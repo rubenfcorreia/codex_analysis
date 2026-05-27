@@ -42,6 +42,7 @@ from poster_plotting import (
 from sleep_dendrite_spine_pipeline import (
     REPORT_SIGNIFICANCE_ALPHA,
     _draw_boxplot_significance_annotations,
+    summarize_state_values_by_dendrite,
     _mixed_model_response_payload,
     _mixed_model_term_component_label,
     _mixed_model_term_interaction_value_label,
@@ -685,11 +686,22 @@ def build_figure(
         "dendrite_event_frequency_per_min",
     ]
     basal_state_results = {
-        metric: summarize_state_values(cache, metric, state_comparison_states, compartment_filter="basal")
+        metric: summarize_state_values_by_dendrite(
+            cache,
+            metric,
+            state_comparison_states,
+            compartment_filter="basal",
+        )
         for metric in summary_metrics
     }
+
     apical_state_results = {
-        metric: summarize_state_values(cache, metric, state_comparison_states, compartment_filter="apical")
+        metric: summarize_state_values_by_dendrite(
+            cache,
+            metric,
+            state_comparison_states,
+            compartment_filter="apical",
+        )
         for metric in summary_metrics
     }
     basal_apical_rows = {
