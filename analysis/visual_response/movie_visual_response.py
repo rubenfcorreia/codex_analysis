@@ -718,7 +718,8 @@ def summarize_movie_session(
             if roi_idx is None or roi_idx < 0 or roi_idx >= exp.cut_array.shape[0]:
                 continue
             traces = []
-            trial_response_values: List[float] = []
+            trial_baseline_values: List[float] = []
+            trial_stimulus_values: List[float] = []
             for trial_id in trial_ids:
                 trial_trace = np.asarray(exp.cut_array[roi_idx, trial_id], dtype=float)
                 traces.append(trial_trace)
@@ -726,14 +727,15 @@ def summarize_movie_session(
                 baseline_value, stimulus_value = trial_activity_means(trial_trace, exp.cut_t, trial_duration)
                 paired_baseline_values.append(baseline_value)
                 paired_stimulus_values.append(stimulus_value)
-                trial_response_values.append(stimulus_value)
+                trial_baseline_values.append(baseline_value)
+                trial_stimulus_values.append(stimulus_value)
             if not traces:
                 continue
             roi_mean, roi_std = trace_mean_and_std(traces)
             if roi_mean.size == 0:
                 continue
             roi_means.append(roi_mean)
-            roi_response_value = float(np.nanmean(trial_response_values)) if trial_response_values else float("nan")
+            roi_response_value = float(np.nanmean(trial_stimulus_values)) if trial_stimulus_values else float("nan")
             roi_response_values.append(roi_response_value)
             roi_traces.append(
                 {
@@ -743,6 +745,8 @@ def summarize_movie_session(
                     "trace": roi_mean,
                     "std_trace": roi_std,
                     "response_amplitude": roi_response_value,
+                    "paired_baseline_values": trial_baseline_values,
+                    "paired_stimulus_values": trial_stimulus_values,
                 }
             )
         if not roi_means:
@@ -1584,110 +1588,125 @@ def plot_movie_group_figure(
             outputs.extend(plot_movie_compartment_boxplot_figure(box_output, group_name, compartment_name, category, category_summary, group_meta))
     return outputs
 
-def summarize_movie_significance_counts(session_summaries: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+def summarize_movie_dendrite_significance_counts(session_summaries_by_compartment: Dict[str, Sequence[Dict[str, Any]]]) -> Dict[str, Dict[str, int]]:
+    def _roi_key(roi_trace: Dict[str, Any]) -> str:
+        key = roi_trace.get("general_roi_id")
+        if key in (None, ""):
+            key = roi_trace.get("conversion_index")
+        return str(key)
+
+    def _blank_roi_lookup(session_summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        blank_summary = session_summary.get("categories", {}).get("blank") or {}
+        return {_roi_key(roi_trace): roi_trace for roi_trace in blank_summary.get("roi_traces", [])}
+
+    def _classify_dendrite(movie_roi: Dict[str, Any], blank_roi: Optional[Dict[str, Any]]) -> Tuple[bool, bool]:
+        paired = paired_ttest_summary(movie_roi.get("paired_baseline_values", []), movie_roi.get("paired_stimulus_values", []))
+        blank = None
+        if blank_roi is not None:
+            blank = welch_ttest_summary(movie_roi.get("paired_stimulus_values", []), blank_roi.get("paired_stimulus_values", []))
+        apply_bonferroni_correction([record for record in (paired, blank) if record is not None])
+        return bool(paired.get("significant")), bool(blank.get("significant")) if blank is not None else False
+
     counts: Dict[str, Dict[str, int]] = {
-        category: {
-            "n_sessions": 0,
+        compartment: {
+            "n_dendrites": 0,
             "none": 0,
             "intertrial_only": 0,
             "blank_only": 0,
             "both": 0,
         }
-        for category in MOVIE_CATEGORIES
+        for compartment in session_summaries_by_compartment
     }
-    for session_summary in session_summaries:
-        if not session_summary.get("available"):
-            continue
-        for category in MOVIE_CATEGORIES:
-            category_summary = session_summary.get("categories", {}).get(category)
-            if not category_summary:
+
+    for compartment_name, session_summaries in session_summaries_by_compartment.items():
+        valid_sessions = [session for session in session_summaries if session.get("available")]
+        test_records: List[Dict[str, Any]] = []
+        dendrite_records: List[Dict[str, Any]] = []
+        for session_summary in valid_sessions:
+            movies_summary = session_summary.get("categories", {}).get("movies") or {}
+            movie_rois = movies_summary.get("roi_traces", [])
+            if not movie_rois:
                 continue
-            stats_block = category_summary.get("stats", {})
-            paired_block = stats_block.get("paired_pre_vs_stimulus") or {}
-            blank_block = stats_block.get("stimulus_vs_blank") or {}
-            paired_significant = bool(paired_block.get("significant"))
-            blank_significant = bool(blank_block.get("significant"))
-            counts[category]["n_sessions"] += 1
-            if paired_significant and blank_significant:
-                counts[category]["both"] += 1
-            elif paired_significant:
-                counts[category]["intertrial_only"] += 1
-            elif blank_significant:
-                counts[category]["blank_only"] += 1
+            blank_lookup = _blank_roi_lookup(session_summary)
+            for movie_roi in movie_rois:
+                blank_roi = blank_lookup.get(_roi_key(movie_roi))
+                paired = paired_ttest_summary(movie_roi.get("paired_baseline_values", []), movie_roi.get("paired_stimulus_values", []))
+                blank = None
+                if blank_roi is not None:
+                    blank = welch_ttest_summary(movie_roi.get("paired_stimulus_values", []), blank_roi.get("paired_stimulus_values", []))
+                paired.update({"comparison_name": "paired_pre_vs_stimulus", "compartment": compartment_name})
+                test_records.append(paired)
+                if blank is not None:
+                    blank.update({"comparison_name": "stimulus_vs_blank", "compartment": compartment_name})
+                    test_records.append(blank)
+                dendrite_records.append({"paired": paired, "blank": blank})
+
+        apply_bonferroni_correction(test_records)
+        for record in dendrite_records:
+            paired = record["paired"]
+            blank = record["blank"]
+            paired_sig = bool(paired.get("significant"))
+            blank_sig = bool(blank.get("significant")) if blank is not None else False
+            counts[compartment_name]["n_dendrites"] += 1
+            if paired_sig and blank_sig:
+                counts[compartment_name]["both"] += 1
+            elif paired_sig:
+                counts[compartment_name]["intertrial_only"] += 1
+            elif blank_sig:
+                counts[compartment_name]["blank_only"] += 1
             else:
-                counts[category]["none"] += 1
+                counts[compartment_name]["none"] += 1
     return counts
 
 
 def plot_movie_significance_counts_figure(
     output_path: Path,
     group_name: str,
-    compartment_name: str,
-    session_summaries: Sequence[Dict[str, Any]],
+    session_summaries_by_compartment: Dict[str, Sequence[Dict[str, Any]]],
     group_meta: Dict[str, Any],
 ) -> List[Path]:
     if plt is None:
         return []
-    valid_sessions = [session for session in session_summaries if session.get("available")]
-    if not valid_sessions:
-        return []
-    counts = summarize_movie_significance_counts(valid_sessions)
-    categories = ["movies"] if counts.get("movies", {}).get("n_sessions", 0) > 0 else []
-    if not categories:
+    counts = summarize_movie_dendrite_significance_counts(session_summaries_by_compartment)
+    categories = ["none", "intertrial_only", "blank_only", "both"]
+    labels = ["No significant", "Intertrial only", "Blank only", "Both"]
+    if not any(counts.get(compartment, {}).get("n_dendrites", 0) for compartment in counts):
         return []
 
-    base_color = MOVIE_CATEGORY_COLORS.get(compartment_name, "#666666")
-    intertrial_color = lighten_color(base_color, 0.68)
-    blank_color = lighten_color(base_color, 0.82)
-    both_color = base_color
+    fig, ax = plt.subplots(1, 1, figsize=(4.8, 6.2))
+    y_positions = np.arange(len(categories), dtype=float)
+    height = 0.34
+    offsets = {"basal": -height / 2.0, "apical": height / 2.0}
+    colors = {"basal": MOVIE_CATEGORY_COLORS.get("basal", "#4C78A8"), "apical": MOVIE_CATEGORY_COLORS.get("apical", "#F58518")}
 
-    fig, ax = plt.subplots(1, 1, figsize=(7.2, 4.0))
-    x_positions = np.arange(len(categories), dtype=float)
-    width = 0.62
-    none = np.asarray([counts[category]["none"] for category in categories], dtype=float)
-    intertrial_only = np.asarray([counts[category]["intertrial_only"] for category in categories], dtype=float)
-    blank_only = np.asarray([counts[category]["blank_only"] for category in categories], dtype=float)
-    both = np.asarray([counts[category]["both"] for category in categories], dtype=float)
-    bottoms = np.zeros(len(categories), dtype=float)
-    stacked_series = [
-        ("no significant", none, "#D9D9D9"),
-        ("intertrial only", intertrial_only, intertrial_color),
-        ("blank only", blank_only, blank_color),
-        ("both", both, both_color),
-    ]
-    for label, values, color in stacked_series:
-        ax.bar(
-            x_positions,
+    for compartment_name in ("basal", "apical"):
+        values = np.asarray([counts.get(compartment_name, {}).get(category, 0) for category in categories], dtype=float)
+        ax.barh(
+            y_positions + offsets[compartment_name],
             values,
-            width=width,
-            bottom=bottoms,
-            color=color,
-            edgecolor=base_color,
-            linewidth=1.2,
-            label=label,
+            height=height,
+            color=lighten_color(colors[compartment_name], 0.12),
+            edgecolor=colors[compartment_name],
+            linewidth=1.4,
+            label=f"{compartment_name.capitalize()} dendrites",
         )
-        bottoms = bottoms + values
+        for y_position, value in zip(y_positions + offsets[compartment_name], values):
+            if value <= 0:
+                continue
+            ax.text(
+                float(value + max(0.05, 0.03 * max(values.max(), 1.0))),
+                float(y_position),
+                f"{int(value)}",
+                ha="left",
+                va="center",
+                fontsize=POSTER_NOTE_SIZE,
+                color=colors[compartment_name],
+            )
 
-    label_offset = max(0.05, 0.04 * float(max(np.nanmax(bottoms), 1.0)))
-    for x_position, category in zip(x_positions, categories):
-        total = int(counts[category]["n_sessions"])
-        ax.text(
-            float(x_position),
-            float(total + label_offset),
-            f"n={total}",
-            ha="center",
-            va="bottom",
-            fontsize=POSTER_NOTE_SIZE,
-            color=base_color,
-        )
-
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels([category.capitalize() for category in categories], fontsize=POSTER_FONT_SIZE)
-    ax.set_ylabel("Significant expIDs", fontsize=POSTER_LABEL_SIZE)
-    ax.set_title(
-        f"{compartment_name.capitalize()} movies significance counts",
-        fontsize=POSTER_TITLE_SIZE - 1,
-    )
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels, fontsize=POSTER_FONT_SIZE)
+    ax.set_xlabel("Dendrites", fontsize=POSTER_LABEL_SIZE)
+    ax.set_title("Movies dendrite significance counts", fontsize=POSTER_TITLE_SIZE - 1)
     if group_name:
         ax.text(
             0.5,
@@ -1699,12 +1718,13 @@ def plot_movie_significance_counts_figure(
             fontsize=POSTER_NOTE_SIZE,
             color="#666666",
         )
-    ax.set_ylim(0.0, float(max(np.nanmax(bottoms), 1.0) * 1.25))
-    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
+    upper = max(float(counts.get("basal", {}).get("n_dendrites", 0)), float(counts.get("apical", {}).get("n_dendrites", 0)), 1.0)
+    ax.set_xlim(0.0, upper * 1.25)
+    set_sparse_numeric_ticks(ax, axis="x", nbins=5)
     ax.tick_params(axis="x", labelsize=POSTER_FONT_SIZE)
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
     ax.legend(loc="upper right", frameon=False, fontsize=POSTER_NOTE_SIZE)
-    fig.subplots_adjust(left=0.16, right=0.98, bottom=0.16, top=0.85)
+    fig.subplots_adjust(left=0.22, right=0.98, bottom=0.12, top=0.85)
     return save_figure(fig, output_path, dpi=DEFAULT_DPI, extra_formats=("svg",))
 
 def plot_soma_onset_figure(
@@ -2100,24 +2120,13 @@ def main() -> None:
             apical_group_summary,
             group,
         )
-        basal_significance_paths = plot_movie_significance_counts_figure(
-            group_output_dir / f"{safe_filename_component(group_name)}_basal_significance_counts.svg",
+        significance_count_paths = plot_movie_significance_counts_figure(
+            group_output_dir / f"{safe_filename_component(group_name)}_movies_significance_counts.svg",
             group_name,
-            "basal",
-            basal_group_sessions,
+            {"basal": basal_group_sessions, "apical": apical_group_sessions},
             group,
         )
-        apical_significance_paths = plot_movie_significance_counts_figure(
-            group_output_dir / f"{safe_filename_component(group_name)}_apical_significance_counts.svg",
-            group_name,
-            "apical",
-            apical_group_sessions,
-            group,
-        )
-        significance_summary = {
-            "basal": summarize_movie_significance_counts(basal_group_sessions),
-            "apical": summarize_movie_significance_counts(apical_group_sessions),
-        }
+        significance_summary = summarize_movie_dendrite_significance_counts({"basal": basal_group_sessions, "apical": apical_group_sessions})
         if movie_only_mode:
             soma_figure_paths: List[str] = []
             poster_ready_path: Optional[Path] = None
@@ -2165,7 +2174,7 @@ def main() -> None:
                 },
                 "outputs": {
                     "movie_figures": [str(path) for path in movie_figure_paths],
-                    "significance_count_figures": [str(path) for path in basal_significance_paths + apical_significance_paths],
+                    "significance_count_figures": [str(path) for path in significance_count_paths],
                     "soma_figures": [str(path) for path in soma_figure_paths],
                     "poster_ready_figure": str(poster_ready_path) if poster_ready_path is not None else None,
                 },
