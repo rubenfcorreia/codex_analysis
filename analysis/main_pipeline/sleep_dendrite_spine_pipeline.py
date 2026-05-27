@@ -101,6 +101,7 @@ DEFAULT_REVIEW_FIGURES_DIR = ROOT_DIR / DEFAULT_REVIEW_FIGURES_DIRNAME
 # These labels are reused everywhere so the cache, analysis, and plots stay aligned.
 MOVIE_TRIAL_TYPES = ["blank", "grating", "zebra", "movies"]
 SLEEP_STATE_LABELS = ["active_awake", "quiet_awake", "nrem", "rem"]
+SPINE_COACTIVITY_ANCHOR_STATE = "quiet_awake_movies"
 MOVIE_TRIAL_TYPE_SUFFIXES = {
     "blank": "blank",
     "grating": "gratings",
@@ -1786,6 +1787,51 @@ def generate_analysis_figures(
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with spine coactivity plotter ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
+    anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+    for plot_idx, compartment in enumerate(spine_coactivity_anchor_state_compartments(anchor_rows), start=1):
+        with step_scope(
+            f"figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
+            index=plot_idx,
+            total=len(spine_coactivity_anchor_state_compartments(anchor_rows)),
+        ):
+            try:
+                scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
+                distribution_path = plot_spine_coactivity_distribution_figure(
+                    scope_results,
+                    coactivity_dir,
+                    output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if distribution_path:
+                    saved.append(distribution_path)
+                heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                    scope_results,
+                    coactivity_dir,
+                    output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if heatmap_path:
+                    saved.append(heatmap_path)
+                summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                    scope_results,
+                    coactivity_dir,
+                    output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if summary_path:
+                    saved.append(summary_path)
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity figures ({gallery_compartment_suffix(compartment)}): {exc}")
+                continue
     matrix_rows = results.get("matrix_similarity", [])
     compartments = matrix_similarity_output_compartments(matrix_rows)
     for comp_idx, compartment in enumerate(compartments, start=1):
@@ -1911,6 +1957,16 @@ def generate_analysis_figures(
         removed_detail_files = cleanup_roi_detail_figures(fig_dir)
         if removed_detail_files:
             step_message(f"removed {len(removed_detail_files)} stale ROI detail PNG/SVG files")
+    basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+        results,
+        coactivity_dir,
+        output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
+        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        coactive_only=True,
+    )
+    if basal_vs_apical_path:
+        saved.append(basal_vs_apical_path)
     return saved
 def generate_review_figures(
     output_dir: Path,
@@ -2118,6 +2174,60 @@ def generate_review_figures(
                     saved.append(pair_summary_path)
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
+    anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+    for plot_idx, compartment in enumerate(spine_coactivity_anchor_state_compartments(anchor_rows), start=1):
+        with step_scope(
+            f"review figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
+            index=plot_idx,
+            total=len(spine_coactivity_anchor_state_compartments(anchor_rows)),
+        ):
+            try:
+                scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
+                distribution_path = plot_spine_coactivity_distribution_figure(
+                    scope_results,
+                    coactivity_dir,
+                    output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if distribution_path:
+                    saved.append(distribution_path)
+                heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                    scope_results,
+                    coactivity_review_dir,
+                    output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if heatmap_path:
+                    saved.append(heatmap_path)
+                summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                    scope_results,
+                    coactivity_review_dir,
+                    output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if summary_path:
+                    saved.append(summary_path)
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity review figures ({gallery_compartment_suffix(compartment)}): {exc}")
+    basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+        results,
+        coactivity_review_dir,
+        output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
+        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        coactive_only=True,
+    )
+    if basal_vs_apical_path:
+        saved.append(basal_vs_apical_path)
     return saved
 def gallery_compartment_suffix(compartment: Optional[str]) -> str:
     return "all" if compartment is None else str(compartment)
@@ -2267,12 +2377,19 @@ def filter_rows_by_spine_coactivity(
     rows: Sequence[Dict[str, Any]],
     compartment_filter: Optional[str] = None,
     global_dendrite_id_filter: Optional[str] = None,
+    state_filter: Optional[str] = None,
+    coactive_only: bool = False,
 ) -> List[Dict[str, Any]]:
     filtered: List[Dict[str, Any]] = []
+    state_filter = canonical_state_label(state_filter) if state_filter is not None else None
     for row in rows:
         if compartment_filter is not None and not gallery_compartment_filter_matches(row.get("compartment"), compartment_filter):
             continue
         if global_dendrite_id_filter is not None and str(row.get("global_dendrite_id")) != str(global_dendrite_id_filter):
+            continue
+        if state_filter is not None and canonical_state_label(row.get("state")) != state_filter:
+            continue
+        if coactive_only and not bool(row.get("coactive")):
             continue
         filtered.append(dict(row))
     return filtered
@@ -2412,6 +2529,28 @@ def build_filtered_spine_coactivity_results(
             "pair_state_rows": [row for row in filtered_pair_state_rows if str(row.get("status")) == "ok"],
         }
     }
+def spine_coactivity_pair_state_scope_name(anchor_state_filter: Optional[str], coactive_only: bool) -> str:
+    anchor_text = safe_filename_component(anchor_state_filter) if anchor_state_filter is not None else "all_states"
+    coactive_text = "coactive" if coactive_only else "all_pairs"
+    return f"{anchor_text}_{coactive_text}"
+def spine_coactivity_pair_state_output_name(kind: str, anchor_state_filter: Optional[str], compartment: Optional[str], coactive_only: bool = True) -> str:
+    scope_name = spine_coactivity_pair_state_scope_name(anchor_state_filter, coactive_only)
+    return f"spine_coactivity_{kind}_{scope_name}_{gallery_compartment_suffix(compartment)}.svg"
+def spine_coactivity_basal_apical_distribution_output_name(anchor_state_filter: Optional[str], coactive_only: bool = True) -> str:
+    scope_name = spine_coactivity_pair_state_scope_name(anchor_state_filter, coactive_only)
+    return f"spine_coactivity_basal_vs_apical_distribution_{scope_name}.svg"
+def spine_coactivity_anchor_state_compartments(rows: Sequence[Dict[str, Any]]) -> List[Optional[str]]:
+    compartments: List[Optional[str]] = [None]
+    compartments.extend(spine_coactivity_output_compartments(rows))
+    deduped: List[Optional[str]] = []
+    seen = set()
+    for compartment in compartments:
+        key = gallery_compartment_suffix(compartment)
+        if key in seen:
+            continue
+        deduped.append(compartment)
+        seen.add(key)
+    return deduped
 def _make_count_heatmap(count_rows: List[Dict[str, Any]]) -> Tuple[np.ndarray, List[str], List[str]]:
     if not count_rows:
         return np.empty((0, 0), dtype=float), [], []
@@ -2992,6 +3131,8 @@ def _spine_coactivity_state_subject_values(
 def _spine_coactivity_pair_state_rows(
     results: Dict[str, Any],
     compartment_filter: Optional[str] = None,
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     coactivity = results.get("spine_coactivity", {})
     if not isinstance(coactivity, dict):
@@ -2999,13 +3140,23 @@ def _spine_coactivity_pair_state_rows(
     source_rows = coactivity.get("pair_state_rows")
     if not isinstance(source_rows, list) or not source_rows:
         source_rows = coactivity.get("table_rows", [])
-    rows = filter_rows_by_spine_coactivity(source_rows, compartment_filter=compartment_filter)
+    rows = filter_rows_by_spine_coactivity(
+        source_rows,
+        compartment_filter=compartment_filter,
+    )
     rows = [row for row in rows if str(row.get("status")) == "ok" and np.isfinite(as_float(row.get("coactivity_r")))]
+    if anchor_state_filter is not None:
+        anchor_state = canonical_state_label(anchor_state_filter)
+        anchor_rows = [row for row in rows if canonical_state_label(row.get("state")) == anchor_state]
+        if coactive_only:
+            anchor_pair_ids = {str(row.get("global_pair_id")) for row in anchor_rows if bool(row.get("coactive"))}
+        else:
+            anchor_pair_ids = {str(row.get("global_pair_id")) for row in anchor_rows}
+        rows = [row for row in rows if str(row.get("global_pair_id")) in anchor_pair_ids]
     state_labels = [state for state in selected_matrix_state_labels(results) if any(canonical_state_label(row.get("state")) == state for row in rows)]
     if state_labels:
         rows = [row for row in rows if canonical_state_label(row.get("state")) in state_labels]
     return rows, state_labels
-
 
 def _spine_coactivity_pair_state_display_label(row: Dict[str, Any]) -> str:
     _, day_date, _ = split_day_id(row.get("day_id") or row.get("exp_id") or "unknown")
@@ -3022,6 +3173,8 @@ def plot_spine_coactivity_distribution_figure(
     output_name: str = "spine_coactivity_distribution.svg",
     title: str = "Spine coactivity coefficient distributions",
     compartment_filter: Optional[str] = None,
+    state_filter: Optional[str] = None,
+    coactive_only: bool = False,
     value_kind: str = "coactivity_r",
 ) -> Optional[str]:
     if plt is None:
@@ -3030,7 +3183,12 @@ def plot_spine_coactivity_distribution_figure(
     if not isinstance(coactivity, dict):
         return None
     value_key = "coactivity_r" if value_kind != "shuffle_p" else "shuffle_p"
-    rows = filter_rows_by_spine_coactivity(coactivity.get("table_rows", []), compartment_filter=compartment_filter)
+    rows = filter_rows_by_spine_coactivity(
+        coactivity.get("table_rows", []),
+        compartment_filter=compartment_filter,
+        state_filter=state_filter,
+        coactive_only=coactive_only,
+    )
     rows = [row for row in rows if row.get("status") == "ok" and np.isfinite(as_float(row.get(value_key))) and np.isfinite(as_float(row.get("coactivity_r"))) ]
     if not rows:
         return None
@@ -3090,10 +3248,13 @@ def plot_spine_coactivity_distribution_figure(
     ax.grid(axis="x", alpha=0.25)
     set_sparse_numeric_ticks(ax, axis="x", nbins=5)
     if value_key == "coactivity_r":
+        active_state = format_requested_state_label(state_filter) if state_filter is not None else None
+        active_text = f" | state={active_state}" if active_state is not None else ""
+        active_text += " | coactive pairs" if coactive_only else ""
         ax.text(
             0.02,
             0.98,
-            f"mean positive fraction = {format_report_number(next((as_float(row.get('positive_fraction')) for row in coactivity.get('state_summary_rows', []) if str(row.get('compartment')) == compartment), float('nan')))}",
+            f"mean positive fraction = {format_report_number(next((as_float(row.get('positive_fraction')) for row in coactivity.get('state_summary_rows', []) if str(row.get('compartment')) == compartment), float('nan')))}{active_text}",
             transform=ax.transAxes,
             ha="left",
             va="top",
@@ -3255,10 +3416,17 @@ def plot_spine_coactivity_pair_state_heatmap_figure(
     output_name: str = "spine_coactivity_pair_state_heatmap.svg",
     title: str = "Spine coactivity coefficient across selected states",
     compartment_filter: Optional[str] = None,
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
 ) -> Optional[str]:
     if plt is None:
         return None
-    rows, state_labels = _spine_coactivity_pair_state_rows(results, compartment_filter=compartment_filter)
+    rows, state_labels = _spine_coactivity_pair_state_rows(
+        results,
+        compartment_filter=compartment_filter,
+        anchor_state_filter=anchor_state_filter,
+        coactive_only=coactive_only,
+    )
     if not rows or not state_labels:
         return None
     coactivity = results.get("spine_coactivity", {})
@@ -3321,10 +3489,12 @@ def plot_spine_coactivity_pair_state_heatmap_figure(
     ax.set_xlim(-0.5, len(state_labels) - 0.5)
     ax.set_ylim(len(pair_labels) - 0.5, -0.5)
     ax.grid(which="major", color="white", linestyle="-", linewidth=0.6, alpha=0.55)
+    anchor_text = f" | anchor={format_requested_state_label(anchor_state_filter)}" if anchor_state_filter is not None else ""
+    active_text = " | coactive pairs" if coactive_only else ""
     ax.text(
         0.02,
         0.98,
-        f"sorted by coactivity_r_range | n pairs = {len(pair_ids)}",
+        f"sorted by coactivity_r_range | n pairs = {len(pair_ids)}{anchor_text}{active_text}",
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -3340,6 +3510,159 @@ def plot_spine_coactivity_pair_state_heatmap_figure(
     save_figure(fig, output_path, extra_formats=())
     return str(output_path)
 
+def _spine_coactivity_basal_apical_distribution_rows(
+    results: Dict[str, Any],
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
+) -> Tuple[Dict[str, Dict[str, List[Dict[str, Any]]]], List[str]]:
+    rows, state_labels = _spine_coactivity_pair_state_rows(
+        results,
+        compartment_filter=None,
+        anchor_state_filter=anchor_state_filter,
+        coactive_only=coactive_only,
+    )
+    compartment_state_rows: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"basal": defaultdict(list), "apical": defaultdict(list)}
+    pair_values: Dict[Tuple[str, str, str], List[float]] = defaultdict(list)
+    pair_meta: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    selected_state_set = {canonical_state_label(state) for state in state_labels}
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment not in {"basal", "apical"}:
+            continue
+        state = canonical_state_label(row.get("state"))
+        if state not in selected_state_set:
+            continue
+        value = as_float(row.get("coactivity_r"))
+        if value is None or not np.isfinite(value):
+            continue
+        pair_id = str(row.get("global_pair_id") or "unknown")
+        key = (compartment, state, pair_id)
+        pair_values[key].append(float(value))
+        pair_meta.setdefault(key, dict(row))
+    for compartment in ["basal", "apical"]:
+        for state in state_labels:
+            pair_ids = sorted(pair_id for comp, state_label, pair_id in pair_values if comp == compartment and state_label == state)
+            for pair_id in pair_ids:
+                values = pair_values.get((compartment, state, pair_id), [])
+                if not values:
+                    continue
+                meta = pair_meta.get((compartment, state, pair_id), {})
+                compartment_state_rows[compartment][state].append(
+                    {
+                        "compartment": compartment,
+                        "state": state,
+                        "global_pair_id": pair_id,
+                        "animal_id": meta.get("animal_id"),
+                        "day_id": meta.get("day_id"),
+                        "exp_id": meta.get("exp_id"),
+                        "global_dendrite_id": meta.get("global_dendrite_id"),
+                        "mean_coactivity_r": float(np.nanmean(values)),
+                        "n_rows": int(len(values)),
+                    }
+                )
+    return {compartment: dict(state_rows) for compartment, state_rows in compartment_state_rows.items()}, state_labels
+
+def plot_spine_coactivity_basal_apical_distribution_figure(
+    results: Dict[str, Any],
+    fig_dir: Path,
+    output_name: str = "spine_coactivity_basal_vs_apical_distribution.svg",
+    title: str = "Quiet awake movies coactive-pair distribution - Basal vs apical",
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
+) -> Optional[str]:
+    if plt is None:
+        return None
+    compartment_state_rows, state_labels = _spine_coactivity_basal_apical_distribution_rows(
+        results,
+        anchor_state_filter=anchor_state_filter,
+        coactive_only=coactive_only,
+    )
+    if not state_labels:
+        return None
+    compartment_order = [comp for comp in ["basal", "apical"] if any(compartment_state_rows.get(comp, {}).get(state) for state in state_labels)]
+    if not compartment_order:
+        return None
+    fig_width = min(max(8.4, 0.75 * len(state_labels) + 4.2), 12.0)
+    fig_height = min(max(4.4, 0.58 * len(state_labels) + 2.9), 10.0)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), squeeze=True)
+    state_positions = np.arange(1, len(state_labels) + 1, dtype=float)
+    compartment_colors = {"basal": "#1f77b4", "apical": "#d95f02"}
+    compartment_offsets = {"basal": -0.16, "apical": 0.16}
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor=compartment_colors.get(compartment, "#444444"), edgecolor="#444444", label=compartment.capitalize())
+        for compartment in compartment_order
+    ]
+    for state_index, state in enumerate(state_labels):
+        base_pos = state_positions[state_index]
+        for compartment in compartment_order:
+            pair_rows = compartment_state_rows.get(compartment, {}).get(state, [])
+            values = np.asarray(
+                [
+                    as_float(row.get("mean_coactivity_r"))
+                    for row in pair_rows
+                    if np.isfinite(as_float(row.get("mean_coactivity_r")))
+                ],
+                dtype=float,
+            )
+            if values.size == 0:
+                continue
+            pos = base_pos + compartment_offsets.get(compartment, 0.0)
+            bp = ax.boxplot(
+                [values],
+                positions=[pos],
+                widths=0.26,
+                patch_artist=True,
+                showfliers=False,
+                vert=False,
+            )
+            _set_boxplot_colors(bp, [compartment_colors.get(compartment, "#444444")])
+            jitter = np.random.default_rng(91 if compartment == "basal" else 92).uniform(-0.08, 0.08, size=values.size)
+            ax.scatter(
+                values,
+                np.full(values.size, pos) + jitter,
+                s=13,
+                alpha=0.45,
+                color=compartment_colors.get(compartment, "#444444"),
+                edgecolor="none",
+                zorder=3,
+            )
+            ax.text(
+                0.98,
+                pos,
+                f"n pairs={values.size}",
+                transform=ax.get_yaxis_transform(),
+                ha="right",
+                va="center",
+                fontsize=POSTER_NOTE_SIZE,
+            )
+    ax.axvline(0.0, color="#333333", linewidth=1)
+    ax.set_title(title, fontsize=POSTER_TITLE_SIZE)
+    ax.set_xlabel("Mean coactivity coefficient per spine pair", fontsize=POSTER_LABEL_SIZE)
+    ax.set_ylabel("State", fontsize=POSTER_LABEL_SIZE)
+    ax.set_yticks(state_positions)
+    ax.set_yticklabels([format_requested_state_label(state) for state in state_labels])
+    ax.tick_params(axis="both", labelsize=max(POSTER_FONT_SIZE, 14))
+    ax.grid(axis="x", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="x", nbins=5)
+    if legend_handles:
+        ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=POSTER_NOTE_SIZE)
+    state_text = format_report_list([format_requested_state_label(state) for state in state_labels], max_items=6)
+    anchor_text = format_requested_state_label(anchor_state_filter) if anchor_state_filter is not None else "selected states"
+    ax.text(
+        0.02,
+        0.98,
+        f"anchor={anchor_text} | selected states={state_text} | n values are spine pairs | coactive pairs only",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=POSTER_NOTE_SIZE,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+    )
+    fig.tight_layout(pad=0.95)
+    output_path = fig_dir / output_name
+    save_figure(fig, output_path, extra_formats=())
+    return str(output_path)
 
 def plot_spine_coactivity_pair_state_summary_figure(
     results: Dict[str, Any],
@@ -3347,10 +3670,17 @@ def plot_spine_coactivity_pair_state_summary_figure(
     output_name: str = "spine_coactivity_pair_state_summary.svg",
     title: str = "Spine coactivity state-change summary",
     compartment_filter: Optional[str] = None,
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
 ) -> Optional[str]:
     if plt is None:
         return None
-    rows, state_labels = _spine_coactivity_pair_state_rows(results, compartment_filter=compartment_filter)
+    rows, state_labels = _spine_coactivity_pair_state_rows(
+        results,
+        compartment_filter=compartment_filter,
+        anchor_state_filter=anchor_state_filter,
+        coactive_only=coactive_only,
+    )
     if not rows or not state_labels:
         return None
     coactivity = results.get("spine_coactivity", {})
@@ -3414,10 +3744,12 @@ def plot_spine_coactivity_pair_state_summary_figure(
     y_min, y_max = padded_value_limits(similarity_values.tolist())
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
+    anchor_text = f" | anchor={format_requested_state_label(anchor_state_filter)}" if anchor_state_filter is not None else ""
+    active_text = " | coactive pairs" if coactive_only else ""
     ax.text(
         0.02,
         0.98,
-        f"Each dot = one pair | n pairs = {len(summary_rows)} | rows sorted in heatmap by coactivity_r_range",
+        f"Each dot = one pair | n pairs = {len(summary_rows)} | rows sorted in heatmap by coactivity_r_range{anchor_text}{active_text}",
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -3432,7 +3764,6 @@ def plot_spine_coactivity_pair_state_summary_figure(
     output_path = fig_dir / output_name
     save_figure(fig, output_path, extra_formats=())
     return str(output_path)
-
 
 def plot_direct_trial_type_distribution_figure(
 
@@ -4439,6 +4770,20 @@ def render_analysis_family_figures(
                         )
                     except Exception as exc:
                         eprint(f"[ALERT] Failed to create spine coactivity heatmap for {compartment} / {dendrite_id}: {exc}")
+    basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+        results,
+        gallery_dir,
+        output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+        title=f"Quiet awake movies coactive-pair distribution - basal vs apical",
+        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        coactive_only=True,
+    )
+    if basal_vs_apical_path:
+        append_entry(
+            "spine_coactivity_basal_vs_apical_distribution",
+            spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+            basal_vs_apical_path,
+        )
     return saved
 def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
     if plt is None:
@@ -4656,6 +5001,76 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
             animal_id=None if rep is None else rep["animal_id"],
             exp_id=None if rep is None else rep["exp_id"],
             global_dendrite_id=None if rep is None else rep["global_dendrite_id"],
+        )
+    # Quiet-awake-movies spine coactivity checkpoint examples.
+    anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+    for compartment in spine_coactivity_anchor_state_compartments(anchor_rows):
+        scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
+        distribution_path = plot_spine_coactivity_distribution_figure(
+            scope_results,
+            gallery_dir,
+            output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+            title=f"Quiet awake movies coactive-pair distribution - {gallery_compartment_title(compartment)}",
+            compartment_filter=compartment,
+            state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        rep = None
+        if distribution_path:
+            append_entry(
+                "spine_coactivity_anchor_distribution",
+                spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True) + f"_{gallery_compartment_suffix(compartment)}",
+                distribution_path,
+                compartment=compartment,
+            )
+        heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+            scope_results,
+            gallery_dir,
+            output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+            title=f"Quiet awake movies coactive pairs across states - {gallery_compartment_title(compartment)}",
+            compartment_filter=compartment,
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        rep = None
+        spine_rows = scope_results.get("spine_coactivity", {}).get("pair_state_rows", []) if isinstance(scope_results.get("spine_coactivity", {}), dict) else []
+        if spine_rows:
+            rep = sorted(
+                spine_rows,
+                key=lambda row: (
+                    str(row.get("animal_id", "")),
+                    str(row.get("exp_id", "")),
+                    str(row.get("global_dendrite_id", "")),
+                    str(row.get("state", "")),
+                    str(row.get("global_pair_id", "")),
+                ),
+            )[0]
+        append_entry(
+            "spine_coactivity_pair_state_heatmap",
+            spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True) + f"_{gallery_compartment_suffix(compartment)}",
+            heatmap_path,
+            compartment=compartment,
+            animal_id=None if rep is None else rep.get("animal_id"),
+            exp_id=None if rep is None else rep.get("exp_id"),
+            global_dendrite_id=None if rep is None else rep.get("global_dendrite_id"),
+        )
+        summary_path = plot_spine_coactivity_pair_state_summary_figure(
+            scope_results,
+            gallery_dir,
+            output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+            title=f"Quiet awake movies coactive-pair summary - {gallery_compartment_title(compartment)}",
+            compartment_filter=compartment,
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        append_entry(
+            "spine_coactivity_pair_state_summary",
+            spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True) + f"_{gallery_compartment_suffix(compartment)}",
+            summary_path,
+            compartment=compartment,
+            animal_id=None if rep is None else rep.get("animal_id"),
+            exp_id=None if rep is None else rep.get("exp_id"),
+            global_dendrite_id=None if rep is None else rep.get("global_dendrite_id"),
         )
     # Mixed-model checkpoint examples.
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
