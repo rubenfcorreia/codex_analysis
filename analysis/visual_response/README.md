@@ -15,7 +15,7 @@ This folder contains the visual-response launcher for the movie dendrite cohorts
 - uses the native time axes already stored in the aligned data instead of a fixed pre/post plotting window
 - uses an explicit `soma_group_map` only when soma-enabled runs are requested
 - writes poster-ready PNG and SVG figures under `results/visual_response/figures/<group>/`
-- adds movie-only significance-count figures that show how many basal/apical expIDs are significant vs intertrial, blank, or both
+- adds one movie-only significance-count figure that shows the number of basal and apical dendrites that are significant vs intertrial, blank, both, or neither
 - emits separate basal and apical movie figures for each group, split into one onset figure and one boxplot figure per movie category, with one averaged trace per dendrite in each onset panel
 - renders the soma rapid-retinotopy outputs as separate onset, boxplot, and 2D response-map figures; the retinotopy panel becomes a 2D response map when the trial table contains repeated x/y stimulus positions, and the onset figure shows the 1 s grating window from the trial table
 
