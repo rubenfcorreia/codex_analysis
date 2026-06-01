@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import csv
 import argparse
+from collections import defaultdict
 import json
+import math
 import re
 import sys
 from itertools import combinations
@@ -21,6 +24,7 @@ try:
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
     from matplotlib.lines import Line2D
 except Exception:  # pragma: no cover - matplotlib is required for the real run
     plt = None
@@ -41,24 +45,23 @@ from poster_plotting import (
 
 from sleep_dendrite_spine_pipeline import (
     REPORT_SIGNIFICANCE_ALPHA,
+    SPINE_COACTIVITY_ANCHOR_STATE,
     _draw_boxplot_significance_annotations,
-    summarize_state_values_by_dendrite,
-    _mixed_model_response_payload,
-    _mixed_model_term_component_label,
-    _mixed_model_term_interaction_value_label,
-    _mixed_model_term_kind,
-    _mixed_model_term_value_label,
-    _pad_boxplot_ylim,
-    _set_boxplot_colors,
+    _spine_coactivity_basal_apical_distribution_rows,
+    _spine_coactivity_pair_state_display_label,
+    _spine_coactivity_pair_state_rows,
     as_float,
     basal_apical_comparison,
+    build_filtered_spine_coactivity_results,
     build_state_summary_gallery_results,
     build_mixed_model_table,
     canonical_state_label,
     color_state_tick_labels,
     ensure_dir,
+    filter_rows_by_spine_coactivity,
     flatten_state_summary_values,
     format_requested_state_label,
+    gallery_compartment_suffix,
     load_cached_analysis_table,
     load_npz_cache,
     mixed_model_design_row,
@@ -67,11 +70,26 @@ from sleep_dendrite_spine_pipeline import (
     resolve_analysis_state_selections,
     run_mixed_model_analysis,
     run_mixed_model_family,
-    summarize_state_values,
+    selected_matrix_plot_state_labels,
     selected_mixed_model_state_labels,
     set_requested_state_ticks,
+    set_sparse_colorbar_ticks,
+    set_sparse_numeric_ticks,
+    spine_coactivity_anchor_state_compartments,
+    spine_coactivity_basal_apical_distribution_output_name,
+    spine_coactivity_output_compartments,
+    spine_coactivity_pair_state_output_name,
     state_display_color,
     state_summary_y_limits,
+    summarize_state_values,
+    summarize_state_values_by_dendrite,
+    _mixed_model_response_payload,
+    _mixed_model_term_component_label,
+    _mixed_model_term_interaction_value_label,
+    _mixed_model_term_kind,
+    _mixed_model_term_value_label,
+    _pad_boxplot_ylim,
+    _set_boxplot_colors,
 )
 
 if plt is not None:
@@ -108,10 +126,26 @@ def cm_to_inch(value_cm: float) -> float:
 
 
 def load_cache(path: Path) -> Dict[str, Any]:
-    cache = load_npz_cache(path)
-    if not isinstance(cache, dict):
-        raise TypeError(f"Expected a cache dictionary from {path}")
-    return cache
+    try:
+        cache = load_npz_cache(path)
+        if not isinstance(cache, dict):
+            raise TypeError(f"Expected a cache dictionary from {path}")
+        return cache
+    except Exception:
+        json_path = ROOT_DIR / "results" / "main_pipeline" / "analysis_results.json"
+        if json_path.exists():
+            try:
+                payload = json.loads(json_path.read_text())
+                if isinstance(payload, dict):
+                    return {
+                        "config": dict(payload.get("config", {})) if isinstance(payload.get("config"), dict) else {},
+                        "analysis_unit": payload.get("analysis_unit"),
+                        "alerts": list(payload.get("alerts", [])) if isinstance(payload.get("alerts", []), list) else [],
+                        "run_parameters": dict(payload.get("run_parameters", {})) if isinstance(payload.get("run_parameters"), dict) else {},
+                    }
+            except Exception:
+                pass
+        return {}
 
 
 def _svg_dimension_to_float(value: Any) -> float:
@@ -133,6 +167,77 @@ def set_svg_physical_size(svg_path: Path, width_cm: float) -> None:
     root.attrib["width"] = f"{float(width_cm):.4f}cm"
     root.attrib["height"] = f"{float(width_cm) * aspect:.4f}cm"
     tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
+
+
+DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM = "spine_coactivity_poster_ready"
+DEFAULT_SPINE_COACTIVITY_WIDTH_CM = 35.0
+DEFAULT_SPINE_COACTIVITY_HEIGHT_CM = 15.0
+SPINE_COACTIVITY_COMPOSITE_STEM = "spine_coactivity_poster_ready"
+
+
+def load_analysis_results_payload() -> Dict[str, Any]:
+    json_path = ROOT_DIR / "results" / "main_pipeline" / "analysis_results.json"
+    payload: Dict[str, Any] = {}
+    if json_path.exists():
+        try:
+            loaded = json.loads(json_path.read_text())
+            if isinstance(loaded, dict):
+                payload = dict(loaded)
+        except Exception:
+            pass
+    spine_coactivity = payload.get("spine_coactivity")
+    if isinstance(spine_coactivity, dict) and spine_coactivity.get("table_rows"):
+        return payload
+
+    def _load_csv_rows(csv_path: Path) -> List[Dict[str, Any]]:
+        if not csv_path.exists():
+            return []
+        try:
+            with csv_path.open("r", newline="") as handle:
+                return list(csv.DictReader(handle))
+        except Exception:
+            return []
+
+    coactivity_base = ROOT_DIR / "results" / "main_pipeline"
+    table_rows = _load_csv_rows(coactivity_base / "spine_coactivity_table.csv")
+    if not table_rows:
+        cache_path = coactivity_base / "cache" / "sleep_dendrite_spine_cache_analysis_results_cache.npz"
+        if cache_path.exists():
+            try:
+                payload = load_npz_cache(cache_path)
+                if isinstance(payload, dict):
+                    if isinstance(payload.get("analysis_results"), dict):
+                        return dict(payload.get("analysis_results", {}))
+                    return payload
+            except Exception:
+                pass
+        return payload if isinstance(payload, dict) else {}
+
+    coactivity_payload = dict(spine_coactivity) if isinstance(spine_coactivity, dict) else {}
+    coactivity_payload["table_rows"] = table_rows
+    coactivity_payload.setdefault("pair_state_rows", list(table_rows))
+
+    state_summary_rows = _load_csv_rows(coactivity_base / "spine_coactivity_state_summary.csv")
+    if state_summary_rows:
+        coactivity_payload.setdefault("state_summary_rows", state_summary_rows)
+    pair_summary_rows = _load_csv_rows(coactivity_base / "spine_coactivity_pair_summary.csv")
+    if pair_summary_rows:
+        coactivity_payload.setdefault("pair_summary_rows", pair_summary_rows)
+    compartment_summary_rows = _load_csv_rows(coactivity_base / "spine_coactivity_compartment_summary.csv")
+    if compartment_summary_rows:
+        coactivity_payload.setdefault("compartment_summary_rows", compartment_summary_rows)
+    state_agreement_rows = _load_csv_rows(coactivity_base / "spine_coactivity_state_agreement.csv")
+    if state_agreement_rows:
+        coactivity_payload.setdefault("state_agreement_rows", state_agreement_rows)
+
+    payload["spine_coactivity"] = coactivity_payload
+    return payload
+
+
+def _export_single_axis_figure(fig: Any, path: Path) -> Path:
+    save_figure(fig, path, extra_formats=())
+    return path
+
 
 
 def _pad_boxplot_limits(
@@ -643,6 +748,847 @@ def draw_mixed_model_forest_panel(
     return True
 
 
+# Spine coactivity poster mode.
+
+def _save_svg_figure_exact(fig: Any, path: Path) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, format="svg", dpi=POSTER_DPI, bbox_inches=None, pad_inches=0)
+    if plt is not None:
+        plt.close(fig)
+    return output_path
+
+
+def _spine_coactivity_basal_apical_payload(
+    results: Dict[str, Any],
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
+) -> Optional[Dict[str, Any]]:
+    compartment_state_rows, state_labels = _spine_coactivity_basal_apical_distribution_rows(
+        results,
+        anchor_state_filter=anchor_state_filter,
+        coactive_only=coactive_only,
+    )
+    if not state_labels:
+        return None
+    all_values: List[float] = []
+    for compartment in ("basal", "apical"):
+        for state in state_labels:
+            state_rows = compartment_state_rows.get(compartment, {}).get(state, [])
+            values = np.asarray(
+                [as_float(row.get("mean_coactivity_r")) for row in state_rows if np.isfinite(as_float(row.get("mean_coactivity_r")))],
+                dtype=float,
+            )
+            if values.size:
+                all_values.extend(float(value) for value in values)
+    if not all_values:
+        return None
+    return {
+        "compartment_state_rows": compartment_state_rows,
+        "state_labels": list(state_labels),
+        "x_limits": padded_value_limits(np.asarray(all_values, dtype=float)),
+    }
+
+def _spine_coactivity_distribution_payload(
+    results: Dict[str, Any],
+    compartment_filter: Optional[str] = None,
+    state_filter: Optional[str] = None,
+    coactive_only: bool = False,
+) -> Optional[Dict[str, Any]]:
+    rows, state_labels = _spine_coactivity_pair_state_rows(
+        results,
+        compartment_filter=compartment_filter,
+        anchor_state_filter=state_filter,
+        coactive_only=coactive_only,
+    )
+    if not rows or not state_labels:
+        return None
+
+    if state_filter is not None:
+        wanted_states = [canonical_state_label(state_filter)]
+    else:
+        wanted_states = list(state_labels)
+
+    labels: List[str] = []
+    series: List[np.ndarray] = []
+    significance_masks: List[np.ndarray] = []
+    all_values: List[float] = []
+
+    for state in wanted_states:
+        state_rows = [
+            row for row in rows
+            if canonical_state_label(row.get("state")) == state
+        ]
+        values: List[float] = []
+        sig_mask: List[bool] = []
+
+        for row in state_rows:
+            value = as_float(row.get("coactivity_r"))
+            if value is None or not np.isfinite(value):
+                continue
+            values.append(float(value))
+            sig_mask.append(_coactivity_row_is_significant(row))
+
+        if not values:
+            continue
+
+        labels.append(state)
+        arr = np.asarray(values, dtype=float)
+        series.append(arr)
+        significance_masks.append(np.asarray(sig_mask, dtype=bool))
+        all_values.extend(values)
+
+    if not labels:
+        return None
+
+    return {
+        "rows": rows,
+        "state_labels": labels,
+        "series": series,
+        "significance_masks": significance_masks,
+        "x_limits": padded_value_limits(np.asarray(all_values, dtype=float)),
+    }
+
+def _spine_coactivity_heatmap_payload(
+    results: Dict[str, Any],
+    compartment_filter: Optional[str] = None,
+    anchor_state_filter: Optional[str] = None,
+    coactive_only: bool = False,
+) -> Optional[Dict[str, Any]]:
+    rows, state_labels = _spine_coactivity_pair_state_rows(
+        results,
+        compartment_filter=compartment_filter,
+        anchor_state_filter=anchor_state_filter,
+        coactive_only=coactive_only,
+    )
+    if not rows or not state_labels:
+        return None
+    coactivity = results.get("spine_coactivity", {})
+    pair_summary_rows = [row for row in coactivity.get("pair_summary_rows", []) if isinstance(row, dict)] if isinstance(coactivity, dict) else []
+    if compartment_filter is not None:
+        pair_summary_rows = [row for row in pair_summary_rows if str(row.get("compartment")) == compartment_filter]
+    pair_summary_lookup = {str(row.get("global_pair_id")): dict(row) for row in pair_summary_rows}
+    pair_rows_by_id: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        pair_rows_by_id[str(row.get("global_pair_id"))].append(dict(row))
+    pair_ids = list(pair_rows_by_id)
+    if not pair_ids:
+        return None
+
+    def sort_key(pair_id: str) -> Tuple[int, float, int, float, str]:
+        summary = pair_summary_lookup.get(pair_id, {})
+        range_value = as_float(summary.get("coactivity_r_range"))
+        profile_similarity = as_float(summary.get("profile_similarity_r"))
+        return (
+            0 if range_value is not None and np.isfinite(range_value) else 1,
+            -(range_value if range_value is not None and np.isfinite(range_value) else float("-inf")),
+            0 if profile_similarity is not None and np.isfinite(profile_similarity) else 1,
+            -(profile_similarity if profile_similarity is not None and np.isfinite(profile_similarity) else float("-inf")),
+            pair_id,
+        )
+
+    pair_ids = sorted(pair_ids, key=sort_key)
+    matrix = np.full((len(pair_ids), len(state_labels)), np.nan, dtype=float)
+    pair_labels: List[str] = []
+    for row_index, pair_id in enumerate(pair_ids):
+        pair_rows = pair_rows_by_id.get(pair_id, [])
+        reference_row = pair_rows[0] if pair_rows else pair_summary_lookup.get(pair_id, {})
+        pair_labels.append(_spine_coactivity_pair_state_display_label(reference_row))
+        for col_index, state in enumerate(state_labels):
+            state_value = next(
+                (
+                    as_float(row.get("coactivity_r"))
+                    for row in pair_rows
+                    if canonical_state_label(row.get("state")) == state and np.isfinite(as_float(row.get("coactivity_r")))
+                ),
+                None,
+            )
+            if state_value is not None and np.isfinite(state_value):
+                matrix[row_index, col_index] = float(state_value)
+    finite_values = matrix[np.isfinite(matrix)]
+    if finite_values.size == 0:
+        return None
+    max_abs = float(np.nanmax(np.abs(finite_values))) if finite_values.size else 0.0
+    if not np.isfinite(max_abs) or max_abs <= 0:
+        max_abs = 1.0
+    return {
+        "matrix": matrix,
+        "pair_labels": pair_labels,
+        "state_labels": list(state_labels),
+        "max_abs": max_abs,
+        "pair_ids": pair_ids,
+    }
+
+
+def _draw_spine_coactivity_basal_apical_distribution_panel(
+    ax: Any,
+    payload: Dict[str, Any],
+    *,
+    title: str,
+    show_ylabel: bool = True,
+    show_xlabel: bool = True,
+    show_y_ticklabels: bool = True,
+    show_legend: bool = True,
+    x_limits: Optional[Tuple[float, float]] = None,
+) -> None:
+    compartment_state_rows = payload["compartment_state_rows"]
+    state_labels = list(payload["state_labels"])
+    state_positions = np.arange(1, len(state_labels) + 1, dtype=float)
+    compartment_colors = {"basal": "#1f77b4", "apical": "#d95f02"}
+    compartment_offsets = {"basal": -0.16, "apical": 0.16}
+    compartment_order = [comp for comp in ["basal", "apical"] if any(compartment_state_rows.get(comp, {}).get(state) for state in state_labels)]
+    for state_index, state in enumerate(state_labels):
+        base_pos = state_positions[state_index]
+        for compartment in compartment_order:
+            pair_rows = compartment_state_rows.get(compartment, {}).get(state, [])
+            values = np.asarray(
+                [
+                    as_float(row.get("mean_coactivity_r"))
+                    for row in pair_rows
+                    if np.isfinite(as_float(row.get("mean_coactivity_r")))
+                ],
+                dtype=float,
+            )
+            if values.size == 0:
+                continue
+            pos = base_pos + compartment_offsets.get(compartment, 0.0)
+            bp = ax.boxplot(
+                [values],
+                positions=[pos],
+                widths=0.26,
+                patch_artist=True,
+                showfliers=False,
+                vert=False,
+            )
+            _set_boxplot_colors(bp, [compartment_colors.get(compartment, "#444444")])
+            jitter = np.random.default_rng(91 if compartment == "basal" else 92).uniform(-0.08, 0.08, size=values.size)
+            ax.scatter(
+                values,
+                np.full(values.size, pos) + jitter,
+                s=7,
+                alpha=0.45,
+                color=compartment_colors.get(compartment, "#444444"),
+                edgecolor="none",
+                zorder=3,
+            )
+    ax.axvline(0.0, color="#333333", linewidth=1)
+    ax.set_title(title, fontsize=max(10, POSTER_TITLE_SIZE - 12), pad=2)
+    ax.set_xlabel("Mean coactivity coefficient per spine pair" if show_xlabel else "", fontsize=max(15, POSTER_LABEL_SIZE - 1))
+    ax.set_ylabel("State" if show_ylabel else "", fontsize=max(15, POSTER_LABEL_SIZE - 3))
+    ax.set_yticks(state_positions)
+    ax.set_yticklabels([format_requested_state_label(state) for state in state_labels])
+    color_state_tick_labels(ax, state_labels, axis="y")
+    if not show_y_ticklabels:
+        ax.tick_params(axis="y", labelleft=False)
+    ax.tick_params(axis="both", labelsize=max(13, POSTER_FONT_SIZE - 2))
+    ax.grid(axis="x", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="x", nbins=5)
+    if x_limits is not None:
+        ax.set_xlim(x_limits)
+    else:
+        all_values = [
+            as_float(row.get("mean_coactivity_r"))
+            for comp in compartment_order
+            for state in state_labels
+            for row in compartment_state_rows.get(comp, {}).get(state, [])
+            if np.isfinite(as_float(row.get("mean_coactivity_r")))
+        ]
+        if all_values:
+            limits = padded_value_limits(np.asarray(all_values, dtype=float))
+            if limits is not None:
+                ax.set_xlim(limits)
+    if show_legend and compartment_order:
+        legend_handles = [
+            Line2D([0], [0], color=compartment_colors.get(compartment, "#444444"), marker="s", linestyle="", markersize=8, label=compartment.capitalize())
+            for compartment in compartment_order
+        ]
+        ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=max(12, POSTER_LEGEND_SIZE - 3))
+    anchor_text = format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)
+    ax.invert_yaxis()
+
+
+
+def _draw_spine_coactivity_distribution_panel(
+    ax: Any,
+    payload: Dict[str, Any],
+    *,
+    title: str,
+    state_filter: Optional[str] = None,
+    show_ylabel: bool = True,
+    show_xlabel: bool = True,
+    show_y_ticklabels: bool = True,
+    x_limits: Optional[Tuple[float, float]] = None,
+    highlight_color: str = "#1f77b4",
+    show_legend: bool = True,
+) -> None:
+    state_labels = list(payload["state_labels"])
+    series = [np.asarray(arr, dtype=float) for arr in payload["series"]]
+    significance_masks = [
+        np.asarray(mask, dtype=bool)
+        for mask in payload.get("significance_masks", [np.ones_like(arr, dtype=bool) for arr in series])
+    ]
+
+    positions = np.arange(1, len(state_labels) + 1)
+
+    bp = ax.boxplot(
+        series,
+        positions=positions,
+        widths=0.58,
+        patch_artist=True,
+        showfliers=False,
+        vert=False,
+    )
+    _set_boxplot_colors(bp, ["#bdbdbd"] * len(series))
+
+    rng = np.random.default_rng(11)
+    for pos, arr, sig_mask in zip(positions, series, significance_masks):
+        finite_mask = np.isfinite(arr)
+        finite = arr[finite_mask]
+        sig = sig_mask[finite_mask]
+
+        if finite.size == 0:
+            continue
+
+        jitter = rng.uniform(-0.12, 0.12, size=finite.size)
+
+        ns_values = finite[~sig]
+        ns_y = np.full(ns_values.size, pos) + jitter[~sig]
+        if ns_values.size:
+            ax.scatter(
+                ns_values,
+                ns_y,
+                s=7,
+                alpha=0.38,
+                color="#9e9e9e",
+                edgecolor="none",
+                zorder=2,
+                label="ns" if pos == positions[0] else None,
+            )
+
+        sig_values = finite[sig]
+        sig_y = np.full(sig_values.size, pos) + jitter[sig]
+        if sig_values.size:
+            ax.scatter(
+                sig_values,
+                sig_y,
+                s=10,
+                alpha=0.72,
+                color=highlight_color,
+                edgecolor="white",
+                linewidth=0.25,
+                zorder=3,
+                label="significant" if pos == positions[0] else None,
+            )
+
+        ax.text(
+            0.98,
+            pos,
+            f"sig={sig_values.size} | ns={ns_values.size}",
+            transform=ax.get_yaxis_transform(),
+            ha="right",
+            va="center",
+            fontsize=max(7, POSTER_NOTE_SIZE - 5),
+        )
+
+    ax.axvline(0.0, color="#333333", linewidth=1)
+    ax.set_title(title, fontsize=max(10, POSTER_TITLE_SIZE - 12), pad=2)
+    ax.set_ylabel("State" if show_ylabel else "", fontsize=max(13, POSTER_LABEL_SIZE - 5))
+    ax.set_xlabel("Coactivity coefficient" if show_xlabel else "", fontsize=max(13, POSTER_LABEL_SIZE - 4))
+
+    ax.set_yticks(positions)
+    ax.set_yticklabels([format_requested_state_label(state) for state in state_labels])
+    if not show_y_ticklabels:
+        ax.tick_params(axis="y", labelleft=False)
+
+    ax.invert_yaxis()
+    ax.tick_params(axis="both", labelsize=max(11, POSTER_FONT_SIZE - 4))
+    ax.grid(axis="x", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="x", nbins=5)
+
+    if x_limits is not None:
+        ax.set_xlim(x_limits)
+    else:
+        all_values = np.concatenate(series) if series else np.asarray([], dtype=float)
+        if all_values.size:
+            limits = padded_value_limits(all_values)
+            if limits is not None:
+                ax.set_xlim(limits)
+
+    note_state = format_requested_state_label(state_filter) if state_filter is not None else "selected states"
+    ax.text(
+        0.02,
+        0.98,
+        f"state={note_state}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=max(7, POSTER_NOTE_SIZE - 5),
+        bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+    )
+
+    if show_legend:
+        handles = [
+            Line2D([0], [0], marker="o", linestyle="", color=highlight_color, markersize=6, label="significant"),
+            Line2D([0], [0], marker="o", linestyle="", color="#9e9e9e", markersize=6, label="ns"),
+        ]
+        ax.legend(handles=handles, frameon=False, fontsize=max(9, POSTER_LEGEND_SIZE - 5), loc="lower right")
+
+def _draw_spine_coactivity_heatmap_panel(
+    ax: Any,
+    payload: Dict[str, Any],
+    *,
+    title: str,
+    show_xlabel: bool = True,
+    show_ylabel: bool = True,
+    show_x_ticklabels: bool = True,
+    show_y_ticklabels: bool = False,
+    colorbar: bool = False,
+    colorbar_label: str = "Coactivity coefficient",
+    shared_max_abs: Optional[float] = None,
+) -> None:
+    from matplotlib.colors import Normalize
+
+    matrix = np.asarray(payload["matrix"], dtype=float)
+    state_labels = list(payload["state_labels"])
+    pair_labels = list(payload["pair_labels"])
+    max_abs = float(shared_max_abs if shared_max_abs is not None else payload["max_abs"])
+    if not np.isfinite(max_abs) or max_abs <= 0:
+        max_abs = 1.0
+    im = ax.imshow(matrix, cmap="coolwarm", vmin=-max_abs, vmax=max_abs, aspect="auto", interpolation="nearest")
+    ax.set_title(title, fontsize=max(16, POSTER_TITLE_SIZE - 6), pad=2)
+    ax.set_xlabel("State" if show_xlabel else "", fontsize=max(15, POSTER_LABEL_SIZE - 2))
+    ax.set_ylabel("Spine pair" if show_ylabel else "", fontsize=max(15, POSTER_LABEL_SIZE - 2))
+    ax.set_xticks(np.arange(len(state_labels)))
+    ax.set_xticklabels([format_requested_state_label(state) for state in state_labels], rotation=40, ha="right")
+    color_state_tick_labels(ax, state_labels, axis="x")
+    y_positions = np.arange(len(pair_labels))
+    label_step = max(1, int(math.ceil(len(pair_labels) / 20.0)))
+    sparse_y_labels = [label if (idx % label_step == 0 or idx in {0, len(pair_labels) - 1}) else "" for idx, label in enumerate(pair_labels)]
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(sparse_y_labels, fontsize=max(8, POSTER_FONT_SIZE - 5))
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    if not show_x_ticklabels:
+        ax.tick_params(axis="x", labelbottom=False)
+    if not show_y_ticklabels:
+        ax.tick_params(axis="y", labelleft=False)
+    ax.set_xlim(-0.5, len(state_labels) - 0.5)
+    ax.set_ylim(len(pair_labels) - 0.5, -0.5)
+    ax.grid(which="major", color="white", linestyle="-", linewidth=0.6, alpha=0.55)
+    anchor_text = format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)
+    ax.text(
+        0.02,
+        0.98,
+        f"anchor={anchor_text} | n pairs={len(pair_labels)} | coactive pairs only",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=POSTER_NOTE_SIZE,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+    )
+    if colorbar:
+        mappable = plt.cm.ScalarMappable(norm=Normalize(vmin=-max_abs, vmax=max_abs), cmap="coolwarm")
+        mappable.set_array([])
+        cbar = ax.figure.colorbar(mappable, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(colorbar_label, fontsize=POSTER_LABEL_SIZE)
+        cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
+        set_sparse_colorbar_ticks(cbar, nbins=5)
+
+def _spine_coactivity_selected_state_comparison_payload(
+    results: Dict[str, Any],
+    *,
+    compartment_filter: str,
+    selected_states: Sequence[str],
+    anchor_state: str = SPINE_COACTIVITY_ANCHOR_STATE,
+) -> Optional[Dict[str, Any]]:
+    rows, available_state_labels = _spine_coactivity_pair_state_rows(
+        results,
+        compartment_filter=compartment_filter,
+        anchor_state_filter=anchor_state,
+        coactive_only=False,
+    )
+    if not rows:
+        return None
+
+    anchor_state = canonical_state_label(anchor_state)
+    selected_state_labels = [
+        canonical_state_label(state)
+        for state in selected_states
+        if canonical_state_label(state) in {canonical_state_label(s) for s in available_state_labels}
+    ]
+
+    if not selected_state_labels:
+        selected_state_labels = [canonical_state_label(s) for s in available_state_labels]
+
+    anchor_sig_pair_ids = {
+        _global_pair_id(row)
+        for row in rows
+        if canonical_state_label(row.get("state")) == anchor_state
+        and _global_pair_id(row)
+        and _coactivity_row_is_significant(row)
+    }
+
+    if not anchor_sig_pair_ids:
+        return None
+
+    series: List[np.ndarray] = []
+    labels: List[str] = []
+    all_values: List[float] = []
+
+    for state in selected_state_labels:
+        values = [
+            as_float(row.get("coactivity_r"))
+            for row in rows
+            if canonical_state_label(row.get("state")) == state
+            and _global_pair_id(row) in anchor_sig_pair_ids
+            and np.isfinite(as_float(row.get("coactivity_r")))
+        ]
+        values = [float(v) for v in values if v is not None and np.isfinite(v)]
+
+        if not values:
+            continue
+
+        arr = np.asarray(values, dtype=float)
+        labels.append(state)
+        series.append(arr)
+        all_values.extend(values)
+
+    if not series:
+        return None
+
+    return {
+        "state_labels": labels,
+        "series": series,
+        "n_anchor_pairs": len(anchor_sig_pair_ids),
+        "y_limits": padded_value_limits(np.asarray(all_values, dtype=float)),
+    }
+
+
+def _draw_spine_coactivity_selected_state_comparison_panel(
+    ax: Any,
+    payload: Dict[str, Any],
+    *,
+    title: str,
+    color: str,
+    show_ylabel: bool = True,
+    show_xlabel: bool = True,
+    show_x_ticklabels: bool = True,
+    y_limits: Optional[Tuple[float, float]] = None,
+) -> None:
+    state_labels = list(payload["state_labels"])
+    series = [np.asarray(arr, dtype=float) for arr in payload["series"]]
+    positions = np.arange(1, len(state_labels) + 1)
+
+    bp = ax.boxplot(
+        series,
+        positions=positions,
+        widths=0.55,
+        patch_artist=True,
+        showfliers=False,
+    )
+    _set_boxplot_colors(bp, [color] * len(series))
+
+    rng = np.random.default_rng(23)
+    for pos, arr in zip(positions, series):
+        finite = arr[np.isfinite(arr)]
+        if not finite.size:
+            continue
+        jitter = rng.uniform(-0.10, 0.10, size=finite.size)
+        ax.scatter(
+            np.full(finite.size, pos) + jitter,
+            finite,
+            s=8,
+            alpha=0.58,
+            color=color,
+            edgecolor="white",
+            linewidth=0.25,
+            zorder=3,
+        )
+        ax.text(
+            pos,
+            0.98,
+            f"n={finite.size}",
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize=max(7, POSTER_NOTE_SIZE - 5),
+        )
+
+    ax.axhline(0.0, color="#333333", linewidth=1)
+    ax.set_title(title, fontsize=max(10, POSTER_TITLE_SIZE - 12), pad=2)
+    ax.set_ylabel("Coactivity coefficient" if show_ylabel else "", fontsize=max(13, POSTER_LABEL_SIZE - 5))
+    ax.set_xlabel("State" if show_xlabel else "", fontsize=max(13, POSTER_LABEL_SIZE - 5))
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels([format_requested_state_label(state) for state in state_labels], rotation=35, ha="right")
+    color_state_tick_labels(ax, state_labels, axis="x")
+
+    if not show_x_ticklabels:
+        ax.tick_params(axis="x", labelbottom=False)
+
+    ax.tick_params(axis="both", labelsize=max(10, POSTER_FONT_SIZE - 5))
+    ax.grid(axis="y", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
+
+    if y_limits is not None:
+        ax.set_ylim(y_limits)
+    else:
+        limits = payload.get("y_limits")
+        if limits is not None:
+            ax.set_ylim(limits)
+
+    ax.text(
+        0.02,
+        0.98,
+        f"anchor={format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} | significant anchor pairs only",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=max(7, POSTER_NOTE_SIZE - 5),
+        bbox=dict(boxstyle="round,pad=0.20", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+    )
+    
+def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: Path) -> List[Path]:
+    if plt is None:
+        raise RuntimeError("matplotlib is unavailable, so the spine-coactivity poster cannot be rendered.")
+    output_dir = ensure_dir(output_dir)
+    written: List[Path] = []
+
+    combined_payload = _spine_coactivity_basal_apical_payload(results, anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE, coactive_only=True)
+    if combined_payload is None:
+        raise RuntimeError("No spine coactivity rows were available for the basal-vs-apical poster panel.")
+    state_labels = combined_payload["state_labels"]
+    fig = plt.figure(figsize=(min(max(8.6, 0.62 * len(state_labels) + 4.2), 12.8), min(max(7.0, 0.44 * len(state_labels) + 4.0), 11.5)))
+    ax = fig.add_subplot(1, 1, 1)
+    _draw_spine_coactivity_basal_apical_distribution_panel(
+        ax,
+        combined_payload,
+        title="Quiet awake movies coactive-pair distribution - Basal vs apical",
+    )
+    written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True)))
+
+    for compartment in ["basal", "apical"]:
+        compartment_results = build_filtered_spine_coactivity_results(results, compartment)
+        distribution_payload = _spine_coactivity_distribution_payload(
+            compartment_results,
+            compartment_filter=compartment,
+            state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        if distribution_payload is None:
+            raise RuntimeError(f"No spine coactivity rows were available for the {compartment} anchor distribution panel.")
+        fig = plt.figure(figsize=(6.6, 3.9))
+        ax = fig.add_subplot(1, 1, 1)
+        _draw_spine_coactivity_distribution_panel(
+            ax,
+            distribution_payload,
+            title=f"Quiet awake movies coactive-pair distribution - {compartment.capitalize()}",
+            state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        )
+
+        written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True)))
+
+    for compartment in ["basal", "apical"]:
+        compartment_results = build_filtered_spine_coactivity_results(results, compartment)
+        heatmap_payload = _spine_coactivity_heatmap_payload(
+            compartment_results,
+            compartment_filter=compartment,
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        if heatmap_payload is None:
+            raise RuntimeError(f"No spine coactivity rows were available for the {compartment} pair-state heatmap panel.")
+        fig = plt.figure(figsize=(7.4, min(max(5.2, 0.14 * len(heatmap_payload['pair_labels']) + 3.4), 14.0)))
+        ax = fig.add_subplot(1, 1, 1)
+        _draw_spine_coactivity_heatmap_panel(
+            ax,
+            heatmap_payload,
+            title=f"Quiet awake movies coactive pairs across states - {compartment.capitalize()}",
+            colorbar=True,
+        )
+        written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True)))
+
+    return written
+
+
+def build_spine_coactivity_poster_figure(
+    cache: Dict[str, Any],
+    results: Dict[str, Any],
+    *,
+    width_cm: float = DEFAULT_SPINE_COACTIVITY_WIDTH_CM,
+    height_cm: float = DEFAULT_SPINE_COACTIVITY_HEIGHT_CM,
+) -> Tuple[Any, Dict[str, Any], List[str]]:
+    config = cache.get("config", {}) if isinstance(cache.get("config", {}), dict) else {}
+    movie_expids = config.get("movie_expids")
+    sleep_expids = config.get("sleep_expids")
+    state_comparison_states, basal_apical_states, selection_meta = resolve_analysis_state_selections(
+        config,
+        movie_expids=movie_expids,
+        sleep_expids=sleep_expids,
+    )
+    analysis_state_selection = {
+        "state_comparison_states": list(state_comparison_states),
+        "basal_apical_states": list(basal_apical_states),
+        "compare_states": selection_meta.get("compare_states"),
+        "state_mode": selection_meta.get("state_mode"),
+        "movie_trial_types": selection_meta.get("movie_trial_types"),
+        "state_mode_source": selection_meta.get("state_mode_source"),
+        "movie_trial_types_source": selection_meta.get("movie_trial_types_source"),
+        "alerts": list(selection_meta.get("alerts", [])),
+    }
+    poster_results: Dict[str, Any] = dict(results) if isinstance(results, dict) else {}
+    poster_results["analysis_state_selection"] = analysis_state_selection
+
+    fig = plt.figure(figsize=(cm_to_inch(width_cm), cm_to_inch(height_cm)))
+    outer = GridSpec(
+        2,
+        3,
+        figure=fig,
+        width_ratios=[1.55, 1.0, 1.0],
+        height_ratios=[1.0, 1.0],
+        wspace=0.38,
+        hspace=0.45,
+    )
+    fig.subplots_adjust(left=0.06, right=0.985, top=0.90, bottom=0.18)
+
+    left_ax = fig.add_subplot(outer[:, 0])
+    left_payload = _spine_coactivity_basal_apical_payload(
+        poster_results,
+        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        coactive_only=True,
+    )
+    if left_payload is None:
+        raise RuntimeError("Could not build the basal-vs-apical spine-coactivity poster panel.")
+    _draw_spine_coactivity_basal_apical_distribution_panel(
+        left_ax,
+        left_payload,
+        title="Quiet awake movies coactive-pair distribution - Basal vs apical",
+    )
+
+    mid_spec = GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[:, 1], hspace=0.38)
+    right_spec = GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[:, 2], hspace=0.38)
+
+    mid_top = fig.add_subplot(mid_spec[0, 0])
+    mid_bottom = fig.add_subplot(mid_spec[1, 0], sharex=mid_top)
+    right_top = fig.add_subplot(right_spec[0, 0])
+    right_bottom = fig.add_subplot(right_spec[1, 0], sharex=right_top)
+
+    mid_payloads = []
+    for compartment in ["basal", "apical"]:
+        compartment_results = build_filtered_spine_coactivity_results(poster_results, compartment)
+        payload = _spine_coactivity_distribution_payload(
+            compartment_results,
+            compartment_filter=compartment,
+            state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=False,
+        )
+        if payload is None:
+            raise RuntimeError(f"Could not build the quiet-awake-movies coactivity distribution panel for {compartment}.")
+        mid_payloads.append((compartment, payload))
+
+    mid_limits_values = np.concatenate([arr for _, payload in mid_payloads for arr in payload["series"]])
+    mid_limits = padded_value_limits(mid_limits_values)
+
+    _draw_spine_coactivity_distribution_panel(
+        mid_top,
+        mid_payloads[0][1],
+        title="Quiet awake movie spine-pair coactivity - Basal",
+        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        show_y_ticklabels=False,
+        x_limits=mid_limits,
+        highlight_color="#1f77b4",
+        show_legend=True,
+    )
+    _draw_spine_coactivity_distribution_panel(
+        mid_bottom,
+        mid_payloads[1][1],
+        title="Quiet awake movie spine-pair coactivity - Apical",
+        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+        show_y_ticklabels=False,
+        x_limits=mid_limits,
+        highlight_color="#d95f02",
+        show_legend=False,
+    )
+    mid_top.set_ylabel("")
+    mid_bottom.set_ylabel("")
+    mid_top.tick_params(axis="x", labelbottom=False)
+    mid_top.set_xlabel("")
+
+    right_payloads = []
+    for compartment in ["basal", "apical"]:
+        compartment_results = build_filtered_spine_coactivity_results(poster_results, compartment)
+        payload = _spine_coactivity_selected_state_comparison_payload(
+            compartment_results,
+            compartment_filter=compartment,
+            selected_states=state_comparison_states,
+            anchor_state=SPINE_COACTIVITY_ANCHOR_STATE,
+        )
+        if payload is None:
+            raise RuntimeError(f"Could not build the selected-state coactivity comparison panel for {compartment}.")
+        right_payloads.append((compartment, payload))
+
+    right_limits_values = np.concatenate([arr for _, payload in right_payloads for arr in payload["series"]])
+    right_y_limits = padded_value_limits(right_limits_values)
+
+    _draw_spine_coactivity_selected_state_comparison_panel(
+        right_top,
+        right_payloads[0][1],
+        title="Basal coactive spine pairs across selected states",
+        color="#1f77b4",
+        show_x_ticklabels=False,
+        y_limits=right_y_limits,
+    )
+    _draw_spine_coactivity_selected_state_comparison_panel(
+        right_bottom,
+        right_payloads[1][1],
+        title="Apical coactive spine pairs across selected states",
+        color="#d95f02",
+        y_limits=right_y_limits,
+    )
+    right_top.set_xlabel("")
+    right_top.tick_params(axis="x", labelbottom=False)
+    return fig, analysis_state_selection, list(state_comparison_states)
+
+
+def _coactivity_row_is_significant(row: Dict[str, Any]) -> bool:
+    """Return True if a spine-pair row should be treated as significant/coactive."""
+    for key in (
+        "significant",
+        "is_significant",
+        "coactivity_significant",
+        "is_coactive",
+        "coactive",
+        "anchor_coactive",
+        "quiet_awake_movie_coactive",
+    ):
+        if key in row:
+            value = row.get(key)
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if text in {"1", "true", "yes", "y", "sig", "significant", "coactive"}:
+                return True
+            if text in {"0", "false", "no", "n", "ns", "non-significant", "nonsignificant"}:
+                return False
+
+    for key in (
+        "shuffle_p",
+        "p_value",
+        "p",
+        "coactivity_p",
+        "coactivity_p_value",
+        "anchor_shuffle_p",
+        "anchor_p_value",
+    ):
+        p_value = as_float(row.get(key))
+        if p_value is not None and np.isfinite(p_value):
+            return float(p_value) < REPORT_SIGNIFICANCE_ALPHA
+
+    return False
+
+
+def _global_pair_id(row: Dict[str, Any]) -> str:
+    return str(row.get("global_pair_id", row.get("pair_id", "")))
+
 def build_figure(
     cache: Dict[str, Any],
     *,
@@ -858,6 +1804,12 @@ def parse_args() -> argparse.Namespace:
         help="Base filename stem for the exported figure.",
     )
     parser.add_argument(
+        "--figure-mode",
+        choices=("mixed_model", "spine_coactivity"),
+        default="mixed_model",
+        help="Choose the poster figure layout to render.",
+    )
+    parser.add_argument(
         "--width-cm",
         type=float,
         default=DEFAULT_WIDTH_CM,
@@ -879,12 +1831,29 @@ def main() -> int:
 
     cache = load_cache(args.cache_path)
     output_dir = ensure_dir(args.output_dir)
-    output_stem = str(args.output_stem).strip() or DEFAULT_OUTPUT_STEM
-    svg_path = output_dir / f"{output_stem}.svg"
+    figure_mode = str(args.figure_mode).strip().lower()
+    if figure_mode == "spine_coactivity":
+        width_cm = float(args.width_cm)
+        height_cm = float(args.height_cm)
+        if width_cm == DEFAULT_WIDTH_CM and height_cm == DEFAULT_HEIGHT_CM:
+            width_cm = DEFAULT_SPINE_COACTIVITY_WIDTH_CM
+            height_cm = DEFAULT_SPINE_COACTIVITY_HEIGHT_CM
+        output_stem = str(args.output_stem).strip() or DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM
+        results = load_analysis_results_payload()
+        if not isinstance(results, dict) or not results:
+            raise RuntimeError("No analysis_results payload was available for the spine-coactivity poster.")
+        render_spine_coactivity_component_svgs(results, output_dir)
+        figure, _, _ = build_spine_coactivity_poster_figure(cache, results, width_cm=width_cm, height_cm=height_cm)
+        svg_path = output_dir / f"{output_stem}.svg"
+        _save_svg_figure_exact(figure, svg_path)
+        set_svg_physical_size(svg_path, width_cm)
+    else:
+        output_stem = str(args.output_stem).strip() or DEFAULT_OUTPUT_STEM
+        svg_path = output_dir / f"{output_stem}.svg"
 
-    figure, _, _ = build_figure(cache, width_cm=args.width_cm, height_cm=args.height_cm)
-    save_figure(figure, svg_path, extra_formats=())
-    set_svg_physical_size(svg_path, args.width_cm)
+        figure, _, _ = build_figure(cache, width_cm=args.width_cm, height_cm=args.height_cm)
+        save_figure(figure, svg_path, extra_formats=())
+        set_svg_physical_size(svg_path, args.width_cm)
 
     print(f"Saved SVG: {svg_path}")
     return 0

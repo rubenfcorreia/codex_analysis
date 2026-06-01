@@ -1999,6 +1999,7 @@ def build_group_output_dir(output_dir: Path, group_name: str) -> Path:
 
 def render_poster_ready_figure(output_dir: Path, group_name: str, experiments: Dict[str, LoadedExperiment], group: Dict[str, Any]) -> Path:
     import visual_response.poster_ready_visual_response as pr
+    print(pr.__file__)
 
     poster_output_dir = ensure_dir(output_dir)
     poster_spec = pr.build_poster_spec(group_name, experiments, group)

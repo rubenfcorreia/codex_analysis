@@ -230,6 +230,8 @@ USER_EDITABLE_DEFAULTS = {
     "movie_trial_types": None,
     "state_comparison_states": None,
     "basal_apical_states": None,
+    "spine_coactivity_anchor_state": "quiet_awake_movies",
+    "source_cache_validate": True,
     "fit_spine_coactivity_mixed_model": False,
     "spine_coactivity_only": False,
     "mixed_model_only": False,
@@ -1026,17 +1028,7 @@ def _render_state_summary_comparison_panel_figure(
             ax.scatter(np.full(arr.size, pos) + jitter, arr, s=14, alpha=0.48, color=color, edgecolor="none")
         all_data.extend(data)
     set_requested_state_ticks(ax, state_order)
-    ax.set_ylabel(
-        "Events / min"
-        if metric_key in {
-            "dendrite_event_frequency_per_min",
-            "spine_event_frequency_per_min",
-            "coincident_event_frequency_per_min",
-            "noncoincident_event_frequency_per_min",
-        }
-        else "dF/F",
-        fontsize=POSTER_LABEL_SIZE,
-    )
+    ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
     ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
     _pad_boxplot_ylim(ax, all_data, y_limit=y_limit)
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
@@ -1601,11 +1593,16 @@ def generate_analysis_figures(
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     present_compartments = sorted_present_compartments(cache)
-    y_limits = state_summary_y_limits(cache, state_labels)
-    comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
-    overview_results = build_state_summary_gallery_results(cache, state_labels, None)
-    basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
-    apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+    with step_scope("figure prep: state summary y-limits"):
+        y_limits = state_summary_y_limits(cache, state_labels)
+    with step_scope("figure prep: state summary comparison y-limits"):
+        comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
+    with step_scope("figure prep: state summary overview results"):
+        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+    with step_scope("figure prep: state summary basal results"):
+        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
+    with step_scope("figure prep: state summary apical results"):
+        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
     state_summary_specs = [
         {
             "kind": "overview",
@@ -1754,6 +1751,8 @@ def generate_analysis_figures(
                 )
                 if distribution_path:
                     saved.append(distribution_path)
+                else:
+                    step_message("plotter returned no output")
                 distribution_pvalue_path = plot_spine_coactivity_distribution_figure(
                     compartment_results,
                     coactivity_dir,
@@ -1764,6 +1763,8 @@ def generate_analysis_figures(
                 )
                 if distribution_pvalue_path:
                     saved.append(distribution_pvalue_path)
+                else:
+                    step_message("plotter returned no output")
                 heatmap_path = plot_spine_coactivity_tendency_figure(
                     compartment_results,
                     coactivity_dir,
@@ -1774,6 +1775,8 @@ def generate_analysis_figures(
                 )
                 if heatmap_path:
                     saved.append(heatmap_path)
+                else:
+                    step_message("plotter returned no output")
                 heatmap_pvalue_path = plot_spine_coactivity_tendency_figure(
                     compartment_results,
                     coactivity_dir,
@@ -1784,6 +1787,8 @@ def generate_analysis_figures(
                 )
                 if heatmap_pvalue_path:
                     saved.append(heatmap_pvalue_path)
+                else:
+                    step_message("plotter returned no output")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with spine coactivity plotter ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
@@ -1829,6 +1834,8 @@ def generate_analysis_figures(
                 )
                 if summary_path:
                     saved.append(summary_path)
+                else:
+                    step_message("plotter returned no output")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity figures ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
@@ -1967,6 +1974,8 @@ def generate_analysis_figures(
     )
     if basal_vs_apical_path:
         saved.append(basal_vs_apical_path)
+    else:
+        step_message("plotter returned no output")
     return saved
 def generate_review_figures(
     output_dir: Path,
@@ -1983,11 +1992,16 @@ def generate_review_figures(
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     present_compartments = sorted_present_compartments(cache)
-    y_limits = state_summary_y_limits(cache, state_labels)
-    comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
-    overview_results = build_state_summary_gallery_results(cache, state_labels, None)
-    basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
-    apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+    with step_scope("review figure prep: state summary y-limits"):
+        y_limits = state_summary_y_limits(cache, state_labels)
+    with step_scope("review figure prep: state summary comparison y-limits"):
+        comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
+    with step_scope("review figure prep: state summary overview results"):
+        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+    with step_scope("review figure prep: state summary basal results"):
+        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
+    with step_scope("review figure prep: state summary apical results"):
+        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
     review_specs = [
         {
             "kind": "overview",
@@ -2056,6 +2070,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({scope_label}): {exc}")
                 continue
             if not output_path:
+                step_message("plotter returned no output")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -2094,6 +2109,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
                 continue
             if not output_path:
+                step_message("plotter returned no output")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -2119,6 +2135,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
                 continue
             if not output_path:
+                step_message("plotter returned no output")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -2163,6 +2180,8 @@ def generate_review_figures(
                 )
                 if pair_heatmap_path:
                     saved.append(pair_heatmap_path)
+                else:
+                    step_message("plotter returned no output")
                 pair_summary_path = plot_spine_coactivity_pair_state_summary_figure(
                     compartment_results,
                     coactivity_review_dir,
@@ -2172,6 +2191,8 @@ def generate_review_figures(
                 )
                 if pair_summary_path:
                     saved.append(pair_summary_path)
+                else:
+                    step_message("plotter returned no output")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
     anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
@@ -2185,7 +2206,7 @@ def generate_review_figures(
                 scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
                 distribution_path = plot_spine_coactivity_distribution_figure(
                     scope_results,
-                    coactivity_dir,
+                    coactivity_review_dir,
                     output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
                     title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
                     compartment_filter=compartment,
@@ -2648,17 +2669,7 @@ def plot_spine_regression_qc_checkpoint(
     ax.plot(time, alpha * dend_trace + intercept, color="#555555", linestyle="--", linewidth=1.1, label="Robust fit")
     ax.set_title("Dendrite and spine traces", fontsize=POSTER_TITLE_SIZE)
     ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
-    ax.set_ylabel(
-        "Events / min"
-        if metric_key in {
-            "dendrite_event_frequency_per_min",
-            "spine_event_frequency_per_min",
-            "coincident_event_frequency_per_min",
-            "noncoincident_event_frequency_per_min",
-        }
-        else "dF/F",
-        fontsize=POSTER_LABEL_SIZE,
-    )
+    ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
     ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
     ax.legend(frameon=False, fontsize=POSTER_LEGEND_SIZE)
     ax.grid(alpha=0.2)
@@ -4463,6 +4474,8 @@ def render_analysis_family_figures(
     def record(path: Optional[str]) -> None:
         if path:
             saved.append(path)
+        else:
+            step_message("plotter returned no output")
     if family == "state":
         summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
         state_labels = selected_matrix_state_labels(results)
@@ -4770,20 +4783,19 @@ def render_analysis_family_figures(
                         )
                     except Exception as exc:
                         eprint(f"[ALERT] Failed to create spine coactivity heatmap for {compartment} / {dendrite_id}: {exc}")
-    basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
-        results,
-        gallery_dir,
-        output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
-        title=f"Quiet awake movies coactive-pair distribution - basal vs apical",
-        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-        coactive_only=True,
-    )
-    if basal_vs_apical_path:
-        append_entry(
-            "spine_coactivity_basal_vs_apical_distribution",
-            spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
-            basal_vs_apical_path,
+    try:
+        record(
+            plot_spine_coactivity_basal_apical_distribution_figure(
+                results,
+                coactivity_dir,
+                output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+                title=f"Quiet awake movies coactive-pair distribution - basal vs apical",
+                anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                coactive_only=True,
+            )
         )
+    except Exception as exc:
+        eprint(f"[ALERT] Failed to create basal-vs-apical coactivity figure: {exc}")
     return saved
 def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
     if plt is None:
@@ -4805,6 +4817,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         scope: Optional[str] = None,
     ) -> None:
         if not path:
+            step_message(f"skipped checkpoint gallery {checkpoint}[{variant}]: plotter returned no output")
             return
         path_obj = Path(path)
         try:
@@ -5016,13 +5029,12 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
             coactive_only=True,
         )
         rep = None
-        if distribution_path:
-            append_entry(
-                "spine_coactivity_anchor_distribution",
-                spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True) + f"_{gallery_compartment_suffix(compartment)}",
-                distribution_path,
-                compartment=compartment,
-            )
+        append_entry(
+            "spine_coactivity_anchor_distribution",
+            spine_coactivity_pair_state_scope_name(SPINE_COACTIVITY_ANCHOR_STATE, True) + f"_{gallery_compartment_suffix(compartment)}",
+            distribution_path,
+            compartment=compartment,
+        )
         heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
             scope_results,
             gallery_dir,
@@ -5881,17 +5893,22 @@ def analysis_results_cache_path(cache_path: Path) -> Path:
 
 def load_analysis_tables_cache(path: Path, *, rebuild: bool = False) -> Optional[Dict[str, Any]]:
     if rebuild or not path.exists():
+        step_message("rebuilding analysis-tables cache")
         return None
     try:
         cache = load_npz_cache(path)
     except Exception:
+        step_message("rebuilding analysis-tables cache")
         return None
     if not isinstance(cache, dict):
+        step_message("rebuilding analysis-tables cache")
         return None
     if cache.get("schema_version") != ANALYSIS_TABLE_CACHE_SCHEMA_VERSION:
+        step_message("rebuilding analysis-tables cache")
         return None
     tables = cache.get("analysis_tables")
     if not isinstance(tables, dict):
+        step_message("rebuilding analysis-tables cache")
         return None
     return cache
 
@@ -5907,21 +5924,27 @@ def load_analysis_results_cache(
     rebuild: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if rebuild or not path.exists():
+        step_message("rebuilding analysis-results cache")
         return None
     try:
         cache = load_npz_cache(path)
     except Exception:
+        step_message("rebuilding analysis-results cache")
         return None
     if not isinstance(cache, dict):
+        step_message("rebuilding analysis-results cache")
         return None
     if cache.get("schema_version") != ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION:
+        step_message("rebuilding analysis-results cache")
         return None
     if expected_meta is not None:
         expected_hash = analysis_cache_meta_hash(expected_meta)
         if str(cache.get("meta_hash") or "") != expected_hash:
+            step_message("rebuilding analysis-results cache")
             return None
     results = cache.get("analysis_results")
     if not isinstance(results, dict):
+        step_message("rebuilding analysis-results cache")
         return None
     return cache
 
@@ -6240,6 +6263,7 @@ def load_or_build_shared_shuffle_cache(
     target = build_shared_shuffle_cache(cache, shuffle_n, state_labels=state_labels)
     if existing and existing.get("signature") == target["signature"] and int(existing.get("shuffle_n", -1)) == int(shuffle_n):
         return existing, shuffle_path, False
+    step_message("rebuilding shared circular-shift cache")
     if shuffle_path is not None:
         save_shared_shuffle_cache(shuffle_path, target)
     return target, shuffle_path, True
@@ -10941,6 +10965,7 @@ def load_or_build_cache(
     explicit_locomotion_threshold: Optional[float],
     cache_path: Path,
     rebuild: bool,
+    validate_existing_cache: bool = True,
 ) -> Dict[str, Any]:
     # Reuse the saved cache when the requested experiment set and source files have not changed.
     requested_config = {
@@ -10960,36 +10985,49 @@ def load_or_build_cache(
         except Exception as exc:
             eprint(f"[ALERT] Could not load existing cache at {cache_path}: {exc}. Rebuilding.")
             existing = None
+    existing_has_content = False
+    if existing:
+        existing_summary = summarize_cache(existing)
+        existing_has_content = bool(existing_summary.get("n_animals", 0)) or bool(existing_summary.get("n_experiments", 0))
     if existing and existing.get("schema_version") == CACHE_SCHEMA_VERSION and existing.get("config_hash") == requested_hash:
-        # Touch each stored experiment just far enough to see whether any source file changed.
-        source_stale = False
-        validation_items = sorted(existing.get("experiments", {}).items())
-        with step_scope("validate existing cache", total=len(validation_items)):
-            for idx, (exp_id, exp_meta) in enumerate(validation_items, start=1):
-                step_progress(idx, len(validation_items), label=str(exp_id))
-                signature = exp_meta.get("source_signature")
-                try:
-                    processed = process_experiment(
-                        repo_base=repo_base,
-                        exp_id=exp_id,
-                        channel=channel,
-                        high_pass_hz=high_pass_hz,
-                        movie_expids=movie_expids,
-                        sleep_expids=sleep_expids,
-                        basal_expids=basal_expids,
-                        apical_expids=apical_expids,
-                        explicit_locomotion_threshold=explicit_locomotion_threshold,
-                    )
-                    if processed["exp_meta"]["source_signature"] != signature:
+        if validate_existing_cache:
+            # Touch each stored experiment just far enough to see whether any source file changed.
+            source_stale = False
+            validation_items = sorted(existing.get("experiments", {}).items())
+            with step_scope("validate existing cache", total=len(validation_items)):
+                for idx, (exp_id, exp_meta) in enumerate(validation_items, start=1):
+                    step_progress(idx, len(validation_items), label=str(exp_id))
+                    signature = exp_meta.get("source_signature")
+                    try:
+                        processed = process_experiment(
+                            repo_base=repo_base,
+                            exp_id=exp_id,
+                            channel=channel,
+                            high_pass_hz=high_pass_hz,
+                            movie_expids=movie_expids,
+                            sleep_expids=sleep_expids,
+                            basal_expids=basal_expids,
+                            apical_expids=apical_expids,
+                            explicit_locomotion_threshold=explicit_locomotion_threshold,
+                        )
+                        if processed["exp_meta"]["source_signature"] != signature:
+                            source_stale = True
+                            break
+                    except Exception:
                         source_stale = True
                         break
-                except Exception:
-                    source_stale = True
-                    break
-        if not source_stale:
-            step_message("reusing existing cache")
-            strip_gabor_fields(existing)
-            return existing
+            if not source_stale and existing_has_content:
+                step_message("reusing existing cache")
+                strip_gabor_fields(existing)
+                return existing
+            if not source_stale and not existing_has_content:
+                step_message("existing cache was empty; rebuilding from source experiments")
+        else:
+            if existing_has_content:
+                step_message("reusing existing cache without validation")
+                strip_gabor_fields(existing)
+                return existing
+            step_message("existing cache was empty; rebuilding from source experiments")
     # Anything stale or missing gets rebuilt into a fresh cache dictionary.
     step_message("rebuilding cache from source experiments")
     cache: Dict[str, Any] = {
@@ -11837,6 +11875,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="Optional subset of movie state labels for the basal-vs-apical comparison analysis",
     )
+    parser.add_argument(
+        "--spine-coactivity-anchor-state",
+        help="Anchor state used to select spine-pair comparison plots and basal-vs-apical distributions",
+    )
+    parser.add_argument(
+        "--skip-source-cache-validation",
+        action="store_true",
+        help="Reuse an existing source cache without validating each experiment against source files",
+    )
     parser.add_argument("--fit-spine-coactivity-mixed-model", action="store_true", help="Enable the optional mixed-model inference layer for spine coactivity")
     parser.add_argument("--spine-coactivity-only", action="store_true", help="Skip the main state/correlation/matrix analyses and run only spine coactivity")
     parser.add_argument("--mixed-model-only", action="store_true", help="Skip the state/correlation/matrix analyses and run only the main mixed-model branch")
@@ -11878,6 +11925,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_trial_types": parse_list_argument(args.movie_trial_types),
         "state_comparison_states": parse_list_argument(args.state_comparison_states),
         "basal_apical_states": parse_list_argument(args.basal_apical_states),
+        "spine_coactivity_anchor_state": args.spine_coactivity_anchor_state,
+        "source_cache_validate": False if args.skip_source_cache_validation else None,
         "fit_spine_coactivity_mixed_model": True if args.fit_spine_coactivity_mixed_model else None,
         "spine_coactivity_only": True if args.spine_coactivity_only else None,
         "mixed_model_only": True if args.mixed_model_only else None,
@@ -11898,6 +11947,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rebuild": True if args.rebuild else None,
     }
     config = merge_cli_config(cli_config, file_config)
+    global SPINE_COACTIVITY_ANCHOR_STATE
+    configured_anchor_state = canonical_state_label(str(config.get("spine_coactivity_anchor_state") or SPINE_COACTIVITY_ANCHOR_STATE))
+    if configured_anchor_state not in ALL_REQUESTED_STATES:
+        raise SystemExit(f"Unknown spine coactivity anchor state: {configured_anchor_state}. Allowed values are: {', '.join(ALL_REQUESTED_STATES)}")
+    SPINE_COACTIVITY_ANCHOR_STATE = configured_anchor_state
     # Apply explicit script defaults only after merging config and CLI values.
     # That keeps `--config` as the main place to set the run, while still
     # allowing command-line overrides when you need them.
@@ -11955,6 +12009,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mixed_model_contrast_p_source = normalize_mixed_model_contrast_p_source(config.get("mixed_model_contrast_p_source"))
         high_pass_hz = float(config.get("high_pass_hz") or DEFAULT_HIGH_PASS_HZ)
         rebuild = bool(config.get("rebuild"))
+        source_cache_validate = bool(config.get("source_cache_validate"))
         source_cache_rebuild = bool(config.get("source_cache_rebuild")) or rebuild
         analysis_tables_rebuild = bool(config.get("analysis_tables_rebuild")) or rebuild
         analysis_results_rebuild = bool(config.get("analysis_results_rebuild")) or rebuild
@@ -11967,6 +12022,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ensure_dir(output_dir)
     # Build or reuse the cache first; every later output comes from this normalized data structure.
     with step_scope("cache load or rebuild"):
+        if not source_cache_validate:
+            step_message("skipping source-cache validation")
         source_cache = load_or_build_cache(
             repo_base=repo_base,
             movie_expids=movie_expids,
@@ -11978,6 +12035,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             explicit_locomotion_threshold=config.get("locomotion_threshold"),
             cache_path=cache_path,
             rebuild=source_cache_rebuild,
+            validate_existing_cache=source_cache_validate,
         )
     if config.get("demo_truth"):
         source_cache["demo_truth"] = config["demo_truth"]
@@ -12019,6 +12077,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_tables_signature": analysis_tables_signature,
         "state_comparison_states": list(state_comparison_states or []),
         "basal_apical_states": list(basal_apical_states or []),
+        "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": list(selection_meta.get("movie_trial_types") or []),
         "compare_states": list(selection_meta.get("compare_states") or []) if selection_meta.get("compare_states") is not None else None,
@@ -12118,6 +12177,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
         "compare_states": selection_meta.get("compare_states"),
+        "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
+        "source_cache_validate": source_cache_validate,
         "output_dir": str(output_dir),
         "cache_path": str(cache_path),
         "analysis_tables_cache_path": str(analysis_tables_cache_file),
@@ -12128,6 +12189,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_mode": selection_meta.get("state_mode"),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "movie_trial_types": selection_meta.get("movie_trial_types"),
+        "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "state_comparison_states": state_comparison_states,
         "basal_apical_states": basal_apical_states,
         "state_mode_source": selection_meta.get("state_mode_source"),

@@ -103,6 +103,8 @@ TOP_ROW_COLORS = {
 
 
 RETINO_PANEL_WIDTH_SCALE = 0.75
+SOMA_GRATING_TRACE_YMAX = 0.3
+
 
 
 @dataclass
@@ -483,7 +485,8 @@ def draw_movie_boxplot(ax: Any, spec: BoxplotSpec, y_limits: Optional[Tuple[floa
     data = [record[0] for record in box_records]
     positions = [record[1] for record in box_records]
     labels = [record[2] for record in box_records]
-    bp = ax.boxplot(data, positions=positions, widths=0.50, patch_artist=True, showfliers=False)
+    box_width = 0.62 if spec.category_name == "blank" else 0.50
+    bp = ax.boxplot(data, positions=positions, widths=box_width, patch_artist=True, showfliers=False)
     for patch, (_, _, _, facecolor, edgecolor) in zip(bp["boxes"], box_records):
         patch.set_facecolor(facecolor)
         patch.set_edgecolor(edgecolor)
@@ -522,7 +525,10 @@ def draw_movie_boxplot(ax: Any, spec: BoxplotSpec, y_limits: Optional[Tuple[floa
             spec.color if comparison_kind == "paired" else "#777777",
         )
 
-    ax.set_xlim(0.5, 3.5)
+    if spec.category_name == "blank":
+        ax.set_xlim(0.5, 2.5)
+    else:
+        ax.set_xlim(0.5, 3.5)
     ax.set_xticks(positions)
     ax.set_xticklabels(labels, fontsize=PANEL_FONT_SIZE, rotation=0)
     offset_tick_label(ax, "during", dy=-0.16)
@@ -691,9 +697,15 @@ def render_row(fig: Any, outer: Any, row_index: int, row: RowSpec) -> None:
             shared_limits = (min(trace_limits[0], box_limits[0]), max(trace_limits[1], box_limits[1]))
         else:
             shared_limits = trace_limits or box_limits
+        soma_trace_limits = trace_limits or shared_limits
+        if soma_trace_limits is not None:
+            soma_trace_limits = (float(soma_trace_limits[0]), SOMA_GRATING_TRACE_YMAX)
+        else:
+            soma_trace_limits = (0.0, SOMA_GRATING_TRACE_YMAX)
+
         draw_mean_image(axes[0], row.mean_image)
         draw_retino_panel(axes[1], row.retino)
-        draw_trace_panel(axes[2], row.trace_panels[0], y_limits=shared_limits, show_y_axis=True, show_title=True)
+        draw_trace_panel(axes[2], row.trace_panels[0], y_limits=soma_trace_limits, show_y_axis=True, show_title=True)
         draw_soma_boxplot(axes[3], row.box_panels[0], y_limits=shared_limits, show_y_axis=False)
     else:
         spans = [(0, 2), (2, 3), (3, 4), (4, 5), (5, 6)]

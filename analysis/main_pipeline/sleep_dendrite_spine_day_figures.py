@@ -2062,6 +2062,138 @@ def plot_day_figure(
     save_figure(fig, output_path, dpi=dpi)
 
 
+def build_activity_window_save_path(output_dir: Path, animal_id: str, date: str, compartment: Any, global_dendrite_id: str) -> Path:
+    animal_slug = safe_filename_component(animal_id)
+    compartment_slug = safe_filename_component(normalized_compartment_folder(compartment))
+    date_slug = safe_filename_component(date)
+    dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
+    figure_dir = output_dir / "figures" / animal_slug / compartment_slug / date_slug
+    figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_activity_15min.svg"
+    return figure_dir / figure_name
+
+
+def select_representative_dendrite_for_compartment(
+    cache: Dict[str, Any],
+    animal_id: str,
+    compartment: str,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    animal_entry = cache.get("animals", {}).get(animal_id, {})
+    best_candidate: Optional[Tuple[float, str, Dict[str, Any], Dict[str, Any]]] = None
+    for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
+        if str(dendrite_record.get("compartment") or "").strip().lower() != compartment:
+            continue
+        observations = dendrite_record.get("observations", {})
+        if not observations:
+            continue
+        representative_exp_id = choose_representative_exp_id(dendrite_record, sorted(observations.keys()))
+        if representative_exp_id is None:
+            continue
+        representative_obs = observations.get(representative_exp_id)
+        if representative_obs is None:
+            continue
+        event_info = representative_obs.get("event_info", {}) or {}
+        event_frequency = float(event_info.get("event_frequency_per_min", float("-inf")))
+        candidate = (event_frequency, global_dendrite_id, dendrite_record, representative_obs)
+        if best_candidate is None or candidate[0] > best_candidate[0] or (
+            candidate[0] == best_candidate[0] and candidate[1] < best_candidate[1]
+        ):
+            best_candidate = candidate
+    if best_candidate is None:
+        raise ValueError(f"No {compartment} dendrite was available for {animal_id}")
+    _, global_dendrite_id, dendrite_record, representative_obs = best_candidate
+    return global_dendrite_id, dendrite_record, representative_obs
+
+
+def plot_activity_window_figure(
+    cache: Dict[str, Any],
+    animal_id: str,
+    global_dendrite_id: str,
+    output_path: Path,
+    window_minutes: float = 15.0,
+    dpi: int = DEFAULT_DPI,
+) -> None:
+    if plt is None:
+        raise RuntimeError("matplotlib is required to generate figures")
+
+    animal_entry = cache.get("animals", {}).get(animal_id, {})
+    dendrite_record = animal_entry.get("dendrites", {}).get(global_dendrite_id)
+    if dendrite_record is None:
+        raise KeyError(f"Unknown dendrite: {global_dendrite_id}")
+
+    representative_exp_id = choose_representative_exp_id(dendrite_record, sorted(dendrite_record.get("observations", {}).keys()))
+    if representative_exp_id is None:
+        raise ValueError(f"No representative expID found for {global_dendrite_id}")
+
+    representative_obs = dendrite_record["observations"][representative_exp_id]
+    compartment = str(representative_obs.get("compartment") or dendrite_record.get("compartment") or "").strip()
+    trace_value = representative_obs.get("trace_hp")
+    if trace_value is None:
+        trace_value = representative_obs.get("trace")
+    if trace_value is None:
+        raise KeyError(f"No trace or trace_hp data was available for {global_dendrite_id}")
+
+    t = np.asarray(representative_obs.get("time"), dtype=float).ravel()
+    trace = np.asarray(trace_value, dtype=float).ravel()
+    if t.size == 0 or trace.size == 0:
+        raise ValueError(f"Empty trace for {global_dendrite_id}")
+    if t.size != trace.size:
+        n = min(t.size, trace.size)
+        t = t[:n]
+        trace = trace[:n]
+
+    window_seconds = float(window_minutes) * 60.0
+    window_start = float(t[0])
+    window_end = window_start + window_seconds
+    window_mask = (t >= window_start) & (t <= window_end)
+    if not np.any(window_mask):
+        raise ValueError(f"No samples were found in the requested {window_minutes:.1f} min window for {global_dendrite_id}")
+
+    window_t = np.asarray(t[window_mask], dtype=float)
+    window_trace = np.asarray(trace[window_mask], dtype=float)
+    finite = window_trace[np.isfinite(window_trace)]
+    if finite.size:
+        p_low, p_high = np.nanpercentile(finite, [5.0, 95.0])
+        window_trace = np.clip(window_trace - p_low, 0.0, None)
+        scale = float(max(p_high - p_low, np.nanmax(window_trace)))
+    else:
+        scale = 1.0
+    if not np.isfinite(scale) or scale <= 0.0:
+        scale = 1.0
+
+    rel_minutes = (window_t - window_t[0]) / 60.0
+    day_title = format_dendrite_display_name(animal_id, compartment, dendrite_record.get("global_dendrite_id", global_dendrite_id))
+
+    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    ax.plot(rel_minutes, window_trace, color="#222222", linewidth=0.8)
+    ax.axhline(0.0, color="#8a8a8a", linewidth=0.7, linestyle="--", alpha=0.8)
+    ax.set_xlim(0.0, window_minutes)
+    ax.set_ylim(0.0, 1.15 * scale)
+    ax.set_xticks([0.0, 5.0, 10.0, 15.0])
+    ax.set_yticks([0.0, scale])
+    ax.set_yticklabels(["0", "+"], fontsize=max(10, POSTER_FONT_SIZE - 1))
+    ax.set_xlabel("Time (min)", fontsize=max(11, POSTER_LABEL_SIZE - 3))
+    ax.set_ylabel("Activity", fontsize=max(11, POSTER_LABEL_SIZE - 3))
+    ax.set_title(f"{day_title} | 15 min window", fontsize=max(14, POSTER_TITLE_SIZE - 7), pad=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(axis="both", labelsize=max(10, POSTER_FONT_SIZE - 2))
+    ax.text(
+        0.99,
+        0.92,
+        representative_exp_id,
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=max(9, POSTER_NOTE_SIZE - 2),
+        color="#444444",
+    )
+
+    fig.tight_layout()
+    ensure_dir(output_path.parent)
+    save_figure(fig, output_path, dpi=dpi, extra_formats=())
+
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate full-day dendrite/spine figure summaries from the cached analysis")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Config JSON with the movie/sleep expID lists")

@@ -15,24 +15,32 @@
   "repo_base": "/home/rubencorreia/data/Repository",
   "remote_repo_base": "/data/Remote_Repository",
   "basal_expids": [
-    "2025-11-11_01_ESRC022",
-    "2025-12-01_01_ESRC026",
-    "2025-12-15_06_ESRC026",
-    "2026-01-14_01_ESRC023",
-    "2026-03-03_01_ESRC028",
-    "2026-03-23_02_ESRC028",
-    "2026-05-14_01_ESRC028"
+    "2026-04-30_02_ESRC028"
   ],
+
   "apical_expids": [
-    "2026-01-26_01_ESRC023",
-    "2026-01-27_01_ESRC026",
-    "2026-02-02_01_ESRC027",
-    "2025-12-11_05_ESRC023",
-    "2026-05-04_02_ESRC028",
-    "2026-05-19_01_ESRC028"
+    "2026-05-04_02_ESRC028"
   ],
-  "soma_expids": [],
-  "soma_group_map": [],
+
+  "soma_expids": [
+    "2026-02-13_02_ESRC028"
+  ],
+
+  "soma_group_map": [
+    {
+      "name": "ESRC028",
+      "label": "ESRC028",
+      "basal_expids": [
+        "2026-04-30_02_ESRC028"
+      ],
+      "apical_expids": [
+        "2026-05-04_02_ESRC028"
+      ],
+      "soma_expids": [
+        "2026-02-13_02_ESRC028"
+      ]
+    }
+  ],
   "channel": 0,
   "output_dir": "/home/rubencorreia/code/codex_analysis/results/visual_response"
 }
