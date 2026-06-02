@@ -14,7 +14,7 @@ import sys
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 from copy import deepcopy
 import xml.etree.ElementTree as ET
@@ -66,6 +66,7 @@ from poster_plotting import (
     POSTER_TITLE_SIZE,
     POSTER_WIDE_FIGSIZE,
     configure_poster_matplotlib,
+    rasterize_svg_to_png,
     save_figure,
     set_sparse_numeric_ticks,
 )
@@ -125,6 +126,35 @@ DEFAULT_CATEGORY_COLORS = {
     "movie": "#4C78A8",
     "sleep": "#F58518",
 }
+BLANK_MOVIE_PATH = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"
+GRATING_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\01"
+ZEBRA_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\02"
+DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER = ["movies", "blank", "zebra", "grating"]
+DEFAULT_MOVIE_TRIAL_DISPLAY = {
+    "movies": "Movies",
+    "blank": "Blank",
+    "zebra": "Zebra",
+    "grating": "Grating",
+}
+DEFAULT_MOVIE_PREV_GROUP_ORDER = ["after_blank", "after_zebra", "after_movie", "after_grating"]
+DEFAULT_MOVIE_PREV_GROUP_DISPLAY = {
+    "after_blank": "After blank",
+    "after_zebra": "After zebra",
+    "after_movie": "After movie",
+    "after_grating": "After grating",
+}
+DEFAULT_MOVIE_VIDEO_FIGURE_DIRNAME = "movie_video_state"
+DEFAULT_MOVIE_VIDEO_FIGURE_STEM = "movie_video_sleep_fraction"
+DEFAULT_MOVIE_WAKE_VIDEO_FIGURE_DIRNAME = "movie_video_wake_state"
+DEFAULT_MOVIE_WAKE_VIDEO_AWAKE_FIGURE_STEM = "movie_video_awake_fraction"
+DEFAULT_MOVIE_WAKE_VIDEO_POST_CLIP_FIGURE_STEM = "movie_video_post_clip_wake_up"
+DEFAULT_MOVIE_ONSET_VIDEO_FIGURE_STEM = "movie_video_onset_awake_increase"
+DEFAULT_MOVIE_PREV_GROUP_FIGURE_DIRNAME = "movie_prev_group_state"
+DEFAULT_MOVIE_PREV_GROUP_FIGURE_STEM = "movie_prev_group_sleep_fraction"
+DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_DIRNAME = "movie_prev_group_wake_state"
+DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_STEM = "movie_prev_group_post_clip_wake_up"
+DEFAULT_MOVIE_VIDEO_TOP_N = 12
+DEFAULT_MOVIE_ONSET_WINDOW_S = 2.0
 DEFAULT_METRIC_SPECS = [
     ("state_fraction", "Fraction of time", "Fraction"),
     ("bout_count", "Bout count", "Bouts"),
@@ -349,6 +379,34 @@ def as_float(value: Any) -> Optional[float]:
         except Exception:
             return None
     return None
+
+
+def as_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+    if isinstance(value, (int, np.integer)):
+        try:
+            return int(value)
+        except Exception:
+            return None
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return None
+        return int(value)
+    return None
+
+
+def interval_mask(t: np.ndarray, start: float, end: float) -> np.ndarray:
+    t = np.asarray(t, dtype=float)
+    return (t >= start) & (t < end)
 
 
 def format_display_state(state: str) -> str:
@@ -1155,6 +1213,834 @@ def group_summaries_by_animal(summaries: Sequence[SessionSummary]) -> Dict[str, 
             )
         )
     return dict(sorted(grouped.items(), key=lambda item: item[0]))
+
+
+FEATURE_BLOCK_RE = re.compile(r'^(F\d+)_(.+)$')
+
+
+def feature_prefix_sort_key(prefix: str) -> Tuple[int, str]:
+    match = re.search(r'(\d+)$', prefix)
+    if match is None:
+        return 10**9, prefix
+    return int(match.group(1)), prefix
+
+
+def classify_movie_name(feature_name: Any) -> str:
+    name = str(feature_name or '')
+    if name == BLANK_MOVIE_PATH:
+        return 'blank'
+    if name.startswith(GRATING_PREFIX):
+        return 'grating'
+    if name.startswith(ZEBRA_PREFIX):
+        return 'zebra'
+    return 'movies'
+
+
+def classify_movie_prev_group(prev_trial_category: Any) -> str:
+    prev_category = str(prev_trial_category or '').strip().lower()
+    if prev_category == 'blank':
+        return 'after_blank'
+    if prev_category == 'zebra':
+        return 'after_zebra'
+    if prev_category == 'movies':
+        return 'after_movie'
+    if prev_category == 'grating':
+        return 'after_grating'
+    return ''
+
+
+def normalize_movie_clip_id(feature_name: Any) -> str:
+    text = str(feature_name or '').strip()
+    if not text:
+        return 'unknown_video'
+    base = PureWindowsPath(text).name or text
+    base = re.sub(r'\.[A-Za-z0-9]+$', '', base).strip()
+    return base or text
+
+
+def movie_feature_blocks(row: Mapping[str, Any], columns: Sequence[str]) -> List[Dict[str, Any]]:
+    blocks: Dict[str, Dict[str, Any]] = defaultdict(dict)
+    for column in columns:
+        match = FEATURE_BLOCK_RE.match(column)
+        if match is None:
+            continue
+        prefix, suffix = match.groups()
+        blocks[prefix][suffix] = row.get(column)
+    ordered_blocks: List[Dict[str, Any]] = []
+    for prefix in sorted(blocks, key=feature_prefix_sort_key):
+        block = blocks[prefix]
+        name = str(block.get('name') or '').strip()
+        feature_type = str(block.get('type') or '').strip().lower()
+        if not name and not feature_type:
+            continue
+        ordered_blocks.append(
+            {
+                'prefix': prefix,
+                'name': name,
+                'type': feature_type,
+                'onset': as_float(block.get('onset')),
+                'duration': as_float(block.get('duration')),
+                'speed': as_float(block.get('speed')),
+                'loop': as_int(block.get('loop')),
+            }
+        )
+    return ordered_blocks
+
+
+def load_trial_rows(trial_csv_path: Path) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[str]]:
+    if not trial_csv_path.exists():
+        return None, None, f'missing {trial_csv_path.name}'
+    try:
+        with trial_csv_path.open('r', encoding='utf-8', newline='') as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames is None:
+                return [], [], None
+            return [dict(row) for row in reader], list(reader.fieldnames), None
+    except Exception as exc:
+        return None, None, f'failed to load {trial_csv_path.name}: {exc}'
+
+
+def load_sleep_state_timeline(bundle: Mapping[str, Any]) -> Tuple[np.ndarray, np.ndarray, str]:
+    if 'state_10hz' in bundle and 'state_10hz_t' in bundle:
+        state_values = np.asarray(bundle['state_10hz'], dtype=int).ravel()
+        state_time = np.asarray(bundle['state_10hz_t'], dtype=float).ravel()
+        state_values, state_time = align_length(state_values, state_time)
+        return state_time, state_values, 'state_10hz'
+    state_values = np.asarray(bundle['state_epoch'], dtype=int).ravel()
+    state_time = np.asarray(bundle['state_epoch_t'], dtype=float).ravel()
+    state_values, state_time = align_length(state_values, state_time)
+    return state_time, state_values, 'state_epoch'
+
+
+def analyze_movie_expid_trials(
+    exp_id: str,
+    animal_id: str,
+    date: str,
+    category: str,
+    bundle: Mapping[str, Any],
+    sleep_state_path: Path,
+    trial_rows: Sequence[Mapping[str, Any]],
+    trial_fieldnames: Sequence[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    state_time, state_values, state_source = load_sleep_state_timeline(bundle)
+    if state_time.size == 0 or state_values.size == 0:
+        raise ValueError(f'empty sleep state timeline in {sleep_state_path}')
+
+    trial_summary_rows: List[Dict[str, Any]] = []
+    skipped_rows: List[Dict[str, Any]] = []
+    previous_trial_category: Optional[str] = None
+    previous_video_id: Optional[str] = None
+    previous_trial_name: Optional[str] = None
+    previous_trial_time: Optional[float] = None
+    previous_trial_duration: Optional[float] = None
+    previous_trial_end: Optional[float] = None
+    next_trial_start_times: List[Optional[float]] = [None] * len(trial_rows)
+    next_seen_trial_start: Optional[float] = None
+    for reverse_index in range(len(trial_rows) - 1, -1, -1):
+        next_trial_start_times[reverse_index] = next_seen_trial_start
+        reverse_trial_start = as_float(trial_rows[reverse_index].get('time'))
+        if reverse_trial_start is not None:
+            next_seen_trial_start = float(reverse_trial_start)
+
+    for trial_index, trial_row in enumerate(trial_rows):
+        blocks = movie_feature_blocks(trial_row, trial_fieldnames)
+        movie_blocks = [block for block in blocks if str(block.get('type')) == 'movie' and str(block.get('name') or '').strip()]
+        current_trial_category: Optional[str] = None
+        current_video_id: Optional[str] = None
+        current_video_name: Optional[str] = None
+        skip_reason: Optional[str] = None
+
+        if len(movie_blocks) == 0:
+            skip_reason = 'no movie feature block'
+        elif len(movie_blocks) > 1:
+            skip_reason = 'ambiguous movie feature blocks: ' + ', '.join(str(block.get('prefix')) for block in movie_blocks)
+        else:
+            block = movie_blocks[0]
+            current_video_name = str(block.get('name') or '').strip()
+            current_video_id = normalize_movie_clip_id(current_video_name)
+            current_trial_category = classify_movie_name(current_video_name)
+
+        trial_time = as_float(trial_row.get('time'))
+        trial_duration = as_float(trial_row.get('duration'))
+        trial_end = (trial_time + trial_duration) if trial_time is not None and trial_duration is not None else None
+        if skip_reason is None and (trial_time is None or trial_duration is None):
+            skip_reason = 'missing time/duration'
+
+        row_after_blank_or_zebra = bool(previous_trial_category in {'blank', 'zebra'})
+        row_prev_group = classify_movie_prev_group(previous_trial_category)
+        row_prev_category = previous_trial_category or ''
+        row_prev_video_id = previous_video_id or ''
+        row_prev_video_name = previous_trial_name or ''
+
+        next_trial_start_s = next_trial_start_times[trial_index]
+        onset_window_start_s = float(trial_time) if trial_time is not None else float('nan')
+        onset_window_end_limit_s = onset_window_start_s + DEFAULT_MOVIE_ONSET_WINDOW_S if np.isfinite(onset_window_start_s) else float('nan')
+        onset_window_end_s = min(onset_window_end_limit_s, float(trial_end)) if np.isfinite(onset_window_end_limit_s) and trial_end is not None else float('nan')
+        onset_window_duration_s = float(max(0.0, onset_window_end_s - onset_window_start_s)) if np.isfinite(onset_window_end_s) and np.isfinite(onset_window_start_s) else float('nan')
+        onset_window_sample_count = 0
+        onset_active_wake_fraction = float('nan')
+        onset_quiet_wake_fraction = float('nan')
+        onset_awake_fraction = float('nan')
+        prev_trial_tail_window_start_s = float('nan')
+        prev_trial_tail_window_end_s = float('nan')
+        prev_trial_tail_window_sample_count = 0
+        prev_trial_tail_active_wake_fraction = float('nan')
+        prev_trial_tail_quiet_wake_fraction = float('nan')
+        prev_trial_tail_awake_fraction = float('nan')
+        onset_minus_prev_trial_tail_awake_fraction = float('nan')
+        if np.isfinite(onset_window_start_s) and np.isfinite(onset_window_end_s) and onset_window_end_s > onset_window_start_s:
+            onset_mask = interval_mask(state_time, onset_window_start_s, onset_window_end_s)
+            onset_states = state_values[onset_mask]
+            if onset_states.size > 0:
+                onset_window_sample_count = int(onset_states.size)
+                onset_active_count = int(np.count_nonzero(onset_states == 0))
+                onset_quiet_count = int(np.count_nonzero(onset_states == 1))
+                onset_active_wake_fraction = float(onset_active_count / float(onset_states.size))
+                onset_quiet_wake_fraction = float(onset_quiet_count / float(onset_states.size))
+                onset_awake_fraction = float(onset_active_wake_fraction + onset_quiet_wake_fraction)
+        if previous_trial_time is not None and previous_trial_end is not None and np.isfinite(onset_awake_fraction):
+            prev_trial_tail_window_end_s = float(previous_trial_end)
+            prev_trial_tail_window_start_s = max(float(previous_trial_time), float(previous_trial_end) - DEFAULT_MOVIE_ONSET_WINDOW_S)
+            if prev_trial_tail_window_end_s > prev_trial_tail_window_start_s:
+                prev_tail_mask = interval_mask(state_time, prev_trial_tail_window_start_s, prev_trial_tail_window_end_s)
+                prev_tail_states = state_values[prev_tail_mask]
+                if prev_tail_states.size > 0:
+                    prev_trial_tail_window_sample_count = int(prev_tail_states.size)
+                    prev_tail_active_count = int(np.count_nonzero(prev_tail_states == 0))
+                    prev_tail_quiet_count = int(np.count_nonzero(prev_tail_states == 1))
+                    prev_trial_tail_active_wake_fraction = float(prev_tail_active_count / float(prev_tail_states.size))
+                    prev_trial_tail_quiet_wake_fraction = float(prev_tail_quiet_count / float(prev_tail_states.size))
+                    prev_trial_tail_awake_fraction = float(prev_trial_tail_active_wake_fraction + prev_trial_tail_quiet_wake_fraction)
+        if np.isfinite(onset_awake_fraction) and np.isfinite(prev_trial_tail_awake_fraction):
+            onset_minus_prev_trial_tail_awake_fraction = float(onset_awake_fraction - prev_trial_tail_awake_fraction)
+
+        post_clip_window_start_s = float(trial_end) if trial_end is not None else float('nan')
+        requested_post_clip_end_s = post_clip_window_start_s + 60.0 if np.isfinite(post_clip_window_start_s) else float('nan')
+        if next_trial_start_s is not None and np.isfinite(requested_post_clip_end_s):
+            requested_post_clip_end_s = min(requested_post_clip_end_s, float(next_trial_start_s))
+        post_clip_window_end_s = max(post_clip_window_start_s, float(requested_post_clip_end_s)) if np.isfinite(requested_post_clip_end_s) else float('nan')
+        post_clip_window_duration_s = float(max(0.0, post_clip_window_end_s - post_clip_window_start_s)) if np.isfinite(post_clip_window_end_s) and np.isfinite(post_clip_window_start_s) else float('nan')
+        post_clip_window_sample_count = 0
+        post_clip_active_wake_fraction = float('nan')
+        wakes_up_after_clip = float('nan')
+        if np.isfinite(post_clip_window_start_s) and np.isfinite(post_clip_window_end_s) and post_clip_window_end_s > post_clip_window_start_s:
+            post_clip_mask = interval_mask(state_time, post_clip_window_start_s, post_clip_window_end_s)
+            post_clip_states = state_values[post_clip_mask]
+            if post_clip_states.size > 0:
+                post_clip_window_sample_count = int(post_clip_states.size)
+                post_clip_active_count = int(np.count_nonzero(post_clip_states == 0))
+                post_clip_active_wake_fraction = float(post_clip_active_count / float(post_clip_states.size))
+                wakes_up_after_clip = float(1.0 if post_clip_active_count > 0 else 0.0)
+
+        if skip_reason is None and trial_time is not None and trial_duration is not None and trial_duration > 0 and current_video_id is not None and current_trial_category is not None:
+            window_mask = interval_mask(state_time, float(trial_time), float(trial_end))
+            window_states = state_values[window_mask]
+            if window_states.size == 0:
+                skip_reason = 'no sleep-state samples in trial window'
+            else:
+                denominator = float(window_states.size)
+                active_fraction = float(np.count_nonzero(window_states == 0) / denominator)
+                quiet_fraction = float(np.count_nonzero(window_states == 1) / denominator)
+                nrem_fraction = float(np.count_nonzero(window_states == 2) / denominator)
+                rem_fraction = float(np.count_nonzero(window_states == 3) / denominator)
+                unclassified_fraction = float(max(0.0, 1.0 - (active_fraction + quiet_fraction + nrem_fraction + rem_fraction)))
+                trial_summary_rows.append(
+                    {
+                        'scope': 'trial',
+                        'animal_id': animal_id,
+                        'date': date,
+                        'category': category,
+                        'exp_id': exp_id,
+                        'trial_index': int(trial_index),
+                        'trial_time_s': float(trial_time),
+                        'trial_duration_s': float(trial_duration),
+                        'trial_end_s': float(trial_end),
+                        'prev_trial_category': row_prev_category,
+                        'prev_trial_group': row_prev_group,
+                        'prev_video_id': row_prev_video_id,
+                        'prev_video_name': row_prev_video_name,
+                        'after_blank_or_zebra': row_after_blank_or_zebra,
+                        'trial_category': current_trial_category,
+                        'video_id': current_video_id,
+                        'video_name': current_video_name or '',
+                        'state_source': state_source,
+                        'window_sample_count': int(window_states.size),
+                        'active_wake_fraction': active_fraction,
+                        'quiet_wake_fraction': quiet_fraction,
+                        'nrem_fraction': nrem_fraction,
+                        'rem_fraction': rem_fraction,
+                        'sleep_fraction': float(nrem_fraction + rem_fraction),
+                        'awake_fraction': float(active_fraction + quiet_fraction),
+                        'onset_window_start_s': float(onset_window_start_s) if np.isfinite(onset_window_start_s) else '',
+                        'onset_window_end_s': float(onset_window_end_s) if np.isfinite(onset_window_end_s) else '',
+                        'onset_window_duration_s': float(onset_window_duration_s) if np.isfinite(onset_window_duration_s) else '',
+                        'onset_window_sample_count': int(onset_window_sample_count),
+                        'onset_active_wake_fraction': onset_active_wake_fraction,
+                        'onset_quiet_wake_fraction': onset_quiet_wake_fraction,
+                        'onset_awake_fraction': onset_awake_fraction,
+                        'prev_trial_tail_start_s': float(prev_trial_tail_window_start_s) if np.isfinite(prev_trial_tail_window_start_s) else '',
+                        'prev_trial_tail_end_s': float(prev_trial_tail_window_end_s) if np.isfinite(prev_trial_tail_window_end_s) else '',
+                        'prev_trial_tail_window_sample_count': int(prev_trial_tail_window_sample_count),
+                        'prev_trial_tail_active_wake_fraction': prev_trial_tail_active_wake_fraction,
+                        'prev_trial_tail_quiet_wake_fraction': prev_trial_tail_quiet_wake_fraction,
+                        'prev_trial_tail_awake_fraction': prev_trial_tail_awake_fraction,
+                        'onset_minus_prev_trial_tail_awake_fraction': onset_minus_prev_trial_tail_awake_fraction,
+                        'next_trial_start_s': float(next_trial_start_s) if next_trial_start_s is not None else '',
+                        'post_clip_window_start_s': float(post_clip_window_start_s) if np.isfinite(post_clip_window_start_s) else '',
+                        'post_clip_window_end_s': float(post_clip_window_end_s) if np.isfinite(post_clip_window_end_s) else '',
+                        'post_clip_window_duration_s': float(post_clip_window_duration_s) if np.isfinite(post_clip_window_duration_s) else '',
+                        'post_clip_window_sample_count': int(post_clip_window_sample_count),
+                        'post_clip_active_wake_fraction': post_clip_active_wake_fraction,
+                        'wakes_up_after_clip': wakes_up_after_clip,
+                        'unclassified_fraction': unclassified_fraction,
+                    }
+                )
+        if current_trial_category is not None:
+            previous_trial_category = current_trial_category
+            previous_video_id = current_video_id
+            previous_trial_name = current_video_name
+            previous_trial_time = trial_time
+            previous_trial_duration = trial_duration
+            previous_trial_end = trial_end
+        else:
+            previous_trial_category = None
+            previous_video_id = None
+            previous_trial_name = None
+            previous_trial_time = None
+            previous_trial_duration = None
+            previous_trial_end = None
+        if skip_reason is not None:
+            skipped_rows.append(
+                {
+                    'exp_id': exp_id,
+                    'animal_id': animal_id,
+                    'date': date,
+                    'category': category,
+                    'trial_index': int(trial_index),
+                    'trial_time_s': trial_time if trial_time is not None else '',
+                    'trial_duration_s': trial_duration if trial_duration is not None else '',
+                    'trial_category': current_trial_category or '',
+                    'video_id': current_video_id or '',
+                    'video_name': current_video_name or '',
+                    'prev_trial_category': row_prev_category,
+                    'prev_trial_group': row_prev_group,
+                    'after_blank_or_zebra': row_after_blank_or_zebra,
+                    'reason': skip_reason,
+                }
+            )
+
+    trial_summary_rows.sort(key=lambda row: (str(row.get('animal_id')), str(row.get('date')), str(row.get('exp_id')), int(row.get('trial_index', 0))))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    after_grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in trial_summary_rows:
+        key = (str(row.get('trial_category')), str(row.get('video_id')))
+        grouped[key].append(row)
+        if bool(row.get('after_blank_or_zebra')):
+            after_grouped[key].append(row)
+
+    def summarize_group(rows_by_key: Mapping[Tuple[str, str], Sequence[Dict[str, Any]]], subset_label: str) -> List[Dict[str, Any]]:
+        summaries: List[Dict[str, Any]] = []
+        for (trial_category, video_id), group_rows in sorted(rows_by_key.items(), key=lambda item: (item[0][0], item[0][1])):
+            sleep_values = np.asarray([as_float(row.get('sleep_fraction')) for row in group_rows], dtype=float)
+            sleep_values = sleep_values[np.isfinite(sleep_values)]
+            if sleep_values.size == 0:
+                continue
+            active_mean, active_sem = mean_sem([row.get('active_wake_fraction') for row in group_rows])
+            quiet_mean, quiet_sem = mean_sem([row.get('quiet_wake_fraction') for row in group_rows])
+            nrem_mean, nrem_sem = mean_sem([row.get('nrem_fraction') for row in group_rows])
+            rem_mean, rem_sem = mean_sem([row.get('rem_fraction') for row in group_rows])
+            window_mean, window_sem = mean_sem([row.get('window_sample_count') for row in group_rows])
+            video_names = [str(row.get('video_name') or '').strip() for row in group_rows if str(row.get('video_name') or '').strip()]
+            representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+            after_count = int(sum(bool(row.get('after_blank_or_zebra')) for row in group_rows))
+            summaries.append(
+                {
+                    'subset': subset_label,
+                    'trial_category': trial_category,
+                    'video_id': video_id,
+                    'video_name': representative_video_name,
+                    'n_trials': int(len(group_rows)),
+                    'n_animals': int(len({str(row.get('animal_id')) for row in group_rows})),
+                    'n_expids': int(len({str(row.get('exp_id')) for row in group_rows})),
+                    'n_after_blank_or_zebra_trials': after_count,
+                    'after_blank_or_zebra_fraction': float(after_count / len(group_rows)) if group_rows else float('nan'),
+                    'mean_window_sample_count': window_mean,
+                    'sem_window_sample_count': window_sem,
+                    'mean_active_wake_fraction': active_mean,
+                    'sem_active_wake_fraction': active_sem,
+                    'mean_quiet_wake_fraction': quiet_mean,
+                    'sem_quiet_wake_fraction': quiet_sem,
+                    'mean_nrem_fraction': nrem_mean,
+                    'sem_nrem_fraction': nrem_sem,
+                    'mean_rem_fraction': rem_mean,
+                    'sem_rem_fraction': rem_sem,
+                    'mean_sleep_fraction': float(np.nanmean(sleep_values)),
+                    'sem_sleep_fraction': float(np.nanstd(sleep_values, ddof=1) / math.sqrt(sleep_values.size)) if sleep_values.size > 1 else float('nan'),
+                }
+            )
+        summaries.sort(key=lambda row: (-float(row.get('mean_sleep_fraction', float('-inf'))), str(row.get('trial_category')), str(row.get('video_id'))))
+        for rank, row in enumerate(summaries, start=1):
+            row['sleep_fraction_rank'] = int(rank)
+        return summaries
+
+    video_rows = summarize_group(grouped, 'all')
+    after_blank_or_zebra_rows = summarize_group(after_grouped, 'after_blank_or_zebra')
+    checks = {
+        'state_source': state_source,
+        'n_trial_rows': int(len(trial_rows)),
+        'n_trial_summary_rows': int(len(trial_summary_rows)),
+        'n_video_groups': int(len(video_rows)),
+        'n_after_blank_or_zebra_video_groups': int(len(after_blank_or_zebra_rows)),
+        'n_skipped_rows': int(len(skipped_rows)),
+    }
+    return trial_summary_rows, video_rows, {
+        'after_blank_or_zebra_rows': after_blank_or_zebra_rows,
+        'skipped_rows': skipped_rows,
+        'checks': checks,
+    }
+
+
+
+def summarize_movie_video_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in trial_rows:
+        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
+            continue
+        key = (str(row.get('trial_category')), str(row.get('video_id')))
+        grouped[key].append(dict(row))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    summaries: List[Dict[str, Any]] = []
+    for (trial_category, video_id), group_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        sleep_values = np.asarray([as_float(row.get('sleep_fraction')) for row in group_rows], dtype=float)
+        sleep_values = sleep_values[np.isfinite(sleep_values)]
+        if sleep_values.size == 0:
+            continue
+        active_mean, active_sem = mean_sem([row.get('active_wake_fraction') for row in group_rows])
+        quiet_mean, quiet_sem = mean_sem([row.get('quiet_wake_fraction') for row in group_rows])
+        nrem_mean, nrem_sem = mean_sem([row.get('nrem_fraction') for row in group_rows])
+        rem_mean, rem_sem = mean_sem([row.get('rem_fraction') for row in group_rows])
+        window_mean, window_sem = mean_sem([row.get('window_sample_count') for row in group_rows])
+        video_names = [str(row.get('video_name') or '').strip() for row in group_rows if str(row.get('video_name') or '').strip()]
+        representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+        after_count = int(sum(bool(row.get('after_blank_or_zebra')) for row in group_rows))
+        summaries.append(
+            {
+                'subset': subset_label,
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': representative_video_name,
+                'n_trials': int(len(group_rows)),
+                'n_animals': int(len({str(row.get('animal_id')) for row in group_rows})),
+                'n_expids': int(len({str(row.get('exp_id')) for row in group_rows})),
+                'n_after_blank_or_zebra_trials': after_count,
+                'after_blank_or_zebra_fraction': float(after_count / len(group_rows)) if group_rows else float('nan'),
+                'mean_window_sample_count': window_mean,
+                'sem_window_sample_count': window_sem,
+                'mean_active_wake_fraction': active_mean,
+                'sem_active_wake_fraction': active_sem,
+                'mean_quiet_wake_fraction': quiet_mean,
+                'sem_quiet_wake_fraction': quiet_sem,
+                'mean_nrem_fraction': nrem_mean,
+                'sem_nrem_fraction': nrem_sem,
+                'mean_rem_fraction': rem_mean,
+                'sem_rem_fraction': rem_sem,
+                'mean_sleep_fraction': float(np.nanmean(sleep_values)),
+                'sem_sleep_fraction': float(np.nanstd(sleep_values, ddof=1) / math.sqrt(sleep_values.size)) if sleep_values.size > 1 else float('nan'),
+            }
+        )
+    summaries.sort(key=lambda row: (-float(row.get('mean_sleep_fraction', float('-inf'))), str(row.get('trial_category')), str(row.get('video_id'))))
+    for rank, row in enumerate(summaries, start=1):
+        row['sleep_fraction_rank'] = int(rank)
+    return summaries
+
+
+def summarize_movie_prev_group_comparisons(trial_rows: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in trial_rows:
+        current_trial_category = str(row.get('trial_category') or '').strip().lower()
+        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
+        if current_trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not prev_group:
+            continue
+        grouped[(current_trial_category, prev_group)].append(dict(row))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    group_rows: List[Dict[str, Any]] = []
+    comparison_rows: List[Dict[str, Any]] = []
+    for current_trial_category in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER:
+        group_stats: Dict[str, Dict[str, Any]] = {}
+        for prev_group in DEFAULT_MOVIE_PREV_GROUP_ORDER:
+            rows = grouped.get((current_trial_category, prev_group), [])
+            sleep_values = np.asarray([as_float(row.get('sleep_fraction')) for row in rows], dtype=float)
+            sleep_values = sleep_values[np.isfinite(sleep_values)]
+            active_mean, active_sem = mean_sem([row.get('active_wake_fraction') for row in rows])
+            quiet_mean, quiet_sem = mean_sem([row.get('quiet_wake_fraction') for row in rows])
+            nrem_mean, nrem_sem = mean_sem([row.get('nrem_fraction') for row in rows])
+            rem_mean, rem_sem = mean_sem([row.get('rem_fraction') for row in rows])
+            window_mean, window_sem = mean_sem([row.get('window_sample_count') for row in rows])
+            video_names = [str(row.get('video_name') or '').strip() for row in rows if str(row.get('video_name') or '').strip()]
+            representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+            summary_row = {
+                'current_trial_category': current_trial_category,
+                'current_trial_category_display': DEFAULT_MOVIE_TRIAL_DISPLAY.get(current_trial_category, current_trial_category),
+                'prev_trial_group': prev_group,
+                'prev_trial_group_display': DEFAULT_MOVIE_PREV_GROUP_DISPLAY.get(prev_group, prev_group),
+                'n_trials': int(len(rows)),
+                'n_animals': int(len({str(row.get('animal_id')) for row in rows})),
+                'n_expids': int(len({str(row.get('exp_id')) for row in rows})),
+                'mean_window_sample_count': window_mean,
+                'sem_window_sample_count': window_sem,
+                'mean_active_wake_fraction': active_mean,
+                'sem_active_wake_fraction': active_sem,
+                'mean_quiet_wake_fraction': quiet_mean,
+                'sem_quiet_wake_fraction': quiet_sem,
+                'mean_nrem_fraction': nrem_mean,
+                'sem_nrem_fraction': nrem_sem,
+                'mean_rem_fraction': rem_mean,
+                'sem_rem_fraction': rem_sem,
+                'mean_sleep_fraction': float(np.nanmean(sleep_values)) if sleep_values.size else float('nan'),
+                'sem_sleep_fraction': float(np.nanstd(sleep_values, ddof=1) / math.sqrt(sleep_values.size)) if sleep_values.size > 1 else float('nan'),
+                'video_name': representative_video_name,
+            }
+            group_rows.append(summary_row)
+            group_stats[prev_group] = summary_row
+
+        comparison_row: Dict[str, Any] = {
+            'current_trial_category': current_trial_category,
+            'current_trial_category_display': DEFAULT_MOVIE_TRIAL_DISPLAY.get(current_trial_category, current_trial_category),
+        }
+        for prev_group in DEFAULT_MOVIE_PREV_GROUP_ORDER:
+            stats_row = group_stats.get(prev_group, {})
+            comparison_row[f'n_trials_{prev_group}'] = int(stats_row.get('n_trials', 0) or 0)
+            comparison_row[f'n_animals_{prev_group}'] = int(stats_row.get('n_animals', 0) or 0)
+            comparison_row[f'n_expids_{prev_group}'] = int(stats_row.get('n_expids', 0) or 0)
+            comparison_row[f'mean_sleep_fraction_{prev_group}'] = as_float(stats_row.get('mean_sleep_fraction')) if stats_row else float('nan')
+            comparison_row[f'sem_sleep_fraction_{prev_group}'] = as_float(stats_row.get('sem_sleep_fraction')) if stats_row else float('nan')
+            comparison_row[f'prev_trial_group_display_{prev_group}'] = DEFAULT_MOVIE_PREV_GROUP_DISPLAY.get(prev_group, prev_group)
+        comparison_rows.append(comparison_row)
+
+    group_rows.sort(
+        key=lambda row: (
+            DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER.index(str(row.get('current_trial_category'))) if str(row.get('current_trial_category')) in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER else 10**6,
+            DEFAULT_MOVIE_PREV_GROUP_ORDER.index(str(row.get('prev_trial_group'))) if str(row.get('prev_trial_group')) in DEFAULT_MOVIE_PREV_GROUP_ORDER else 10**6,
+        )
+    )
+    comparison_rows.sort(
+        key=lambda row: (
+            DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER.index(str(row.get('current_trial_category'))) if str(row.get('current_trial_category')) in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER else 10**6,
+        )
+    )
+    return group_rows, comparison_rows
+
+
+def summarize_movie_video_awake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in trial_rows:
+        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
+            continue
+        key = (str(row.get('trial_category')), str(row.get('video_id')))
+        grouped[key].append(dict(row))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    summaries: List[Dict[str, Any]] = []
+    for (trial_category, video_id), group_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        awake_values = np.asarray([as_float(row.get('awake_fraction')) for row in group_rows], dtype=float)
+        awake_values = awake_values[np.isfinite(awake_values)]
+        if awake_values.size == 0:
+            continue
+        active_mean, active_sem = mean_sem([row.get('active_wake_fraction') for row in group_rows])
+        quiet_mean, quiet_sem = mean_sem([row.get('quiet_wake_fraction') for row in group_rows])
+        window_mean, window_sem = mean_sem([row.get('window_sample_count') for row in group_rows])
+        video_names = [str(row.get('video_name') or '').strip() for row in group_rows if str(row.get('video_name') or '').strip()]
+        representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+        after_count = int(sum(bool(row.get('after_blank_or_zebra')) for row in group_rows))
+        summaries.append(
+            {
+                'subset': subset_label,
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': representative_video_name,
+                'n_trials': int(len(group_rows)),
+                'n_animals': int(len({str(row.get('animal_id')) for row in group_rows})),
+                'n_expids': int(len({str(row.get('exp_id')) for row in group_rows})),
+                'n_after_blank_or_zebra_trials': after_count,
+                'after_blank_or_zebra_fraction': float(after_count / len(group_rows)) if group_rows else float('nan'),
+                'mean_window_sample_count': window_mean,
+                'sem_window_sample_count': window_sem,
+                'mean_active_wake_fraction': active_mean,
+                'sem_active_wake_fraction': active_sem,
+                'mean_quiet_wake_fraction': quiet_mean,
+                'sem_quiet_wake_fraction': quiet_sem,
+                'mean_awake_fraction': float(np.nanmean(awake_values)),
+                'sem_awake_fraction': float(np.nanstd(awake_values, ddof=1) / math.sqrt(awake_values.size)) if awake_values.size > 1 else float('nan'),
+            }
+        )
+    summaries.sort(key=lambda row: (-float(row.get('mean_awake_fraction', float('-inf'))), str(row.get('trial_category')), str(row.get('video_id'))))
+    for rank, row in enumerate(summaries, start=1):
+        row['awake_fraction_rank'] = int(rank)
+    return summaries
+
+
+def summarize_movie_post_clip_wake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in trial_rows:
+        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
+            continue
+        key = (str(row.get('trial_category')), str(row.get('video_id')))
+        grouped[key].append(dict(row))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    summaries: List[Dict[str, Any]] = []
+    for (trial_category, video_id), group_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        post_clip_active_values = np.asarray([as_float(row.get('post_clip_active_wake_fraction')) for row in group_rows], dtype=float)
+        post_clip_active_values = post_clip_active_values[np.isfinite(post_clip_active_values)]
+        wakes_up_values = np.asarray([as_float(row.get('wakes_up_after_clip')) for row in group_rows], dtype=float)
+        wakes_up_values = wakes_up_values[np.isfinite(wakes_up_values)]
+        if post_clip_active_values.size == 0 and wakes_up_values.size == 0:
+            continue
+        window_mean, window_sem = mean_sem([row.get('window_sample_count') for row in group_rows])
+        post_window_duration_mean, post_window_duration_sem = mean_sem([row.get('post_clip_window_duration_s') for row in group_rows])
+        post_window_samples_mean, post_window_samples_sem = mean_sem([row.get('post_clip_window_sample_count') for row in group_rows])
+        video_names = [str(row.get('video_name') or '').strip() for row in group_rows if str(row.get('video_name') or '').strip()]
+        representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+        after_count = int(sum(bool(row.get('after_blank_or_zebra')) for row in group_rows))
+        summaries.append(
+            {
+                'subset': subset_label,
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': representative_video_name,
+                'n_trials': int(len(group_rows)),
+                'n_animals': int(len({str(row.get('animal_id')) for row in group_rows})),
+                'n_expids': int(len({str(row.get('exp_id')) for row in group_rows})),
+                'n_after_blank_or_zebra_trials': after_count,
+                'after_blank_or_zebra_fraction': float(after_count / len(group_rows)) if group_rows else float('nan'),
+                'mean_window_sample_count': window_mean,
+                'sem_window_sample_count': window_sem,
+                'mean_post_clip_window_duration_s': post_window_duration_mean,
+                'sem_post_clip_window_duration_s': post_window_duration_sem,
+                'mean_post_clip_window_sample_count': post_window_samples_mean,
+                'sem_post_clip_window_sample_count': post_window_samples_sem,
+                'n_post_clip_trials': int(post_clip_active_values.size),
+                'mean_post_clip_active_wake_fraction': float(np.nanmean(post_clip_active_values)),
+                'sem_post_clip_active_wake_fraction': float(np.nanstd(post_clip_active_values, ddof=1) / math.sqrt(post_clip_active_values.size)) if post_clip_active_values.size > 1 else float('nan'),
+                'mean_wakes_up_after_clip': float(np.nanmean(wakes_up_values)) if wakes_up_values.size else float('nan'),
+                'sem_wakes_up_after_clip': float(np.nanstd(wakes_up_values, ddof=1) / math.sqrt(wakes_up_values.size)) if wakes_up_values.size > 1 else float('nan'),
+            }
+        )
+    summaries.sort(key=lambda row: (-float(row.get('mean_wakes_up_after_clip', float('-inf'))), str(row.get('trial_category')), str(row.get('video_id'))))
+    for rank, row in enumerate(summaries, start=1):
+        row['post_clip_wake_up_rank'] = int(rank)
+    return summaries
+
+
+def summarize_movie_video_onset_awake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in trial_rows:
+        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
+            continue
+        key = (str(row.get('trial_category')), str(row.get('video_id')))
+        grouped[key].append(dict(row))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    summaries: List[Dict[str, Any]] = []
+    for (trial_category, video_id), group_rows in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+        onset_values = np.asarray([as_float(row.get('onset_awake_fraction')) for row in group_rows], dtype=float)
+        onset_values = onset_values[np.isfinite(onset_values)]
+        prev_tail_values = np.asarray([as_float(row.get('prev_trial_tail_awake_fraction')) for row in group_rows], dtype=float)
+        prev_tail_values = prev_tail_values[np.isfinite(prev_tail_values)]
+        delta_values = np.asarray([as_float(row.get('onset_minus_prev_trial_tail_awake_fraction')) for row in group_rows], dtype=float)
+        delta_values = delta_values[np.isfinite(delta_values)]
+        if onset_values.size == 0 and delta_values.size == 0:
+            continue
+        active_mean, active_sem = mean_sem([row.get('onset_active_wake_fraction') for row in group_rows])
+        quiet_mean, quiet_sem = mean_sem([row.get('onset_quiet_wake_fraction') for row in group_rows])
+        prev_tail_active_mean, prev_tail_active_sem = mean_sem([row.get('prev_trial_tail_active_wake_fraction') for row in group_rows])
+        prev_tail_quiet_mean, prev_tail_quiet_sem = mean_sem([row.get('prev_trial_tail_quiet_wake_fraction') for row in group_rows])
+        onset_window_duration_mean, onset_window_duration_sem = mean_sem([row.get('onset_window_duration_s') for row in group_rows])
+        onset_window_samples_mean, onset_window_samples_sem = mean_sem([row.get('onset_window_sample_count') for row in group_rows])
+        prev_tail_window_samples_mean, prev_tail_window_samples_sem = mean_sem([row.get('prev_trial_tail_window_sample_count') for row in group_rows])
+        video_names = [str(row.get('video_name') or '').strip() for row in group_rows if str(row.get('video_name') or '').strip()]
+        representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+        after_count = int(sum(bool(row.get('after_blank_or_zebra')) for row in group_rows))
+        summaries.append(
+            {
+                'subset': subset_label,
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': representative_video_name,
+                'n_trials': int(len(group_rows)),
+                'n_animals': int(len({str(row.get('animal_id')) for row in group_rows})),
+                'n_expids': int(len({str(row.get('exp_id')) for row in group_rows})),
+                'n_after_blank_or_zebra_trials': after_count,
+                'after_blank_or_zebra_fraction': float(after_count / len(group_rows)) if group_rows else float('nan'),
+                'mean_onset_window_duration_s': onset_window_duration_mean,
+                'sem_onset_window_duration_s': onset_window_duration_sem,
+                'mean_onset_window_sample_count': onset_window_samples_mean,
+                'sem_onset_window_sample_count': onset_window_samples_sem,
+                'mean_prev_trial_tail_window_sample_count': prev_tail_window_samples_mean,
+                'sem_prev_trial_tail_window_sample_count': prev_tail_window_samples_sem,
+                'mean_onset_active_wake_fraction': active_mean,
+                'sem_onset_active_wake_fraction': active_sem,
+                'mean_onset_quiet_wake_fraction': quiet_mean,
+                'sem_onset_quiet_wake_fraction': quiet_sem,
+                'mean_onset_awake_fraction': float(np.nanmean(onset_values)),
+                'sem_onset_awake_fraction': float(np.nanstd(onset_values, ddof=1) / math.sqrt(onset_values.size)) if onset_values.size > 1 else float('nan'),
+                'mean_prev_trial_tail_active_wake_fraction': prev_tail_active_mean,
+                'sem_prev_trial_tail_active_wake_fraction': prev_tail_active_sem,
+                'mean_prev_trial_tail_quiet_wake_fraction': prev_tail_quiet_mean,
+                'sem_prev_trial_tail_quiet_wake_fraction': prev_tail_quiet_sem,
+                'mean_prev_trial_tail_awake_fraction': float(np.nanmean(prev_tail_values)) if prev_tail_values.size else float('nan'),
+                'sem_prev_trial_tail_awake_fraction': float(np.nanstd(prev_tail_values, ddof=1) / math.sqrt(prev_tail_values.size)) if prev_tail_values.size > 1 else float('nan'),
+                'mean_onset_minus_prev_trial_tail_awake_fraction': float(np.nanmean(delta_values)) if delta_values.size else float('nan'),
+                'sem_onset_minus_prev_trial_tail_awake_fraction': float(np.nanstd(delta_values, ddof=1) / math.sqrt(delta_values.size)) if delta_values.size > 1 else float('nan'),
+            }
+        )
+    summaries.sort(key=lambda row: (-float(row.get('mean_onset_minus_prev_trial_tail_awake_fraction', float('-inf'))), str(row.get('trial_category')), str(row.get('video_id'))))
+    for rank, row in enumerate(summaries, start=1):
+        row['onset_awake_increase_rank'] = int(rank)
+    return summaries
+
+
+def summarize_movie_prev_group_post_clip_wake_comparisons(trial_rows: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    for row in trial_rows:
+        current_trial_category = str(row.get('trial_category') or '').strip().lower()
+        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
+        if current_trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not prev_group:
+            continue
+        grouped[(current_trial_category, prev_group)].append(dict(row))
+
+    def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
+        arr = np.asarray([as_float(value) for value in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return float('nan'), float('nan')
+        mean = float(np.nanmean(arr))
+        sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float('nan')
+        return mean, sem
+
+    group_rows: List[Dict[str, Any]] = []
+    comparison_rows: List[Dict[str, Any]] = []
+    for current_trial_category in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER:
+        group_stats: Dict[str, Dict[str, Any]] = {}
+        for prev_group in DEFAULT_MOVIE_PREV_GROUP_ORDER:
+            rows = grouped.get((current_trial_category, prev_group), [])
+            post_clip_active_values = np.asarray([as_float(row.get('post_clip_active_wake_fraction')) for row in rows], dtype=float)
+            post_clip_active_values = post_clip_active_values[np.isfinite(post_clip_active_values)]
+            wakes_up_values = np.asarray([as_float(row.get('wakes_up_after_clip')) for row in rows], dtype=float)
+            wakes_up_values = wakes_up_values[np.isfinite(wakes_up_values)]
+            window_mean, window_sem = mean_sem([row.get('window_sample_count') for row in rows])
+            post_window_duration_mean, post_window_duration_sem = mean_sem([row.get('post_clip_window_duration_s') for row in rows])
+            post_window_samples_mean, post_window_samples_sem = mean_sem([row.get('post_clip_window_sample_count') for row in rows])
+            video_names = [str(row.get('video_name') or '').strip() for row in rows if str(row.get('video_name') or '').strip()]
+            representative_video_name = max(set(video_names), key=video_names.count) if video_names else ''
+            summary_row = {
+                'current_trial_category': current_trial_category,
+                'current_trial_category_display': DEFAULT_MOVIE_TRIAL_DISPLAY.get(current_trial_category, current_trial_category),
+                'prev_trial_group': prev_group,
+                'prev_trial_group_display': DEFAULT_MOVIE_PREV_GROUP_DISPLAY.get(prev_group, prev_group),
+                'n_trials': int(len(rows)),
+                'n_animals': int(len({str(row.get('animal_id')) for row in rows})),
+                'n_expids': int(len({str(row.get('exp_id')) for row in rows})),
+                'mean_window_sample_count': window_mean,
+                'sem_window_sample_count': window_sem,
+                'mean_post_clip_window_duration_s': post_window_duration_mean,
+                'sem_post_clip_window_duration_s': post_window_duration_sem,
+                'mean_post_clip_window_sample_count': post_window_samples_mean,
+                'sem_post_clip_window_sample_count': post_window_samples_sem,
+                'n_post_clip_trials': int(post_clip_active_values.size),
+                'mean_post_clip_active_wake_fraction': float(np.nanmean(post_clip_active_values)) if post_clip_active_values.size else float('nan'),
+                'sem_post_clip_active_wake_fraction': float(np.nanstd(post_clip_active_values, ddof=1) / math.sqrt(post_clip_active_values.size)) if post_clip_active_values.size > 1 else float('nan'),
+                'mean_wakes_up_after_clip': float(np.nanmean(wakes_up_values)) if wakes_up_values.size else float('nan'),
+                'sem_wakes_up_after_clip': float(np.nanstd(wakes_up_values, ddof=1) / math.sqrt(wakes_up_values.size)) if wakes_up_values.size > 1 else float('nan'),
+                'video_name': representative_video_name,
+            }
+            group_rows.append(summary_row)
+            group_stats[prev_group] = summary_row
+
+        comparison_row: Dict[str, Any] = {
+            'current_trial_category': current_trial_category,
+            'current_trial_category_display': DEFAULT_MOVIE_TRIAL_DISPLAY.get(current_trial_category, current_trial_category),
+        }
+        for prev_group in DEFAULT_MOVIE_PREV_GROUP_ORDER:
+            stats_row = group_stats.get(prev_group, {})
+            comparison_row[f'n_trials_{prev_group}'] = int(stats_row.get('n_trials', 0) or 0)
+            comparison_row[f'n_animals_{prev_group}'] = int(stats_row.get('n_animals', 0) or 0)
+            comparison_row[f'n_expids_{prev_group}'] = int(stats_row.get('n_expids', 0) or 0)
+            comparison_row[f'mean_post_clip_window_duration_s_{prev_group}'] = as_float(stats_row.get('mean_post_clip_window_duration_s')) if stats_row else float('nan')
+            comparison_row[f'sem_post_clip_window_duration_s_{prev_group}'] = as_float(stats_row.get('sem_post_clip_window_duration_s')) if stats_row else float('nan')
+            comparison_row[f'mean_post_clip_window_sample_count_{prev_group}'] = as_float(stats_row.get('mean_post_clip_window_sample_count')) if stats_row else float('nan')
+            comparison_row[f'sem_post_clip_window_sample_count_{prev_group}'] = as_float(stats_row.get('sem_post_clip_window_sample_count')) if stats_row else float('nan')
+            comparison_row[f'mean_post_clip_active_wake_fraction_{prev_group}'] = as_float(stats_row.get('mean_post_clip_active_wake_fraction')) if stats_row else float('nan')
+            comparison_row[f'sem_post_clip_active_wake_fraction_{prev_group}'] = as_float(stats_row.get('sem_post_clip_active_wake_fraction')) if stats_row else float('nan')
+            comparison_row[f'mean_wakes_up_after_clip_{prev_group}'] = as_float(stats_row.get('mean_wakes_up_after_clip')) if stats_row else float('nan')
+            comparison_row[f'sem_wakes_up_after_clip_{prev_group}'] = as_float(stats_row.get('sem_wakes_up_after_clip')) if stats_row else float('nan')
+            comparison_row[f'prev_trial_group_display_{prev_group}'] = DEFAULT_MOVIE_PREV_GROUP_DISPLAY.get(prev_group, prev_group)
+        comparison_rows.append(comparison_row)
+
+    group_rows.sort(
+        key=lambda row: (
+            DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER.index(str(row.get('current_trial_category'))) if str(row.get('current_trial_category')) in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER else 10**6,
+            DEFAULT_MOVIE_PREV_GROUP_ORDER.index(str(row.get('prev_trial_group'))) if str(row.get('prev_trial_group')) in DEFAULT_MOVIE_PREV_GROUP_ORDER else 10**6,
+        )
+    )
+    comparison_rows.sort(
+        key=lambda row: (
+            DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER.index(str(row.get('current_trial_category'))) if str(row.get('current_trial_category')) in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER else 10**6,
+        )
+    )
+    return group_rows, comparison_rows
 
 
 def load_sleep_state_arrays(sleep_state_path: Path) -> Tuple[np.ndarray, np.ndarray]:
@@ -2428,6 +3314,511 @@ def _metric_axis_label(metric_name: str, metric_label: str) -> str:
     return metric_label
 
 
+def _save_svg_and_png(fig: Any, output_path: Path, dpi: int = POSTER_DPI) -> List[Path]:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    stem = output_path.with_suffix('')
+    svg_path = output_path if output_path.suffix.lower() == '.svg' else stem.with_suffix('.svg')
+    png_path = stem.with_suffix('.png')
+    fig.savefig(svg_path, format='svg', dpi=dpi, bbox_inches='tight', pad_inches=0.22)
+    fig.savefig(png_path, format='png', dpi=dpi, bbox_inches='tight', pad_inches=0.22)
+    if plt is not None:
+        plt.close(fig)
+    return [svg_path, png_path]
+
+
+def plot_movie_video_sleep_fraction(
+    trial_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    group_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in trial_rows:
+        trial_category = str(row.get('trial_category') or '').strip().lower()
+        video_id = str(row.get('video_id') or '').strip()
+        if trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not video_id:
+            continue
+        value = as_float(row.get('sleep_fraction'))
+        if value is None or not np.isfinite(value):
+            continue
+        key = (trial_category, video_id)
+        grouped[key].append(float(value))
+        meta = group_meta.setdefault(
+            key,
+            {
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': str(row.get('video_name') or '').strip(),
+            },
+        )
+        if not meta.get('video_name') and str(row.get('video_name') or '').strip():
+            meta['video_name'] = str(row.get('video_name') or '').strip()
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            -float(np.nanmean(np.asarray(item[1], dtype=float))) if item[1] else float('inf'),
+            item[0][0],
+            item[0][1],
+        ),
+    )
+    labels = [f"{group_meta[key]['trial_category']} | {key[1]}" for key, _ in ordered_groups]
+    means = [float(np.nanmean(np.asarray(values, dtype=float))) if values else float('nan') for _, values in ordered_groups]
+    sds = [float(np.nanstd(np.asarray(values, dtype=float), ddof=1)) if len(values) > 1 else 0.0 for _, values in ordered_groups]
+    colors = [
+        {
+            'movies': '#4C78A8',
+            'blank': '#A0CBE8',
+            'zebra': '#F58518',
+            'grating': '#54A24B',
+        }.get(group_meta[key]['trial_category'], '#7A7A7A')
+        for key, _ in ordered_groups
+    ]
+    fig_height = max(9.0, min(30.0, 0.22 * max(len(means), 1) + 5.0))
+    fig, ax = plt.subplots(1, 1, figsize=(13.8, fig_height), squeeze=False)
+    ax = ax[0, 0]
+    if not means:
+        ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.set_xlim(0.0, 1.0)
+    else:
+        y = np.arange(len(means), dtype=float)
+        ax.barh(y, means, color=colors, edgecolor='white', linewidth=0.8, zorder=2)
+        ax.axvline(0.5, color='#222222', linestyle='--', linewidth=1.5, alpha=0.9)
+        ax.text(0.5, 1.01, '0.5 threshold', transform=ax.get_xaxis_transform(), ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#222222')
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.set_xlim(0.0, 1.0)
+        ax.grid(axis='x', alpha=0.2)
+        set_sparse_numeric_ticks(ax, axis='x', nbins=6)
+        ax.set_xlabel('Mean sleep fraction (NREM + REM)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.tick_params(axis='both', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        for idx, (key, values) in enumerate(ordered_groups):
+            n_trials = int(len(values))
+            value = means[idx] if np.isfinite(means[idx]) else 0.0
+            ax.text(min(0.98, value + 0.015), idx, f'n={n_trials}', va='center', ha='left', fontsize=max(8, POSTER_NOTE_SIZE - 8), color='#444444')
+    ax.set_ylabel('Video ID', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+    fig.suptitle('Sleep fraction by video ID', fontsize=POSTER_TITLE_SIZE, y=0.98)
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.95])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_VIDEO_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_VIDEO_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+def plot_movie_prev_group_sleep_fraction(
+    trial_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    for row in trial_rows:
+        current_trial_category = str(row.get('trial_category') or '').strip().lower()
+        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
+        if current_trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not prev_group:
+            continue
+        value = as_float(row.get('sleep_fraction'))
+        if value is None or not np.isfinite(value):
+            continue
+        grouped[(current_trial_category, prev_group)].append(float(value))
+
+    fig, axes = plt.subplots(2, 2, figsize=(15.0, 11.6), squeeze=False, sharey=True)
+    rng = np.random.default_rng(0)
+    group_colors = {
+        'after_blank': '#4C78A8',
+        'after_zebra': '#F58518',
+        'after_movie': '#54A24B',
+        'after_grating': '#B279A2',
+    }
+    x_positions = {group: index for index, group in enumerate(DEFAULT_MOVIE_PREV_GROUP_ORDER)}
+    tick_labels = ['After blank', 'After zebra', 'After movie', 'After grating']
+    for index, current_trial_category in enumerate(DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER):
+        ax = axes[index // 2, index % 2]
+        panel_title = DEFAULT_MOVIE_TRIAL_DISPLAY.get(current_trial_category, current_trial_category)
+        for prev_group in DEFAULT_MOVIE_PREV_GROUP_ORDER:
+            values = np.asarray(grouped.get((current_trial_category, prev_group), []), dtype=float)
+            values = values[np.isfinite(values)]
+            x_pos = x_positions[prev_group]
+            if values.size == 0:
+                ax.text(x_pos, 0.04, 'n=0', ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#666666')
+                continue
+            jitter = rng.uniform(-0.09, 0.09, size=values.size)
+            ax.scatter(np.full(values.size, x_pos) + jitter, values, s=16, alpha=0.45, color=group_colors[prev_group], edgecolors='none')
+            box = ax.boxplot(
+                [values],
+                positions=[x_pos],
+                widths=0.52,
+                patch_artist=True,
+                showfliers=False,
+                medianprops={'color': '#222222', 'linewidth': 1.8},
+                whiskerprops={'color': '#444444', 'linewidth': 1.1},
+                capprops={'color': '#444444', 'linewidth': 1.1},
+            )
+            for patch in box['boxes']:
+                patch.set_facecolor(group_colors[prev_group])
+                patch.set_alpha(0.25)
+                patch.set_edgecolor(group_colors[prev_group])
+                patch.set_linewidth(1.5)
+            mean_value = float(np.nanmean(values))
+            sd_value = float(np.nanstd(values, ddof=1)) if values.size > 1 else 0.0
+            ax.errorbar(
+                [x_pos],
+                [mean_value],
+                yerr=[[sd_value], [sd_value]],
+                fmt='none',
+                ecolor=group_colors[prev_group],
+                elinewidth=1.6,
+                capsize=4.0,
+                capthick=1.6,
+                zorder=4,
+            )
+            ax.scatter([x_pos], [mean_value], marker='D', s=40, color=group_colors[prev_group], edgecolors='white', linewidths=0.7, zorder=5)
+            n_trials = int(values.size)
+            ax.text(x_pos, 0.98, f'n={n_trials}', transform=ax.get_xaxis_transform(), ha='center', va='top', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#444444')
+        ax.set_title(panel_title, fontsize=max(16, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.set_xlim(-0.6, 3.6)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xticks([0, 1, 2, 3])
+        ax.set_xticklabels(tick_labels)
+        ax.grid(axis='y', alpha=0.18)
+        ax.tick_params(axis='both', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        set_sparse_numeric_ticks(ax, axis='y', nbins=5)
+        if index % 2 == 0:
+            ax.set_ylabel('Sleep fraction (NREM + REM)', fontsize=max(12, POSTER_LABEL_SIZE - 6), labelpad=8)
+        else:
+            ax.set_ylabel('')
+    fig.suptitle('Sleep fraction by current movie type and previous-trial group', fontsize=POSTER_TITLE_SIZE, y=0.98)
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.95])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_PREV_GROUP_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_PREV_GROUP_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
+
+def plot_movie_video_awake_fraction(
+    trial_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    group_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in trial_rows:
+        trial_category = str(row.get('trial_category') or '').strip().lower()
+        video_id = str(row.get('video_id') or '').strip()
+        if trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not video_id:
+            continue
+        value = as_float(row.get('awake_fraction'))
+        if value is None or not np.isfinite(value):
+            continue
+        key = (trial_category, video_id)
+        grouped[key].append(float(value))
+        meta = group_meta.setdefault(
+            key,
+            {
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': str(row.get('video_name') or '').strip(),
+            },
+        )
+        if not meta.get('video_name') and str(row.get('video_name') or '').strip():
+            meta['video_name'] = str(row.get('video_name') or '').strip()
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            -float(np.nanmean(np.asarray(item[1], dtype=float))) if item[1] else float('inf'),
+            item[0][0],
+            item[0][1],
+        ),
+    )
+    labels = [f"{group_meta[key]['trial_category']} | {key[1]}" for key, _ in ordered_groups]
+    means = [float(np.nanmean(np.asarray(values, dtype=float))) if values else float('nan') for _, values in ordered_groups]
+    sds = [float(np.nanstd(np.asarray(values, dtype=float), ddof=1)) if len(values) > 1 else 0.0 for _, values in ordered_groups]
+    colors = [
+        {
+            'movies': '#4C78A8',
+            'blank': '#A0CBE8',
+            'zebra': '#F58518',
+            'grating': '#54A24B',
+        }.get(group_meta[key]['trial_category'], '#7A7A7A')
+        for key, _ in ordered_groups
+    ]
+    fig_height = max(9.0, min(30.0, 0.22 * max(len(means), 1) + 5.0))
+    fig, ax = plt.subplots(1, 1, figsize=(13.8, fig_height), squeeze=False)
+    ax = ax[0, 0]
+    if not means:
+        ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.set_xlim(0.0, 1.0)
+    else:
+        y = np.arange(len(means), dtype=float)
+        ax.barh(y, means, color=colors, edgecolor='white', linewidth=0.8, zorder=2)
+        ax.axvline(0.5, color='#222222', linestyle='--', linewidth=1.5, alpha=0.9)
+        ax.text(0.5, 1.01, '0.5 threshold', transform=ax.get_xaxis_transform(), ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#222222')
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.set_xlim(0.0, 1.0)
+        ax.grid(axis='x', alpha=0.2)
+        set_sparse_numeric_ticks(ax, axis='x', nbins=6)
+        ax.set_xlabel('Mean awake fraction (active wake + quiet wake)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.tick_params(axis='both', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        for idx, (key, values) in enumerate(ordered_groups):
+            n_trials = int(len(values))
+            value = means[idx] if np.isfinite(means[idx]) else 0.0
+            ax.text(min(0.98, value + 0.015), idx, f'n={n_trials}', va='center', ha='left', fontsize=max(8, POSTER_NOTE_SIZE - 8), color='#444444')
+    ax.set_ylabel('Video ID', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+    fig.suptitle('Awake fraction by video ID', fontsize=POSTER_TITLE_SIZE, y=0.98)
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.95])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_WAKE_VIDEO_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_WAKE_VIDEO_AWAKE_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
+
+def plot_movie_video_post_clip_wake_up(
+    trial_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    group_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in trial_rows:
+        trial_category = str(row.get('trial_category') or '').strip().lower()
+        video_id = str(row.get('video_id') or '').strip()
+        if trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not video_id:
+            continue
+        value = as_float(row.get('wakes_up_after_clip'))
+        if value is None or not np.isfinite(value):
+            continue
+        key = (trial_category, video_id)
+        grouped[key].append(float(value))
+        meta = group_meta.setdefault(
+            key,
+            {
+                'trial_category': trial_category,
+                'video_id': video_id,
+                'video_name': str(row.get('video_name') or '').strip(),
+            },
+        )
+        if not meta.get('video_name') and str(row.get('video_name') or '').strip():
+            meta['video_name'] = str(row.get('video_name') or '').strip()
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            -float(np.nanmean(np.asarray(item[1], dtype=float))) if item[1] else float('inf'),
+            item[0][0],
+            item[0][1],
+        ),
+    )
+    labels = [f"{group_meta[key]['trial_category']} | {key[1]}" for key, _ in ordered_groups]
+    means = [float(np.nanmean(np.asarray(values, dtype=float))) if values else float('nan') for _, values in ordered_groups]
+    sds = [float(np.nanstd(np.asarray(values, dtype=float), ddof=1)) if len(values) > 1 else 0.0 for _, values in ordered_groups]
+    colors = [
+        {
+            'movies': '#4C78A8',
+            'blank': '#A0CBE8',
+            'zebra': '#F58518',
+            'grating': '#54A24B',
+        }.get(group_meta[key]['trial_category'], '#7A7A7A')
+        for key, _ in ordered_groups
+    ]
+    fig_height = max(9.0, min(30.0, 0.22 * max(len(means), 1) + 5.0))
+    fig, ax = plt.subplots(1, 1, figsize=(13.8, fig_height), squeeze=False)
+    ax = ax[0, 0]
+    if not means:
+        ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.set_xlim(0.0, 1.0)
+    else:
+        y = np.arange(len(means), dtype=float)
+        ax.barh(y, means, color=colors, edgecolor='white', linewidth=0.8, zorder=2)
+        ax.axvline(0.5, color='#222222', linestyle='--', linewidth=1.5, alpha=0.9)
+        ax.text(0.5, 1.01, '0.5 threshold', transform=ax.get_xaxis_transform(), ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#222222')
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.set_xlim(0.0, 1.0)
+        ax.grid(axis='x', alpha=0.2)
+        set_sparse_numeric_ticks(ax, axis='x', nbins=6)
+        ax.set_xlabel('Fraction of trials with active wake after clip', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.tick_params(axis='both', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        for idx, (key, values) in enumerate(ordered_groups):
+            n_trials = int(len(values))
+            value = means[idx] if np.isfinite(means[idx]) else 0.0
+            ax.text(min(0.98, value + 0.015), idx, f'n={n_trials}', va='center', ha='left', fontsize=max(8, POSTER_NOTE_SIZE - 8), color='#444444')
+    ax.set_ylabel('Video ID', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+    fig.suptitle('Post-clip wake-up fraction by video ID', fontsize=POSTER_TITLE_SIZE, y=0.98)
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.95])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_WAKE_VIDEO_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_WAKE_VIDEO_POST_CLIP_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
+
+def plot_movie_video_onset_awake_increase(
+    trial_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    group_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in trial_rows:
+        trial_category = str(row.get('trial_category') or '').strip().lower()
+        video_id = str(row.get('video_id') or '').strip()
+        if trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not video_id:
+            continue
+        value = as_float(row.get('onset_minus_prev_trial_tail_awake_fraction'))
+        if value is None or not np.isfinite(value):
+            continue
+        key = (trial_category, video_id)
+        grouped[key].append(float(value))
+        meta = group_meta.setdefault(key, {'trial_category': trial_category, 'video_id': video_id, 'video_name': str(row.get('video_name') or '').strip()})
+        if not meta.get('video_name') and str(row.get('video_name') or '').strip():
+            meta['video_name'] = str(row.get('video_name') or '').strip()
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            -float(np.nanmean(np.asarray(item[1], dtype=float))) if item[1] else float('inf'),
+            item[0][0],
+            item[0][1],
+        ),
+    )
+    labels = [f"{group_meta[key]['trial_category']} | {key[1]}" for key, _ in ordered_groups]
+    means = [float(np.nanmean(np.asarray(values, dtype=float))) if values else float('nan') for _, values in ordered_groups]
+    sds = [float(np.nanstd(np.asarray(values, dtype=float), ddof=1)) if len(values) > 1 else 0.0 for _, values in ordered_groups]
+    colors = [
+        {
+            'movies': '#4C78A8',
+            'blank': '#A0CBE8',
+            'zebra': '#F58518',
+            'grating': '#54A24B',
+        }.get(group_meta[key]['trial_category'], '#7A7A7A')
+        for key, _ in ordered_groups
+    ]
+    fig_height = max(9.0, min(30.0, 0.22 * max(len(means), 1) + 5.0))
+    fig, ax = plt.subplots(1, 1, figsize=(13.8, fig_height), squeeze=False)
+    ax = ax[0, 0]
+    if not means:
+        ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.set_xlim(-1.0, 1.0)
+    else:
+        y = np.arange(len(means), dtype=float)
+        ax.barh(y, means, color=colors, edgecolor='white', linewidth=0.8, zorder=2)
+        ax.axvline(0.0, color='#222222', linestyle='--', linewidth=1.5, alpha=0.9)
+        ax.text(0.0, 1.01, 'no change', transform=ax.get_xaxis_transform(), ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#222222')
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.grid(axis='x', alpha=0.2)
+        set_sparse_numeric_ticks(ax, axis='x', nbins=6)
+        ax.set_xlabel('Onset awake fraction minus previous-trial tail awake fraction', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+        ax.set_title('All video IDs', fontsize=max(15, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.tick_params(axis='both', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        x_min = min(0.0, float(np.nanmin(np.asarray(means, dtype=float))) - 0.05)
+        x_max = max(0.0, float(np.nanmax(np.asarray(means, dtype=float))) + 0.05)
+        ax.set_xlim(x_min, x_max)
+        for idx, (key, values) in enumerate(ordered_groups):
+            n_trials = int(len(values))
+            value = means[idx] if np.isfinite(means[idx]) else 0.0
+            ax.text(value + (0.015 if value >= 0 else -0.015), idx, f'n={n_trials}', va='center', ha='left' if value >= 0 else 'right', fontsize=max(8, POSTER_NOTE_SIZE - 8), color='#444444')
+    ax.set_ylabel('Video ID', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+    fig.suptitle('Video-onset awake increase by video ID versus previous-trial tail', fontsize=POSTER_TITLE_SIZE, y=0.98)
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.95])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_WAKE_VIDEO_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_ONSET_VIDEO_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
+
+def plot_movie_prev_group_post_clip_wake_up(
+    trial_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    for row in trial_rows:
+        current_trial_category = str(row.get('trial_category') or '').strip().lower()
+        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
+        if current_trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not prev_group:
+            continue
+        value = as_float(row.get('wakes_up_after_clip'))
+        if value is None or not np.isfinite(value):
+            continue
+        grouped[(current_trial_category, prev_group)].append(float(value))
+
+    fig, axes = plt.subplots(2, 2, figsize=(15.0, 11.6), squeeze=False, sharey=True)
+    rng = np.random.default_rng(0)
+    group_colors = {
+        'after_blank': '#4C78A8',
+        'after_zebra': '#F58518',
+        'after_movie': '#54A24B',
+        'after_grating': '#B279A2',
+    }
+    x_positions = {group: index for index, group in enumerate(DEFAULT_MOVIE_PREV_GROUP_ORDER)}
+    tick_labels = ['After blank', 'After zebra', 'After movie', 'After grating']
+    for index, current_trial_category in enumerate(DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER):
+        ax = axes[index // 2, index % 2]
+        panel_title = DEFAULT_MOVIE_TRIAL_DISPLAY.get(current_trial_category, current_trial_category)
+        for prev_group in DEFAULT_MOVIE_PREV_GROUP_ORDER:
+            values = np.asarray(grouped.get((current_trial_category, prev_group), []), dtype=float)
+            values = values[np.isfinite(values)]
+            x_pos = x_positions[prev_group]
+            if values.size == 0:
+                ax.text(x_pos, 0.04, 'n=0', ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#666666')
+                continue
+            jitter = rng.uniform(-0.09, 0.09, size=values.size)
+            ax.scatter(np.full(values.size, x_pos) + jitter, values, s=16, alpha=0.45, color=group_colors[prev_group], edgecolors='none')
+            box = ax.boxplot(
+                [values],
+                positions=[x_pos],
+                widths=0.52,
+                patch_artist=True,
+                showfliers=False,
+                medianprops={'color': '#222222', 'linewidth': 1.8},
+                whiskerprops={'color': '#444444', 'linewidth': 1.1},
+                capprops={'color': '#444444', 'linewidth': 1.1},
+            )
+            for patch in box['boxes']:
+                patch.set_facecolor(group_colors[prev_group])
+                patch.set_alpha(0.25)
+                patch.set_edgecolor(group_colors[prev_group])
+                patch.set_linewidth(1.5)
+            mean_value = float(np.nanmean(values))
+            sd_value = float(np.nanstd(values, ddof=1)) if values.size > 1 else 0.0
+            ax.errorbar(
+                [x_pos],
+                [mean_value],
+                yerr=[[sd_value], [sd_value]],
+                fmt='none',
+                ecolor=group_colors[prev_group],
+                elinewidth=1.6,
+                capsize=4.0,
+                capthick=1.6,
+                zorder=4,
+            )
+            ax.scatter([x_pos], [mean_value], marker='D', s=40, color=group_colors[prev_group], edgecolors='white', linewidths=0.7, zorder=5)
+            n_trials = int(values.size)
+            ax.text(x_pos, 0.98, f'n={n_trials}', transform=ax.get_xaxis_transform(), ha='center', va='top', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#444444')
+        ax.set_title(panel_title, fontsize=max(16, POSTER_TITLE_SIZE - 8), pad=8)
+        ax.set_xlim(-0.6, 3.6)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xticks([0, 1, 2, 3])
+        ax.set_xticklabels(tick_labels)
+        ax.grid(axis='y', alpha=0.18)
+        ax.tick_params(axis='both', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        set_sparse_numeric_ticks(ax, axis='y', nbins=5)
+        if index % 2 == 0:
+            ax.set_ylabel('Wake-up fraction after clip', fontsize=max(12, POSTER_LABEL_SIZE - 6), labelpad=8)
+        else:
+            ax.set_ylabel('')
+    fig.suptitle('Wake-up fraction by current movie type and previous-trial group', fontsize=POSTER_TITLE_SIZE, y=0.98)
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.95])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
 def _plot_metric_panels(
     category_rows: Mapping[str, Sequence[Mapping[str, Any]]],
     metric_name: str,
@@ -3120,6 +4511,187 @@ def write_sleep_state_report(
     append_kv("state montage figures", format_report_list(manifest.get("state_montage_artifacts")))
     append_kv("report", report_rel)
 
+    append_section("Movie video analysis")
+    append_kv("movie analyzed trial rows", manifest.get("movie_trial_row_count", 0))
+    append_kv("movie trial wake rows", manifest.get("movie_trial_wake_row_count", 0))
+    append_kv("movie video groups", manifest.get("movie_video_row_count", 0))
+    append_kv("movie awake video groups", manifest.get("movie_awake_video_row_count", 0))
+    append_kv("movie onset video groups", manifest.get("movie_onset_video_row_count", 0))
+    append_kv("after blank/zebra video groups", manifest.get("movie_after_blank_or_zebra_row_count", 0))
+    append_kv("movie post-clip wake-up groups", manifest.get("movie_post_clip_wake_row_count", 0))
+    append_kv("movie previous-trial comparison rows", manifest.get("movie_prev_group_comparison_row_count", 0))
+    append_kv("movie previous-trial post-clip wake-up rows", manifest.get("movie_prev_group_post_clip_wake_row_count", 0))
+    append_kv("movie previous-trial post-clip wake-up comparison rows", manifest.get("movie_prev_group_post_clip_wake_comparison_row_count", 0))
+    append_kv("movie skipped trial rows", manifest.get("movie_trial_skip_count", 0))
+    append_kv("movie trial summary CSV", report_relative_path(manifest.get("movie_trial_summary_path"), output_dir))
+    append_kv("movie trial wake CSV", report_relative_path(manifest.get("movie_trial_wake_summary_path"), output_dir))
+    append_kv("movie video summary CSV", report_relative_path(manifest.get("movie_video_summary_path"), output_dir))
+    append_kv("movie awake fraction summary CSV", report_relative_path(manifest.get("movie_awake_video_summary_path"), output_dir))
+    append_kv("movie onset awake increase summary CSV", report_relative_path(manifest.get("movie_onset_video_summary_path"), output_dir))
+    append_kv("movie after blank/zebra summary CSV", report_relative_path(manifest.get("movie_after_blank_or_zebra_summary_path"), output_dir))
+    append_kv("movie post-clip wake-up summary CSV", report_relative_path(manifest.get("movie_post_clip_wake_summary_path"), output_dir))
+    append_kv("movie previous-trial group summary CSV", report_relative_path(manifest.get("movie_prev_group_summary_path"), output_dir))
+    append_kv("movie previous-trial comparison CSV", report_relative_path(manifest.get("movie_prev_group_comparison_path"), output_dir))
+    append_kv("movie previous-trial post-clip wake-up summary CSV", report_relative_path(manifest.get("movie_prev_group_post_clip_wake_summary_path"), output_dir))
+    append_kv("movie previous-trial post-clip wake-up comparison CSV", report_relative_path(manifest.get("movie_prev_group_post_clip_wake_comparison_path"), output_dir))
+    append_kv("movie trial skip CSV", report_relative_path(manifest.get("movie_skip_summary_path"), output_dir))
+    append_kv("movie video figures", format_report_list(manifest.get("movie_video_artifacts")))
+    append_kv("movie previous-trial comparison figures", format_report_list(manifest.get("movie_prev_group_artifacts")))
+    append_kv("movie wake figures", format_report_list(manifest.get("movie_wake_video_artifacts")))
+    append_kv("movie wake comparison figures", format_report_list(manifest.get("movie_wake_prev_group_artifacts")))
+    render_table(
+        "Movie video sleep fraction summary",
+        list(manifest.get("movie_video_summary_rows", []))[:DEFAULT_MOVIE_VIDEO_TOP_N],
+        [
+            "sleep_fraction_rank",
+            "trial_category",
+            "video_id",
+            "video_name",
+            "n_trials",
+            "n_animals",
+            "n_after_blank_or_zebra_trials",
+            "after_blank_or_zebra_fraction",
+            "mean_nrem_fraction",
+            "mean_rem_fraction",
+            "mean_sleep_fraction",
+        ],
+    )
+    render_table(
+        "Movie video awake fraction summary",
+        list(manifest.get("movie_awake_video_summary_rows", []))[:DEFAULT_MOVIE_VIDEO_TOP_N],
+        [
+            "awake_fraction_rank",
+            "trial_category",
+            "video_id",
+            "video_name",
+            "n_trials",
+            "n_animals",
+            "mean_awake_fraction",
+            "sem_awake_fraction",
+            "mean_active_wake_fraction",
+            "mean_quiet_wake_fraction",
+        ],
+    )
+    render_table(
+        "Movie video onset awake increase summary",
+        list(manifest.get("movie_onset_video_summary_rows", []))[:DEFAULT_MOVIE_VIDEO_TOP_N],
+        [
+            "onset_awake_increase_rank",
+            "trial_category",
+            "video_id",
+            "video_name",
+            "n_trials",
+            "n_animals",
+            "mean_onset_awake_fraction",
+            "mean_prev_trial_tail_awake_fraction",
+            "mean_onset_minus_prev_trial_tail_awake_fraction",
+        ],
+    )
+    render_table(
+        "Movie video sleep fraction after blank or zebra",
+        list(manifest.get("movie_after_blank_or_zebra_summary_rows", []))[:DEFAULT_MOVIE_VIDEO_TOP_N],
+        [
+            "sleep_fraction_rank",
+            "trial_category",
+            "video_id",
+            "video_name",
+            "n_trials",
+            "n_animals",
+            "n_after_blank_or_zebra_trials",
+            "after_blank_or_zebra_fraction",
+            "mean_nrem_fraction",
+            "mean_rem_fraction",
+            "mean_sleep_fraction",
+        ],
+    )
+    render_table(
+        "Movie video post-clip wake-up summary",
+        list(manifest.get("movie_post_clip_wake_summary_rows", []))[:DEFAULT_MOVIE_VIDEO_TOP_N],
+        [
+            "post_clip_wake_up_rank",
+            "trial_category",
+            "video_id",
+            "video_name",
+            "n_trials",
+            "n_animals",
+            "n_post_clip_trials",
+            "mean_post_clip_active_wake_fraction",
+            "mean_wakes_up_after_clip",
+            "mean_post_clip_window_duration_s",
+        ],
+    )
+    render_table(
+        "Movie previous-trial group summary",
+        list(manifest.get("movie_prev_group_summary_rows", [])),
+        [
+            "current_trial_category_display",
+            "prev_trial_group_display",
+            "n_trials",
+            "n_animals",
+            "n_expids",
+            "mean_sleep_fraction",
+            "sem_sleep_fraction",
+            "mean_nrem_fraction",
+            "mean_rem_fraction",
+        ],
+    )
+    render_table(
+        "Movie previous-trial group comparison",
+        list(manifest.get("movie_prev_group_comparison_rows", [])),
+        [
+            "current_trial_category_display",
+            "n_trials_after_blank",
+            "mean_sleep_fraction_after_blank",
+            "n_trials_after_zebra",
+            "mean_sleep_fraction_after_zebra",
+            "n_trials_after_movie",
+            "mean_sleep_fraction_after_movie",
+            "n_trials_after_grating",
+            "mean_sleep_fraction_after_grating",
+        ],
+    )
+    render_table(
+        "Movie previous-trial post-clip wake-up summary",
+        list(manifest.get("movie_prev_group_post_clip_wake_summary_rows", [])),
+        [
+            "current_trial_category_display",
+            "prev_trial_group_display",
+            "n_trials",
+            "n_animals",
+            "mean_post_clip_active_wake_fraction",
+            "mean_wakes_up_after_clip",
+        ],
+    )
+    render_table(
+        "Movie previous-trial post-clip wake-up comparison",
+        list(manifest.get("movie_prev_group_post_clip_wake_comparison_rows", [])),
+        [
+            "current_trial_category_display",
+            "n_trials_after_blank",
+            "mean_wakes_up_after_clip_after_blank",
+            "n_trials_after_zebra",
+            "mean_wakes_up_after_clip_after_zebra",
+            "n_trials_after_movie",
+            "mean_wakes_up_after_clip_after_movie",
+            "n_trials_after_grating",
+            "mean_wakes_up_after_clip_after_grating",
+        ],
+    )
+    render_table(
+        "Movie trial skip summary",
+        list(manifest.get("movie_trial_skip_rows", []))[:10],
+        [
+            "exp_id",
+            "trial_index",
+            "video_id",
+            "video_name",
+            "prev_trial_category",
+            "prev_trial_group",
+            "after_blank_or_zebra",
+            "reason",
+        ],
+    )
+
     append_section("Metric definitions")
     lines.append("- Overall sleep-state fraction for state $s$:")
     lines.append(r"  $$f_s = \\frac{T_s}{\\sum_{k \\in \\{\\mathrm{active\\ wake}, \\mathrm{quiet\\ wake}, \\mathrm{NREM}, \\mathrm{REM}, \\mathrm{unclassified}\\}} T_k}$$")
@@ -3164,6 +4736,11 @@ def write_sleep_state_report(
     rem_fraction_artifacts = list(manifest.get("rem_fraction_artifacts", []))
     rem_day_presence_artifacts = list(manifest.get("rem_day_presence_artifacts", []))
     composition_artifacts = list(manifest.get("composition_artifacts", []))
+    movie_video_artifacts = list(manifest.get("movie_video_artifacts", []))
+    movie_prev_group_artifacts = list(manifest.get("movie_prev_group_artifacts", []))
+    movie_wake_video_artifacts = list(manifest.get("movie_wake_video_artifacts", []))
+    movie_onset_video_artifacts = list(manifest.get("movie_onset_video_artifacts", []))
+    movie_wake_prev_group_artifacts = list(manifest.get("movie_wake_prev_group_artifacts", []))
     poster_ready_artifacts = list(manifest.get("poster_ready_artifacts", []))
     render_table(
         "Overall sleep-state composition",
@@ -3203,6 +4780,26 @@ def write_sleep_state_report(
         lines.append("- sleep-state composition figures")
         for artifact in composition_artifacts:
             lines.append(f"  - {artifact}")
+    if movie_video_artifacts:
+        lines.append("- movie-video sleep figures")
+        for artifact in movie_video_artifacts:
+            lines.append(f"  - {artifact}")
+    if movie_prev_group_artifacts:
+        lines.append("- movie previous-trial comparison figures")
+        for artifact in movie_prev_group_artifacts:
+            lines.append(f"  - {artifact}")
+    if movie_wake_video_artifacts:
+        lines.append("- movie wake figures")
+        for artifact in movie_wake_video_artifacts:
+            lines.append(f"  - {artifact}")
+    if movie_onset_video_artifacts:
+        lines.append("- movie onset figures")
+        for artifact in movie_onset_video_artifacts:
+            lines.append(f"  - {artifact}")
+    if movie_wake_prev_group_artifacts:
+        lines.append("- movie wake comparison figures")
+        for artifact in movie_wake_prev_group_artifacts:
+            lines.append(f"  - {artifact}")
     if state_montage_artifacts:
         lines.append("- state montage figures")
         for artifact in state_montage_artifacts:
@@ -3215,7 +4812,7 @@ def write_sleep_state_report(
         lines.append("- poster-ready composite")
         for artifact in poster_ready_artifacts:
             lines.append(f"  - {artifact}")
-    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or composition_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
+    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
         lines.append("- none")
 
     render_table(
@@ -3447,6 +5044,357 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fieldnames=sorted({key for row in rem_analysis["fraction_curve_rows"] for key in row.keys()}),
     )
 
+    movie_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == 'movie']
+    movie_trial_rows: List[Dict[str, Any]] = []
+    movie_trial_skip_rows: List[Dict[str, Any]] = []
+    movie_trial_exp_checks: List[Dict[str, Any]] = []
+    for summary in movie_exp_summaries:
+        exp_id = str(summary.exp_ids[0]) if summary.exp_ids else ''
+        sleep_state_path = Path(summary.sleep_state_paths[0]) if summary.sleep_state_paths else resolve_repo_root(repo_base, summary.animal_id, exp_id) / 'sleep_score' / 'sleep_state.pickle'
+        exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
+        trial_csv_path = exp_root / f'{exp_id}_all_trials.csv'
+        trial_rows, trial_fieldnames, trial_error = load_trial_rows(trial_csv_path)
+        if trial_error is not None or trial_rows is None:
+            movie_trial_skip_rows.append(
+                {
+                    'exp_id': exp_id,
+                    'animal_id': summary.animal_id,
+                    'date': summary.date,
+                    'category': summary.category,
+                    'trial_index': -1,
+                    'trial_time_s': '',
+                    'trial_duration_s': '',
+                    'trial_category': '',
+                    'video_id': '',
+                    'video_name': '',
+                    'prev_trial_category': '',
+                    'after_blank_or_zebra': False,
+                    'reason': trial_error or 'missing trial CSV',
+                }
+            )
+            movie_trial_exp_checks.append(
+                {
+                    'exp_id': exp_id,
+                    'animal_id': summary.animal_id,
+                    'date': summary.date,
+                    'category': summary.category,
+                    'trial_csv_path': report_relative_path(trial_csv_path, output_dir),
+                    'sleep_state_path': report_relative_path(sleep_state_path, output_dir),
+                    'reason': trial_error or 'missing trial CSV',
+                    'n_trial_rows': 0,
+                    'n_trial_summary_rows': 0,
+                    'n_video_groups': 0,
+                    'n_after_blank_or_zebra_video_groups': 0,
+                    'n_skipped_rows': 0,
+                    'state_source': 'n/a',
+                }
+            )
+            continue
+        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+        trial_summary_rows, _, trial_analysis = analyze_movie_expid_trials(
+            exp_id,
+            summary.animal_id,
+            summary.date,
+            summary.category,
+            bundle,
+            sleep_state_path,
+            trial_rows,
+            trial_fieldnames or [],
+        )
+        movie_trial_rows.extend(trial_summary_rows)
+        movie_trial_skip_rows.extend(trial_analysis.get('skipped_rows', []))
+        checks = dict(trial_analysis.get('checks', {}))
+        checks.update(
+            {
+                'exp_id': exp_id,
+                'animal_id': summary.animal_id,
+                'date': summary.date,
+                'category': summary.category,
+                'trial_csv_path': report_relative_path(trial_csv_path, output_dir),
+                'sleep_state_path': report_relative_path(sleep_state_path, output_dir),
+            }
+        )
+        movie_trial_exp_checks.append(checks)
+
+    movie_video_rows = summarize_movie_video_groups(movie_trial_rows, 'all')
+    movie_after_blank_or_zebra_rows = summarize_movie_video_groups(movie_trial_rows, 'after_blank_or_zebra')
+    movie_prev_group_rows, movie_prev_group_comparison_rows = summarize_movie_prev_group_comparisons(movie_trial_rows)
+    movie_awake_video_rows = summarize_movie_video_awake_groups(movie_trial_rows, 'all')
+    movie_onset_video_rows = summarize_movie_video_onset_awake_groups(movie_trial_rows, 'all')
+    movie_post_clip_wake_rows = summarize_movie_post_clip_wake_groups(movie_trial_rows, 'all')
+    movie_prev_group_post_clip_wake_rows, movie_prev_group_post_clip_wake_comparison_rows = summarize_movie_prev_group_post_clip_wake_comparisons(movie_trial_rows)
+
+    movie_trial_table_path = output_dir / 'movie_trial_level_summary.csv'
+    movie_trial_wake_table_path = output_dir / 'movie_trial_wake_summary.csv'
+    movie_video_table_path = output_dir / 'movie_video_level_summary.csv'
+    movie_awake_video_table_path = output_dir / 'movie_video_awake_fraction_summary.csv'
+    movie_onset_video_table_path = output_dir / 'movie_video_onset_awake_increase_summary.csv'
+    movie_after_table_path = output_dir / 'movie_video_after_blank_or_zebra_summary.csv'
+    movie_post_clip_wake_table_path = output_dir / 'movie_video_post_clip_wake_up_summary.csv'
+    movie_prev_group_table_path = output_dir / 'movie_prev_group_level_summary.csv'
+    movie_prev_group_comparison_table_path = output_dir / 'movie_prev_group_comparison_summary.csv'
+    movie_prev_group_post_clip_wake_table_path = output_dir / 'movie_prev_group_post_clip_wake_up_summary.csv'
+    movie_prev_group_post_clip_wake_comparison_table_path = output_dir / 'movie_prev_group_post_clip_wake_up_comparison_summary.csv'
+    movie_skip_table_path = output_dir / 'movie_trial_skip_summary.csv'
+
+    movie_trial_fieldnames = [
+        'scope',
+        'animal_id',
+        'date',
+        'category',
+        'exp_id',
+        'trial_index',
+        'trial_time_s',
+        'trial_duration_s',
+        'trial_end_s',
+        'prev_trial_category',
+        'prev_trial_group',
+        'prev_video_id',
+        'prev_video_name',
+        'after_blank_or_zebra',
+        'trial_category',
+        'video_id',
+        'video_name',
+        'state_source',
+        'window_sample_count',
+        'active_wake_fraction',
+        'quiet_wake_fraction',
+        'nrem_fraction',
+        'rem_fraction',
+        'sleep_fraction',
+        'awake_fraction',
+        'unclassified_fraction',
+    ]
+    movie_trial_wake_fieldnames = movie_trial_fieldnames + [
+        'next_trial_start_s',
+        'post_clip_window_start_s',
+        'post_clip_window_end_s',
+        'post_clip_window_duration_s',
+        'post_clip_window_sample_count',
+        'post_clip_active_wake_fraction',
+        'wakes_up_after_clip',
+    ]
+    movie_video_fieldnames = [
+        'subset',
+        'sleep_fraction_rank',
+        'trial_category',
+        'video_id',
+        'video_name',
+        'n_trials',
+        'n_animals',
+        'n_expids',
+        'n_after_blank_or_zebra_trials',
+        'after_blank_or_zebra_fraction',
+        'mean_window_sample_count',
+        'sem_window_sample_count',
+        'mean_active_wake_fraction',
+        'sem_active_wake_fraction',
+        'mean_quiet_wake_fraction',
+        'sem_quiet_wake_fraction',
+        'mean_nrem_fraction',
+        'sem_nrem_fraction',
+        'mean_rem_fraction',
+        'sem_rem_fraction',
+        'mean_sleep_fraction',
+        'sem_sleep_fraction',
+    ]
+    movie_awake_video_fieldnames = [
+        'subset',
+        'awake_fraction_rank',
+        'trial_category',
+        'video_id',
+        'video_name',
+        'n_trials',
+        'n_animals',
+        'n_expids',
+        'n_after_blank_or_zebra_trials',
+        'after_blank_or_zebra_fraction',
+        'mean_window_sample_count',
+        'sem_window_sample_count',
+        'mean_active_wake_fraction',
+        'sem_active_wake_fraction',
+        'mean_quiet_wake_fraction',
+        'sem_quiet_wake_fraction',
+        'mean_awake_fraction',
+        'sem_awake_fraction',
+    ]
+
+    movie_onset_video_fieldnames = [
+        'subset',
+        'onset_awake_increase_rank',
+        'trial_category',
+        'video_id',
+        'video_name',
+        'n_trials',
+        'n_animals',
+        'n_expids',
+        'n_after_blank_or_zebra_trials',
+        'after_blank_or_zebra_fraction',
+        'mean_onset_window_duration_s',
+        'sem_onset_window_duration_s',
+        'mean_onset_window_sample_count',
+        'sem_onset_window_sample_count',
+        'mean_prev_trial_tail_window_sample_count',
+        'sem_prev_trial_tail_window_sample_count',
+        'mean_onset_awake_fraction',
+        'sem_onset_awake_fraction',
+        'mean_prev_trial_tail_awake_fraction',
+        'sem_prev_trial_tail_awake_fraction',
+        'mean_onset_minus_prev_trial_tail_awake_fraction',
+        'sem_onset_minus_prev_trial_tail_awake_fraction',
+    ]
+    movie_post_clip_wake_fieldnames = [
+        'subset',
+        'post_clip_wake_up_rank',
+        'trial_category',
+        'video_id',
+        'video_name',
+        'n_trials',
+        'n_animals',
+        'n_expids',
+        'n_after_blank_or_zebra_trials',
+        'after_blank_or_zebra_fraction',
+        'mean_window_sample_count',
+        'sem_window_sample_count',
+        'mean_post_clip_window_duration_s',
+        'sem_post_clip_window_duration_s',
+        'mean_post_clip_window_sample_count',
+        'sem_post_clip_window_sample_count',
+        'n_post_clip_trials',
+        'mean_post_clip_active_wake_fraction',
+        'sem_post_clip_active_wake_fraction',
+        'mean_wakes_up_after_clip',
+        'sem_wakes_up_after_clip',
+    ]
+    movie_prev_group_fieldnames = [
+        'current_trial_category',
+        'current_trial_category_display',
+        'prev_trial_group',
+        'prev_trial_group_display',
+        'n_trials',
+        'n_animals',
+        'n_expids',
+        'mean_window_sample_count',
+        'sem_window_sample_count',
+        'mean_active_wake_fraction',
+        'sem_active_wake_fraction',
+        'mean_quiet_wake_fraction',
+        'sem_quiet_wake_fraction',
+        'mean_nrem_fraction',
+        'sem_nrem_fraction',
+        'mean_rem_fraction',
+        'sem_rem_fraction',
+        'mean_sleep_fraction',
+        'sem_sleep_fraction',
+        'video_name',
+    ]
+    movie_prev_group_comparison_fieldnames = [
+        'current_trial_category',
+        'current_trial_category_display',
+        'n_trials_after_blank',
+        'n_trials_after_zebra',
+        'n_trials_after_movie',
+        'n_trials_after_grating',
+        'n_animals_after_blank',
+        'n_animals_after_zebra',
+        'n_animals_after_movie',
+        'n_animals_after_grating',
+        'n_expids_after_blank',
+        'n_expids_after_zebra',
+        'n_expids_after_movie',
+        'n_expids_after_grating',
+        'mean_sleep_fraction_after_blank',
+        'mean_sleep_fraction_after_zebra',
+        'mean_sleep_fraction_after_movie',
+        'mean_sleep_fraction_after_grating',
+        'sem_sleep_fraction_after_blank',
+        'sem_sleep_fraction_after_zebra',
+        'sem_sleep_fraction_after_movie',
+        'sem_sleep_fraction_after_grating',
+    ]
+    movie_prev_group_post_clip_wake_fieldnames = [
+        'current_trial_category',
+        'current_trial_category_display',
+        'prev_trial_group',
+        'prev_trial_group_display',
+        'n_trials',
+        'n_animals',
+        'n_expids',
+        'mean_window_sample_count',
+        'sem_window_sample_count',
+        'mean_post_clip_window_duration_s',
+        'sem_post_clip_window_duration_s',
+        'mean_post_clip_window_sample_count',
+        'sem_post_clip_window_sample_count',
+        'n_post_clip_trials',
+        'mean_post_clip_active_wake_fraction',
+        'sem_post_clip_active_wake_fraction',
+        'mean_wakes_up_after_clip',
+        'sem_wakes_up_after_clip',
+        'video_name',
+    ]
+    movie_prev_group_post_clip_wake_comparison_fieldnames = [
+        'current_trial_category',
+        'current_trial_category_display',
+        'n_trials_after_blank',
+        'n_trials_after_zebra',
+        'n_trials_after_movie',
+        'n_trials_after_grating',
+        'n_animals_after_blank',
+        'n_animals_after_zebra',
+        'n_animals_after_movie',
+        'n_animals_after_grating',
+        'n_expids_after_blank',
+        'n_expids_after_zebra',
+        'n_expids_after_movie',
+        'n_expids_after_grating',
+        'mean_post_clip_active_wake_fraction_after_blank',
+        'mean_post_clip_active_wake_fraction_after_zebra',
+        'mean_post_clip_active_wake_fraction_after_movie',
+        'mean_post_clip_active_wake_fraction_after_grating',
+        'sem_post_clip_active_wake_fraction_after_blank',
+        'sem_post_clip_active_wake_fraction_after_zebra',
+        'sem_post_clip_active_wake_fraction_after_movie',
+        'sem_post_clip_active_wake_fraction_after_grating',
+        'mean_wakes_up_after_clip_after_blank',
+        'mean_wakes_up_after_clip_after_zebra',
+        'mean_wakes_up_after_clip_after_movie',
+        'mean_wakes_up_after_clip_after_grating',
+        'sem_wakes_up_after_clip_after_blank',
+        'sem_wakes_up_after_clip_after_zebra',
+        'sem_wakes_up_after_clip_after_movie',
+        'sem_wakes_up_after_clip_after_grating',
+    ]
+    movie_skip_fieldnames = [
+        'exp_id',
+        'animal_id',
+        'date',
+        'category',
+        'trial_index',
+        'trial_time_s',
+        'trial_duration_s',
+        'trial_category',
+        'video_id',
+        'video_name',
+        'prev_trial_category',
+        'prev_trial_group',
+        'after_blank_or_zebra',
+        'reason',
+    ]
+
+    write_csv_rows(movie_trial_table_path, movie_trial_rows, fieldnames=movie_trial_fieldnames)
+    write_csv_rows(movie_trial_wake_table_path, movie_trial_rows, fieldnames=movie_trial_wake_fieldnames)
+    write_csv_rows(movie_video_table_path, movie_video_rows, fieldnames=movie_video_fieldnames)
+    write_csv_rows(movie_awake_video_table_path, movie_awake_video_rows, fieldnames=movie_awake_video_fieldnames)
+    write_csv_rows(movie_onset_video_table_path, movie_onset_video_rows, fieldnames=movie_onset_video_fieldnames)
+    write_csv_rows(movie_after_table_path, movie_after_blank_or_zebra_rows, fieldnames=movie_video_fieldnames)
+    write_csv_rows(movie_post_clip_wake_table_path, movie_post_clip_wake_rows, fieldnames=movie_post_clip_wake_fieldnames)
+    write_csv_rows(movie_prev_group_table_path, movie_prev_group_rows, fieldnames=movie_prev_group_fieldnames)
+    write_csv_rows(movie_prev_group_comparison_table_path, movie_prev_group_comparison_rows, fieldnames=movie_prev_group_comparison_fieldnames)
+    write_csv_rows(movie_prev_group_post_clip_wake_table_path, movie_prev_group_post_clip_wake_rows, fieldnames=movie_prev_group_post_clip_wake_fieldnames)
+    write_csv_rows(movie_prev_group_post_clip_wake_comparison_table_path, movie_prev_group_post_clip_wake_comparison_rows, fieldnames=movie_prev_group_post_clip_wake_comparison_fieldnames)
+    write_csv_rows(movie_skip_table_path, movie_trial_skip_rows, fieldnames=movie_skip_fieldnames)
+
     figure_artifacts: List[str] = []
     stacked_area_artifacts: List[str] = []
     probability_artifacts: List[str] = []
@@ -3456,6 +5404,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rem_fraction_artifacts: List[str] = []
     rem_day_presence_artifacts: List[str] = []
     composition_artifacts: List[str] = []
+    movie_video_artifacts: List[str] = []
+    movie_prev_group_artifacts: List[str] = []
+    movie_wake_video_artifacts: List[str] = []
+    movie_onset_video_artifacts: List[str] = []
+    movie_wake_prev_group_artifacts: List[str] = []
     state_montage_artifacts: List[str] = []
     poster_ready_artifacts: List[str] = []
     sleep_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == "sleep"]
@@ -3509,6 +5462,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     saved = plot_rem_day_presence_pie(rem_day_presence_rows, output_dir)
     rem_day_presence_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
+    saved = plot_movie_video_sleep_fraction(movie_trial_rows, output_dir)
+    movie_video_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_prev_group_sleep_fraction(movie_trial_rows, output_dir)
+    movie_prev_group_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_video_awake_fraction(movie_trial_rows, output_dir)
+    movie_wake_video_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_video_onset_awake_increase(movie_trial_rows, output_dir)
+    movie_onset_video_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_video_post_clip_wake_up(movie_trial_rows, output_dir)
+    movie_wake_video_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_prev_group_post_clip_wake_up(movie_trial_rows, output_dir)
+    movie_wake_prev_group_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+
     for summary in sorted(sleep_exp_summaries, key=lambda s: (str(s.animal_id), str(s.date), str(s.exp_ids[0]) if s.exp_ids else "", str(s.sleep_state_paths[0]) if s.sleep_state_paths else "")):
         saved = plot_state_montage_per_exp(summary, output_dir)
         state_montage_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
@@ -3534,7 +5500,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 review_state_montage_artifacts.append(str(review_svg_copy.relative_to(ROOT_DIR)))
     rem_artifacts = sorted(set(rem_latency_artifacts + rem_probability_artifacts + rem_fraction_artifacts + rem_day_presence_artifacts))
     probability_all_artifacts = sorted(set(probability_artifacts + probability_percent_artifacts))
-    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + composition_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
+    movie_video_artifacts = sorted(set(movie_video_artifacts))
+    movie_prev_group_artifacts = sorted(set(movie_prev_group_artifacts))
+    movie_wake_video_artifacts = sorted(set(movie_wake_video_artifacts))
+    movie_onset_video_artifacts = sorted(set(movie_onset_video_artifacts))
+    movie_wake_prev_group_artifacts = sorted(set(movie_wake_prev_group_artifacts))
+    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
 
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -3556,6 +5527,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_order": DEFAULT_STATE_ORDER,
         "category_order": DEFAULT_CATEGORY_ORDER,
         "figure_artifacts": figure_artifacts,
+        "movie_video_artifacts": movie_video_artifacts,
+        "movie_prev_group_artifacts": movie_prev_group_artifacts,
+        "movie_wake_video_artifacts": movie_wake_video_artifacts,
+        "movie_onset_video_artifacts": movie_onset_video_artifacts,
+        "movie_wake_prev_group_artifacts": movie_wake_prev_group_artifacts,
         "all_figure_artifacts": all_figure_artifacts,
         "stacked_area_artifacts": sorted(set(stacked_area_artifacts)),
         "probability_artifacts": sorted(set(probability_artifacts)),
@@ -3571,6 +5547,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "poster_ready_artifacts": sorted(set(poster_ready_artifacts)),
         "state_composition_rows": state_composition_rows,
         "rem_day_presence_rows": rem_day_presence_rows,
+        "movie_trial_row_count": len(movie_trial_rows),
+        "movie_trial_wake_row_count": len(movie_trial_rows),
+        "movie_video_row_count": len(movie_video_rows),
+        "movie_awake_video_row_count": len(movie_awake_video_rows),
+        "movie_onset_video_row_count": len(movie_onset_video_rows),
+        "movie_after_blank_or_zebra_row_count": len(movie_after_blank_or_zebra_rows),
+        "movie_post_clip_wake_row_count": len(movie_post_clip_wake_rows),
+        "movie_prev_group_row_count": len(movie_prev_group_rows),
+        "movie_prev_group_comparison_row_count": len(movie_prev_group_comparison_rows),
+        "movie_prev_group_post_clip_wake_row_count": len(movie_prev_group_post_clip_wake_rows),
+        "movie_prev_group_post_clip_wake_comparison_row_count": len(movie_prev_group_post_clip_wake_comparison_rows),
+        "movie_trial_skip_count": len(movie_trial_skip_rows),
+        "movie_trial_exp_checks": movie_trial_exp_checks,
+        "movie_trial_summary_rows": movie_trial_rows,
+        "movie_trial_wake_summary_rows": movie_trial_rows,
+        "movie_video_summary_rows": movie_video_rows,
+        "movie_awake_video_summary_rows": movie_awake_video_rows,
+        "movie_onset_video_summary_rows": movie_onset_video_rows,
+        "movie_after_blank_or_zebra_summary_rows": movie_after_blank_or_zebra_rows,
+        "movie_post_clip_wake_summary_rows": movie_post_clip_wake_rows,
+        "movie_prev_group_summary_rows": movie_prev_group_rows,
+        "movie_prev_group_comparison_rows": movie_prev_group_comparison_rows,
+        "movie_prev_group_post_clip_wake_summary_rows": movie_prev_group_post_clip_wake_rows,
+        "movie_prev_group_post_clip_wake_comparison_rows": movie_prev_group_post_clip_wake_comparison_rows,
+        "movie_trial_skip_rows": movie_trial_skip_rows,
         "rem_fraction_rows": rem_analysis.get("fraction_curve_rows", []),
         "rem_table_artifacts": [
             report_relative_path(rem_exp_table_path, output_dir),
@@ -3581,6 +5582,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "table_artifacts": [
             report_relative_path(exp_table_path, output_dir),
             report_relative_path(day_table_path, output_dir),
+            report_relative_path(movie_trial_table_path, output_dir),
+            report_relative_path(movie_trial_wake_table_path, output_dir),
+            report_relative_path(movie_video_table_path, output_dir),
+            report_relative_path(movie_awake_video_table_path, output_dir),
+            report_relative_path(movie_onset_video_table_path, output_dir),
+            report_relative_path(movie_after_table_path, output_dir),
+            report_relative_path(movie_post_clip_wake_table_path, output_dir),
+            report_relative_path(movie_prev_group_table_path, output_dir),
+            report_relative_path(movie_prev_group_comparison_table_path, output_dir),
+            report_relative_path(movie_prev_group_post_clip_wake_table_path, output_dir),
+            report_relative_path(movie_prev_group_post_clip_wake_comparison_table_path, output_dir),
+            report_relative_path(movie_skip_table_path, output_dir),
             report_relative_path(rem_exp_table_path, output_dir),
             report_relative_path(rem_day_table_path, output_dir),
             report_relative_path(rem_probability_table_path, output_dir),
@@ -3588,6 +5601,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ],
         "exp_level_summary_path": report_relative_path(exp_table_path, output_dir),
         "day_level_summary_path": report_relative_path(day_table_path, output_dir),
+        "movie_trial_summary_path": report_relative_path(movie_trial_table_path, output_dir),
+        "movie_trial_wake_summary_path": report_relative_path(movie_trial_wake_table_path, output_dir),
+        "movie_video_summary_path": report_relative_path(movie_video_table_path, output_dir),
+        "movie_awake_video_summary_path": report_relative_path(movie_awake_video_table_path, output_dir),
+        "movie_onset_video_summary_path": report_relative_path(movie_onset_video_table_path, output_dir),
+        "movie_after_blank_or_zebra_summary_path": report_relative_path(movie_after_table_path, output_dir),
+        "movie_post_clip_wake_summary_path": report_relative_path(movie_post_clip_wake_table_path, output_dir),
+        "movie_prev_group_summary_path": report_relative_path(movie_prev_group_table_path, output_dir),
+        "movie_prev_group_comparison_path": report_relative_path(movie_prev_group_comparison_table_path, output_dir),
+        "movie_prev_group_post_clip_wake_summary_path": report_relative_path(movie_prev_group_post_clip_wake_table_path, output_dir),
+        "movie_prev_group_post_clip_wake_comparison_path": report_relative_path(movie_prev_group_post_clip_wake_comparison_table_path, output_dir),
+        "movie_skip_summary_path": report_relative_path(movie_skip_table_path, output_dir),
         "rem_exp_transition_summary_path": report_relative_path(rem_exp_table_path, output_dir),
         "rem_day_transition_summary_path": report_relative_path(rem_day_table_path, output_dir),
         "rem_probability_curve_path": report_relative_path(rem_probability_table_path, output_dir),
@@ -3613,9 +5638,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "n_skipped_expids": manifest["n_skipped_expids"],
             "n_animals": manifest["n_animals"],
             "n_day_groups": manifest["n_day_groups"],
+            "n_movie_trial_rows": manifest["movie_trial_row_count"],
+            "n_movie_video_groups": manifest["movie_video_row_count"],
+            "n_movie_after_blank_or_zebra_groups": manifest["movie_after_blank_or_zebra_row_count"],
+            "n_movie_prev_group_rows": manifest["movie_prev_group_row_count"],
+            "n_movie_prev_group_comparison_rows": manifest["movie_prev_group_comparison_row_count"],
             "output_dir": str(output_dir),
             "manifest_path": report_relative_path(manifest_path, output_dir),
             "report_path": report_relative_path(report_path, output_dir),
+            "movie_trial_summary_path": report_relative_path(movie_trial_table_path, output_dir),
+            "movie_video_summary_path": report_relative_path(movie_video_table_path, output_dir),
+            "movie_after_blank_or_zebra_summary_path": report_relative_path(movie_after_table_path, output_dir),
+            "movie_prev_group_summary_path": report_relative_path(movie_prev_group_table_path, output_dir),
+            "movie_prev_group_comparison_path": report_relative_path(movie_prev_group_comparison_table_path, output_dir),
         },
         indent=2,
         sort_keys=True,
