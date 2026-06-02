@@ -351,7 +351,7 @@ def default_recipe() -> Dict[str, Any]:
                 "exp_id": "2025-01-02_01_DEMOGEN",
                 "animal_id": "DEMOGEN",
                 "kind": "movie",
-                "compartment": "basal",
+                "compartment": "apical",
                 "mode": "normal",
                 "seed": 202,
                 "t_end": 180.0,
@@ -1454,7 +1454,7 @@ def validate_targets(manifest: Dict[str, Any], output_dir: Path) -> List[Dict[st
     return rows
 
 
-def run_pipeline_validation(recipe: Dict[str, Any], manifest: Dict[str, Any], output_dir: Path, analyses: Optional[Sequence[str]]) -> int:
+def run_pipeline_validation(recipe: Dict[str, Any], manifest: Dict[str, Any], output_dir: Path) -> int:
     analysis_config = build_analysis_config(recipe, manifest, output_dir)
     config_path = output_dir / "demo_analysis_config.json"
     write_json(config_path, analysis_config)
@@ -1464,8 +1464,6 @@ def run_pipeline_validation(recipe: Dict[str, Any], manifest: Dict[str, Any], ou
         "--config",
         str(config_path),
     ]
-    if analyses:
-        cmd += ["--analyses", *list(analyses)]
     proc = subprocess.run(cmd, check=False)
     return proc.returncode
 
@@ -1486,16 +1484,14 @@ def validate_command(args: argparse.Namespace) -> int:
     ensure_dir(output_dir)
     manifest = build_repository(recipe, output_dir)
     write_json(output_dir / "demo_build_manifest.json", manifest)
-    analyses = canonical_analysis_families(args.analyses) if args.analyses else list(manifest.get("analysis_families", DEFAULT_ANALYSIS_FAMILIES))
-    pipeline_analyses = None if set(analyses) == set(DEFAULT_ANALYSIS_FAMILIES) else analyses
-    analysis_config = build_analysis_config(recipe, manifest, output_dir)
-    rc = run_pipeline_validation(recipe, manifest, output_dir, pipeline_analyses)
+    analysis_families = list(manifest.get("analysis_families", DEFAULT_ANALYSIS_FAMILIES))
+    rc = run_pipeline_validation(recipe, manifest, output_dir)
     validation_rows = validate_targets(manifest, output_dir)
     validation_summary = {
         "analysis_return_code": rc,
         "n_validation_rows": len(validation_rows),
         "n_recovered": int(sum(1 for row in validation_rows if row.get("recovered"))),
-        "analysis_families": analyses,
+        "analysis_families": analysis_families,
         "manifest": manifest,
     }
     write_json(output_dir / "demo_validation_summary.json", validation_summary)
@@ -1514,11 +1510,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate", help="Build the synthetic repo and run the analysis pipeline")
     validate_parser.add_argument("--recipe", type=Path, help="JSON recipe describing the synthetic experiment")
     validate_parser.add_argument("--output-dir", type=Path, help="Directory that will hold the synthetic repo and outputs")
-    validate_parser.add_argument(
-        "--analyses",
-        nargs="*",
-        help="Optional subset of analysis families to run in the pipeline: state, basal_apical, correlation, matrix, mixed_model, or all",
-    )
 
     return parser
 

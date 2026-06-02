@@ -1590,6 +1590,7 @@ def generate_analysis_figures(
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
     saved: List[str] = []
+    coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     present_compartments = sorted_present_compartments(cache)
@@ -4476,6 +4477,7 @@ def render_analysis_family_figures(
             saved.append(path)
         else:
             step_message("plotter returned no output")
+    coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     if family == "state":
         summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
         state_labels = selected_matrix_state_labels(results)
