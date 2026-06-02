@@ -109,7 +109,7 @@
   "shuffle_n": 200,
   "high_pass_hz": null,
   "locomotion_threshold": 0.05,
-  "rebuild": false,
+  "rebuild": true,
   "source_cache_rebuild": false,
   "analysis_tables_rebuild": false,
   "analysis_results_rebuild": false,
@@ -128,6 +128,6 @@
   "fit_spine_coactivity_mixed_model": false,
   "spine_coactivity_only": true,
   "demo": false,
-  "mixed_model_contrast_p_source": "classical",
+  "mixed_model_contrast_p_source": "shuffle",
   "mixed_model_only": false
 }
