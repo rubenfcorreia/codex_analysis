@@ -10954,6 +10954,49 @@ def write_analysis_outputs(
             write_csv_rows(csv_path, spine_coactivity_model["contrast_rows"], fieldnames)
             written_artifacts.append(report_relative_path(csv_path, output_dir))
     return list(dict.fromkeys(written_artifacts))
+
+
+def write_poster_ready_figures(output_dir: Path, cache: Dict[str, Any], results: Dict[str, Any]) -> List[str]:
+    from sleep_dendrite_spine_poster_figure import (
+        DEFAULT_HEIGHT_CM as MIXED_POSTER_HEIGHT_CM,
+        DEFAULT_OUTPUT_STEM as MIXED_POSTER_OUTPUT_STEM,
+        DEFAULT_WIDTH_CM as MIXED_POSTER_WIDTH_CM,
+        write_mixed_model_poster_figure,
+    )
+    from sleep_dendrite_spine_spine_coactivity_poster_figure import (
+        DEFAULT_SPINE_COACTIVITY_HEIGHT_CM,
+        DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM,
+        DEFAULT_SPINE_COACTIVITY_WIDTH_CM,
+        write_spine_coactivity_poster_figure,
+    )
+
+    poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
+    written: List[str] = []
+
+    with step_scope("poster figure generation: mixed_model"):
+        mixed_path = write_mixed_model_poster_figure(
+            cache,
+            poster_output_dir,
+            results=results,
+            output_stem=MIXED_POSTER_OUTPUT_STEM,
+            width_cm=float(MIXED_POSTER_WIDTH_CM),
+            height_cm=float(MIXED_POSTER_HEIGHT_CM),
+        )
+    written.append(report_relative_path(mixed_path, output_dir))
+
+    with step_scope("poster figure generation: spine_coactivity"):
+        coactivity_path = write_spine_coactivity_poster_figure(
+            cache,
+            poster_output_dir,
+            results=results,
+            output_stem=DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM,
+            width_cm=float(DEFAULT_SPINE_COACTIVITY_WIDTH_CM),
+            height_cm=float(DEFAULT_SPINE_COACTIVITY_HEIGHT_CM),
+        )
+    written.append(report_relative_path(coactivity_path, output_dir))
+
+    return written
+
 def load_or_build_cache(
     repo_base: Path,
     movie_expids: Sequence[str],
@@ -12198,6 +12241,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     with step_scope("analysis outputs"):
         written_artifacts = write_analysis_outputs(output_dir, results, analysis_cache, figure_root=figure_output_dir)
+    with step_scope("poster figure generation"):
+        written_artifacts.extend(write_poster_ready_figures(output_dir, analysis_cache, results))
     report_path = output_dir / "analysis_report.txt"
     results["analysis_report_path"] = str(report_path)
     results["shared_shuffle_cache"] = {

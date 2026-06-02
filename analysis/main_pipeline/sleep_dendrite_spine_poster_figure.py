@@ -43,6 +43,8 @@ from poster_plotting import (
     set_sparse_numeric_ticks,
 )
 
+import sleep_dendrite_spine_poster_common as poster_common
+
 from sleep_dendrite_spine_pipeline import (
     REPORT_SIGNIFICANCE_ALPHA,
     SPINE_COACTIVITY_ANCHOR_STATE,
@@ -1592,6 +1594,7 @@ def _global_pair_id(row: Dict[str, Any]) -> str:
 def build_figure(
     cache: Dict[str, Any],
     *,
+    results: Optional[Dict[str, Any]] = None,
     width_cm: float = DEFAULT_WIDTH_CM,
     height_cm: float = DEFAULT_HEIGHT_CM,
 ) -> Tuple[Any, Dict[str, Any], List[str]]:
@@ -1617,15 +1620,7 @@ def build_figure(
 
     shuffle_n = int(config.get("shuffle_n", 200) or 200)
 
-    analysis_results_path = ROOT_DIR / "results" / "main_pipeline" / "analysis_results.json"
-    analysis_results: Dict[str, Any] = {}
-    if analysis_results_path.exists():
-        try:
-            loaded_results = json.loads(analysis_results_path.read_text())
-            if isinstance(loaded_results, dict):
-                analysis_results = loaded_results
-        except Exception:
-            analysis_results = {}
+    analysis_results: Dict[str, Any] = dict(results) if isinstance(results, dict) else poster_common.load_analysis_results_payload()
 
     summary_metrics = [
         "dendrite_mean",
@@ -1783,8 +1778,25 @@ def build_figure(
     )
     return fig, analysis_state_selection, state_comparison_states
 
-def parse_args() -> argparse.Namespace:
+def write_mixed_model_poster_figure(
+    cache: Dict[str, Any],
+    output_dir: Path,
+    *,
+    results: Optional[Dict[str, Any]] = None,
+    output_stem: str = DEFAULT_OUTPUT_STEM,
+    width_cm: float = DEFAULT_WIDTH_CM,
+    height_cm: float = DEFAULT_HEIGHT_CM,
+) -> Path:
+    figure, _, _ = build_figure(cache, results=results, width_cm=width_cm, height_cm=height_cm)
+    output_dir = poster_common.ensure_dir(output_dir)
+    stem = str(output_stem).strip() or DEFAULT_OUTPUT_STEM
+    svg_path = output_dir / f"{stem}.svg"
+    poster_common.save_svg_figure_exact(figure, svg_path)
+    poster_common.set_svg_physical_size(svg_path, float(width_cm))
+    return svg_path
 
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create the poster-ready 2x2 dendrite summary figure.")
     parser.add_argument(
         "--cache-path",
@@ -1804,12 +1816,6 @@ def parse_args() -> argparse.Namespace:
         help="Base filename stem for the exported figure.",
     )
     parser.add_argument(
-        "--figure-mode",
-        choices=("mixed_model", "spine_coactivity"),
-        default="mixed_model",
-        help="Choose the poster figure layout to render.",
-    )
-    parser.add_argument(
         "--width-cm",
         type=float,
         default=DEFAULT_WIDTH_CM,
@@ -1826,35 +1832,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if plt is None:
-        raise RuntimeError("matplotlib is unavailable, so the poster figure cannot be rendered.")
-
-    cache = load_cache(args.cache_path)
-    output_dir = ensure_dir(args.output_dir)
-    figure_mode = str(args.figure_mode).strip().lower()
-    if figure_mode == "spine_coactivity":
-        width_cm = float(args.width_cm)
-        height_cm = float(args.height_cm)
-        if width_cm == DEFAULT_WIDTH_CM and height_cm == DEFAULT_HEIGHT_CM:
-            width_cm = DEFAULT_SPINE_COACTIVITY_WIDTH_CM
-            height_cm = DEFAULT_SPINE_COACTIVITY_HEIGHT_CM
-        output_stem = str(args.output_stem).strip() or DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM
-        results = load_analysis_results_payload()
-        if not isinstance(results, dict) or not results:
-            raise RuntimeError("No analysis_results payload was available for the spine-coactivity poster.")
-        render_spine_coactivity_component_svgs(results, output_dir)
-        figure, _, _ = build_spine_coactivity_poster_figure(cache, results, width_cm=width_cm, height_cm=height_cm)
-        svg_path = output_dir / f"{output_stem}.svg"
-        _save_svg_figure_exact(figure, svg_path)
-        set_svg_physical_size(svg_path, width_cm)
-    else:
-        output_stem = str(args.output_stem).strip() or DEFAULT_OUTPUT_STEM
-        svg_path = output_dir / f"{output_stem}.svg"
-
-        figure, _, _ = build_figure(cache, width_cm=args.width_cm, height_cm=args.height_cm)
-        save_figure(figure, svg_path, extra_formats=())
-        set_svg_physical_size(svg_path, args.width_cm)
-
+    cache = poster_common.load_cache(args.cache_path)
+    results = poster_common.load_analysis_results_payload()
+    if not isinstance(results, dict) or not results:
+        raise RuntimeError("No analysis_results payload was available for the mixed-model poster.")
+    svg_path = write_mixed_model_poster_figure(
+        cache,
+        args.output_dir,
+        results=results,
+        output_stem=str(args.output_stem).strip() or DEFAULT_OUTPUT_STEM,
+        width_cm=float(args.width_cm),
+        height_cm=float(args.height_cm),
+    )
     print(f"Saved SVG: {svg_path}")
     return 0
 
