@@ -93,13 +93,6 @@ It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and z
 - The workflow writes CSV tables plus stacked-area, probability-vs-time, REM-latency, REM-fraction, and composition figures.
 - This workflow is descriptive rather than inferential: it summarizes sleep-state structure and transitions rather than running the main pipeline's hypothesis tests.
 
-## Zebra Movie Helpers
-
-- `sleep_zebra_movies_roi_wrapper.py` resolves the movie clips, refreshes the movie cache, and writes per-dendrite/per-spine figures.
-- `sleep_zebra_gabor_postprocess.py` is a sidecar workflow that writes the movie-only Gabor manifest, summary, and per-experiment detail JSON.
-- The wrapper and post-process are helper workflows, not separate inferential analyses.
-- Their main outputs are ROI lookup, cached clips, Gabor summaries, and poster-ready per-dendrite figures.
-
 ## How The Pipeline Treats Significance
 
 - Use `shuffle_p < 0.05` for the state comparisons, correlations, matrix similarity, and spine coactivity families.

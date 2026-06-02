@@ -14,7 +14,6 @@ This directory is organized by workflow.
 | --- | --- |
 | `docs/main_pipeline/` | Main dendrite/spine analysis and demo builder notes. |
 | `docs/methods/` | Repo-wide methods page for metrics, calculations, and statistical tests. |
-| `docs/zebra_movies/` | Zebra movie and Gabor workflow notes. |
 | `docs/sleep_state_across_days/` | Sleep-state-only across-days notes. |
 
 ## Configs

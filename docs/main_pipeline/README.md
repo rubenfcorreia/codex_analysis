@@ -229,8 +229,6 @@ Typical outputs are:
 - `mixed_model_contrasts.csv`
 - `demo_validation.csv` when running demo mode
 - `analysis_report.txt` - summary-first run report
-- `results/zebra_movies/gabor/manifest.json` and `results/zebra_movies/gabor/gabor_summary.json` when you run the separate Gabor post-process
-- `results/zebra_movies/gabor/experiments/<animal_id>/<date>/<exp_id>_gabor_detail.json` - one detail file per movie expID from the sidecar Gabor step
 - `figures/basal_apical_summary.svg`
 - `figures/correlation_summary.svg`
 - `figures/matrix_similarity_heatmap_basal.svg`
@@ -244,7 +242,6 @@ Typical outputs are:
 - `figures/matrix_similarity_distribution.svg` - basal/apical coefficient distributions for spine-spine state-pair comparisons when those compartments are present
 - `figures/state_coverage_heatmap.svg`
 - `figures/demo_validation_scatter.svg` when running demo mode
-- `results/zebra_movies/figures/<animal_ID>/<basal-or-apical>/<date>/<animal_ID>_<basal-or-apical>_<date>_<dendrite>.svg` from `sleep_zebra_movies_roi_wrapper.py`
 
 ## Checkpoint Gallery
 

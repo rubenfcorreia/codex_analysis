@@ -8,7 +8,6 @@ The runnable code now lives inside these folders, which keeps the root directory
 | Folder | Purpose |
 | --- | --- |
 | `main_pipeline/` | Main dendrite/spine analysis, day figures, and demo builder launchers. |
-| `zebra_movies/` | Zebra movie analysis and Gabor launchers. |
 | `sleep_state_across_days/` | Sleep-state-only across-days launcher. |
 | `visual_response/` | Movie dendrite and rapid-retinotopy visual-response launcher. |
 
