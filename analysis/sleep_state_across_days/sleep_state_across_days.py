@@ -89,6 +89,8 @@ DEFAULT_REM_FIGURE_DIRNAME = "rem_summary"
 DEFAULT_REM_FRACTION_FIGURE_DIRNAME = "fraction_time"
 DEFAULT_COMPOSITION_FIGURE_DIRNAME = "composition_summary"
 DEFAULT_POSTER_READY_FIGURE_STEM = "sleep_state_poster_composite"
+DEFAULT_WITHIN_DAY_FIGURE_DIRNAME = "within_day_timecourse"
+DEFAULT_WITHIN_DAY_FIGURE_STEM = "within_day_sleep_state_fractions"
 DEFAULT_STATE_ORDER = ["active_wake", "quiet_wake", "nrem", "rem"]
 DEFAULT_STATE_MONTAGE_EXP_FIGURE_DIRNAME = "per_exp"
 DEFAULT_REM_LATENCY_METRICS = [
@@ -2735,6 +2737,7 @@ def summarize_movie_pupil_transitions(
                 'sem_post_pupil_diameter': post_sem,
                 'mean_delta_pupil_diameter': delta_mean,
                 'sem_delta_pupil_diameter': delta_sem,
+                'delta_pupil_diameter_values': delta_values,
             }
         )
         if valid_events:
@@ -3620,6 +3623,7 @@ def plot_sleep_state_poster_ready_composite(
         values = [float(as_float(row.get('fraction'))) for row in rem_rows]
         labels = [str(row.get('state_display', row.get('state', 'unknown'))) for row in rem_rows]
         colors = ['#6A3D9A', '#A6761D'][: len(values)]
+        pct_suffixes = [f"\n[{int(row.get('day_count', 0))}]" for row in rem_rows]
         ax_rem.set_anchor('C')
         draw_compact_pie_panel(
             ax_rem,
@@ -3627,7 +3631,7 @@ def plot_sleep_state_poster_ready_composite(
             labels,
             colors,
             title='Experimental days with REM',
-            force_pct_labels=['Experimental days with REM', 'Experimental days without REM'],
+            pct_suffixes=pct_suffixes,
             legend_ncol=1,
             radius=0.82,
             legend_inside=True,
@@ -4359,6 +4363,110 @@ def _plot_stacked_area_panel(
     return save_figure(fig, output_path, dpi=POSTER_DPI)
 
 
+def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary], output_dir: Path) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+
+    day_timeline = select_poster_ready_day_summaries(exp_summaries, DEFAULT_POSTER_READY_STATE_MONTAGE_EXAMPLE_EXP_ID)
+    if not day_timeline:
+        day_timeline = select_poster_ready_day_summaries(exp_summaries, DEFAULT_REVIEW_STATE_MONTAGE_EXAMPLE_EXP_ID)
+    if not day_timeline:
+        day_timeline = [summary for summary in exp_summaries if summary.sleep_state_paths][:1]
+
+    fig, ax_frac = plt.subplots(2, 2, figsize=(10.8, 8.4), squeeze=False)
+    time_min, profile, sleep_start_min = build_day_timeline_profile(day_timeline)
+    state_order = list(DEFAULT_STATE_ORDER)
+    x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
+    fraction_axes = ax_frac.ravel().tolist()
+    for idx, state in enumerate(state_order):
+        ax = fraction_axes[idx]
+        values = np.asarray(profile.get(state, []), dtype=float)
+        if time_min.size and values.size and np.isfinite(values).any():
+            band = 0.06
+            band_color = lighten_color(DEFAULT_STACKED_STATE_COLORS[state], amount=0.68)
+            ax.fill_between(
+                time_min,
+                np.clip(values - band, 0.0, 1.05),
+                np.clip(values + band, 0.0, 1.05),
+                color=band_color,
+                alpha=0.18,
+                linewidth=0,
+                zorder=1,
+            )
+            ax.plot(
+                time_min,
+                values,
+                color=DEFAULT_STACKED_STATE_COLORS[state],
+                linewidth=2.0,
+                alpha=0.95,
+                zorder=2,
+            )
+        else:
+            ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=max(8, POSTER_FONT_SIZE - 7), color='#666666')
+        if sleep_start_min is not None and np.isfinite(sleep_start_min):
+            if sleep_start_min > 0.0:
+                ax.axvspan(0.0, sleep_start_min, color='0.94', alpha=0.55, zorder=0)
+            ax.axvline(sleep_start_min, color='#222222', linestyle='--', linewidth=1.15, alpha=0.98, zorder=7)
+        ax.set_xlim(0.0, x_max)
+        ax.set_ylim(0.0, 1.05)
+        ax.grid(axis='y', alpha=0.22)
+        set_sparse_numeric_ticks(ax, axis='y', nbins=5)
+        if idx < 2:
+            ax.set_xticks([])
+            ax.tick_params(axis='x', bottom=False, labelbottom=False)
+        else:
+            set_sparse_numeric_ticks(ax, axis='x', nbins=3)
+            ax.tick_params(axis='x', labelsize=max(8, POSTER_FONT_SIZE - 7), pad=0)
+        ax.tick_params(axis='y', labelsize=max(8, POSTER_FONT_SIZE - 7))
+        if idx in (0, 2):
+            ax.tick_params(axis='y', labelleft=True)
+        else:
+            ax.tick_params(axis='y', labelleft=False)
+            ax.spines['left'].set_visible(False)
+        ax.set_xlabel('')
+    for ax in fraction_axes:
+        ax.set_xlim(0.0, x_max)
+        ax.set_ylim(0.0, 1.05)
+    fraction_axes[0].set_ylabel('Fraction', fontsize=max(12, POSTER_LABEL_SIZE - 5), labelpad=4)
+    frac_block_x0 = min(ax.get_position().x0 for ax in fraction_axes)
+    frac_block_x1 = max(ax.get_position().x1 for ax in fraction_axes)
+    frac_block_y0 = min(ax.get_position().y0 for ax in fraction_axes)
+    frac_block_y1 = max(ax.get_position().y1 for ax in fraction_axes)
+    fig.text(
+        0.5 * (float(frac_block_x0) + float(frac_block_x1)),
+        float(frac_block_y0) - 0.070,
+        'Time\n(min)',
+        ha='center',
+        va='top',
+        fontsize=max(11, POSTER_LABEL_SIZE - 7),
+        linespacing=0.8,
+    )
+    fig.text(
+        float(frac_block_x1),
+        float(frac_block_y1) + 0.006,
+        'sleep session starts',
+        ha='right',
+        va='bottom',
+        fontsize=max(8, POSTER_FONT_SIZE - 7),
+        color='#666666',
+    )
+    fig.suptitle('Sleep-state fractions through experimental time', fontsize=max(22, POSTER_SUPTITLE_SIZE - 2), y=0.985)
+    fig.text(
+        0.5,
+        0.93,
+        'Representative day; dashed line marks sleep-session start and gray shading shows pre-sleep time.',
+        ha='center',
+        va='top',
+        fontsize=max(15, POSTER_NOTE_SIZE + 2),
+        color='#444444',
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='This figure includes Axes that are not compatible with tight_layout*')
+        fig.tight_layout(rect=[0.02, 0.02, 0.995, 0.91])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_WITHIN_DAY_FIGURE_DIRNAME / 'overall')
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_WITHIN_DAY_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
+
 def plot_per_animal_stacked_area(animal_id: str, day_summaries: Sequence[SessionSummary], output_dir: Path) -> List[Path]:
     animal_summaries = [summary for summary in day_summaries if str(summary.animal_id) == animal_id]
     return _plot_stacked_area_panel({category: [summary for summary in animal_summaries if str(summary.category) == category] for category in DEFAULT_CATEGORY_ORDER}, x_mode='date', x_label='Calendar date', title=f'{animal_id} sleep-state composition across days', note='Stacked areas show the fraction of time in each state; gray is Unclassified when present.', output_dir=output_dir, figure_subdir=Path('per_animal') / safe_filename_component(animal_id), output_stem=f'{safe_filename_component(animal_id)}_stacked_area')
@@ -4465,12 +4573,23 @@ def draw_compact_pie_panel(
     *,
     title: str,
     force_pct_labels: Optional[Sequence[str]] = None,
+    pct_suffixes: Optional[Sequence[str]] = None,
     legend_ncol: int = 2,
     radius: float = 0.84,
     legend_inside: bool = False,
     show_legend: bool = True,
 ) -> None:
     force_pct_labels = set(force_pct_labels or [])
+    pct_suffixes = list(pct_suffixes or [])
+    pct_index = {'value': -1}
+
+    def autopct(pct: float) -> str:
+        pct_index['value'] += 1
+        suffix = ''
+        if pct_index['value'] < len(pct_suffixes):
+            suffix = pct_suffixes[pct_index['value']]
+        return f'{pct:.1f}%{suffix}'
+
     ax.clear()
     ax.set_aspect('equal')
     ax.pie(
@@ -4478,7 +4597,7 @@ def draw_compact_pie_panel(
         colors=colors,
         startangle=90,
         counterclock=False,
-        autopct=lambda pct: f'{pct:.1f}%',
+        autopct=autopct,
         pctdistance=1.08,
         radius=radius,
         wedgeprops=dict(linewidth=1.2, edgecolor='white'),
@@ -4524,8 +4643,24 @@ def build_rem_day_presence_composition(day_rows: Sequence[Mapping[str, Any]]) ->
             without_rem += 1
     total = float(with_rem + without_rem)
     rows_out = [
-        {'state': 'experimental_days_with_rem', 'state_display': 'Experimental days with REM', 'fraction': with_rem / total if total else float('nan'), 'percent': (with_rem / total * 100.0) if total else float('nan')},
-        {'state': 'experimental_days_without_rem', 'state_display': 'Experimental days without REM', 'fraction': without_rem / total if total else float('nan'), 'percent': (without_rem / total * 100.0) if total else float('nan')},
+        {
+            'state': 'experimental_days_with_rem',
+            'state_display': 'Experimental days with REM',
+            'n_days': with_rem,
+            'day_count': with_rem,
+            'fraction': with_rem / total if total else float('nan'),
+            'percent': (with_rem / total * 100.0) if total else float('nan'),
+            'percent_display': f'{(with_rem / total * 100.0):.3f} [{with_rem}]' if total else 'n/a',
+        },
+        {
+            'state': 'experimental_days_without_rem',
+            'state_display': 'Experimental days without REM',
+            'n_days': without_rem,
+            'day_count': without_rem,
+            'fraction': without_rem / total if total else float('nan'),
+            'percent': (without_rem / total * 100.0) if total else float('nan'),
+            'percent_display': f'{(without_rem / total * 100.0):.3f} [{without_rem}]' if total else 'n/a',
+        },
     ]
     return rows_out
 
@@ -4537,7 +4672,8 @@ def plot_rem_day_presence_pie(rem_day_presence_rows: Sequence[Mapping[str, Any]]
     values = [float(as_float(row.get('fraction'))) for row in rem_day_presence_rows if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))]
     labels = [str(row.get('state_display', row.get('state', 'unknown'))) for row in rem_day_presence_rows if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))]
     colors = ['#6A3D9A', '#A6761D'][: len(values)]
-    draw_compact_pie_panel(ax, values, labels, colors, title='Experimental days with REM', force_pct_labels=labels, legend_ncol=1, radius=0.82)
+    pct_suffixes = [f"\n[{int(row.get('day_count', 0))}]" for row in rem_day_presence_rows if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))]
+    draw_compact_pie_panel(ax, values, labels, colors, title='Experimental days with REM', pct_suffixes=pct_suffixes, legend_ncol=1, radius=0.82)
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', message='This figure includes Axes that are not compatible with tight_layout*')
         fig.tight_layout()
@@ -4888,44 +5024,70 @@ def plot_movie_pupil_transition_summary(
         raise RuntimeError('matplotlib is required to generate figures')
     ordered_rows = [dict(row) for row in sorted(summary_rows, key=lambda row: int(row.get('transition_rank', 0)))]
     labels = [str(row.get('transition_label') or '') for row in ordered_rows]
-    means = np.asarray([as_float(row.get('mean_delta_pupil_diameter')) for row in ordered_rows], dtype=float)
-    finite_means = means[np.isfinite(means)]
-    fig_height = max(8.8, 0.58 * max(len(labels), 1) + 2.2)
+    delta_lists = []
+    means = []
+    for row in ordered_rows:
+        values = np.asarray(row.get('delta_pupil_diameter_values', []), dtype=float)
+        finite_values = values[np.isfinite(values)]
+        delta_lists.append(finite_values)
+        means.append(float(np.nanmean(finite_values)) if finite_values.size else float('nan'))
+    means = np.asarray(means, dtype=float)
+    finite_concat = np.concatenate([values for values in delta_lists if values.size]) if any(values.size for values in delta_lists) else np.asarray([], dtype=float)
+    fig_height = max(8.8, 0.62 * max(len(labels), 1) + 2.4)
     fig, ax = plt.subplots(1, 1, figsize=(14.5, fig_height), squeeze=False)
     ax = ax[0, 0]
-    if finite_means.size == 0:
+    if finite_concat.size == 0:
         ax.text(0.5, 0.5, 'No transition data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
     else:
         y_positions = np.arange(len(ordered_rows), dtype=float)
-        colors = ['#BDBDBD' if not np.isfinite(value) else ('#4C78A8' if value >= 0 else '#E45756') for value in means]
-        ax.barh(y_positions, np.nan_to_num(means, nan=0.0), color=colors, edgecolor='white', linewidth=0.9, zorder=2)
+        box = ax.boxplot(
+            delta_lists,
+            vert=False,
+            positions=y_positions,
+            widths=0.62,
+            patch_artist=True,
+            showfliers=False,
+            whis=1.5,
+            medianprops=dict(color='#222222', linewidth=1.4),
+            whiskerprops=dict(color='#666666', linewidth=1.0),
+            capprops=dict(color='#666666', linewidth=1.0),
+            boxprops=dict(linewidth=1.0, edgecolor='white'),
+        )
+        for patch, value in zip(box['boxes'], means):
+            patch.set_facecolor('#BDBDBD' if not np.isfinite(value) else ('#4C78A8' if value >= 0 else '#E45756'))
+            patch.set_alpha(0.78)
         ax.axvline(0.0, color='#222222', linestyle='--', linewidth=1.5, alpha=0.95)
         ax.text(0.0, 1.01, 'no change', transform=ax.get_xaxis_transform(), ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#222222')
         ax.set_yticks(y_positions)
         ax.set_yticklabels(labels)
         ax.invert_yaxis()
-        max_abs = float(np.nanmax(np.abs(finite_means))) if finite_means.size else 1.0
-        max_abs = max(max_abs, 0.5)
-        ax.set_xlim(-1.1 * max_abs, 1.1 * max_abs)
+        lower, upper = np.nanpercentile(finite_concat, [0.5, 99.5])
+        if not np.isfinite(lower) or not np.isfinite(upper) or lower == upper:
+            lower = float(np.nanmin(finite_concat)) if finite_concat.size else -1.0
+            upper = float(np.nanmax(finite_concat)) if finite_concat.size else 1.0
+        span = max(float(upper - lower), 1.0)
+        pad = 0.08 * span
+        lower -= pad
+        upper += pad
+        if lower > 0.0:
+            lower = 0.0
+        if upper < 0.0:
+            upper = 0.0
+        ax.set_xlim(lower, upper)
         ax.grid(axis='x', alpha=0.2)
         set_sparse_numeric_ticks(ax, axis='x', nbins=6)
         ax.tick_params(axis='both', labelsize=max(10, POSTER_FONT_SIZE - 6))
+        label_x = upper - 0.02 * span
+        label_ha = 'right'
+        if label_x < 0.0:
+            label_x = lower + 0.02 * span
+            label_ha = 'left'
         for idx, row in enumerate(ordered_rows):
-            n_transitions = int(row.get('n_transitions', 0))
             n_valid = int(row.get('n_valid_transitions', 0))
-            value = means[idx] if np.isfinite(means[idx]) else 0.0
-            if value >= 0:
-                x_text = value + 0.03 * max_abs
-                ha = 'left'
-            else:
-                x_text = value - 0.03 * max_abs
-                ha = 'right'
-            ax.text(x_text, idx, f'n={n_transitions}', va='center', ha=ha, fontsize=max(8, POSTER_NOTE_SIZE - 8), color='#444444')
-            if n_valid != n_transitions:
-                ax.text(x_text, idx + 0.22, f'valid={n_valid}', va='center', ha=ha, fontsize=max(7, POSTER_NOTE_SIZE - 9), color='#666666')
-    ax.set_xlabel('Mean pupil diameter change (post 2 s - pre 2 s)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+            ax.text(label_x, idx, f'n={n_valid}', va='center', ha=label_ha, fontsize=max(8, POSTER_NOTE_SIZE - 8), color='#444444')
+    ax.set_xlabel('Pupil diameter change (post 2 s - pre 2 s)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
     ax.set_ylabel('Sleep-state transition', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
-    ax.set_title('Mean pupil change by sleep-state transition', fontsize=POSTER_TITLE_SIZE, pad=10)
+    ax.set_title('Pupil change by sleep-state transition', fontsize=POSTER_TITLE_SIZE, pad=10)
     fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.96])
     figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME)
     return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM}.svg', dpi=POSTER_DPI)
@@ -5367,6 +5529,7 @@ def write_sleep_state_report(
     rem_probability_artifacts = list(manifest.get("rem_probability_artifacts", []))
     rem_fraction_artifacts = list(manifest.get("rem_fraction_artifacts", []))
     rem_day_presence_artifacts = list(manifest.get("rem_day_presence_artifacts", []))
+    within_day_fraction_artifacts = list(manifest.get("within_day_fraction_artifacts", []))
     composition_artifacts = list(manifest.get("composition_artifacts", []))
     movie_video_artifacts = list(manifest.get("movie_video_artifacts", []))
     movie_prev_group_artifacts = list(manifest.get("movie_prev_group_artifacts", []))
@@ -5410,6 +5573,10 @@ def write_sleep_state_report(
     if rem_day_presence_artifacts:
         lines.append("- REM day-presence figures")
         for artifact in rem_day_presence_artifacts:
+            lines.append(f"  - {artifact}")
+    if within_day_fraction_artifacts:
+        lines.append("- within-day sleep-state fraction figures")
+        for artifact in within_day_fraction_artifacts:
             lines.append(f"  - {artifact}")
     if composition_artifacts:
         lines.append("- sleep-state composition figures")
@@ -5459,7 +5626,7 @@ def write_sleep_state_report(
         lines.append("- poster-ready composite")
         for artifact in poster_ready_artifacts:
             lines.append(f"  - {artifact}")
-    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
+    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
         lines.append("- none")
 
     render_table(
@@ -5572,7 +5739,7 @@ def write_sleep_state_report(
             "state_display",
             "day_count",
             "fraction",
-            "percent",
+            "percent_display",
         ],
     )
 
@@ -6127,6 +6294,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rem_probability_artifacts: List[str] = []
     rem_fraction_artifacts: List[str] = []
     rem_day_presence_artifacts: List[str] = []
+    within_day_fraction_artifacts: List[str] = []
     composition_artifacts: List[str] = []
     movie_video_artifacts: List[str] = []
     movie_prev_group_artifacts: List[str] = []
@@ -6189,6 +6357,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     saved = plot_rem_day_presence_pie(rem_day_presence_rows, output_dir)
     rem_day_presence_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
+    saved = plot_within_day_sleep_state_fractions(exp_summaries, output_dir)
+    within_day_fraction_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+
     saved = plot_movie_video_sleep_fraction(movie_trial_rows, output_dir)
     movie_video_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_prev_group_sleep_fraction(movie_trial_rows, output_dir)
@@ -6241,7 +6412,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_state_artifacts = sorted(set(movie_pupil_state_artifacts))
     movie_pupil_transition_artifacts = sorted(set(movie_pupil_transition_artifacts))
     movie_pupil_transition_example_artifacts = sorted(set(movie_pupil_transition_example_artifacts))
-    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
+    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
 
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -6280,6 +6451,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rem_probability_artifacts": sorted(set(rem_probability_artifacts)),
         "rem_fraction_artifacts": sorted(set(rem_fraction_artifacts)),
         "rem_day_presence_artifacts": sorted(set(rem_day_presence_artifacts)),
+        "within_day_fraction_artifacts": sorted(set(within_day_fraction_artifacts)),
         "composition_artifacts": sorted(set(composition_artifacts)),
         "state_montage_artifacts": sorted(set(state_montage_artifacts)),
         "review_state_montage_artifacts": sorted(set(review_state_montage_artifacts)),
@@ -6305,6 +6477,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_state_row_count": len(movie_pupil_state_rows),
         "movie_pupil_transition_row_count": len(movie_pupil_transition_rows),
         "movie_pupil_transition_example_row_count": len(movie_pupil_transition_example_rows),
+        "within_day_fraction_row_count": len(day_summaries),
         "movie_trial_skip_count": len(movie_trial_skip_rows),
         "movie_trial_exp_checks": movie_trial_exp_checks,
         "movie_trial_summary_rows": movie_trial_rows,
@@ -6375,6 +6548,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rem_day_transition_summary_path": report_relative_path(rem_day_table_path, output_dir),
         "rem_probability_curve_path": report_relative_path(rem_probability_table_path, output_dir),
         "rem_fraction_curve_path": report_relative_path(rem_fraction_table_path, output_dir),
+        "within_day_fraction_path": within_day_fraction_artifacts[0] if within_day_fraction_artifacts else None,
         "source_sleep_state_paths": {
             summary.exp_ids[0]: summary.sleep_state_paths[0] if summary.sleep_state_paths else None
             for summary in exp_summaries

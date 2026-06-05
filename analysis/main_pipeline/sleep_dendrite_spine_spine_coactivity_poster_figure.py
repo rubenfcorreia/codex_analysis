@@ -78,6 +78,7 @@ from sleep_dendrite_spine_pipeline import (
     set_sparse_colorbar_ticks,
     set_sparse_numeric_ticks,
     spine_coactivity_anchor_state_compartments,
+    spine_coactivity_anchor_selection_note,
     spine_coactivity_basal_apical_distribution_output_name,
     spine_coactivity_output_compartments,
     spine_coactivity_pair_state_output_name,
@@ -1147,6 +1148,7 @@ def _draw_spine_coactivity_heatmap_panel(
     colorbar: bool = False,
     colorbar_label: str = "Coactivity coefficient",
     shared_max_abs: Optional[float] = None,
+    selection_note: Optional[str] = None,
 ) -> None:
     from matplotlib.colors import Normalize
 
@@ -1177,10 +1179,11 @@ def _draw_spine_coactivity_heatmap_panel(
     ax.set_ylim(len(pair_labels) - 0.5, -0.5)
     ax.grid(which="major", color="white", linestyle="-", linewidth=0.6, alpha=0.55)
     anchor_text = format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)
+    selection_text = selection_note or "selected if shuffle_significant and abs(coactivity_r) >= 0.05"
     ax.text(
         0.02,
         0.98,
-        f"anchor={anchor_text} | n pairs={len(pair_labels)} | coactive pairs only",
+        f"anchor={anchor_text} | n pairs={len(pair_labels)} | {selection_text}",
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -1275,6 +1278,7 @@ def _draw_spine_coactivity_selected_state_comparison_panel(
     show_xlabel: bool = True,
     show_x_ticklabels: bool = True,
     y_limits: Optional[Tuple[float, float]] = None,
+    selection_note: Optional[str] = None,
 ) -> None:
     state_labels = list(payload["state_labels"])
     series = [np.asarray(arr, dtype=float) for arr in payload["series"]]
@@ -1338,10 +1342,11 @@ def _draw_spine_coactivity_selected_state_comparison_panel(
         if limits is not None:
             ax.set_ylim(limits)
 
+    selection_text = selection_note or "selected if shuffle_significant and abs(coactivity_r) >= 0.05"
     ax.text(
         0.02,
         0.98,
-        f"anchor={format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} | significant anchor pairs only",
+        f"anchor={format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} | {selection_text}",
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -1354,6 +1359,7 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
         raise RuntimeError("matplotlib is unavailable, so the spine-coactivity poster cannot be rendered.")
     output_dir = ensure_dir(output_dir)
     written: List[Path] = []
+    selection_note = spine_coactivity_anchor_selection_note(results)
 
     combined_payload = _spine_coactivity_basal_apical_payload(results, anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE, coactive_only=True)
     if combined_payload is None:
@@ -1406,6 +1412,7 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
             heatmap_payload,
             title=f"Quiet awake movies coactive pairs across states - {compartment.capitalize()}",
             colorbar=True,
+            selection_note=selection_note,
         )
         written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True)))
 
@@ -1439,6 +1446,7 @@ def build_spine_coactivity_poster_figure(
     }
     poster_results: Dict[str, Any] = dict(results) if isinstance(results, dict) else {}
     poster_results["analysis_state_selection"] = analysis_state_selection
+    selection_note = spine_coactivity_anchor_selection_note(poster_results)
 
     fig = plt.figure(figsize=(cm_to_inch(width_cm), cm_to_inch(height_cm)))
     outer = GridSpec(
@@ -1538,6 +1546,7 @@ def build_spine_coactivity_poster_figure(
         color="#1f77b4",
         show_x_ticklabels=False,
         y_limits=right_y_limits,
+        selection_note=selection_note,
     )
     _draw_spine_coactivity_selected_state_comparison_panel(
         right_bottom,
@@ -1545,6 +1554,7 @@ def build_spine_coactivity_poster_figure(
         title="Apical coactive spine pairs across selected states",
         color="#d95f02",
         y_limits=right_y_limits,
+        selection_note=selection_note,
     )
     right_top.set_xlabel("")
     right_top.tick_params(axis="x", labelbottom=False)
@@ -1553,6 +1563,20 @@ def build_spine_coactivity_poster_figure(
 
 def _coactivity_row_is_significant(row: Dict[str, Any]) -> bool:
     """Return True if a spine-pair row should be treated as significant/coactive."""
+    for key in (
+        "quiet_awake_movies_selected",
+        "quiet_awake_movie_selected",
+        "anchor_selected",
+    ):
+        if key in row:
+            value = row.get(key)
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if text in {"1", "true", "yes", "y", "sig", "significant", "selected", "coactive"}:
+                return True
+            if text in {"0", "false", "no", "n", "ns", "non-significant", "nonsignificant", "not_selected"}:
+                return False
     for key in (
         "significant",
         "is_significant",
