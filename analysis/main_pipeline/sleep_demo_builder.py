@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as _dt
+import os
 import json
 import math
 import pickle
@@ -15,6 +16,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+try:
+    from threadpoolctl import threadpool_limits
+except Exception:
+    threadpool_limits = None
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -26,7 +31,18 @@ DEFAULT_ANALYSIS_FAMILIES = ["state", "basal_apical", "correlation", "matrix", "
 DEFAULT_CHANNEL = 0
 DEFAULT_HIGH_PASS_HZ = 0.02
 DEFAULT_SHUFFLES = 200
+DEFAULT_CPU_THREAD_LIMIT = 1
 DEFAULT_LOCOMOTION_THRESHOLD = 0.35
+DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD = 0.05
+CPU_THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+_CPU_THREAD_LIMIT_CONTROLLER = None
 
 BLANK_MOVIE_PATH = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"
 GRATING_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\01"
@@ -80,6 +96,35 @@ def as_int(value: Any) -> Optional[int]:
     if isinstance(value, float) and np.isfinite(value):
         return int(value)
     return None
+
+
+def normalize_positive_int(value: Any, default: int, field_name: str) -> int:
+    parsed = as_int(value)
+    if parsed is None:
+        if value is None:
+            parsed = int(default)
+        else:
+            raise SystemExit(f"Invalid {field_name}: {value!r}. Expected a positive integer.")
+    if parsed <= 0:
+        raise SystemExit(f"Invalid {field_name}: {value!r}. Expected a positive integer.")
+    return int(parsed)
+
+
+def apply_cpu_thread_limit(thread_limit: Any) -> int:
+    global _CPU_THREAD_LIMIT_CONTROLLER
+    limit = normalize_positive_int(thread_limit, DEFAULT_CPU_THREAD_LIMIT, "cpu_thread_limit")
+    for env_var in CPU_THREAD_LIMIT_ENV_VARS:
+        os.environ[env_var] = str(limit)
+    if threadpool_limits is not None:
+        if _CPU_THREAD_LIMIT_CONTROLLER is not None:
+            try:
+                _CPU_THREAD_LIMIT_CONTROLLER.__exit__(None, None, None)
+            except Exception:
+                pass
+        controller = threadpool_limits(limits=limit)
+        controller.__enter__()
+        _CPU_THREAD_LIMIT_CONTROLLER = controller
+    return limit
 
 
 def jsonable(value: Any) -> Any:
@@ -286,6 +331,8 @@ def default_recipe() -> Dict[str, Any]:
         "user_id": "demo_user",
         "channel": DEFAULT_CHANNEL,
         "locomotion_threshold": DEFAULT_LOCOMOTION_THRESHOLD,
+        "spine_coactivity_abs_threshold": DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
+        "cpu_thread_limit": DEFAULT_CPU_THREAD_LIMIT,
         "analysis_families": list(DEFAULT_ANALYSIS_FAMILIES),
         "stimulus_source_root": str(DEFAULT_STIMULUS_SOURCE_ROOT),
         "experiments": [
@@ -1199,6 +1246,10 @@ def build_repository(recipe: Dict[str, Any], output_dir: Path) -> Dict[str, Any]
     if not experiments:
         raise SystemExit("Recipe must include at least one experiment")
     source_root = Path(recipe.get("stimulus_source_root") or DEFAULT_STIMULUS_SOURCE_ROOT)
+    spine_coactivity_abs_threshold = as_float(recipe.get("spine_coactivity_abs_threshold"))
+    if spine_coactivity_abs_threshold is None or spine_coactivity_abs_threshold < 0:
+        spine_coactivity_abs_threshold = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD
+    cpu_thread_limit = apply_cpu_thread_limit(recipe.get("cpu_thread_limit"))
 
     if repo_base.exists():
         shutil.rmtree(repo_base)
@@ -1243,7 +1294,9 @@ def build_repository(recipe: Dict[str, Any], output_dir: Path) -> Dict[str, Any]
         "channel": int(recipe.get("channel", DEFAULT_CHANNEL)),
         "locomotion_threshold": as_float(recipe.get("locomotion_threshold")) or DEFAULT_LOCOMOTION_THRESHOLD,
         "shuffle_n": int(recipe.get("shuffle_n", DEFAULT_SHUFFLES)),
+        "cpu_thread_limit": cpu_thread_limit,
         "high_pass_hz": as_float(recipe.get("high_pass_hz")) or DEFAULT_HIGH_PASS_HZ,
+        "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "analysis_families": canonical_analysis_families(recipe.get("analysis_families")),
         "movie_expids": movie_expids,
         "sleep_expids": sleep_expids,
@@ -1271,7 +1324,9 @@ def build_analysis_config(recipe: Dict[str, Any], manifest: Dict[str, Any], outp
         "channel": int(manifest["channel"]),
         "locomotion_threshold": float(manifest["locomotion_threshold"]),
         "shuffle_n": int(manifest["shuffle_n"]),
+        "cpu_thread_limit": int(manifest.get("cpu_thread_limit", DEFAULT_CPU_THREAD_LIMIT)),
         "high_pass_hz": float(manifest["high_pass_hz"]),
+        "spine_coactivity_abs_threshold": float(manifest.get("spine_coactivity_abs_threshold", DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD)),
         "rebuild": True,
         "output_dir": str(output_dir),
         "figure_output_dir": str(output_dir / "figures" / "demo"),

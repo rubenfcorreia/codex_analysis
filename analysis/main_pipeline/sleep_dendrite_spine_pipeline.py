@@ -31,6 +31,10 @@ try:
     from statsmodels.tools.sm_exceptions import ConvergenceWarning
 except Exception:
     ConvergenceWarning = Warning
+try:
+    from threadpoolctl import threadpool_limits
+except Exception:
+    threadpool_limits = None
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 warnings.filterwarnings(
     "ignore",
@@ -78,6 +82,7 @@ DEND_AXON_CONVERSION_FILENAME = "ROIs_dendrite_axon_mode_conversion.npy"
 DEFAULT_CHANNEL = 0
 DEFAULT_HIGH_PASS_HZ = 0.02
 DEFAULT_SHUFFLES = 200
+DEFAULT_CPU_THREAD_LIMIT = 1
 DEFAULT_Locomotion_THRESHOLD_FRACTION = 3.0
 DEFAULT_CACHE_NAME = "sleep_dendrite_spine_cache.npz"
 DEFAULT_ANALYSIS_TABLES_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_tables.npz"
@@ -88,6 +93,15 @@ ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 2
 ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 2
 SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 1
 REPORT_SIGNIFICANCE_ALPHA = 0.05
+CPU_THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+_CPU_THREAD_LIMIT_CONTROLLER = None
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_DIR = ROOT_DIR / "results" / "main_pipeline"
 DEFAULT_CACHE_DIRNAME = "cache"
@@ -102,6 +116,8 @@ DEFAULT_REVIEW_FIGURES_DIR = ROOT_DIR / DEFAULT_REVIEW_FIGURES_DIRNAME
 MOVIE_TRIAL_TYPES = ["blank", "grating", "zebra", "movies"]
 SLEEP_STATE_LABELS = ["active_awake", "quiet_awake", "nrem", "rem"]
 SPINE_COACTIVITY_ANCHOR_STATE = "quiet_awake_movies"
+SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD = "quiet_awake_movies_selected"
+DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD = 0.05
 MOVIE_TRIAL_TYPE_SUFFIXES = {
     "blank": "blank",
     "grating": "gratings",
@@ -231,6 +247,7 @@ USER_EDITABLE_DEFAULTS = {
     "state_comparison_states": None,
     "basal_apical_states": None,
     "spine_coactivity_anchor_state": "quiet_awake_movies",
+    "spine_coactivity_abs_threshold": DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
     "source_cache_validate": True,
     "fit_spine_coactivity_mixed_model": False,
     "spine_coactivity_only": False,
@@ -243,6 +260,7 @@ USER_EDITABLE_DEFAULTS = {
     "demo": False,
     "channel": DEFAULT_CHANNEL,
     "shuffle_n": DEFAULT_SHUFFLES,
+    "cpu_thread_limit": DEFAULT_CPU_THREAD_LIMIT,
     "high_pass_hz": DEFAULT_HIGH_PASS_HZ,
     "locomotion_threshold": None,
     "rebuild": False,
@@ -2551,6 +2569,60 @@ def build_filtered_spine_coactivity_results(
             "pair_state_rows": [row for row in filtered_pair_state_rows if str(row.get("status")) == "ok"],
         }
     }
+
+
+def _coerce_boolish(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "sig", "significant", "selected", "coactive"}:
+        return True
+    if text in {"0", "false", "no", "n", "ns", "non-significant", "nonsignificant", "not_selected"}:
+        return False
+    return None
+
+
+def spine_coactivity_abs_threshold_from_results(results: Dict[str, Any], default: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD) -> float:
+    for container in (
+        results.get("spine_coactivity", {}).get("selection", {}) if isinstance(results.get("spine_coactivity", {}), dict) else {},
+        results.get("analysis_state_selection", {}) if isinstance(results.get("analysis_state_selection", {}), dict) else {},
+        results.get("run_parameters", {}) if isinstance(results.get("run_parameters", {}), dict) else {},
+        results.get("config", {}) if isinstance(results.get("config", {}), dict) else {},
+    ):
+        value = as_float(container.get("spine_coactivity_abs_threshold"))
+        if value is not None and np.isfinite(value) and float(value) >= 0.0:
+            return float(value)
+    return float(default)
+
+
+def spine_coactivity_anchor_selection_text(abs_threshold: float) -> str:
+    return f"shuffle_significant and abs(coactivity_r) >= {float(abs_threshold):g}"
+
+
+def spine_coactivity_anchor_selection_note(results: Dict[str, Any]) -> str:
+    return spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold_from_results(results))
+
+
+def spine_coactivity_quiet_anchor_selected(row: Dict[str, Any], abs_threshold: Optional[float] = None) -> bool:
+    threshold = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD if abs_threshold is None else float(abs_threshold)
+    if not np.isfinite(threshold) or threshold < 0:
+        threshold = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD
+
+    explicit = _coerce_boolish(row.get(SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD))
+    if explicit is not None:
+        return explicit
+
+    shuffle_significant = _coerce_boolish(row.get("shuffle_significant"))
+    if shuffle_significant is None:
+        shuffle_p = as_float(row.get("shuffle_p"))
+        shuffle_significant = bool(shuffle_p is not None and np.isfinite(shuffle_p) and float(shuffle_p) < REPORT_SIGNIFICANCE_ALPHA)
+
+    coactivity_r = as_float(row.get("coactivity_r"))
+    return bool(shuffle_significant and coactivity_r is not None and np.isfinite(coactivity_r) and abs(float(coactivity_r)) >= threshold)
+
+
 def spine_coactivity_pair_state_scope_name(anchor_state_filter: Optional[str], coactive_only: bool) -> str:
     anchor_text = safe_filename_component(anchor_state_filter) if anchor_state_filter is not None else "all_states"
     coactive_text = "coactive" if coactive_only else "all_pairs"
@@ -3100,6 +3172,48 @@ def mixed_model_contrast_p_label(value: Any) -> str:
     return "shuffle p" if normalize_mixed_model_contrast_p_source(value) == "shuffle" else "classical p"
 
 
+def normalize_non_negative_float(value: Any, default: float, field_name: str) -> float:
+    parsed = as_float(value)
+    if parsed is None:
+        if value is None:
+            parsed = float(default)
+        else:
+            raise SystemExit(f"Invalid {field_name}: {value!r}. Expected a non-negative float.")
+    if not np.isfinite(parsed) or parsed < 0:
+        raise SystemExit(f"Invalid {field_name}: {value!r}. Expected a non-negative float.")
+    return float(parsed)
+
+
+def normalize_positive_int(value: Any, default: int, field_name: str) -> int:
+    parsed = as_int(value)
+    if parsed is None:
+        if value is None:
+            parsed = int(default)
+        else:
+            raise SystemExit(f"Invalid {field_name}: {value!r}. Expected a positive integer.")
+    if parsed <= 0:
+        raise SystemExit(f"Invalid {field_name}: {value!r}. Expected a positive integer.")
+    return int(parsed)
+
+
+def apply_cpu_thread_limit(thread_limit: Any) -> int:
+    """Limit native math-library threads for this process and subprocesses."""
+    global _CPU_THREAD_LIMIT_CONTROLLER
+    limit = normalize_positive_int(thread_limit, DEFAULT_CPU_THREAD_LIMIT, "cpu_thread_limit")
+    for env_var in CPU_THREAD_LIMIT_ENV_VARS:
+        os.environ[env_var] = str(limit)
+    if threadpool_limits is not None:
+        if _CPU_THREAD_LIMIT_CONTROLLER is not None:
+            try:
+                _CPU_THREAD_LIMIT_CONTROLLER.__exit__(None, None, None)
+            except Exception:
+                pass
+        controller = threadpool_limits(limits=limit)
+        controller.__enter__()
+        _CPU_THREAD_LIMIT_CONTROLLER = controller
+    return limit
+
+
 def mixed_model_response_display_label(response: Any) -> str:
     response_text = str(response)
     return {
@@ -3157,11 +3271,19 @@ def _spine_coactivity_pair_state_rows(
         compartment_filter=compartment_filter,
     )
     rows = [row for row in rows if str(row.get("status")) == "ok" and np.isfinite(as_float(row.get("coactivity_r")))]
+    abs_threshold = spine_coactivity_abs_threshold_from_results(results)
+    rows = [dict(row) for row in rows]
+    for row in rows:
+        row[SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD] = spine_coactivity_quiet_anchor_selected(row, abs_threshold)
     if anchor_state_filter is not None:
         anchor_state = canonical_state_label(anchor_state_filter)
         anchor_rows = [row for row in rows if canonical_state_label(row.get("state")) == anchor_state]
         if coactive_only:
-            anchor_pair_ids = {str(row.get("global_pair_id")) for row in anchor_rows if bool(row.get("coactive"))}
+            anchor_pair_ids = {
+                str(row.get("global_pair_id"))
+                for row in anchor_rows
+                if bool(row.get(SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD))
+            }
         else:
             anchor_pair_ids = {str(row.get("global_pair_id")) for row in anchor_rows}
         rows = [row for row in rows if str(row.get("global_pair_id")) in anchor_pair_ids]
@@ -3262,7 +3384,7 @@ def plot_spine_coactivity_distribution_figure(
     if value_key == "coactivity_r":
         active_state = format_requested_state_label(state_filter) if state_filter is not None else None
         active_text = f" | state={active_state}" if active_state is not None else ""
-        active_text += " | coactive pairs" if coactive_only else ""
+        active_text += f" | selected if {spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold_from_results(results))}" if coactive_only else ""
         ax.text(
             0.02,
             0.98,
@@ -3502,7 +3624,7 @@ def plot_spine_coactivity_pair_state_heatmap_figure(
     ax.set_ylim(len(pair_labels) - 0.5, -0.5)
     ax.grid(which="major", color="white", linestyle="-", linewidth=0.6, alpha=0.55)
     anchor_text = f" | anchor={format_requested_state_label(anchor_state_filter)}" if anchor_state_filter is not None else ""
-    active_text = " | coactive pairs" if coactive_only else ""
+    active_text = f" | selected if {spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold_from_results(results))}" if coactive_only else ""
     ax.text(
         0.02,
         0.98,
@@ -3661,10 +3783,12 @@ def plot_spine_coactivity_basal_apical_distribution_figure(
         ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=POSTER_NOTE_SIZE)
     state_text = format_report_list([format_requested_state_label(state) for state in state_labels], max_items=6)
     anchor_text = format_requested_state_label(anchor_state_filter) if anchor_state_filter is not None else "selected states"
+    selection_text = spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold_from_results(results))
+    active_text = f" | selected if {selection_text}" if coactive_only else ""
     ax.text(
         0.02,
         0.98,
-        f"anchor={anchor_text} | selected states={state_text} | n values are spine pairs | coactive pairs only",
+        f"anchor={anchor_text} | selected states={state_text} | n values are spine pairs{active_text}",
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -3757,7 +3881,7 @@ def plot_spine_coactivity_pair_state_summary_figure(
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     anchor_text = f" | anchor={format_requested_state_label(anchor_state_filter)}" if anchor_state_filter is not None else ""
-    active_text = " | coactive pairs" if coactive_only else ""
+    active_text = f" | selected if {spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold_from_results(results))}" if coactive_only else ""
     ax.text(
         0.02,
         0.98,
@@ -7868,6 +7992,7 @@ def run_spine_coactivity_analysis(
     shared_shuffle_cache: Optional[Dict[str, Any]] = None,
     fit_spine_coactivity_mixed_model: bool = False,
     mixed_model_contrast_p_source: str = "classical",
+    spine_coactivity_abs_threshold: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
 ) -> Dict[str, Any]:
     analysis_state_set = list(dict.fromkeys([str(state) for state in (state_comparison_states or []) + (basal_apical_states or [])]))
     if not analysis_state_set:
@@ -7936,6 +8061,10 @@ def run_spine_coactivity_analysis(
         "selection": {
             "state_comparison_states": list(state_comparison_states) if state_comparison_states is not None else list(PRIMARY_QUIET_STATES),
             "basal_apical_states": list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES),
+            "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
+            "spine_coactivity_abs_threshold": float(spine_coactivity_abs_threshold),
+            "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),
+            "spine_coactivity_selection_field": SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD,
         },
     }
     if not fit_spine_coactivity_mixed_model:
@@ -7999,6 +8128,7 @@ def process_spine_coactivity_only(
     figure_root: Optional[Path] = None,
     fit_spine_coactivity_mixed_model: bool = False,
     mixed_model_contrast_p_source: str = "classical",
+    spine_coactivity_abs_threshold: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
 ) -> Dict[str, Any]:
     # Standalone entry point that only builds the spine-coactivity analysis.
     results: Dict[str, Any] = {
@@ -8026,6 +8156,7 @@ def process_spine_coactivity_only(
             shared_shuffle_cache=shared_shuffle_cache,
             fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+            spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
         )
     results["spine_coactivity"] = {k: v for k, v in spine_coactivity_results.items() if k != "model"}
     results["spine_coactivity_model"] = {
@@ -9323,6 +9454,8 @@ def run_mixed_model_analysis(
             "basal_apical_states": list(basal_apical_states),
             "p_value_source": p_value_source,
         },
+        "p_value_source": p_value_source,
+        "p_value_source_requested": p_value_source,
         "all_state": all_state_branch,
         "selected_state": selected_state_branch,
         "validation_rows": list(all_state_branch.get("validation_rows", [])),
@@ -9361,6 +9494,8 @@ def run_mixed_model_analysis(
     def empty_branch(state_pair_states: Sequence[str], basal_apical_state_subset: Sequence[str]) -> Dict[str, Any]:
         return {
             "available": bool(MixedLM is not None),
+            "p_value_source": p_value_source,
+            "p_value_source_requested": p_value_source,
             "summary_rows": {
                 "mean_dendrite_activity": [],
                 "mean_spine_activity_per_dendrite": [],
@@ -9416,6 +9551,7 @@ def run_mixed_model_analysis(
                 shuffle_n,
                 alerts=alerts,
                 state_order=branch_state_order,
+                p_value_source=p_value_source,
             )
             branch["summary_rows"][response].extend(result.get("summary_rows", []))
             branch["contrast_rows"].extend(result.get("contrast_rows", []))
@@ -9522,6 +9658,7 @@ def process_cached_analysis(
     figure_root: Optional[Path] = None,
     fit_spine_coactivity_mixed_model: bool = False,
     mixed_model_contrast_p_source: str = "classical",
+    spine_coactivity_abs_threshold: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
 ) -> Dict[str, Any]:
     # Turn the cached experiments into group summaries, correlations, and matrix comparisons.
     experiments = cache.get("experiments", {})
@@ -9656,6 +9793,7 @@ def process_cached_analysis(
             shared_shuffle_cache=shared_shuffle_cache,
             fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+            spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
         )
     results["spine_coactivity"] = {k: v for k, v in spine_coactivity_results.items() if k != "model"}
     results["spine_coactivity_model"] = {
@@ -10551,12 +10689,15 @@ def write_analysis_report(
     append_kv("analysis_unit", analysis_cache.get("analysis_unit", "source"))
     append_kv("channel", runtime.get("channel", config.get("channel", "n/a")))
     append_kv("shuffle_n", runtime.get("shuffle_n", config.get("shuffle_n", "n/a")))
+    append_kv("cpu_thread_limit", runtime.get("cpu_thread_limit", config.get("cpu_thread_limit", DEFAULT_CPU_THREAD_LIMIT)))
     append_kv("shared_shuffle_cache", shared_shuffle_cache.get("path", "n/a"))
     append_kv("shared_shuffle_cache_reused", shared_shuffle_cache.get("reused", "n/a"))
     append_kv("shared_shuffle_cache_entries", shared_shuffle_cache.get("entry_count", "n/a"))
     append_kv("high_pass_hz", format_report_number(runtime.get("high_pass_hz", config.get("high_pass_hz"))))
     locomotion_threshold = runtime.get("locomotion_threshold", config.get("locomotion_threshold"))
+    spine_coactivity_abs_threshold = runtime.get("spine_coactivity_abs_threshold", config.get("spine_coactivity_abs_threshold", DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD))
     append_kv("locomotion_threshold", "auto" if locomotion_threshold is None else format_report_number(locomotion_threshold))
+    append_kv("spine_coactivity_abs_threshold", f"abs(coactivity_r) >= {format_report_number(spine_coactivity_abs_threshold)}")
     append_kv("movie_expids", format_report_list(config.get("movie_expids")))
     append_kv("sleep_expids", format_report_list(config.get("sleep_expids")))
     append_kv("basal_expids", format_report_list(config.get("basal_expids")))
@@ -10595,6 +10736,7 @@ def write_analysis_report(
     append_kv("mean state agreement", format_report_number(spine_coactivity_summary.get("mean_state_agreement_r")))
     append_kv("mean positive-state fraction", format_report_number(spine_coactivity_summary.get("mean_positive_state_fraction")))
     append_kv("mean profile similarity", format_report_number(spine_coactivity_summary.get("mean_profile_similarity_r")))
+    append_kv("quiet-anchor selection", f"shuffle_significant and abs(coactivity_r) >= {format_report_number(spine_coactivity_abs_threshold)}")
     for row in spine_coactivity_summary.get("compartment_summary_rows", []):
         lines.append(
             f"- {row.get('compartment')}: pairs={row.get('n_pairs', 'n/a')} | animals={row.get('n_animals', 'n/a')} | "
@@ -10664,6 +10806,7 @@ def write_analysis_report(
         "spine coactivity mixed-model p-value source",
         spine_coactivity_summary.get('p_value_source', 'classical') if spine_coactivity_summary.get('model_enabled') else 'disabled',
     )
+    lines.append(f"- quiet-awake-movies anchor selections use shuffle_significant and abs(coactivity_r) >= {format_report_number(spine_coactivity_abs_threshold)}")
     for branch_name, branch_summary in [("all_state", mixed_summary), ("selected_state", mixed_selected_summary)]:
         for response_name, terms in sorted((branch_summary.get("tested_terms_by_response") or {}).items()):
             lines.append(f"- {branch_name} {response_name}: {format_report_list(terms) if terms else 'none'}")
@@ -12003,6 +12146,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for key, value in USER_EDITABLE_DEFAULTS.items():
         if key not in config or config[key] is None:
             config[key] = value
+    cpu_thread_limit = apply_cpu_thread_limit(config.get("cpu_thread_limit"))
     if bool(config.get("demo")) or args.demo:
         # Demo mode first materializes a fake repository, then reroutes the analysis there.
         demo_output_dir = Path(config.get("output_dir")) if config.get("output_dir") else DEFAULT_RESULTS_DIR
@@ -12053,6 +12197,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shuffle_n = int(config.get("shuffle_n") or DEFAULT_SHUFFLES)
         mixed_model_contrast_p_source = normalize_mixed_model_contrast_p_source(config.get("mixed_model_contrast_p_source"))
         high_pass_hz = float(config.get("high_pass_hz") or DEFAULT_HIGH_PASS_HZ)
+        spine_coactivity_abs_threshold = normalize_non_negative_float(
+            config.get("spine_coactivity_abs_threshold"),
+            DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
+            "spine_coactivity_abs_threshold",
+        )
         rebuild = bool(config.get("rebuild"))
         source_cache_validate = bool(config.get("source_cache_validate"))
         source_cache_rebuild = bool(config.get("source_cache_rebuild")) or rebuild
@@ -12123,6 +12272,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_comparison_states": list(state_comparison_states or []),
         "basal_apical_states": list(basal_apical_states or []),
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
+        "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": list(selection_meta.get("movie_trial_types") or []),
         "compare_states": list(selection_meta.get("compare_states") or []) if selection_meta.get("compare_states") is not None else None,
@@ -12167,6 +12317,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 figure_root=figure_output_dir,
                 fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
                 mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
+                spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
             )
         elif bool(config.get("mixed_model_only")):
             results = process_mixed_model_only(
@@ -12190,6 +12341,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 figure_root=figure_output_dir,
                 fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
                 mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
+                spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
             )
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
@@ -12209,8 +12361,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     results["run_parameters"] = {
         "channel": channel,
         "shuffle_n": shuffle_n,
+        "cpu_thread_limit": cpu_thread_limit,
         "high_pass_hz": high_pass_hz,
         "locomotion_threshold": config.get("locomotion_threshold"),
+        "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "rebuild": rebuild,
         "source_cache_rebuild": source_cache_rebuild,
         "analysis_tables_rebuild": analysis_tables_rebuild,
@@ -12235,6 +12389,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "movie_trial_types": selection_meta.get("movie_trial_types"),
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
+        "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
+        "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),
         "state_comparison_states": state_comparison_states,
         "basal_apical_states": basal_apical_states,
         "state_mode_source": selection_meta.get("state_mode_source"),
