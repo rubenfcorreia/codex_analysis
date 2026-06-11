@@ -118,6 +118,10 @@ SLEEP_STATE_LABELS = ["active_awake", "quiet_awake", "nrem", "rem"]
 SPINE_COACTIVITY_ANCHOR_STATE = "quiet_awake_movies"
 SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD = "quiet_awake_movies_selected"
 DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD = 0.05
+VISUAL_RESPONSE_MOVIE_STATE = "quiet_awake_movies"
+VISUAL_RESPONSE_BLANK_STATE = "quiet_awake_blank"
+DEFAULT_DENDRITE_RESPONSE_COHORT = "all"
+DENDRITE_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
 MOVIE_TRIAL_TYPE_SUFFIXES = {
     "blank": "blank",
     "grating": "gratings",
@@ -246,6 +250,7 @@ USER_EDITABLE_DEFAULTS = {
     "movie_trial_types": None,
     "state_comparison_states": None,
     "basal_apical_states": None,
+    "dendrite_response_cohort": DEFAULT_DENDRITE_RESPONSE_COHORT,
     "spine_coactivity_anchor_state": "quiet_awake_movies",
     "spine_coactivity_abs_threshold": DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
     "source_cache_validate": True,
@@ -590,6 +595,179 @@ def flatten_state_summary_values(state_summary: Dict[str, List[float]]) -> np.nd
             if arr.size:
                 flattened.extend(arr.tolist())
     return np.asarray(flattened, dtype=float)
+
+
+def welch_ttest_summary(values_a: Sequence[float], values_b: Sequence[float]) -> Dict[str, Any]:
+    a = np.asarray(values_a, dtype=float)
+    b = np.asarray(values_b, dtype=float)
+    a = a[np.isfinite(a)]
+    b = b[np.isfinite(b)]
+    if a.size < 2 or b.size < 2:
+        return {
+            "available": False,
+            "comparison": "stimulus_vs_blank",
+            "statistic": float("nan"),
+            "raw_pvalue": float("nan"),
+            "adjusted_pvalue": float("nan"),
+            "n_a": int(a.size),
+            "n_b": int(b.size),
+            "significant": False,
+            "star": "",
+        }
+    result = stats.ttest_ind(a, b, equal_var=False, nan_policy="omit")
+    raw_pvalue = float(result.pvalue) if np.isfinite(result.pvalue) else float("nan")
+    return {
+        "available": True,
+        "comparison": "stimulus_vs_blank",
+        "statistic": float(result.statistic),
+        "raw_pvalue": raw_pvalue,
+        "adjusted_pvalue": raw_pvalue,
+        "n_a": int(a.size),
+        "n_b": int(b.size),
+        "significant": False,
+        "star": "",
+    }
+
+
+def apply_bonferroni_correction(test_records: List[Dict[str, Any]]) -> int:
+    valid_records = [record for record in test_records if record.get("available") and np.isfinite(as_float(record.get("raw_pvalue")))]
+    valid_ids = {id(record) for record in valid_records}
+    n_tests = int(len(valid_records))
+    if n_tests == 0:
+        for record in test_records:
+            record["adjusted_pvalue"] = float("nan")
+            record["significant"] = False
+            record["star"] = ""
+        return 0
+    for record in valid_records:
+        raw_pvalue = float(record.get("raw_pvalue"))
+        adjusted_pvalue = min(raw_pvalue * n_tests, 1.0)
+        record["adjusted_pvalue"] = float(adjusted_pvalue)
+        record["significant"] = bool(np.isfinite(adjusted_pvalue) and adjusted_pvalue < REPORT_SIGNIFICANCE_ALPHA)
+        record["star"] = "*" if record["significant"] else ""
+    for record in test_records:
+        if id(record) not in valid_ids:
+            record["adjusted_pvalue"] = float("nan")
+            record["significant"] = False
+            record["star"] = ""
+    return n_tests
+
+
+def classify_visual_responsive_dendrites(
+    cache: Dict[str, Any],
+    movie_state: str = VISUAL_RESPONSE_MOVIE_STATE,
+    blank_state: str = VISUAL_RESPONSE_BLANK_STATE,
+) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    for animal_id, animal_entry in sorted(cache.get("animals", {}).items()):
+        for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
+            movie_values: List[float] = []
+            blank_values: List[float] = []
+            compartments_seen: List[str] = []
+            for exp_id, d_obs in sorted(dendrite_record.get("observations", {}).items()):
+                compartment = observation_compartment(cache, exp_id, d_obs)
+                if compartment is not None:
+                    compartments_seen.append(str(compartment))
+                cut_means = d_obs.get("cut_state_means")
+                if not isinstance(cut_means, dict):
+                    continue
+                movie_value = as_float(cut_means.get(movie_state))
+                blank_value = as_float(cut_means.get(blank_state))
+                if movie_value is None or blank_value is None:
+                    continue
+                if not np.isfinite(movie_value) or not np.isfinite(blank_value):
+                    continue
+                movie_values.append(float(movie_value))
+                blank_values.append(float(blank_value))
+            compartment = None
+            if compartments_seen:
+                unique_compartments = list(dict.fromkeys(compartments_seen))
+                compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
+            test = welch_ttest_summary(movie_values, blank_values)
+            effect_size = float(np.nanmean(movie_values) - np.nanmean(blank_values)) if movie_values and blank_values else float("nan")
+            rows.append(
+                {
+                    "animal_id": animal_id,
+                    "global_dendrite_id": global_dendrite_id,
+                    "compartment": compartment,
+                    "comparison": "visual_response_movie_vs_blank",
+                    "state_a": movie_state,
+                    "state_b": blank_state,
+                    "available": bool(test.get("available", False)),
+                    "n_movie_values": int(len(movie_values)),
+                    "n_blank_values": int(len(blank_values)),
+                    "mean_movie": float(np.nanmean(movie_values)) if movie_values else float("nan"),
+                    "mean_blank": float(np.nanmean(blank_values)) if blank_values else float("nan"),
+                    "effect_size": effect_size,
+                    "raw_pvalue": float(test.get("raw_pvalue", float("nan"))),
+                    "adjusted_pvalue": float(test.get("adjusted_pvalue", float("nan"))),
+                    "significant": bool(test.get("significant", False)),
+                    "responsive": False,
+                    "cohort": "nonresponsive",
+                }
+            )
+    by_compartment: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment in {"basal", "apical"}:
+            by_compartment[compartment].append(row)
+    for compartment, compartment_rows in by_compartment.items():
+        n_tests = apply_bonferroni_correction(compartment_rows)
+        for row in compartment_rows:
+            row["n_tests_corrected"] = int(n_tests)
+            row["responsive"] = bool(row.get("significant", False) and np.isfinite(as_float(row.get("effect_size"))) and float(row.get("effect_size")) > 0)
+            row["cohort"] = "responsive" if row["responsive"] else "nonresponsive"
+    for row in rows:
+        if "n_tests_corrected" not in row:
+            row["n_tests_corrected"] = 0
+            row["responsive"] = False
+            row["cohort"] = "nonresponsive"
+    cohort_ids: Dict[str, Dict[str, List[str]]] = {
+        "basal": {"responsive": [], "nonresponsive": []},
+        "apical": {"responsive": [], "nonresponsive": []},
+    }
+    counts: Dict[str, Dict[str, int]] = {
+        "basal": {"responsive": 0, "nonresponsive": 0, "available": 0, "tested": 0},
+        "apical": {"responsive": 0, "nonresponsive": 0, "available": 0, "tested": 0},
+    }
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment not in cohort_ids:
+            continue
+        counts[compartment]["tested"] += 1
+        if row.get("available"):
+            counts[compartment]["available"] += 1
+        cohort = "responsive" if row.get("responsive") else "nonresponsive"
+        cohort_ids[compartment][cohort].append(str(row.get("global_dendrite_id")))
+        counts[compartment][cohort] += 1
+    for compartment in cohort_ids:
+        for cohort in cohort_ids[compartment]:
+            cohort_ids[compartment][cohort] = sorted(dict.fromkeys(cohort_ids[compartment][cohort]))
+    return {
+        "movie_state": movie_state,
+        "blank_state": blank_state,
+        "comparison": "visual_response_movie_vs_blank",
+        "test_name": "welch_ttest",
+        "correction": "bonferroni",
+        "rows": rows,
+        "cohort_ids": cohort_ids,
+        "counts": counts,
+    }
+
+
+def visual_response_dendrite_ids(
+    response_summary: Dict[str, Any],
+    compartment: str,
+    cohort: str,
+) -> List[str]:
+    cohort_ids = response_summary.get("cohort_ids", {}) if isinstance(response_summary, dict) else {}
+    compartment_entry = cohort_ids.get(compartment, {}) if isinstance(cohort_ids, dict) else {}
+    if isinstance(compartment_entry, dict):
+        ids = compartment_entry.get(cohort, [])
+        if isinstance(ids, (list, tuple)):
+            return [str(dendrite_id) for dendrite_id in ids if str(dendrite_id)]
+    return []
+
 def padded_value_limits(values: Sequence[float]) -> Tuple[float, float]:
     arr = np.asarray(list(values), dtype=float)
     arr = arr[np.isfinite(arr)]
@@ -686,12 +864,18 @@ def summarize_state_values_by_dendrite(
     metric_kind: str,
     state_labels: Sequence[str],
     compartment_filter: Optional[str] = None,
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     by_state: Dict[str, Dict[str, List[float]]] = {}
+    dendrite_id_filter_set = None
+    if dendrite_ids_filter is not None:
+        dendrite_id_filter_set = {str(dendrite_id) for dendrite_id in dendrite_ids_filter if str(dendrite_id)}
     for state_label in state_labels:
         dendrite_values: Dict[str, List[float]] = defaultdict(list)
         for animal_id, animal_entry in cache.get("animals", {}).items():
             for dendrite_id, dendrite_record in animal_entry.get("dendrites", {}).items():
+                if dendrite_id_filter_set is not None and str(dendrite_id) not in dendrite_id_filter_set:
+                    continue
                 observation_values: List[float] = []
                 for exp_id, d_obs in dendrite_record.get("observations", {}).items():
                     d_compartment = observation_compartment(cache, exp_id, d_obs)
@@ -1651,6 +1835,69 @@ def generate_analysis_figures(
             },
         ]
     )
+    visual_response_state_summaries = results.get("dendrite_visual_response_state_summaries", {})
+    visual_response_summary = results.get("dendrite_visual_response", {})
+    if isinstance(visual_response_state_summaries, dict):
+        for cohort in [cohort for cohort in DENDRITE_RESPONSE_COHORTS[1:] if cohort in visual_response_state_summaries]:
+            cohort_results = visual_response_state_summaries.get(cohort, {})
+            if not isinstance(cohort_results, dict):
+                continue
+            cohort_basal_results = cohort_results.get("basal")
+            cohort_apical_results = cohort_results.get("apical")
+            if not isinstance(cohort_basal_results, dict) or not isinstance(cohort_apical_results, dict):
+                continue
+            cohort_title = cohort.capitalize()
+            cohort_filters = {
+                "basal": visual_response_dendrite_ids(visual_response_summary, "basal", cohort),
+                "apical": visual_response_dendrite_ids(visual_response_summary, "apical", cohort),
+            }
+            for compartment, compartment_results in [("basal", cohort_basal_results), ("apical", cohort_apical_results)]:
+                if compartment not in present_compartments:
+                    continue
+                compartment_filter = cohort_filters.get(compartment, [])
+                cohort_metric_rows: List[Dict[str, Any]] = []
+                for metric_name in summary_metrics:
+                    cohort_metric_rows.extend(
+                        pairwise_state_comparisons(
+                            cache,
+                            metric_name,
+                            state_labels,
+                            shuffle_n,
+                            compartment_filter=compartment,
+                            dendrite_ids_filter=compartment_filter,
+                        )
+                    )
+                state_summary_specs.append(
+                    {
+                        "kind": "overview",
+                        "compartment": compartment,
+                        "output_name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}.svg",
+                        "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
+                        "results": compartment_results,
+                        "comparison_rows": cohort_metric_rows,
+                    }
+                )
+            cohort_comparison_rows: List[Dict[str, Any]] = []
+            for metric_name in summary_metrics:
+                for state_label in basal_apical_state_labels:
+                    cohort_comparison_rows.append(
+                        basal_apical_comparison(
+                            cache,
+                            metric_name,
+                            state_label,
+                            shuffle_n,
+                            dendrite_ids_filter_by_compartment=cohort_filters,
+                        )
+                    )
+            state_summary_specs.append(
+                {
+                    "kind": "comparison",
+                    "output_name": f"state_summary_boxplots_basal_vs_apical_{cohort}.svg",
+                    "title": f"Selected-state summary distributions - Basal vs apical ({cohort_title})",
+                    "results": (cohort_basal_results, cohort_apical_results),
+                    "comparison_rows": cohort_comparison_rows,
+                }
+            )
     for plot_idx, spec in enumerate(state_summary_specs, start=1):
         compartment = spec.get("compartment")
         scope_label = gallery_compartment_suffix(compartment) if spec["kind"] == "overview" else "basal_vs_apical"
@@ -1669,6 +1916,7 @@ def generate_analysis_figures(
                         title=spec["title"],
                         state_labels=state_labels,
                         y_limits=y_limits,
+                        comparison_rows=spec.get("comparison_rows"),
                     )
                 else:
                     basal_summary, apical_summary = spec["results"]
@@ -1680,7 +1928,7 @@ def generate_analysis_figures(
                         title=spec["title"],
                         state_labels=basal_apical_state_labels,
                         y_limits=comparison_y_limits,
-                        comparison_rows=[
+                        comparison_rows=spec.get("comparison_rows") if spec.get("comparison_rows") is not None else [
                             row
                             for row in results.get("basal_apical_comparisons", [])
                             if str(row.get("comparison")) == "basal_vs_apical"
@@ -2511,25 +2759,45 @@ def build_state_summary_gallery_results(
     cache: Dict[str, Any],
     state_labels: Sequence[str],
     compartment_filter: Optional[str] = None,
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     return {
         "state_summaries": {
-            "dendrite_mean": summarize_state_values(cache, "dendrite_mean", state_labels, compartment_filter),
-            "spine_specific_mean": summarize_state_values(cache, "spine_specific_mean", state_labels, compartment_filter),
-            "dendrite_event_frequency_per_min": summarize_state_values(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter),
-            "spine_event_frequency_per_min": summarize_state_values(cache, "spine_event_frequency_per_min", state_labels, compartment_filter),
-            "coincident_event_frequency_per_min": summarize_state_values(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter),
-            "noncoincident_event_frequency_per_min": summarize_state_values(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter),
+            "dendrite_mean": summarize_state_values(cache, "dendrite_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter),
+            "spine_specific_mean": summarize_state_values(cache, "spine_specific_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter),
+            "dendrite_event_frequency_per_min": summarize_state_values(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter),
+            "spine_event_frequency_per_min": summarize_state_values(cache, "spine_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter),
+            "coincident_event_frequency_per_min": summarize_state_values(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter),
+            "noncoincident_event_frequency_per_min": summarize_state_values(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter),
         },
         "state_dendrite_summaries": {
-            "dendrite_mean": summarize_state_values_by_dendrite(cache, "dendrite_mean", state_labels, compartment_filter),
-            "spine_specific_mean": summarize_state_values_by_dendrite(cache, "spine_specific_mean", state_labels, compartment_filter),
-            "dendrite_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter),
-            "spine_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "spine_event_frequency_per_min", state_labels, compartment_filter),
-            "coincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter),
-            "noncoincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter),
+            "dendrite_mean": summarize_state_values_by_dendrite(cache, "dendrite_mean", state_labels, compartment_filter, dendrite_ids_filter),
+            "spine_specific_mean": summarize_state_values_by_dendrite(cache, "spine_specific_mean", state_labels, compartment_filter, dendrite_ids_filter),
+            "dendrite_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter),
+            "spine_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "spine_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter),
+            "coincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter),
+            "noncoincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter),
         },
     }
+def build_visual_response_dendrite_summary_results(
+    cache: Dict[str, Any],
+    state_labels: Sequence[str],
+    response_summary: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    cohort_results: Dict[str, Dict[str, Any]] = {}
+    for cohort in DENDRITE_RESPONSE_COHORTS[1:]:
+        cohort_results[cohort] = {}
+        for compartment in ("basal", "apical"):
+            dendrite_ids = visual_response_dendrite_ids(response_summary, compartment, cohort)
+            cohort_results[cohort][compartment] = build_state_summary_gallery_results(
+                cache,
+                state_labels,
+                compartment,
+                dendrite_ids,
+            )
+    return cohort_results
+
+
 def build_filtered_correlation_results(results: Dict[str, Any], compartment_filter: Optional[str] = None) -> Dict[str, Any]:
     return {"correlations": filter_rows_by_compartment(results.get("correlations", []), compartment_filter)}
 def build_filtered_matrix_similarity_results(
@@ -7230,10 +7498,16 @@ def per_experiment_state_metrics(
     state_label: str,
     compartment_filter: Optional[str] = None,
     subject_key: str = "day_id",
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, List[float]]:
     subject_values: Dict[str, List[float]] = defaultdict(list)
+    dendrite_id_filter_set = None
+    if dendrite_ids_filter is not None:
+        dendrite_id_filter_set = {str(dendrite_id) for dendrite_id in dendrite_ids_filter if str(dendrite_id)}
     for animal_id, animal_entry in cache.get("animals", {}).items():
         for dendrite_id, dendrite_record in animal_entry["dendrites"].items():
+            if dendrite_id_filter_set is not None and str(dendrite_id) not in dendrite_id_filter_set:
+                continue
             for exp_id, d_obs in dendrite_record["observations"].items():
                 d_compartment = observation_compartment(cache, exp_id, d_obs)
                 if compartment_filter is not None and d_compartment != compartment_filter:
@@ -7446,10 +7720,18 @@ def summarize_state_values(
     state_labels: Sequence[str],
     compartment_filter: Optional[str] = None,
     subject_key: str = "day_id",
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     by_state: Dict[str, Dict[str, List[float]]] = {}
     for state in state_labels:
-        by_state[state] = per_experiment_state_metrics(cache, metric_kind, state, compartment_filter, subject_key=subject_key)
+        by_state[state] = per_experiment_state_metrics(
+            cache,
+            metric_kind,
+            state,
+            compartment_filter,
+            subject_key=subject_key,
+            dendrite_ids_filter=dendrite_ids_filter,
+        )
     return by_state
 def pairwise_state_comparisons(
     cache: Dict[str, Any],
@@ -7457,8 +7739,16 @@ def pairwise_state_comparisons(
     state_labels: Sequence[str],
     shuffle_n: int,
     compartment_filter: Optional[str] = None,
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
-    values_by_state = summarize_state_values(cache, metric_kind, state_labels, compartment_filter, subject_key="day_id")
+    values_by_state = summarize_state_values(
+        cache,
+        metric_kind,
+        state_labels,
+        compartment_filter,
+        subject_key="day_id",
+        dendrite_ids_filter=dendrite_ids_filter,
+    )
     comparisons: List[Dict[str, Any]] = []
     for state_a, state_b in combinations(state_labels, 2):
         comparisons.append(paired_comparison(values_by_state, state_a, state_b, metric_kind, shuffle_n))
@@ -7468,13 +7758,24 @@ def basal_apical_comparison(
     metric_kind: str,
     state_label: str,
     shuffle_n: int,
+    dendrite_ids_filter_by_compartment: Optional[Dict[str, Sequence[str]]] = None,
 ) -> Dict[str, Any]:
-    basal_values = summarize_state_values(cache, metric_kind, [state_label], compartment_filter="basal", subject_key="day_pair_id")[
-        state_label
-    ]
-    apical_values = summarize_state_values(cache, metric_kind, [state_label], compartment_filter="apical", subject_key="day_pair_id")[
-        state_label
-    ]
+    basal_values = summarize_state_values(
+        cache,
+        metric_kind,
+        [state_label],
+        compartment_filter="basal",
+        subject_key="day_pair_id",
+        dendrite_ids_filter=(dendrite_ids_filter_by_compartment or {}).get("basal"),
+    )[state_label]
+    apical_values = summarize_state_values(
+        cache,
+        metric_kind,
+        [state_label],
+        compartment_filter="apical",
+        subject_key="day_pair_id",
+        dendrite_ids_filter=(dendrite_ids_filter_by_compartment or {}).get("apical"),
+    )[state_label]
     subjects = sorted(set(basal_values).intersection(apical_values))
     if subjects:
         paired_payload = {
@@ -8061,7 +8362,8 @@ def run_spine_coactivity_analysis(
         "selection": {
             "state_comparison_states": list(state_comparison_states) if state_comparison_states is not None else list(PRIMARY_QUIET_STATES),
             "basal_apical_states": list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES),
-            "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
+            "dendrite_response_cohort": config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT),
+        "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
             "spine_coactivity_abs_threshold": float(spine_coactivity_abs_threshold),
             "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),
             "spine_coactivity_selection_field": SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD,
@@ -9684,6 +9986,10 @@ def process_cached_analysis(
     analysis_unit = str(cache.get("analysis_unit", "day"))
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
+    visual_response_summary = classify_visual_responsive_dendrites(cache)
+    visual_response_state_summaries = build_visual_response_dendrite_summary_results(cache, state_comparison_states, visual_response_summary)
+    results["dendrite_visual_response"] = visual_response_summary
+    results["dendrite_visual_response_state_summaries"] = visual_response_state_summaries
     with step_scope("state summary metrics"):
         # Build per-state summaries first because several later outputs reuse the same numbers.
         state_metric_names = [
@@ -12064,6 +12370,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional subset of movie state labels for the basal-vs-apical comparison analysis",
     )
     parser.add_argument(
+        "--dendrite-response-cohort",
+        choices=list(DENDRITE_RESPONSE_COHORTS),
+        help="Select which dendrite cohort to render in poster-ready basal/apical panels: all, responsive, or nonresponsive",
+    )
+    parser.add_argument(
         "--spine-coactivity-anchor-state",
         help="Anchor state used to select spine-pair comparison plots and basal-vs-apical distributions",
     )
@@ -12113,6 +12424,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_trial_types": parse_list_argument(args.movie_trial_types),
         "state_comparison_states": parse_list_argument(args.state_comparison_states),
         "basal_apical_states": parse_list_argument(args.basal_apical_states),
+        "dendrite_response_cohort": args.dendrite_response_cohort,
         "spine_coactivity_anchor_state": args.spine_coactivity_anchor_state,
         "source_cache_validate": False if args.skip_source_cache_validation else None,
         "fit_spine_coactivity_mixed_model": True if args.fit_spine_coactivity_mixed_model else None,
@@ -12388,6 +12700,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_mode": selection_meta.get("state_mode"),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "movie_trial_types": selection_meta.get("movie_trial_types"),
+        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),

@@ -56,6 +56,8 @@ from sleep_dendrite_spine_pipeline import (
     basal_apical_comparison,
     build_filtered_spine_coactivity_results,
     build_state_summary_gallery_results,
+    DEFAULT_DENDRITE_RESPONSE_COHORT,
+    DENDRITE_RESPONSE_COHORTS,
     build_mixed_model_table,
     canonical_state_label,
     color_state_tick_labels,
@@ -86,6 +88,7 @@ from sleep_dendrite_spine_pipeline import (
     state_summary_y_limits,
     summarize_state_values,
     summarize_state_values_by_dendrite,
+    visual_response_dendrite_ids,
     _mixed_model_response_payload,
     _mixed_model_term_component_label,
     _mixed_model_term_interaction_value_label,
@@ -1440,6 +1443,7 @@ def build_spine_coactivity_poster_figure(
         "compare_states": selection_meta.get("compare_states"),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
+        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
         "state_mode_source": selection_meta.get("state_mode_source"),
         "movie_trial_types_source": selection_meta.get("movie_trial_types_source"),
         "alerts": list(selection_meta.get("alerts", [])),
@@ -1615,6 +1619,15 @@ def _coactivity_row_is_significant(row: Dict[str, Any]) -> bool:
 def _global_pair_id(row: Dict[str, Any]) -> str:
     return str(row.get("global_pair_id", row.get("pair_id", "")))
 
+
+def selected_dendrite_response_cohort(results: Dict[str, Any]) -> str:
+    selection = results.get("analysis_state_selection", {})
+    if isinstance(selection, dict):
+        cohort = str(selection.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT)
+        if cohort in DENDRITE_RESPONSE_COHORTS:
+            return cohort
+    return DEFAULT_DENDRITE_RESPONSE_COHORT
+
 def build_figure(
     cache: Dict[str, Any],
     *,
@@ -1636,6 +1649,7 @@ def build_figure(
         "compare_states": selection_meta.get("compare_states"),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
+        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
         "state_mode_source": selection_meta.get("state_mode_source"),
         "movie_trial_types_source": selection_meta.get("movie_trial_types_source"),
         "alerts": list(selection_meta.get("alerts", [])),
@@ -1650,39 +1664,83 @@ def build_figure(
         "dendrite_mean",
         "dendrite_event_frequency_per_min",
     ]
-    basal_state_results = {
-        metric: summarize_state_values_by_dendrite(
-            cache,
-            metric,
-            state_comparison_states,
-            compartment_filter="basal",
-        )
-        for metric in summary_metrics
-    }
+    selected_cohort = selected_dendrite_response_cohort(analysis_results)
+    response_summary = analysis_results.get("dendrite_visual_response", {})
+    response_state_summaries = analysis_results.get("dendrite_visual_response_state_summaries", {})
+    if selected_cohort in {"responsive", "nonresponsive"} and isinstance(response_state_summaries, dict):
+        cohort_filters = {
+            "basal": visual_response_dendrite_ids(response_summary, "basal", selected_cohort),
+            "apical": visual_response_dendrite_ids(response_summary, "apical", selected_cohort),
+        }
+        basal_state_results = {
+            metric: summarize_state_values_by_dendrite(
+                cache,
+                metric,
+                state_comparison_states,
+                compartment_filter="basal",
+                dendrite_ids_filter=cohort_filters["basal"],
+            )
+            for metric in summary_metrics
+        }
+        apical_state_results = {
+            metric: summarize_state_values_by_dendrite(
+                cache,
+                metric,
+                state_comparison_states,
+                compartment_filter="apical",
+                dendrite_ids_filter=cohort_filters["apical"],
+            )
+            for metric in summary_metrics
+        }
+        basal_apical_rows = {
+            metric: [
+                basal_apical_comparison(
+                    cache,
+                    metric,
+                    state_label,
+                    shuffle_n,
+                    dendrite_ids_filter_by_compartment=cohort_filters,
+                )
+                for state_label in state_comparison_states
+            ]
+            for metric in summary_metrics
+        }
+    else:
+        selected_cohort = "all"
+        basal_state_results = {
+            metric: summarize_state_values_by_dendrite(
+                cache,
+                metric,
+                state_comparison_states,
+                compartment_filter="basal",
+            )
+            for metric in summary_metrics
+        }
 
-    apical_state_results = {
-        metric: summarize_state_values_by_dendrite(
-            cache,
-            metric,
-            state_comparison_states,
-            compartment_filter="apical",
-        )
-        for metric in summary_metrics
-    }
-    basal_apical_rows = {
-        metric: [
-            row
-            for row in analysis_results.get("basal_apical_comparisons", [])
-            if str(row.get("comparison")) == "basal_vs_apical"
-            and str(row.get("metric")) == metric
-            and str(row.get("state")) in state_comparison_states
-        ]
-        for metric in summary_metrics
-    }
-    for metric in summary_metrics:
-        if basal_apical_rows.get(metric):
-            continue
-        basal_apical_rows[metric] = build_basal_apical_comparisons(cache, metric, state_comparison_states, shuffle_n)
+        apical_state_results = {
+            metric: summarize_state_values_by_dendrite(
+                cache,
+                metric,
+                state_comparison_states,
+                compartment_filter="apical",
+            )
+            for metric in summary_metrics
+        }
+        basal_apical_rows = {
+            metric: [
+                row
+                for row in analysis_results.get("basal_apical_comparisons", [])
+                if str(row.get("comparison")) == "basal_vs_apical"
+                and str(row.get("metric")) == metric
+                and str(row.get("state")) in state_comparison_states
+            ]
+            for metric in summary_metrics
+        }
+        for metric in summary_metrics:
+            if basal_apical_rows.get(metric):
+                continue
+            basal_apical_rows[metric] = build_basal_apical_comparisons(cache, metric, state_comparison_states, shuffle_n)
+    cohort_suffix = "" if selected_cohort == "all" else f" ({selected_cohort})"
 
     mixed_model_results = analysis_results.get("mixed_model_selected_state", {})
     if not isinstance(mixed_model_results, dict) or not mixed_model_results:
@@ -1734,7 +1792,7 @@ def build_figure(
     draw_state_summary_compartment_comparison_panel(
         axes[0, 0],
         metric_key="dendrite_mean",
-        metric_title="Dendrite mean dF/F",
+        metric_title=f"Dendrite mean dF/F{cohort_suffix}",
         basal_summary=basal_state_results.get("dendrite_mean", {}),
         apical_summary=apical_state_results.get("dendrite_mean", {}),
         state_order=boxplot_state_order,
@@ -1747,7 +1805,7 @@ def build_figure(
     draw_state_summary_compartment_comparison_panel(
         axes[0, 1],
         metric_key="dendrite_event_frequency_per_min",
-        metric_title="Dendrite calcium event frequency (per min)",
+        metric_title=f"Dendrite calcium event frequency (per min){cohort_suffix}",
         basal_summary=basal_state_results.get("dendrite_event_frequency_per_min", {}),
         apical_summary=apical_state_results.get("dendrite_event_frequency_per_min", {}),
         state_order=boxplot_state_order,
