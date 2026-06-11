@@ -742,11 +742,13 @@ def summarize_movie_session(
                     "general_roi_id": roi.get("general_roi_id"),
                     "conversion_index": roi_idx,
                     "t": np.asarray(exp.cut_t, dtype=float),
+                    "trial_t": np.asarray(exp.cut_t, dtype=float),
                     "trace": roi_mean,
                     "std_trace": roi_std,
                     "response_amplitude": roi_response_value,
                     "paired_baseline_values": trial_baseline_values,
                     "paired_stimulus_values": trial_stimulus_values,
+                    "trial_traces": traces,
                 }
             )
         if not roi_means:
@@ -1396,76 +1398,185 @@ def session_summary_panel(ax: Any, t: np.ndarray, summary: Dict[str, Any], label
     ax.set_ylabel("Raw dF/F", fontsize=POSTER_LABEL_SIZE)
     ax.tick_params(labelsize=POSTER_FONT_SIZE)
 
+def collect_movie_dendrite_onset_panels(
+    session_summaries: Sequence[Dict[str, Any]],
+    category_name: str,
+) -> List[Dict[str, Any]]:
+    panels: List[Dict[str, Any]] = []
+    for session_summary in session_summaries:
+        if not session_summary.get("available"):
+            continue
+        exp_id = str(session_summary.get("exp_id") or "session")
+        category_summary = session_summary.get("categories", {}).get(category_name) or {}
+        category_t = np.asarray(category_summary.get("t", []), dtype=float)
+        for roi_trace in category_summary.get("roi_traces", []):
+            trial_traces = [np.asarray(trace, dtype=float) for trace in roi_trace.get("trial_traces", []) if np.asarray(trace, dtype=float).size]
+            if not trial_traces:
+                continue
+            trial_t = np.asarray(roi_trace.get("trial_t", []), dtype=float)
+            ref_t = trial_t if trial_t.size else category_t
+            if ref_t.size == 0:
+                ref_t = np.arange(int(trial_traces[0].size), dtype=float)
+            aligned_trials: List[np.ndarray] = []
+            for trace in trial_traces:
+                source_t = trial_t
+                if source_t.size != trace.size or source_t.size == 0:
+                    source_t = np.arange(int(trace.size), dtype=float)
+                aligned_trials.append(resample_trace_to_axis(source_t, trace, ref_t))
+            mean_trace, _ = trace_mean_and_sem(aligned_trials)
+            if mean_trace.size == 0:
+                continue
+            roi_label = roi_trace.get("general_roi_id")
+            if roi_label in (None, ""):
+                roi_label = roi_trace.get("conversion_index")
+            panels.append(
+                {
+                    "session_exp_id": exp_id,
+                    "roi_label": str(roi_label),
+                    "t": np.asarray(ref_t, dtype=float),
+                    "trial_traces": aligned_trials,
+                    "mean_trace": mean_trace,
+                }
+            )
+    return panels
+
 def plot_movie_compartment_onset_figure(
     output_path: Path,
     group_name: str,
     compartment_name: str,
     category_name: str,
     category_summary: Dict[str, Any],
+    session_summaries: Sequence[Dict[str, Any]],
     group_meta: Dict[str, Any],
 ) -> List[Path]:
     if plt is None:
         return []
 
-    compartment_color = MOVIE_CATEGORY_COLORS[compartment_name]
-    fig, onset_ax = plt.subplots(1, 1, figsize=(6.9, 4.5))
-    mean_trace = np.asarray(category_summary.get("mean_trace", []), dtype=float)
-    std_trace = np.asarray(category_summary.get("std_trace", []), dtype=float)
-    if mean_trace.size == 0:
-        onset_ax.text(0.5, 0.5, f"No data for {category_name}", transform=onset_ax.transAxes, ha="center", va="center", fontsize=POSTER_NOTE_SIZE)
-        onset_ax.set_axis_off()
-    else:
-        roi_traces = category_summary.get("roi_traces", [])
-        n_roi_traces = max(len(roi_traces), 1)
-        if roi_traces:
-            for trace_index, trace_record in enumerate(roi_traces):
-                source_t = np.asarray(trace_record.get("t", []), dtype=float)
-                trace = np.asarray(trace_record.get("trace", []), dtype=float)
-                trace_std = np.asarray(trace_record.get("std_trace", []), dtype=float)
-                if trace.size == 0:
-                    continue
-                if source_t.size != trace.size or source_t.size == 0:
-                    source_t = np.arange(trace.size, dtype=float)
-                mix_with_white = 0.28 + 0.46 * (trace_index / max(n_roi_traces - 1, 1))
-                trace_color = lighten_color(compartment_color, mix_with_white)
-                onset_ax.plot(source_t, trace, color=trace_color, linewidth=1.4, alpha=0.95, zorder=2)
-                if trace_std.size == trace.size and np.any(np.isfinite(trace_std)):
-                    onset_ax.fill_between(source_t, trace - trace_std, trace + trace_std, color="#D0D0D0", alpha=0.50, linewidth=0, zorder=1)
-        else:
-            source_t = np.asarray(category_summary.get("t", []), dtype=float)
-            if source_t.size != mean_trace.size or source_t.size == 0:
-                source_t = np.arange(mean_trace.size, dtype=float)
-            onset_ax.plot(source_t, mean_trace, color=compartment_color, linewidth=2.4, label=compartment_name.capitalize(), zorder=3)
-            if std_trace.size == mean_trace.size:
-                onset_ax.fill_between(source_t, mean_trace - std_trace, mean_trace + std_trace, color="#D0D0D0", alpha=0.55, linewidth=0, zorder=1)
-
-        onset_ax.axvline(0, color="#666666", linestyle="--", linewidth=1.0)
-        onset_ax.text(
-            0.02,
+    def _plot_dendrite_panel(ax: Any, panel: Dict[str, Any], trial_color: str) -> None:
+        t = np.asarray(panel.get("t", []), dtype=float)
+        trial_traces = [np.asarray(trace, dtype=float) for trace in panel.get("trial_traces", []) if np.asarray(trace, dtype=float).size]
+        mean_trace = np.asarray(panel.get("mean_trace", []), dtype=float)
+        if t.size == 0 and trial_traces:
+            t = np.arange(int(trial_traces[0].size), dtype=float)
+        for trace in trial_traces:
+            trace_t = t
+            if trace_t.size != trace.size or trace_t.size == 0:
+                trace_t = np.arange(int(trace.size), dtype=float)
+            ax.plot(trace_t, trace, color=trial_color, linewidth=1.0, alpha=0.55, zorder=1)
+        if mean_trace.size:
+            if t.size != mean_trace.size or t.size == 0:
+                t = np.arange(int(mean_trace.size), dtype=float)
+            ax.plot(t, mean_trace, color="#000000", linewidth=2.4, zorder=3)
+        ax.axvline(0, color="#666666", linestyle="--", linewidth=1.0, zorder=0)
+        ax.text(
+            0.03,
             0.93,
-            f"n={int(category_summary.get('n_rois', 0) or 0)}",
-            transform=onset_ax.transAxes,
+            f"{panel.get('session_exp_id')} {panel.get('roi_label')}",
+            transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=POSTER_NOTE_SIZE - 2,
+            fontsize=POSTER_NOTE_SIZE - 3,
             color="#444444",
         )
+        set_sparse_numeric_ticks(ax, axis="both", nbins=4)
+        ax.tick_params(labelsize=POSTER_FONT_SIZE - 1)
+        ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
+        ax.set_xlabel("Time from stimulus onset (s)", fontsize=POSTER_LABEL_SIZE)
+
+    def _panel_output_path(base_dir: Path, base_stem: str, compartment: str, category: str, panel: Dict[str, Any]) -> Path:
+        session_part = safe_filename_component(str(panel.get("session_exp_id") or "session"))
+        roi_part = safe_filename_component(str(panel.get("roi_label") or "roi"))
+        return base_dir / f"{base_stem}_{compartment}_{category}_movie_onset_{session_part}_{roi_part}.svg"
+
+    compartment_color = MOVIE_CATEGORY_COLORS[compartment_name]
+    trial_color = lighten_color(compartment_color, 0.58)
+    dendrite_panels = collect_movie_dendrite_onset_panels(session_summaries, category_name)
+    mean_trace = np.asarray(category_summary.get("mean_trace", []), dtype=float)
+
+    if not dendrite_panels and mean_trace.size == 0:
+        fig, onset_ax = plt.subplots(1, 1, figsize=(6.9, 4.5))
+        onset_ax.text(0.5, 0.5, f"No data for {category_name}", transform=onset_ax.transAxes, ha="center", va="center", fontsize=POSTER_NOTE_SIZE)
+        onset_ax.set_axis_off()
+        fig.suptitle(
+            f"{compartment_name.capitalize()} {category_name.capitalize()} onset responses",
+            fontsize=POSTER_SUPTITLE_SIZE - 2,
+            y=0.985,
+        )
+        fig.subplots_adjust(left=0.11, right=0.98, bottom=0.14, top=0.88)
+        return save_figure(fig, output_path, dpi=DEFAULT_DPI, extra_formats=("svg",))
+
+    outputs: List[Path] = []
+    base_dir = output_path.parent
+    base_stem = output_path.stem if output_path.suffix else output_path.name
+
+    if dendrite_panels:
+        n_panels = len(dendrite_panels)
+        ncols = 2 if n_panels > 1 else 1
+        nrows = int(np.ceil(n_panels / ncols))
+        fig_width = 7.4 if ncols == 2 else 6.9
+        fig_height = max(2.6 * nrows, 3.2)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height), squeeze=False)
+        axes_flat = axes.ravel()
+        for ax, panel in zip(axes_flat, dendrite_panels):
+            _plot_dendrite_panel(ax, panel, trial_color)
+        for ax in axes_flat[n_panels:]:
+            ax.set_axis_off()
+        handles = [
+            Line2D([0], [0], color="#000000", linewidth=2.4, label="Mean"),
+            Line2D([0], [0], color=trial_color, linewidth=1.0, alpha=0.55, label="Trials"),
+        ]
+        fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, fontsize=POSTER_LEGEND_SIZE, bbox_to_anchor=(0.5, 1.01))
+        fig.suptitle(
+            f"{compartment_name.capitalize()} {category_name.capitalize()} onset responses",
+            fontsize=POSTER_SUPTITLE_SIZE - 2,
+            y=0.985,
+        )
+        fig.subplots_adjust(left=0.11, right=0.98, bottom=0.14, top=0.88)
+        outputs.extend(save_figure(fig, output_path, dpi=DEFAULT_DPI, extra_formats=("svg",)))
+
+        for panel in dendrite_panels:
+            per_panel_output = _panel_output_path(base_dir, base_stem, compartment_name, category_name, panel)
+            fig_panel, ax_panel = plt.subplots(1, 1, figsize=(6.9, 4.5))
+            _plot_dendrite_panel(ax_panel, panel, trial_color)
+            ax_panel.set_title(
+                f"{panel.get('session_exp_id')} {panel.get('roi_label')}",
+                fontsize=POSTER_TITLE_SIZE - 1,
+            )
+            fig_panel.suptitle(
+                f"{compartment_name.capitalize()} {category_name.capitalize()} dendrite onset response",
+                fontsize=POSTER_SUPTITLE_SIZE - 2,
+                y=0.985,
+            )
+            fig_panel.legend(handles=handles, loc="upper center", ncol=2, frameon=False, fontsize=POSTER_LEGEND_SIZE, bbox_to_anchor=(0.5, 1.01))
+            fig_panel.subplots_adjust(left=0.11, right=0.98, bottom=0.14, top=0.88)
+            outputs.extend(save_figure(fig_panel, per_panel_output, dpi=DEFAULT_DPI, extra_formats=("svg",)))
+    else:
+        fig, onset_ax = plt.subplots(1, 1, figsize=(6.9, 4.5))
+        source_t = np.asarray(category_summary.get("t", []), dtype=float)
+        if source_t.size != mean_trace.size or source_t.size == 0:
+            source_t = np.arange(mean_trace.size, dtype=float)
+        onset_ax.plot(source_t, mean_trace, color="#000000", linewidth=2.4, zorder=3)
+        onset_ax.axvline(0, color="#666666", linestyle="--", linewidth=1.0)
+        onset_ax.text(0.02, 0.93, f"n={int(category_summary.get('n_rois', 0) or 0)}", transform=onset_ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 2, color="#444444")
         set_sparse_numeric_ticks(onset_ax, axis="both", nbins=5)
         onset_ax.tick_params(labelsize=POSTER_FONT_SIZE)
         onset_ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
         onset_ax.set_xlabel("Time from stimulus onset (s)", fontsize=POSTER_LABEL_SIZE)
+        handles = [Line2D([0], [0], color="#000000", linewidth=2.4, label="Mean")]
+        fig.legend(handles=handles, loc="upper center", ncol=1, frameon=False, fontsize=POSTER_LEGEND_SIZE, bbox_to_anchor=(0.5, 1.01))
+        fig.suptitle(
+            f"{compartment_name.capitalize()} {category_name.capitalize()} onset responses",
+            fontsize=POSTER_SUPTITLE_SIZE - 2,
+            y=0.985,
+        )
+        fig.subplots_adjust(left=0.11, right=0.98, bottom=0.14, top=0.88)
+        outputs.extend(save_figure(fig, output_path, dpi=DEFAULT_DPI, extra_formats=("svg",)))
 
-    handles = [Line2D([0], [0], color=compartment_color, linewidth=2.4, label=compartment_name.capitalize())]
-    fig.legend(handles=handles, loc="upper center", ncol=1, frameon=False, fontsize=POSTER_LEGEND_SIZE, bbox_to_anchor=(0.5, 1.01))
-    fig.suptitle(
-        f"{compartment_name.capitalize()} {category_name.capitalize()} onset responses",
-        fontsize=POSTER_SUPTITLE_SIZE - 2,
-        y=0.985,
-    )
-    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.14, top=0.88)
-    return save_figure(fig, output_path, dpi=DEFAULT_DPI, extra_formats=("svg",))
+    return outputs
 
 def plot_movie_compartment_boxplot_figure(
+
+
     output_path: Path,
     group_name: str,
     compartment_name: str,
@@ -1569,6 +1680,8 @@ def plot_movie_group_figure(
     group_name: str,
     basal_summary: Dict[str, Any],
     apical_summary: Dict[str, Any],
+    basal_session_summaries: Sequence[Dict[str, Any]],
+    apical_session_summaries: Sequence[Dict[str, Any]],
     group_meta: Dict[str, Any],
 ) -> List[Path]:
     if plt is None:
@@ -1578,13 +1691,14 @@ def plot_movie_group_figure(
     base_stem = output_path.stem if output_path.suffix else output_path.name
     outputs: List[Path] = []
     for compartment_name, compartment_summary in (("basal", basal_summary), ("apical", apical_summary)):
+        session_summaries = basal_session_summaries if compartment_name == "basal" else apical_session_summaries
         for category in MOVIE_CATEGORIES:
             category_summary = compartment_summary.get(category) or {}
             if not category_summary or np.asarray(category_summary.get("mean_trace", []), dtype=float).size == 0:
                 continue
             onset_output = base_dir / f"{base_stem}_{compartment_name}_{category}_movie_onset.svg"
             box_output = base_dir / f"{base_stem}_{compartment_name}_{category}_movie_boxplots.svg"
-            outputs.extend(plot_movie_compartment_onset_figure(onset_output, group_name, compartment_name, category, category_summary, group_meta))
+            outputs.extend(plot_movie_compartment_onset_figure(onset_output, group_name, compartment_name, category, category_summary, session_summaries, group_meta))
             outputs.extend(plot_movie_compartment_boxplot_figure(box_output, group_name, compartment_name, category, category_summary, group_meta))
     return outputs
 
@@ -2119,6 +2233,8 @@ def main() -> None:
             group_name,
             basal_group_summary,
             apical_group_summary,
+            basal_group_sessions,
+            apical_group_sessions,
             group,
         )
         significance_count_paths = plot_movie_significance_counts_figure(
