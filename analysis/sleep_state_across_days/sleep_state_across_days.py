@@ -3533,8 +3533,8 @@ def plot_sleep_state_poster_ready_composite(
             ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=max(8, POSTER_FONT_SIZE - 7), color='#666666')
         if sleep_start_min is not None and np.isfinite(sleep_start_min):
             if sleep_start_min > 0.0:
-                ax.axvspan(0.0, sleep_start_min, color='0.94', alpha=0.55, zorder=0)
-            ax.axvline(sleep_start_min, color='#222222', linestyle='--', linewidth=1.15, alpha=0.98, zorder=7)
+                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
+            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
         ax.set_xlim(0.0, x_max)
         ax.set_ylim(0.0, 1.05)
         ax.grid(axis='y', alpha=0.22)
@@ -4374,7 +4374,10 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
         day_timeline = [summary for summary in exp_summaries if summary.sleep_state_paths][:1]
 
     fig, ax_frac = plt.subplots(2, 2, figsize=(10.8, 8.4), squeeze=False)
-    time_min, profile, sleep_start_min = build_day_timeline_profile(day_timeline)
+    day_summaries = aggregate_day_summaries(exp_summaries)
+    time_s, profile = average_probability_summaries(day_summaries)
+    time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
+    _, _, sleep_start_min = build_day_timeline_profile(day_timeline)
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
@@ -4405,8 +4408,8 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
             ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=max(8, POSTER_FONT_SIZE - 7), color='#666666')
         if sleep_start_min is not None and np.isfinite(sleep_start_min):
             if sleep_start_min > 0.0:
-                ax.axvspan(0.0, sleep_start_min, color='0.94', alpha=0.55, zorder=0)
-            ax.axvline(sleep_start_min, color='#222222', linestyle='--', linewidth=1.15, alpha=0.98, zorder=7)
+                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
+            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
         ax.set_xlim(0.0, x_max)
         ax.set_ylim(0.0, 1.05)
         ax.grid(axis='y', alpha=0.22)
@@ -4441,15 +4444,16 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
         fontsize=max(11, POSTER_LABEL_SIZE - 7),
         linespacing=0.8,
     )
-    fig.text(
-        float(frac_block_x1),
-        float(frac_block_y1) + 0.006,
-        'sleep session starts',
-        ha='right',
-        va='bottom',
-        fontsize=max(8, POSTER_FONT_SIZE - 7),
-        color='#666666',
-    )
+    if sleep_start_min is not None and np.isfinite(sleep_start_min):
+        fig.text(
+            float(frac_block_x1),
+            float(frac_block_y1) + 0.006,
+            'sleep session starts',
+            ha='right',
+            va='bottom',
+            fontsize=max(8, POSTER_FONT_SIZE - 7),
+            color='#666666',
+        )
     fig.suptitle('Sleep-state fractions through experimental time', fontsize=max(22, POSTER_SUPTITLE_SIZE - 2), y=0.985)
     fig.text(
         0.5,
@@ -4465,7 +4469,6 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
         fig.tight_layout(rect=[0.02, 0.02, 0.995, 0.91])
     figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_WITHIN_DAY_FIGURE_DIRNAME / 'overall')
     return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_WITHIN_DAY_FIGURE_STEM}.svg', dpi=POSTER_DPI)
-
 
 def plot_per_animal_stacked_area(animal_id: str, day_summaries: Sequence[SessionSummary], output_dir: Path) -> List[Path]:
     animal_summaries = [summary for summary in day_summaries if str(summary.animal_id) == animal_id]
