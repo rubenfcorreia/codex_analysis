@@ -160,6 +160,8 @@ DEFAULT_MOVIE_PUPIL_STATE_FIGURE_STEM = "movie_pupil_by_state"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME = "movie_pupil_transition"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM = "movie_pupil_transition_delta"
 DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM = "movie_pupil_transition_examples"
+DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_DIRNAME = "per_exp"
+DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM = "movie_pupil_transition_examples_per_exp"
 DEFAULT_MOVIE_VIDEO_TOP_N = 12
 DEFAULT_MOVIE_ONSET_WINDOW_S = 2.0
 DEFAULT_MOVIE_PUPIL_TRANSITION_WINDOW_S = 20.0
@@ -2670,8 +2672,9 @@ def summarize_movie_pupil_transitions(
     movie_exp_summaries: Sequence[SessionSummary],
     repo_base: Path,
     window_s: float = DEFAULT_MOVIE_PUPIL_TRANSITION_WINDOW_S,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     transition_events: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    per_exp_transition_events: Dict[str, Dict[Tuple[str, str], List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     checks: Dict[str, Any] = {
         'n_movie_expids': int(len(movie_exp_summaries)),
         'n_expids_with_pupil': 0,
@@ -2755,6 +2758,7 @@ def summarize_movie_pupil_transitions(
                 'trace_pupil_diameter': trace_pupil,
             }
             transition_events[(from_state, to_state)].append(event_row)
+            per_exp_transition_events[exp_id][(from_state, to_state)].append(event_row)
     summary_rows: List[Dict[str, Any]] = []
     example_rows: List[Dict[str, Any]] = []
     example_traces: List[Dict[str, Any]] = []
@@ -2881,7 +2885,102 @@ def summarize_movie_pupil_transitions(
                     'n_transitions': 0,
                 }
             )
-    return summary_rows, example_rows, example_traces, checks
+    per_exp_example_traces: List[Dict[str, Any]] = []
+    for summary in sorted(movie_exp_summaries, key=lambda s: (str(s.animal_id), str(s.date), str(s.exp_ids[0]) if s.exp_ids else '', str(s.sleep_state_paths[0]) if s.sleep_state_paths else '')):
+        exp_id = str(summary.exp_ids[0]) if summary.exp_ids else ''
+        if not exp_id:
+            continue
+        exp_transition_events = per_exp_transition_events.get(exp_id, {})
+        exp_sample_event = next((event for events in exp_transition_events.values() for event in events), None)
+        exp_animal_id = str(exp_sample_event.get('animal_id', summary.animal_id)) if exp_sample_event is not None else str(summary.animal_id)
+        exp_date = str(exp_sample_event.get('date', summary.date)) if exp_sample_event is not None else str(summary.date)
+        exp_category = str(exp_sample_event.get('category', summary.category)) if exp_sample_event is not None else str(summary.category)
+        exp_traces: List[Dict[str, Any]] = []
+        for transition_rank, (from_state, to_state) in enumerate(DEFAULT_STATE_TRANSITION_ORDER, start=1):
+            events = exp_transition_events.get((from_state, to_state), [])
+            valid_events = [event for event in events if np.isfinite(transition_delta_value(event))]
+            if valid_events:
+                delta_values = [transition_delta_value(event) for event in valid_events]
+                delta_mean, _ = finite_mean_and_sem(delta_values)
+                target_delta = delta_mean if np.isfinite(delta_mean) else float(np.nanmean(np.asarray(delta_values, dtype=float)))
+                representative = min(
+                    valid_events,
+                    key=lambda event: (
+                        abs(float(transition_delta_value(event)) - float(target_delta)) if np.isfinite(transition_delta_value(event)) and np.isfinite(target_delta) else float('inf'),
+                        float(event.get('boundary_time_s', float('inf'))),
+                    ),
+                )
+                exp_traces.append(
+                    {
+                        'transition_rank': transition_rank,
+                        'transition_from': from_state,
+                        'transition_from_display': format_display_state(from_state),
+                        'transition_to': to_state,
+                        'transition_to_display': format_display_state(to_state),
+                        'transition_label': f'{format_display_state(from_state)} → {format_display_state(to_state)}',
+                        'n_transitions': int(len(events)),
+                        'n_valid_transitions': int(len(valid_events)),
+                        'example_exp_id': exp_id,
+                        'animal_id': exp_animal_id,
+                        'date': exp_date,
+                        'category': exp_category,
+                        'boundary_time_s': representative.get('boundary_time_s', ''),
+                        'pre_window_start_s': representative.get('pre_window_start_s', ''),
+                        'pre_window_end_s': representative.get('pre_window_end_s', ''),
+                        'post_window_start_s': representative.get('post_window_start_s', ''),
+                        'post_window_end_s': representative.get('post_window_end_s', ''),
+                        'n_pre_samples': representative.get('n_pre_samples', 0),
+                        'n_post_samples': representative.get('n_post_samples', 0),
+                        'pre_mean_pupil_diameter': representative.get('pre_mean_pupil_diameter', float('nan')),
+                        'post_mean_pupil_diameter': representative.get('post_mean_pupil_diameter', float('nan')),
+                        'delta_pupil_diameter': representative.get('delta_pupil_diameter', float('nan')),
+                        'trace_t_rel_s': np.asarray(representative.get('trace_t_rel_s', []), dtype=float),
+                        'trace_pupil_diameter': np.asarray(representative.get('trace_pupil_diameter', []), dtype=float),
+                        'trace_window_s': float(window_s),
+                        'example_selection': 'closest_to_mean_delta_within_exp',
+                    }
+                )
+            else:
+                exp_traces.append(
+                    {
+                        'transition_rank': transition_rank,
+                        'transition_from': from_state,
+                        'transition_from_display': format_display_state(from_state),
+                        'transition_to': to_state,
+                        'transition_to_display': format_display_state(to_state),
+                        'transition_label': f'{format_display_state(from_state)} → {format_display_state(to_state)}',
+                        'n_transitions': 0,
+                        'n_valid_transitions': 0,
+                        'example_exp_id': exp_id,
+                        'animal_id': exp_animal_id,
+                        'date': exp_date,
+                        'category': exp_category,
+                        'boundary_time_s': '',
+                        'pre_window_start_s': '',
+                        'pre_window_end_s': '',
+                        'post_window_start_s': '',
+                        'post_window_end_s': '',
+                        'n_pre_samples': 0,
+                        'n_post_samples': 0,
+                        'pre_mean_pupil_diameter': float('nan'),
+                        'post_mean_pupil_diameter': float('nan'),
+                        'delta_pupil_diameter': float('nan'),
+                        'trace_t_rel_s': np.asarray([], dtype=float),
+                        'trace_pupil_diameter': np.asarray([], dtype=float),
+                        'trace_window_s': float(window_s),
+                        'example_selection': 'none',
+                    }
+                )
+        per_exp_example_traces.append(
+            {
+                'exp_id': exp_id,
+                'animal_id': exp_animal_id,
+                'date': exp_date,
+                'category': exp_category,
+                'traces': exp_traces,
+            }
+        )
+    return summary_rows, example_rows, example_traces, per_exp_example_traces, checks
 
 
 
@@ -5200,6 +5299,178 @@ def plot_movie_pupil_transition_examples(
 
 
 
+
+
+def plot_movie_pupil_transition_examples_per_exp(
+    per_exp_example_traces: Sequence[Mapping[str, Any]],
+    repo_base: Path,
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    saved_paths: List[Path] = []
+    ordered_groups = [
+        dict(row)
+        for row in sorted(
+            per_exp_example_traces,
+            key=lambda row: (
+                str(row.get('animal_id') or ''),
+                str(row.get('date') or ''),
+                str(row.get('exp_id') or ''),
+            ),
+        )
+    ]
+    for group in ordered_groups:
+        exp_id = str(group.get('exp_id') or '')
+        animal_id = str(group.get('animal_id') or '')
+        date = str(group.get('date') or '')
+        traces = [dict(row) for row in sorted(group.get('traces', []), key=lambda row: int(row.get('transition_rank', 0)))]
+        if not exp_id:
+            continue
+        exp_root = resolve_repo_root(repo_base, animal_id, exp_id)
+        sleep_state_path = exp_root / 'sleep_score' / 'sleep_state.pickle'
+        try:
+            bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+        except Exception:
+            bundle = None
+        fig = plt.figure(figsize=(18.8, 22.0))
+        outer = fig.add_gridspec(4, 3, wspace=0.18, hspace=0.22)
+        pupil_axes: List[Any] = []
+        pupil_limits: List[Tuple[float, float]] = []
+        for index, trace in enumerate(traces):
+            cell = outer[index // 3, index % 3].subgridspec(2, 1, height_ratios=[1.08, 0.92], hspace=0.06)
+            pupil_ax = fig.add_subplot(cell[0, 0])
+            spec_ax = fig.add_subplot(cell[1, 0], sharex=pupil_ax)
+            pupil_axes.append(pupil_ax)
+            title = str(trace.get('transition_label') or '')
+            n_transitions = int(trace.get('n_transitions', 0))
+            delta = as_float(trace.get('delta_pupil_diameter'))
+            delta_text = 'n/a' if delta is None or not np.isfinite(delta) else f'{float(delta):.2f}'
+            pupil_ax.set_title(f'{title}\n n={n_transitions}, Δ={delta_text}', fontsize=max(12, POSTER_TITLE_SIZE - 10), pad=8)
+            times = np.asarray(trace.get('trace_t_rel_s', []), dtype=float)
+            values = np.asarray(trace.get('trace_pupil_diameter', []), dtype=float)
+            window_s = as_float(trace.get('trace_window_s')) or DEFAULT_MOVIE_PUPIL_TRANSITION_WINDOW_S
+            if times.size and values.size and np.any(np.isfinite(values)):
+                from_state = str(trace.get('transition_from') or '')
+                color = DEFAULT_STACKED_STATE_COLORS.get(from_state, '#4C78A8')
+                pupil_ax.axvspan(-window_s, 0.0, color='#4C78A8', alpha=0.06, zorder=0)
+                pupil_ax.axvspan(0.0, window_s, color='#E45756', alpha=0.06, zorder=0)
+                pupil_ax.plot(times, values, color=color, linewidth=1.8, zorder=2)
+                pupil_ax.axvline(0.0, color='#222222', linestyle='--', linewidth=1.4, alpha=0.95, zorder=3)
+                if delta is not None and np.isfinite(delta):
+                    pupil_ax.text(0.02, 0.95, f'Δ={float(delta):.2f}', transform=pupil_ax.transAxes, ha='left', va='top', fontsize=max(9, POSTER_NOTE_SIZE - 6), color='#333333')
+                finite_values = values[np.isfinite(values)]
+                if finite_values.size:
+                    y_min = float(np.nanmin(finite_values))
+                    y_max = float(np.nanmax(finite_values))
+                    if y_min == y_max:
+                        y_max = y_min + 1.0
+                    pad = max(0.5, 0.08 * (y_max - y_min))
+                    pupil_limits.append((y_min - pad, y_max + pad))
+            else:
+                pupil_ax.text(0.5, 0.5, 'No transitions', transform=pupil_ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+                pupil_ax.axvline(0.0, color='#222222', linestyle='--', linewidth=1.4, alpha=0.7, zorder=3)
+            pupil_ax.set_xlim(-window_s, window_s)
+            pupil_ax.grid(alpha=0.18)
+            set_sparse_numeric_ticks(pupil_ax, axis='x', nbins=5)
+            set_sparse_numeric_ticks(pupil_ax, axis='y', nbins=5)
+            pupil_ax.tick_params(axis='both', labelsize=max(9, POSTER_FONT_SIZE - 7))
+            if index % 3 == 0:
+                pupil_ax.set_ylabel('Normalized pupil diameter', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+            else:
+                pupil_ax.set_ylabel('')
+                pupil_ax.tick_params(axis='y', left=False, labelleft=False)
+                pupil_ax.spines['left'].set_visible(False)
+            pupil_ax.tick_params(axis='x', labelbottom=False)
+            pupil_ax.spines['top'].set_visible(False)
+            pupil_ax.spines['right'].set_visible(False)
+
+            boundary_time_s = as_float(trace.get('boundary_time_s'))
+            spectrogram = np.asarray(bundle.get('eeg_spectrogram', []), dtype=float) if bundle is not None else np.asarray([], dtype=float)
+            frequencies = np.asarray(bundle.get('eeg_spectrogram_freqs', []), dtype=float) if bundle is not None else np.asarray([], dtype=float)
+            spectrogram_t = np.asarray(bundle.get('eeg_spectrogram_t', []), dtype=float) if bundle is not None else np.asarray([], dtype=float)
+            if boundary_time_s is not None and np.isfinite(boundary_time_s):
+                spec_start_s = float(boundary_time_s - window_s)
+                spec_end_s = float(boundary_time_s + window_s)
+            else:
+                spec_start_s = -window_s
+                spec_end_s = window_s
+            spectrogram_mask = interval_mask(spectrogram_t, spec_start_s, spec_end_s) if spectrogram_t.size else np.asarray([], dtype=bool)
+            if bundle is not None and spectrogram.ndim == 2 and frequencies.size and spectrogram_t.size and spectrogram_mask.size and np.any(spectrogram_mask):
+                freq_mask = np.isfinite(frequencies) & (frequencies >= 0.0) & (frequencies <= 20.0)
+                if np.any(freq_mask):
+                    spec_band = np.asarray(spectrogram[freq_mask][:, spectrogram_mask], dtype=float)
+                    finite_spec = spec_band[np.isfinite(spec_band)]
+                    if finite_spec.size:
+                        vmin = float(np.percentile(finite_spec, 5.0))
+                        vmax = float(np.percentile(finite_spec, 95.0))
+                    else:
+                        vmin, vmax = -6.0, 0.0
+                    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                        vmin = float(np.nanmin(spec_band)) if np.isfinite(np.nanmin(spec_band)) else -6.0
+                        vmax = vmin + 1.0
+                    spec_t_rel = np.asarray(spectrogram_t[spectrogram_mask], dtype=float) - (float(boundary_time_s) if boundary_time_s is not None and np.isfinite(boundary_time_s) else 0.0)
+                    extent = [float(spec_t_rel[0]), float(spec_t_rel[-1]), float(frequencies[freq_mask][0]), float(frequencies[freq_mask][-1])]
+                    spec_ax.imshow(spec_band, aspect='auto', origin='lower', extent=extent, interpolation='nearest', vmin=vmin, vmax=vmax, cmap='magma')
+                    spec_ax.axvline(0.0, color='#222222', linestyle='--', linewidth=1.2, alpha=0.9, zorder=3)
+                    spec_ax.axvspan(-window_s, 0.0, color='#4C78A8', alpha=0.04, zorder=0)
+                    spec_ax.axvspan(0.0, window_s, color='#E45756', alpha=0.04, zorder=0)
+                    delta_low, delta_high = bundle.get('delta_band', (1.0, 4.0))
+                    theta_low, theta_high = bundle.get('theta_band', (5.0, 10.0))
+                    for y, color in [(delta_low, 'white'), (delta_high, 'white'), (theta_low, 'cyan'), (theta_high, 'cyan')]:
+                        if np.isfinite(y):
+                            spec_ax.axhline(float(y), color=color, linestyle=':', linewidth=1.0, alpha=0.9)
+                else:
+                    render_state_montage_panel(spec_ax, 'No spectrogram available')
+            else:
+                render_state_montage_panel(spec_ax, 'No spectrogram available')
+            spec_ax.set_xlim(-window_s, window_s)
+            spec_ax.set_ylim(0.0, 20.0)
+            spec_ax.grid(alpha=0.12)
+            set_sparse_numeric_ticks(spec_ax, axis='x', nbins=5)
+            set_sparse_numeric_ticks(spec_ax, axis='y', nbins=5)
+            spec_ax.tick_params(axis='both', labelsize=max(9, POSTER_FONT_SIZE - 7))
+            if index % 3 == 0:
+                spec_ax.set_ylabel('EEG frequency (Hz)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+            else:
+                spec_ax.set_ylabel('')
+                spec_ax.tick_params(axis='y', left=False, labelleft=False)
+                spec_ax.spines['left'].set_visible(False)
+            if index // 3 == 3:
+                spec_ax.set_xlabel('Time from transition boundary (s)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+            else:
+                spec_ax.tick_params(axis='x', labelbottom=False)
+            spec_ax.spines['top'].set_visible(False)
+            spec_ax.spines['right'].set_visible(False)
+
+        if pupil_limits:
+            lower = min(limit[0] for limit in pupil_limits)
+            upper = max(limit[1] for limit in pupil_limits)
+            if lower == upper:
+                upper = lower + 1.0
+            for pupil_ax in pupil_axes:
+                pupil_ax.set_ylim(lower, upper)
+
+        fig.suptitle(
+            f'Representative normalized pupil and EEG traces around sleep-state transitions\n{animal_id} | {date} | {exp_id}',
+            fontsize=POSTER_TITLE_SIZE,
+            y=0.99,
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='This figure includes Axes that are not compatible with tight_layout*')
+            fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.965])
+        figure_dir = ensure_dir(
+            output_dir
+            / DEFAULT_FIGURE_DIRNAME
+            / DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME
+            / DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_DIRNAME
+            / safe_filename_component(animal_id)
+            / safe_filename_component(exp_id)
+        )
+        output_stem = f'{safe_filename_component(animal_id)}_{safe_filename_component(exp_id)}_{DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM}'
+        saved_paths.extend(_save_svg_and_png(fig, figure_dir / f'{output_stem}.svg', dpi=POSTER_DPI))
+    return saved_paths
+
 def write_sleep_state_report(
     report_path: Path,
     output_dir: Path,
@@ -5569,6 +5840,7 @@ def write_sleep_state_report(
     lines.append("- pupil diameter is normalized per animal using the mean and standard deviation of that animal's pupil samples across all expIDs; if both eyes are present, the traces are averaged on the shared time base")
     lines.append("- the sleep-state summary reports mean normalized pupil diameter per state, using equal weight per experiment for the pooled summary")
     lines.append("- the transition summary uses the 20 s window before and after each state boundary, with change defined as post minus pre")
+    lines.append("- the per-exp pupil transition figures add the same EEG spectrogram window beneath each normalized pupil trace")
 
     figure_artifacts = list(manifest.get("figure_artifacts", []))
     stacked_area_artifacts = list(manifest.get("stacked_area_artifacts", []))
@@ -5590,6 +5862,7 @@ def write_sleep_state_report(
     movie_pupil_state_artifacts = list(manifest.get("movie_pupil_state_artifacts", []))
     movie_pupil_transition_artifacts = list(manifest.get("movie_pupil_transition_artifacts", []))
     movie_pupil_transition_example_artifacts = list(manifest.get("movie_pupil_transition_example_artifacts", []))
+    movie_pupil_transition_example_per_exp_artifacts = list(manifest.get("movie_pupil_transition_example_per_exp_artifacts", []))
     poster_ready_artifacts = list(manifest.get("poster_ready_artifacts", []))
     render_table(
         "Overall sleep-state composition",
@@ -5665,6 +5938,10 @@ def write_sleep_state_report(
         lines.append("- movie pupil transition example figures")
         for artifact in movie_pupil_transition_example_artifacts:
             lines.append(f"  - {artifact}")
+    if movie_pupil_transition_example_per_exp_artifacts:
+        lines.append("- movie pupil transition example figures per expID")
+        for artifact in movie_pupil_transition_example_per_exp_artifacts:
+            lines.append(f"  - {artifact}")
     if state_montage_artifacts:
         lines.append("- state montage figures")
         for artifact in state_montage_artifacts:
@@ -5677,7 +5954,7 @@ def write_sleep_state_report(
         lines.append("- poster-ready composite")
         for artifact in poster_ready_artifacts:
             lines.append(f"  - {artifact}")
-    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
+    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or movie_pupil_transition_example_per_exp_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
         lines.append("- none")
 
     render_table(
@@ -5990,7 +6267,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_post_clip_wake_rows = summarize_movie_post_clip_wake_groups(movie_trial_rows, 'all')
     movie_prev_group_post_clip_wake_rows, movie_prev_group_post_clip_wake_comparison_rows = summarize_movie_prev_group_post_clip_wake_comparisons(movie_trial_rows)
     movie_pupil_state_by_exp_rows, movie_pupil_state_rows, movie_pupil_state_checks = summarize_movie_pupil_state(pupil_exp_summaries, repo_base)
-    movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(pupil_exp_summaries, repo_base)
+    movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(pupil_exp_summaries, repo_base)
 
     movie_trial_table_path = output_dir / 'movie_trial_level_summary.csv'
     movie_trial_wake_table_path = output_dir / 'movie_trial_wake_summary.csv'
@@ -6356,6 +6633,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_state_artifacts: List[str] = []
     movie_pupil_transition_artifacts: List[str] = []
     movie_pupil_transition_example_artifacts: List[str] = []
+    movie_pupil_transition_example_per_exp_artifacts: List[str] = []
     state_montage_artifacts: List[str] = []
     poster_ready_artifacts: List[str] = []
     sleep_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == "sleep"]
@@ -6430,6 +6708,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_transition_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_examples(movie_pupil_transition_example_traces, output_dir)
     movie_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_pupil_transition_examples_per_exp(movie_pupil_transition_example_per_exp_traces, repo_base, output_dir)
+    movie_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
     for summary in sorted(sleep_exp_summaries, key=lambda s: (str(s.animal_id), str(s.date), str(s.exp_ids[0]) if s.exp_ids else "", str(s.sleep_state_paths[0]) if s.sleep_state_paths else "")):
         saved = plot_state_montage_per_exp(summary, output_dir)
@@ -6464,7 +6744,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_state_artifacts = sorted(set(movie_pupil_state_artifacts))
     movie_pupil_transition_artifacts = sorted(set(movie_pupil_transition_artifacts))
     movie_pupil_transition_example_artifacts = sorted(set(movie_pupil_transition_example_artifacts))
-    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
+    movie_pupil_transition_example_per_exp_artifacts = sorted(set(movie_pupil_transition_example_per_exp_artifacts))
+    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
 
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -6494,6 +6775,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_state_artifacts": movie_pupil_state_artifacts,
         "movie_pupil_transition_artifacts": movie_pupil_transition_artifacts,
         "movie_pupil_transition_example_artifacts": movie_pupil_transition_example_artifacts,
+        "movie_pupil_transition_example_per_exp_artifacts": movie_pupil_transition_example_per_exp_artifacts,
         "all_figure_artifacts": all_figure_artifacts,
         "stacked_area_artifacts": sorted(set(stacked_area_artifacts)),
         "probability_artifacts": sorted(set(probability_artifacts)),
