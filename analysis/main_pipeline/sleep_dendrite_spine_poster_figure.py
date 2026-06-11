@@ -1430,6 +1430,9 @@ def build_spine_coactivity_poster_figure(
     height_cm: float = DEFAULT_SPINE_COACTIVITY_HEIGHT_CM,
 ) -> Tuple[Any, Dict[str, Any], List[str]]:
     config = cache.get("config", {}) if isinstance(cache.get("config", {}), dict) else {}
+    result_selection = results.get("analysis_state_selection", {}) if isinstance(results, dict) else {}
+    if not isinstance(result_selection, dict):
+        result_selection = {}
     movie_expids = config.get("movie_expids")
     sleep_expids = config.get("sleep_expids")
     state_comparison_states, basal_apical_states, selection_meta = resolve_analysis_state_selections(
@@ -1443,7 +1446,7 @@ def build_spine_coactivity_poster_figure(
         "compare_states": selection_meta.get("compare_states"),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
-        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        "dendrite_response_cohort": str((result_selection.get("dendrite_response_cohort") or config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT)),
         "state_mode_source": selection_meta.get("state_mode_source"),
         "movie_trial_types_source": selection_meta.get("movie_trial_types_source"),
         "alerts": list(selection_meta.get("alerts", [])),
@@ -1659,6 +1662,8 @@ def build_figure(
     shuffle_n = int(config.get("shuffle_n", 200) or 200)
 
     analysis_results: Dict[str, Any] = dict(results) if isinstance(results, dict) else poster_common.load_analysis_results_payload()
+    if isinstance(analysis_results.get("analysis_state_selection"), dict):
+        analysis_state_selection["dendrite_response_cohort"] = str(analysis_results["analysis_state_selection"].get("dendrite_response_cohort") or analysis_state_selection["dendrite_response_cohort"])
 
     summary_metrics = [
         "dendrite_mean",

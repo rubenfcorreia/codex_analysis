@@ -8295,13 +8295,16 @@ def run_spine_coactivity_analysis(
     mixed_model_contrast_p_source: str = "classical",
     spine_coactivity_abs_threshold: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
 ) -> Dict[str, Any]:
+    cache_config = cache.get("config", {})
+    if not isinstance(cache_config, dict):
+        cache_config = {}
     analysis_state_set = list(dict.fromkeys([str(state) for state in (state_comparison_states or []) + (basal_apical_states or [])]))
     if not analysis_state_set:
         analysis_state_set = list(PRIMARY_QUIET_STATES)
     analysis_states = [state for state in ALL_REQUESTED_STATES if state in analysis_state_set]
     if not analysis_states:
         analysis_states = list(PRIMARY_QUIET_STATES)
-    rebuild_requested = bool(cache.get("config", {}).get("analysis_tables_rebuild")) or bool(cache.get("config", {}).get("rebuild"))
+    rebuild_requested = bool(cache_config.get("analysis_tables_rebuild")) or bool(cache_config.get("rebuild"))
     cached_table = load_cached_analysis_table(
         cache,
         "spine_coactivity_table",
@@ -8362,8 +8365,8 @@ def run_spine_coactivity_analysis(
         "selection": {
             "state_comparison_states": list(state_comparison_states) if state_comparison_states is not None else list(PRIMARY_QUIET_STATES),
             "basal_apical_states": list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES),
-            "dendrite_response_cohort": config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT),
-        "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
+            "dendrite_response_cohort": cache_config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT),
+            "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
             "spine_coactivity_abs_threshold": float(spine_coactivity_abs_threshold),
             "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),
             "spine_coactivity_selection_field": SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD,
