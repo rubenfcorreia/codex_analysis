@@ -160,9 +160,12 @@ DEFAULT_MOVIE_PUPIL_STATE_FIGURE_STEM = "movie_pupil_by_state"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME = "movie_pupil_transition"
 DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME = "sleep_pupil_transition"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM = "movie_pupil_transition_delta"
+DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_STEM = "sleep_pupil_transition_delta"
 DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM = "movie_pupil_transition_examples"
+DEFAULT_SLEEP_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM = "sleep_pupil_transition_examples"
 DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_DIRNAME = "per_exp"
 DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM = "movie_pupil_transition_examples_per_exp"
+DEFAULT_SLEEP_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM = "sleep_pupil_transition_examples_per_exp"
 DEFAULT_MOVIE_VIDEO_TOP_N = 12
 DEFAULT_MOVIE_ONSET_WINDOW_S = 2.0
 DEFAULT_MOVIE_PUPIL_TRANSITION_WINDOW_S = 20.0
@@ -5196,6 +5199,7 @@ def plot_movie_pupil_transition_summary(
     summary_rows: Sequence[Mapping[str, Any]],
     output_dir: Path,
     figure_dirname: str = DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME,
+    figure_stem: str = DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -5267,7 +5271,7 @@ def plot_movie_pupil_transition_summary(
     ax.set_title('Normalized pupil change by sleep-state transition', fontsize=POSTER_TITLE_SIZE, pad=10)
     fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.96])
     figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / figure_dirname)
-    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+    return _save_svg_and_png(fig, figure_dir / f'{figure_stem}.svg', dpi=POSTER_DPI)
 
 
 
@@ -5275,6 +5279,7 @@ def plot_movie_pupil_transition_examples(
     example_traces: Sequence[Mapping[str, Any]],
     output_dir: Path,
     figure_dirname: str = DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME,
+    figure_stem: str = DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -5323,7 +5328,7 @@ def plot_movie_pupil_transition_examples(
     fig.suptitle('Representative normalized pupil traces around sleep-state transitions', fontsize=POSTER_TITLE_SIZE, y=0.99)
     fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.965])
     figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / figure_dirname)
-    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+    return _save_svg_and_png(fig, figure_dir / f'{figure_stem}.svg', dpi=POSTER_DPI)
 
 
 
@@ -5500,7 +5505,8 @@ def plot_movie_pupil_transition_examples_per_exp(
             / safe_filename_component(animal_id)
             / safe_filename_component(exp_id)
         )
-        output_stem = f'{safe_filename_component(animal_id)}_{safe_filename_component(exp_id)}_{DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM}'
+        output_stem_suffix = str(group.get("output_stem_suffix", DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM))
+        output_stem = f"{safe_filename_component(animal_id)}_{safe_filename_component(exp_id)}_{output_stem_suffix}"
         saved_paths.extend(_save_svg_and_png(fig, figure_dir / f'{output_stem}.svg', dpi=POSTER_DPI))
     return saved_paths
 
@@ -6751,14 +6757,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_state_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_summary(movie_pupil_transition_rows, output_dir)
     movie_pupil_transition_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
-    saved = plot_movie_pupil_transition_summary(sleep_pupil_transition_rows, output_dir, figure_dirname=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME)
+    saved = plot_movie_pupil_transition_summary(sleep_pupil_transition_rows, output_dir, figure_dirname=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME, figure_stem=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_STEM)
     sleep_pupil_transition_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_examples(movie_pupil_transition_example_traces, output_dir)
     movie_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
-    saved = plot_movie_pupil_transition_examples(sleep_pupil_transition_example_traces, output_dir, figure_dirname=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME)
+    saved = plot_movie_pupil_transition_examples(sleep_pupil_transition_example_traces, output_dir, figure_dirname=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME, figure_stem=DEFAULT_SLEEP_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM)
     sleep_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_examples_per_exp(movie_pupil_transition_example_per_exp_traces, repo_base, output_dir)
     movie_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    for group in sleep_pupil_transition_example_per_exp_traces:
+        group['output_stem_suffix'] = DEFAULT_SLEEP_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM
     saved = plot_movie_pupil_transition_examples_per_exp(sleep_pupil_transition_example_per_exp_traces, repo_base, output_dir)
     sleep_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
