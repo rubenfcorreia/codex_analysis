@@ -2554,7 +2554,7 @@ def compute_animal_pupil_normalization(
         if not exp_id:
             continue
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
-        pupil_t, pupil_diameter, pupil_source = load_movie_pupil_series(exp_root)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category)
         if pupil_t is None or pupil_diameter is None or pupil_source is None:
             continue
         values = np.asarray(pupil_diameter, dtype=float).ravel()
@@ -2578,6 +2578,31 @@ def compute_animal_pupil_normalization(
             'n_samples': int(pooled.size),
         }
     return normalization
+
+
+def load_session_pupil_series(exp_root: Path, category: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
+    category = str(category).strip().lower()
+    if category == 'sleep':
+        video_path = find_eye_video_path(exp_root)
+        if video_path is not None:
+            eye_side = infer_eye_side_from_path(video_path)
+            if eye_side is not None:
+                pupil_t, pupil_diameter, pupil_source = load_resampled_eye_pupil_series(exp_root, eye_side)
+                if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
+                    return pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye'
+    movie_loader = load_movie_pupil_series
+    pupil_t, pupil_diameter, pupil_source = movie_loader(exp_root)
+    if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
+        return pupil_t, pupil_diameter, pupil_source
+    if category != 'sleep':
+        video_path = find_eye_video_path(exp_root)
+        if video_path is not None:
+            eye_side = infer_eye_side_from_path(video_path)
+            if eye_side is not None:
+                pupil_t, pupil_diameter, pupil_source = load_resampled_eye_pupil_series(exp_root, eye_side)
+                if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
+                    return pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye'
+    return None, None, None
 
 def summarize_movie_pupil_state(
     movie_exp_summaries: Sequence[SessionSummary],
@@ -2609,7 +2634,7 @@ def summarize_movie_pupil_state(
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
         bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
         state_t, state_values, state_source = load_sleep_state_timeline(bundle)
-        pupil_t, pupil_diameter, pupil_source = load_movie_pupil_series(exp_root)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category)
         if pupil_t is None or pupil_diameter is None or pupil_source is None:
             continue
         checks['n_expids_with_pupil'] += 1
@@ -2699,7 +2724,7 @@ def summarize_movie_pupil_transitions(
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
         bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
         state_t, state_values, state_source = load_sleep_state_timeline(bundle)
-        pupil_t, pupil_diameter, pupil_source = load_movie_pupil_series(exp_root)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category)
         if pupil_t is None or pupil_diameter is None or pupil_source is None:
             continue
         checks['n_expids_with_pupil'] += 1
