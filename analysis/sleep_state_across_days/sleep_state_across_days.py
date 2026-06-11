@@ -158,6 +158,7 @@ DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_STEM = "movie_prev_group_post_clip_wake_up"
 DEFAULT_MOVIE_PUPIL_STATE_FIGURE_DIRNAME = "movie_pupil_state"
 DEFAULT_MOVIE_PUPIL_STATE_FIGURE_STEM = "movie_pupil_by_state"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME = "movie_pupil_transition"
+DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME = "sleep_pupil_transition"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM = "movie_pupil_transition_delta"
 DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM = "movie_pupil_transition_examples"
 DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_DIRNAME = "per_exp"
@@ -5194,6 +5195,7 @@ def plot_movie_pupil_state_summary(
 def plot_movie_pupil_transition_summary(
     summary_rows: Sequence[Mapping[str, Any]],
     output_dir: Path,
+    figure_dirname: str = DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -5264,7 +5266,7 @@ def plot_movie_pupil_transition_summary(
     ax.set_ylabel('Sleep-state transition', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
     ax.set_title('Normalized pupil change by sleep-state transition', fontsize=POSTER_TITLE_SIZE, pad=10)
     fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.96])
-    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME)
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / figure_dirname)
     return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM}.svg', dpi=POSTER_DPI)
 
 
@@ -5272,6 +5274,7 @@ def plot_movie_pupil_transition_summary(
 def plot_movie_pupil_transition_examples(
     example_traces: Sequence[Mapping[str, Any]],
     output_dir: Path,
+    figure_dirname: str = DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -5319,7 +5322,7 @@ def plot_movie_pupil_transition_examples(
             ax.set_xlabel('Time from transition boundary (s)', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
     fig.suptitle('Representative normalized pupil traces around sleep-state transitions', fontsize=POSTER_TITLE_SIZE, y=0.99)
     fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.965])
-    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME)
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / figure_dirname)
     return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM}.svg', dpi=POSTER_DPI)
 
 
@@ -5484,10 +5487,15 @@ def plot_movie_pupil_transition_examples_per_exp(
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', message='This figure includes Axes that are not compatible with tight_layout*')
             fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.965])
+        transition_dirname = (
+            DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME
+            if str(group.get('category') or '').strip().lower() == 'sleep'
+            else DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME
+        )
         figure_dir = ensure_dir(
             output_dir
             / DEFAULT_FIGURE_DIRNAME
-            / DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME
+            / transition_dirname
             / DEFAULT_MOVIE_PUPIL_TRANSITION_PER_EXP_FIGURE_DIRNAME
             / safe_filename_component(animal_id)
             / safe_filename_component(exp_id)
@@ -5609,6 +5617,8 @@ def write_sleep_state_report(
     append_kv("pupil state summary rows", manifest.get("movie_pupil_state_row_count", 0))
     append_kv("pupil transition rows", manifest.get("movie_pupil_transition_row_count", 0))
     append_kv("pupil transition example rows", manifest.get("movie_pupil_transition_example_row_count", 0))
+    append_kv("sleep pupil transition rows", manifest.get("sleep_pupil_transition_row_count", 0))
+    append_kv("sleep pupil transition example rows", manifest.get("sleep_pupil_transition_example_row_count", 0))
     append_kv("movie trial summary CSV", report_relative_path(manifest.get("movie_trial_summary_path"), output_dir))
     append_kv("movie trial wake CSV", report_relative_path(manifest.get("movie_trial_wake_summary_path"), output_dir))
     append_kv("movie video summary CSV", report_relative_path(manifest.get("movie_video_summary_path"), output_dir))
@@ -5624,6 +5634,8 @@ def write_sleep_state_report(
     append_kv("movie pupil state summary CSV", report_relative_path(manifest.get("movie_pupil_state_summary_path"), output_dir))
     append_kv("movie pupil transition summary CSV", report_relative_path(manifest.get("movie_pupil_transition_summary_path"), output_dir))
     append_kv("movie pupil transition examples CSV", report_relative_path(manifest.get("movie_pupil_transition_example_summary_path"), output_dir))
+    append_kv("sleep pupil transition summary CSV", report_relative_path(manifest.get("sleep_pupil_transition_summary_path"), output_dir))
+    append_kv("sleep pupil transition examples CSV", report_relative_path(manifest.get("sleep_pupil_transition_example_summary_path"), output_dir))
     append_kv("movie trial skip CSV", report_relative_path(manifest.get("movie_skip_summary_path"), output_dir))
     append_kv("movie video figures", format_report_list(manifest.get("movie_video_artifacts")))
     append_kv("movie previous-trial comparison figures", format_report_list(manifest.get("movie_prev_group_artifacts")))
@@ -6212,6 +6224,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     movie_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == 'movie']
+    sleep_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == 'sleep']
     pupil_exp_summaries = [summary for summary in exp_summaries if str(summary.category) in {'movie', 'sleep'}]
     movie_trial_rows: List[Dict[str, Any]] = []
     movie_trial_skip_rows: List[Dict[str, Any]] = []
@@ -6292,7 +6305,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_post_clip_wake_rows = summarize_movie_post_clip_wake_groups(movie_trial_rows, 'all')
     movie_prev_group_post_clip_wake_rows, movie_prev_group_post_clip_wake_comparison_rows = summarize_movie_prev_group_post_clip_wake_comparisons(movie_trial_rows)
     movie_pupil_state_by_exp_rows, movie_pupil_state_rows, movie_pupil_state_checks = summarize_movie_pupil_state(pupil_exp_summaries, repo_base)
-    movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(pupil_exp_summaries, repo_base)
+    movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(movie_exp_summaries, repo_base)
+    sleep_pupil_transition_rows, sleep_pupil_transition_example_rows, sleep_pupil_transition_example_traces, sleep_pupil_transition_example_per_exp_traces, sleep_pupil_transition_checks = summarize_movie_pupil_transitions(sleep_exp_summaries, repo_base)
 
     movie_trial_table_path = output_dir / 'movie_trial_level_summary.csv'
     movie_trial_wake_table_path = output_dir / 'movie_trial_wake_summary.csv'
@@ -6310,6 +6324,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_state_table_path = output_dir / 'movie_pupil_state_summary.csv'
     movie_pupil_transition_table_path = output_dir / 'movie_pupil_transition_summary.csv'
     movie_pupil_transition_example_table_path = output_dir / 'movie_pupil_transition_examples.csv'
+    sleep_pupil_transition_table_path = output_dir / 'sleep_pupil_transition_summary.csv'
+    sleep_pupil_transition_example_table_path = output_dir / 'sleep_pupil_transition_examples.csv'
 
     movie_trial_fieldnames = [
         'scope',
@@ -6639,6 +6655,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_csv_rows(movie_pupil_state_table_path, movie_pupil_state_rows, fieldnames=movie_pupil_state_fieldnames)
     write_csv_rows(movie_pupil_transition_table_path, movie_pupil_transition_rows, fieldnames=movie_pupil_transition_fieldnames)
     write_csv_rows(movie_pupil_transition_example_table_path, movie_pupil_transition_example_rows, fieldnames=movie_pupil_transition_example_fieldnames)
+    write_csv_rows(sleep_pupil_transition_table_path, sleep_pupil_transition_rows, fieldnames=movie_pupil_transition_fieldnames)
+    write_csv_rows(sleep_pupil_transition_example_table_path, sleep_pupil_transition_example_rows, fieldnames=movie_pupil_transition_example_fieldnames)
 
     figure_artifacts: List[str] = []
     stacked_area_artifacts: List[str] = []
@@ -6659,9 +6677,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_transition_artifacts: List[str] = []
     movie_pupil_transition_example_artifacts: List[str] = []
     movie_pupil_transition_example_per_exp_artifacts: List[str] = []
+    sleep_pupil_transition_artifacts: List[str] = []
+    sleep_pupil_transition_example_artifacts: List[str] = []
+    sleep_pupil_transition_example_per_exp_artifacts: List[str] = []
     state_montage_artifacts: List[str] = []
     poster_ready_artifacts: List[str] = []
-    sleep_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == "sleep"]
     per_animal_rows = group_rows_by_animal(day_rows)
     for animal_id, animal_rows in per_animal_rows.items():
         for metric_name, metric_label, _ in DEFAULT_METRIC_SPECS:
@@ -6731,10 +6751,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_state_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_summary(movie_pupil_transition_rows, output_dir)
     movie_pupil_transition_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_pupil_transition_summary(sleep_pupil_transition_rows, output_dir, figure_dirname=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME)
+    sleep_pupil_transition_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_examples(movie_pupil_transition_example_traces, output_dir)
     movie_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_pupil_transition_examples(sleep_pupil_transition_example_traces, output_dir, figure_dirname=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME)
+    sleep_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_examples_per_exp(movie_pupil_transition_example_per_exp_traces, repo_base, output_dir)
     movie_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_pupil_transition_examples_per_exp(sleep_pupil_transition_example_per_exp_traces, repo_base, output_dir)
+    sleep_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
     for summary in sorted(sleep_exp_summaries, key=lambda s: (str(s.animal_id), str(s.date), str(s.exp_ids[0]) if s.exp_ids else "", str(s.sleep_state_paths[0]) if s.sleep_state_paths else "")):
         saved = plot_state_montage_per_exp(summary, output_dir)
@@ -6770,7 +6796,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_transition_artifacts = sorted(set(movie_pupil_transition_artifacts))
     movie_pupil_transition_example_artifacts = sorted(set(movie_pupil_transition_example_artifacts))
     movie_pupil_transition_example_per_exp_artifacts = sorted(set(movie_pupil_transition_example_per_exp_artifacts))
-    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
+    sleep_pupil_transition_artifacts = sorted(set(sleep_pupil_transition_artifacts))
+    sleep_pupil_transition_example_artifacts = sorted(set(sleep_pupil_transition_example_artifacts))
+    sleep_pupil_transition_example_per_exp_artifacts = sorted(set(sleep_pupil_transition_example_per_exp_artifacts))
+    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + sleep_pupil_transition_artifacts + sleep_pupil_transition_example_artifacts + sleep_pupil_transition_example_per_exp_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
 
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -6801,6 +6830,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_transition_artifacts": movie_pupil_transition_artifacts,
         "movie_pupil_transition_example_artifacts": movie_pupil_transition_example_artifacts,
         "movie_pupil_transition_example_per_exp_artifacts": movie_pupil_transition_example_per_exp_artifacts,
+        "sleep_pupil_transition_artifacts": sleep_pupil_transition_artifacts,
+        "sleep_pupil_transition_example_artifacts": sleep_pupil_transition_example_artifacts,
+        "sleep_pupil_transition_example_per_exp_artifacts": sleep_pupil_transition_example_per_exp_artifacts,
         "all_figure_artifacts": all_figure_artifacts,
         "stacked_area_artifacts": sorted(set(stacked_area_artifacts)),
         "probability_artifacts": sorted(set(probability_artifacts)),
@@ -6832,10 +6864,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_state_expids_with_state_and_pupil": int(movie_pupil_state_checks.get('n_expids_with_state_and_pupil', 0)),
         "movie_pupil_transition_expids_with_pupil": int(movie_pupil_transition_checks.get('n_expids_with_pupil', 0)),
         "movie_pupil_transition_expids_with_state_and_pupil": int(movie_pupil_transition_checks.get('n_expids_with_state_and_pupil', 0)),
+        "sleep_pupil_transition_expids_with_pupil": int(sleep_pupil_transition_checks.get('n_expids_with_pupil', 0)),
+        "sleep_pupil_transition_expids_with_state_and_pupil": int(sleep_pupil_transition_checks.get('n_expids_with_state_and_pupil', 0)),
         "movie_pupil_state_by_exp_row_count": len(movie_pupil_state_by_exp_rows),
         "movie_pupil_state_row_count": len(movie_pupil_state_rows),
         "movie_pupil_transition_row_count": len(movie_pupil_transition_rows),
         "movie_pupil_transition_example_row_count": len(movie_pupil_transition_example_rows),
+        "sleep_pupil_transition_row_count": len(sleep_pupil_transition_rows),
+        "sleep_pupil_transition_example_row_count": len(sleep_pupil_transition_example_rows),
         "within_day_fraction_row_count": len(day_summaries),
         "movie_trial_skip_count": len(movie_trial_skip_rows),
         "movie_trial_exp_checks": movie_trial_exp_checks,
@@ -6853,6 +6889,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_state_summary_rows": movie_pupil_state_rows,
         "movie_pupil_transition_summary_rows": movie_pupil_transition_rows,
         "movie_pupil_transition_example_rows": movie_pupil_transition_example_rows,
+        "sleep_pupil_transition_summary_rows": sleep_pupil_transition_rows,
+        "sleep_pupil_transition_example_rows": sleep_pupil_transition_example_rows,
         "movie_trial_skip_rows": movie_trial_skip_rows,
         "rem_fraction_rows": rem_analysis.get("fraction_curve_rows", []),
         "rem_table_artifacts": [
@@ -6879,6 +6917,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             report_relative_path(movie_pupil_state_table_path, output_dir),
             report_relative_path(movie_pupil_transition_table_path, output_dir),
             report_relative_path(movie_pupil_transition_example_table_path, output_dir),
+            report_relative_path(sleep_pupil_transition_table_path, output_dir),
+            report_relative_path(sleep_pupil_transition_example_table_path, output_dir),
             report_relative_path(movie_skip_table_path, output_dir),
             report_relative_path(rem_exp_table_path, output_dir),
             report_relative_path(rem_day_table_path, output_dir),
@@ -6902,6 +6942,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_state_summary_path": report_relative_path(movie_pupil_state_table_path, output_dir),
         "movie_pupil_transition_summary_path": report_relative_path(movie_pupil_transition_table_path, output_dir),
         "movie_pupil_transition_example_summary_path": report_relative_path(movie_pupil_transition_example_table_path, output_dir),
+        "sleep_pupil_transition_summary_path": report_relative_path(sleep_pupil_transition_table_path, output_dir),
+        "sleep_pupil_transition_example_summary_path": report_relative_path(sleep_pupil_transition_example_table_path, output_dir),
         "movie_skip_summary_path": report_relative_path(movie_skip_table_path, output_dir),
         "rem_exp_transition_summary_path": report_relative_path(rem_exp_table_path, output_dir),
         "rem_day_transition_summary_path": report_relative_path(rem_day_table_path, output_dir),
