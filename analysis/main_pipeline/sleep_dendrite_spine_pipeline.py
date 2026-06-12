@@ -111,6 +111,7 @@ DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
 DEFAULT_MIXED_MODEL_FIGURES_DIRNAME = "mixed_model"
 DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
 DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME = "direct_trial_type_comparison"
+DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME = "event_examples"
 DEFAULT_REVIEW_FIGURES_DIR = ROOT_DIR / DEFAULT_REVIEW_FIGURES_DIRNAME
 # These labels are reused everywhere so the cache, analysis, and plots stay aligned.
 MOVIE_TRIAL_TYPES = ["blank", "grating", "zebra", "movies"]
@@ -1524,6 +1525,298 @@ def plot_basal_apical_summary(results: Dict[str, Any], fig_dir: Path) -> Optiona
     set_sparse_numeric_ticks(ax, axis="y", nbins=5)
     output_path = fig_dir / "basal_apical_summary.svg"
     save_figure(fig, output_path, extra_formats=())
+    plt.close(fig)
+    return str(output_path)
+
+
+def _event_detection_run_bounds(time: np.ndarray, run: Tuple[int, int], pad_seconds: float = 2.0) -> Tuple[int, int]:
+    trace_length = int(np.asarray(time, dtype=float).size)
+    if trace_length <= 0:
+        return 0, 0
+    start, end = int(run[0]), int(run[1])
+    if start >= end:
+        return max(0, min(start, trace_length)), max(0, min(end, trace_length))
+    step_seconds = estimate_trace_step_seconds(time)
+    if np.isfinite(step_seconds) and step_seconds > 0:
+        pad_frames = max(5, int(round(pad_seconds / step_seconds)))
+    else:
+        pad_frames = max(5, int(round(max(0.1 * trace_length, 10))))
+    return max(0, start - pad_frames), min(trace_length, end + pad_frames)
+
+
+def _add_event_run_spans(
+    ax: Any,
+    time: np.ndarray,
+    runs: Sequence[Tuple[int, int]],
+    *,
+    color: str,
+    alpha: float,
+    zorder: float,
+) -> None:
+    if time.size == 0:
+        return
+    for start, end in runs:
+        start = int(start)
+        end = int(end)
+        if start < 0 or end <= start or start >= time.size:
+            continue
+        end_index = min(end - 1, time.size - 1)
+        ax.axvspan(time[start], time[end_index], color=color, alpha=alpha, zorder=zorder)
+
+
+def _build_event_detection_example_figure(
+    *,
+    time: np.ndarray,
+    trace: np.ndarray,
+    event_info: Dict[str, Any],
+    title: str,
+    trace_label: str,
+    trace_kind: str,
+    dendrite_event_info: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    if plt is None:
+        return None
+    time = np.asarray(time, dtype=float).ravel()
+    trace = np.asarray(trace, dtype=float).ravel()
+    if time.size != trace.size:
+        time = np.arange(trace.size, dtype=float)
+    valid = np.isfinite(time) & np.isfinite(trace)
+    if not np.any(valid):
+        return None
+    event_info = event_info or {}
+    dendrite_event_info = dendrite_event_info or {}
+    threshold = as_float(event_info.get("threshold"))
+    event_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
+    dendrite_event_runs = [(int(start), int(end)) for start, end in (dendrite_event_info.get("event_runs") or [])]
+    coincident_event_runs = [(int(start), int(end)) for start, end in (event_info.get("coincident_event_runs") or [])]
+    noncoincident_event_runs = [(int(start), int(end)) for start, end in (event_info.get("noncoincident_event_runs") or [])]
+    zoom_runs = event_runs if event_runs else [None]
+    n_zoom = len(zoom_runs)
+    base_height = 4.25 + 1.4 * float(n_zoom)
+    fig = plt.figure(figsize=(10.8, min(max(base_height, 6.2), 26.0)))
+    from matplotlib import gridspec
+    from matplotlib.patches import Patch
+
+    gs = gridspec.GridSpec(2 + n_zoom, 1, figure=fig, height_ratios=[1.15, 1.0] + [0.95] * n_zoom, hspace=0.58)
+    trace_color = "#4477aa" if trace_kind == "dendrite" else "#7a5195"
+    line_color = trace_color if trace_kind == "dendrite" else "#dd8452"
+
+    top_ax = fig.add_subplot(gs[0, 0])
+    top_ax.plot(time[valid], trace[valid], color=line_color, linewidth=1.2, label=trace_label)
+    if np.isfinite(threshold):
+        top_ax.axhline(threshold, color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold")
+    top_ax.set_title(title, fontsize=POSTER_TITLE_SIZE)
+    top_ax.set_ylabel(trace_label, fontsize=POSTER_LABEL_SIZE)
+    top_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    top_ax.grid(alpha=0.2)
+    top_ax.legend(frameon=False, fontsize=POSTER_LEGEND_SIZE, loc="upper right")
+    set_sparse_numeric_ticks(top_ax, axis="both", nbins=5)
+
+    overview_ax = fig.add_subplot(gs[1, 0])
+    overview_ax.plot(time[valid], trace[valid], color=line_color, linewidth=1.0, alpha=0.9, label=trace_label)
+    if np.isfinite(threshold):
+        overview_ax.axhline(threshold, color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold", zorder=4)
+    overview_ax.axhline(0.0, color="#444444", linewidth=0.8, zorder=3)
+    if trace_kind == "spine" and dendrite_event_runs:
+        _add_event_run_spans(overview_ax, time, dendrite_event_runs, color="#4c78a8", alpha=0.08, zorder=1)
+        _add_event_run_spans(overview_ax, time, noncoincident_event_runs, color="#f58518", alpha=0.12, zorder=2)
+        _add_event_run_spans(overview_ax, time, coincident_event_runs, color="#d62728", alpha=0.16, zorder=3)
+    else:
+        _add_event_run_spans(overview_ax, time, event_runs, color=trace_color, alpha=0.14, zorder=2)
+    overview_ax.set_ylabel(trace_label, fontsize=POSTER_LABEL_SIZE)
+    overview_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    overview_ax.grid(alpha=0.2)
+    overview_ax.set_title("Detected event runs", fontsize=POSTER_TITLE_SIZE)
+    set_sparse_numeric_ticks(overview_ax, axis="both", nbins=5)
+    summary_bits = [f"events={len(event_runs)}"]
+    if trace_kind == "spine":
+        summary_bits.append(f"coincident={len(coincident_event_runs)}")
+        summary_bits.append(f"noncoincident={len(noncoincident_event_runs)}")
+    summary_text = " | ".join(summary_bits)
+    overview_ax.text(
+        0.01,
+        0.98,
+        summary_text,
+        transform=overview_ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=POSTER_FONT_SIZE,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.8),
+    )
+    legend_handles = [
+        Line2D([], [], color=line_color, linewidth=1.2, label=trace_label),
+        Line2D([], [], color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold"),
+    ]
+    if trace_kind == "spine" and dendrite_event_runs:
+        legend_handles.extend(
+            [
+                Patch(facecolor="#4c78a8", edgecolor="none", alpha=0.18, label="Dendrite event"),
+                Patch(facecolor="#f58518", edgecolor="none", alpha=0.18, label="Spine event (noncoincident)"),
+                Patch(facecolor="#d62728", edgecolor="none", alpha=0.18, label="Spine event (coincident)"),
+            ]
+        )
+    else:
+        legend_handles.append(Patch(facecolor=trace_color, edgecolor="none", alpha=0.18, label="Detected event"))
+    overview_ax.legend(handles=legend_handles, frameon=False, fontsize=POSTER_LEGEND_SIZE, loc="upper right")
+
+    for zoom_idx, run in enumerate(zoom_runs, start=1):
+        zoom_ax = fig.add_subplot(gs[1 + zoom_idx, 0])
+        if run is None:
+            zoom_ax.text(0.5, 0.5, "No qualifying events detected", transform=zoom_ax.transAxes, ha="center", va="center", fontsize=POSTER_LABEL_SIZE)
+            zoom_ax.set_axis_off()
+            continue
+        zoom_start, zoom_end = _event_detection_run_bounds(time, run)
+        zoom_slice = slice(zoom_start, zoom_end)
+        zoom_time = time[zoom_slice]
+        zoom_trace = trace[zoom_slice]
+        zoom_valid = np.isfinite(zoom_time) & np.isfinite(zoom_trace)
+        if np.any(zoom_valid):
+            zoom_ax.plot(zoom_time[zoom_valid], zoom_trace[zoom_valid], color=line_color, linewidth=1.15, label=trace_label)
+        if np.isfinite(threshold):
+            zoom_ax.axhline(threshold, color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold")
+        if trace_kind == "spine" and dendrite_event_runs:
+            _add_event_run_spans(zoom_ax, time, dendrite_event_runs, color="#4c78a8", alpha=0.06, zorder=1)
+            if run in coincident_event_runs:
+                _add_event_run_spans(zoom_ax, time, [run], color="#d62728", alpha=0.22, zorder=3)
+                run_label = f"Coincident event {zoom_idx}"
+            else:
+                _add_event_run_spans(zoom_ax, time, [run], color="#f58518", alpha=0.22, zorder=3)
+                run_label = f"Noncoincident event {zoom_idx}"
+        else:
+            _add_event_run_spans(zoom_ax, time, [run], color=trace_color, alpha=0.22, zorder=3)
+            run_label = f"Event {zoom_idx}"
+        if np.any(zoom_valid):
+            y_values = zoom_trace[zoom_valid]
+            y_min = float(np.nanmin(y_values))
+            y_max = float(np.nanmax(y_values))
+            if np.isfinite(threshold):
+                y_min = min(y_min, float(threshold))
+                y_max = max(y_max, float(threshold))
+            if y_min == y_max:
+                pad = 0.1 if y_min == 0 else max(0.05 * abs(y_min), 0.05)
+            else:
+                pad = max(0.08 * (y_max - y_min), 0.05)
+            zoom_ax.set_ylim(y_min - pad, y_max + pad)
+        if zoom_time.size > 0:
+            zoom_ax.set_xlim(float(zoom_time[0]), float(zoom_time[-1]))
+        zoom_ax.set_ylabel(trace_label, fontsize=POSTER_LABEL_SIZE)
+        zoom_ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
+        zoom_ax.set_title(run_label, fontsize=POSTER_TITLE_SIZE)
+        zoom_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+        zoom_ax.grid(alpha=0.2)
+        set_sparse_numeric_ticks(zoom_ax, axis="both", nbins=5)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.985])
+    return fig
+
+
+def plot_event_detection_example_figure(
+    *,
+    output_path: Path,
+    time: np.ndarray,
+    trace: np.ndarray,
+    event_info: Dict[str, Any],
+    title: str,
+    trace_label: str,
+    trace_kind: str,
+    dendrite_event_info: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    if plt is None:
+        return None
+    fig = _build_event_detection_example_figure(
+        time=time,
+        trace=trace,
+        event_info=event_info,
+        title=title,
+        trace_label=trace_label,
+        trace_kind=trace_kind,
+        dendrite_event_info=dendrite_event_info,
+    )
+    if fig is None:
+        return None
+    output_path = Path(output_path)
+    ensure_dir(output_path.parent)
+    try:
+        save_figure(fig, output_path, extra_formats=())
+    finally:
+        plt.close(fig)
+    return str(output_path)
+
+
+def generate_event_detection_example_gallery(cache: Dict[str, Any], fig_dir: Path) -> List[str]:
+    if plt is None:
+        return []
+    event_root = ensure_dir(Path(fig_dir))
+    saved: List[str] = []
+    jobs: List[Dict[str, Any]] = []
+    for animal_id in sorted(cache.get("animals", {})):
+        animal_entry = cache.get("animals", {}).get(animal_id, {})
+        for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
+            for day_id, d_obs in sorted(dendrite_record.get("observations", {}).items()):
+                compartment = observation_compartment(cache, day_id, d_obs)
+                jobs.append(
+                    {
+                        "kind": "dendrite",
+                        "animal_id": animal_id,
+                        "day_id": d_obs.get("day_id") or d_obs.get("exp_id") or day_id,
+                        "compartment": compartment,
+                        "global_dendrite_id": global_dendrite_id,
+                        "global_spine_id": None,
+                        "time": d_obs.get("time"),
+                        "trace": d_obs.get("trace"),
+                        "event_info": d_obs.get("event_info") or {},
+                        "dendrite_event_info": None,
+                        "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} - event detection",
+                        "trace_label": "Dendrite dF/F",
+                    }
+                )
+                for global_spine_id, spine_record in sorted(dendrite_record.get("spines", {}).items()):
+                    s_obs = spine_record.get("observations", {}).get(day_id)
+                    if s_obs is None:
+                        continue
+                    compartment = observation_compartment(cache, day_id, s_obs)
+                    spine_specific = s_obs.get("spine_specific")
+                    trace = spine_specific if spine_specific is not None else s_obs.get("trace_hp", s_obs.get("trace"))
+                    jobs.append(
+                        {
+                            "kind": "spine",
+                            "animal_id": animal_id,
+                            "day_id": s_obs.get("day_id") or s_obs.get("exp_id") or day_id,
+                            "compartment": compartment,
+                            "global_dendrite_id": global_dendrite_id,
+                            "global_spine_id": global_spine_id,
+                            "time": s_obs.get("time"),
+                            "trace": trace,
+                            "event_info": s_obs.get("event_info") or {},
+                            "dendrite_event_info": s_obs.get("dendrite_event_info") or d_obs.get("event_info") or {},
+                            "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} / {safe_filename_component(global_spine_id)} - event detection",
+                            "trace_label": "Spine-specific dF/F",
+                        }
+                    )
+    with step_scope("event detection example gallery", total=len(jobs)):
+        for idx, job in enumerate(jobs, start=1):
+            step_progress(idx, len(jobs), label=f"{job['animal_id']} | {extract_dendrite_token(job['global_dendrite_id'])} | {job['kind']}")
+            path = build_event_example_day_figure_path(
+                event_root,
+                job["animal_id"],
+                job["day_id"],
+                job["compartment"],
+                job["global_dendrite_id"],
+                job["global_spine_id"],
+                kind=str(job["kind"]),
+            )
+            saved_path = plot_event_detection_example_figure(
+                output_path=path,
+                time=np.asarray(job["time"], dtype=float),
+                trace=np.asarray(job["trace"], dtype=float),
+                event_info=dict(job["event_info"] or {}),
+                title=str(job["title"]),
+                trace_label=str(job["trace_label"]),
+                trace_kind=str(job["kind"]),
+                dendrite_event_info=dict(job["dendrite_event_info"] or {}) if job["dendrite_event_info"] is not None else None,
+            )
+            if saved_path:
+                saved.append(saved_path)
+    return saved
     return str(output_path)
 def plot_correlation_summary(
     results: Dict[str, Any],
@@ -1793,6 +2086,7 @@ def generate_analysis_figures(
     summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
     saved: List[str] = []
     coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    shuffle_n = int(results.get("run_parameters", {}).get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
     summary_metrics = [
         "dendrite_mean",
         "spine_specific_mean",
@@ -2748,6 +3042,30 @@ def build_matrix_similarity_day_figure_path(
     figure_dir = ensure_dir(output_dir / animal_slug / compartment_slug / date_slug)
     figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_matrix_similarity_heatmap.svg"
     return figure_dir / figure_name
+
+
+def build_event_example_day_figure_path(
+    output_dir: Path,
+    animal_id: Any,
+    day_id: Any,
+    compartment: Any,
+    global_dendrite_id: Any,
+    global_spine_id: Any = None,
+    *,
+    kind: str,
+) -> Path:
+    day_animal_id, day_date, day_compartment = split_day_id(day_id)
+    animal_slug = safe_filename_component(animal_id or day_animal_id or "unknown_animal")
+    compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
+    date_slug = safe_filename_component(day_date or "unknown_date")
+    dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
+    figure_dir = ensure_dir(output_dir / DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME / animal_slug / compartment_slug / date_slug)
+    if kind == "spine":
+        spine_slug = safe_filename_component(extract_dendrite_token(global_spine_id))
+        figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_{spine_slug}_spine_event_example.svg"
+    else:
+        figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_dendrite_event_example.svg"
+    return figure_dir / figure_name
 def build_spine_coactivity_day_figure_path(
     output_dir: Path,
     animal_id: Any,
@@ -3107,6 +3425,10 @@ def plot_spine_regression_qc_checkpoint(
     suffix = gallery_compartment_suffix(compartment_filter)
     output_path = fig_dir / (output_name or f"02_spine_regression_qc_{suffix}.svg")
     save_figure(fig, output_path, extra_formats=())
+    plt.close(fig)
+    return str(output_path)
+
+
 def plot_matrix_similarity_distribution(
     results: Dict[str, Any],
     fig_dir: Path,
@@ -11288,6 +11610,12 @@ def write_analysis_outputs(
     if checkpoint_gallery.get("manifest_path"):
         written_artifacts.append(report_relative_path(checkpoint_gallery["manifest_path"], output_dir))
     for path in checkpoint_gallery.get("files", []):
+        written_artifacts.append(report_relative_path(path, output_dir))
+    fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
+    with step_scope("event detection example gallery"):
+        event_example_gallery = generate_event_detection_example_gallery(cache, fig_dir)
+    results["event_example_gallery"] = event_example_gallery
+    for path in event_example_gallery:
         written_artifacts.append(report_relative_path(path, output_dir))
     json_path = output_dir / "analysis_results.json"
     with json_path.open("w") as handle:
