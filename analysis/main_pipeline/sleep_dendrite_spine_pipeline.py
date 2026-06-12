@@ -1793,6 +1793,14 @@ def generate_analysis_figures(
     summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
     saved: List[str] = []
     coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    summary_metrics = [
+        "dendrite_mean",
+        "spine_specific_mean",
+        "dendrite_event_frequency_per_min",
+        "spine_event_frequency_per_min",
+        "coincident_event_frequency_per_min",
+        "noncoincident_event_frequency_per_min",
+    ]
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     present_compartments = sorted_present_compartments(cache)
