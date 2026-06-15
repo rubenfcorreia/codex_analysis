@@ -116,7 +116,23 @@ def _build_cache() -> dict:
     return {"animals": animals, "experiments": {}, "config": {}, "alerts": []}
 
 
-def test_event_detection_example_figure_draws_threshold_runs_and_zooms() -> None:
+def _all_axis_text(fig: object) -> list[str]:
+    return [text.get_text() for ax in fig.axes for text in ax.texts]
+
+
+def _all_line_labels(fig: object) -> list[str]:
+    return [line.get_label() for ax in fig.axes for line in ax.lines]
+
+
+def _count_threshold_lines(fig: object, threshold: float) -> int:
+    count = 0
+    for ax in fig.axes:
+        if any(np.allclose(line.get_ydata(), threshold) for line in ax.lines):
+            count += 1
+    return count
+
+
+def test_event_detection_example_figure_draws_annotated_contact_sheet() -> None:
     time = np.arange(24, dtype=float)
     trace = _make_trace([(4, 7), (14, 17)], n=time.size, peak=1.0)
     event_info = _make_event_info(time, [(4, 7), (14, 17)])
@@ -130,21 +146,52 @@ def test_event_detection_example_figure_draws_threshold_runs_and_zooms() -> None
         trace_kind="dendrite",
     )
     assert fig is not None
-    assert len(fig.axes) == 4
+    assert len(fig.axes) == 10
 
     threshold = float(event_info["threshold"])
-    top_ax = fig.axes[0]
-    overview_ax = fig.axes[1]
-    assert any(np.allclose(line.get_ydata(), threshold) for line in top_ax.lines)
-    assert any(np.allclose(line.get_ydata(), threshold) for line in overview_ax.lines)
-    assert len(overview_ax.patches) >= 2
-    assert all(any(np.allclose(line.get_ydata(), threshold) for line in ax.lines) for ax in fig.axes[2:])
+    assert _count_threshold_lines(fig, threshold) == 10
+    assert any("event" in text.lower() for text in _all_axis_text(fig))
+    assert "Dendrite dF/F" in _all_line_labels(fig)
 
     if pipeline.plt is not None:
         pipeline.plt.close(fig)
 
 
-def test_event_detection_gallery_writes_per_animal_outputs_and_skips_invalid(tmp_path: Path) -> None:
+def test_spine_example_figure_includes_dendrite_context_and_coincidence_marker() -> None:
+    time = np.arange(24, dtype=float)
+    dendrite_runs = [(4, 7), (14, 17)]
+    spine_runs = [(4, 7), (10, 13)]
+    dendrite_trace = _make_trace(dendrite_runs, n=time.size, peak=1.0)
+    spine_trace = _make_trace(spine_runs, n=time.size, peak=1.0)
+    dendrite_event_info = _make_event_info(time, dendrite_runs)
+    spine_event_info = pipeline.annotate_spine_event_info(_make_event_info(time, spine_runs), dendrite_event_info)
+
+    fig = pipeline._build_event_detection_example_figure(
+        time=time,
+        trace=spine_trace,
+        event_info=spine_event_info,
+        title="Spine example",
+        trace_label="Spine-specific dF/F",
+        trace_kind="spine",
+        dendrite_event_info=dendrite_event_info,
+        dendrite_trace=dendrite_trace,
+        dendrite_time=time,
+    )
+    assert fig is not None
+    assert len(fig.axes) == 10
+
+    threshold = float(spine_event_info["threshold"])
+    assert _count_threshold_lines(fig, threshold) == 10
+    assert "Spine-specific dF/F" in _all_line_labels(fig)
+    assert "Dendrite dF/F" in _all_line_labels(fig)
+    assert any("coincident" in text.lower() for text in _all_axis_text(fig))
+    assert any("noncoincident" in text.lower() for text in _all_axis_text(fig))
+
+    if pipeline.plt is not None:
+        pipeline.plt.close(fig)
+
+
+def test_event_detection_gallery_writes_per_roi_outputs_and_skips_invalid(tmp_path: Path) -> None:
     cache = _build_cache()
     figure_root = tmp_path / "figures"
 

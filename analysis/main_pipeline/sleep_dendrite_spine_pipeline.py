@@ -1564,6 +1564,133 @@ def _add_event_run_spans(
         ax.axvspan(time[start], time[end_index], color=color, alpha=alpha, zorder=zorder)
 
 
+def _event_run_center(run: Tuple[int, int]) -> float:
+    return 0.5 * (float(int(run[0])) + float(int(run[1])))
+
+
+def _event_run_overlaps_window(window_start: int, window_end: int, run: Tuple[int, int]) -> bool:
+    return bool(max(int(window_start), int(run[0])) < min(int(window_end), int(run[1])))
+
+
+def _window_overlaps_any(window_start: int, window_end: int, runs: Sequence[Tuple[int, int]]) -> bool:
+    return any(_event_run_overlaps_window(window_start, window_end, run) for run in runs)
+
+
+def _select_event_example_windows(
+    trace_size: int,
+    event_runs: Sequence[Tuple[int, int]],
+    *,
+    max_examples: int = 10,
+    pad_frames: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    trace_size = int(trace_size)
+    if trace_size <= 0:
+        return []
+    if pad_frames is None:
+        pad_frames = max(4, min(25, max(6, trace_size // 12)))
+    pad_frames = int(max(1, pad_frames))
+    selected: List[Dict[str, Any]] = []
+    ordered_runs = sorted([(int(start), int(end)) for start, end in event_runs], key=_event_run_center)
+    if ordered_runs:
+        if len(ordered_runs) > max_examples:
+            indices = np.unique(np.round(np.linspace(0, len(ordered_runs) - 1, max_examples)).astype(int))
+            ordered_runs = [ordered_runs[index] for index in indices[:max_examples]]
+        for run in ordered_runs:
+            window_start = max(0, int(run[0]) - pad_frames)
+            window_end = min(trace_size, int(run[1]) + pad_frames)
+            if window_end <= window_start:
+                continue
+            selected.append(
+                {
+                    "kind": "event",
+                    "label": "event",
+                    "run": run,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }
+            )
+    context_centers = np.linspace(0, max(trace_size - 1, 0), max_examples * 4 if trace_size > 1 else 1)
+    for center_value in context_centers:
+        if len(selected) >= max_examples:
+            break
+        center = int(round(float(center_value)))
+        window_start = max(0, center - pad_frames)
+        window_end = min(trace_size, center + pad_frames + 1)
+        if window_end <= window_start:
+            continue
+        if _window_overlaps_any(window_start, window_end, ordered_runs):
+            continue
+        if any(_window_overlaps_any(window_start, window_end, [item["run"]]) for item in selected if item.get("run") is not None):
+            continue
+        selected.append(
+            {
+                "kind": "context",
+                "label": "context",
+                "run": None,
+                "window_start": window_start,
+                "window_end": window_end,
+            }
+        )
+    if not selected:
+        selected.append(
+            {
+                "kind": "context",
+                "label": "context",
+                "run": None,
+                "window_start": 0,
+                "window_end": trace_size,
+            }
+        )
+    selected = sorted(selected, key=lambda item: (int(item["window_start"]), int(item["window_end"])))
+    if len(selected) > max_examples:
+        selected = selected[:max_examples]
+    while len(selected) < max_examples:
+        selected.append(dict(selected[-1]))
+    return selected
+
+
+def _annotate_run_callout(
+    ax: Any,
+    time: np.ndarray,
+    trace: np.ndarray,
+    run: Tuple[int, int],
+    *,
+    label: str,
+    color: str,
+) -> None:
+    if time.size == 0 or trace.size == 0:
+        return
+    start, end = int(run[0]), int(run[1])
+    if start < 0 or end <= start or start >= time.size:
+        return
+    end_index = min(end - 1, time.size - 1)
+    run_time = time[start:end_index + 1]
+    run_trace = trace[start:end_index + 1]
+    valid = np.isfinite(run_time) & np.isfinite(run_trace)
+    if not np.any(valid):
+        return
+    mid_index = start + int(np.floor(0.5 * max(0, end - start - 1)))
+    mid_index = max(start, min(mid_index, end_index))
+    mid_time = float(time[mid_index])
+    peak_time = float(run_time[valid][np.argmax(run_trace[valid])])
+    peak_value = float(np.nanmax(run_trace[valid]))
+    y_range = float(np.nanmax(run_trace[valid]) - np.nanmin(run_trace[valid])) if np.any(valid) else 0.0
+    offset = max(0.12 * abs(peak_value) if np.isfinite(peak_value) else 0.1, 0.08 * y_range, 0.05)
+    ax.annotate(
+        label,
+        xy=(peak_time, peak_value),
+        xytext=(0.0, 16.0),
+        textcoords="offset points",
+        ha="center",
+        va="bottom",
+        fontsize=POSTER_NOTE_SIZE,
+        color=color,
+        arrowprops={"arrowstyle": "-|>", "color": color, "lw": 1.0, "shrinkA": 0.0, "shrinkB": 2.0},
+        zorder=8,
+    )
+    ax.plot([mid_time], [peak_value], marker="o", color=color, markersize=3.5, zorder=9)
+
+
 def _build_event_detection_example_figure(
     *,
     time: np.ndarray,
@@ -1573,6 +1700,8 @@ def _build_event_detection_example_figure(
     trace_label: str,
     trace_kind: str,
     dendrite_event_info: Optional[Dict[str, Any]] = None,
+    dendrite_trace: Optional[np.ndarray] = None,
+    dendrite_time: Optional[np.ndarray] = None,
 ) -> Optional[Any]:
     if plt is None:
         return None
@@ -1588,124 +1717,103 @@ def _build_event_detection_example_figure(
     threshold = as_float(event_info.get("threshold"))
     event_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
     dendrite_event_runs = [(int(start), int(end)) for start, end in (dendrite_event_info.get("event_runs") or [])]
-    coincident_event_runs = [(int(start), int(end)) for start, end in (event_info.get("coincident_event_runs") or [])]
-    noncoincident_event_runs = [(int(start), int(end)) for start, end in (event_info.get("noncoincident_event_runs") or [])]
-    zoom_runs = event_runs if event_runs else [None]
-    n_zoom = len(zoom_runs)
-    base_height = 4.25 + 1.4 * float(n_zoom)
-    fig = plt.figure(figsize=(10.8, min(max(base_height, 6.2), 26.0)))
-    from matplotlib import gridspec
-    from matplotlib.patches import Patch
-
-    gs = gridspec.GridSpec(2 + n_zoom, 1, figure=fig, height_ratios=[1.15, 1.0] + [0.95] * n_zoom, hspace=0.58)
-    trace_color = "#4477aa" if trace_kind == "dendrite" else "#7a5195"
-    line_color = trace_color if trace_kind == "dendrite" else "#dd8452"
-
-    top_ax = fig.add_subplot(gs[0, 0])
-    top_ax.plot(time[valid], trace[valid], color=line_color, linewidth=1.2, label=trace_label)
-    if np.isfinite(threshold):
-        top_ax.axhline(threshold, color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold")
-    top_ax.set_title(title, fontsize=POSTER_TITLE_SIZE)
-    top_ax.set_ylabel(trace_label, fontsize=POSTER_LABEL_SIZE)
-    top_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-    top_ax.grid(alpha=0.2)
-    top_ax.legend(frameon=False, fontsize=POSTER_LEGEND_SIZE, loc="upper right")
-    set_sparse_numeric_ticks(top_ax, axis="both", nbins=5)
-
-    overview_ax = fig.add_subplot(gs[1, 0])
-    overview_ax.plot(time[valid], trace[valid], color=line_color, linewidth=1.0, alpha=0.9, label=trace_label)
-    if np.isfinite(threshold):
-        overview_ax.axhline(threshold, color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold", zorder=4)
-    overview_ax.axhline(0.0, color="#444444", linewidth=0.8, zorder=3)
-    if trace_kind == "spine" and dendrite_event_runs:
-        _add_event_run_spans(overview_ax, time, dendrite_event_runs, color="#4c78a8", alpha=0.08, zorder=1)
-        _add_event_run_spans(overview_ax, time, noncoincident_event_runs, color="#f58518", alpha=0.12, zorder=2)
-        _add_event_run_spans(overview_ax, time, coincident_event_runs, color="#d62728", alpha=0.16, zorder=3)
-    else:
-        _add_event_run_spans(overview_ax, time, event_runs, color=trace_color, alpha=0.14, zorder=2)
-    overview_ax.set_ylabel(trace_label, fontsize=POSTER_LABEL_SIZE)
-    overview_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-    overview_ax.grid(alpha=0.2)
-    overview_ax.set_title("Detected event runs", fontsize=POSTER_TITLE_SIZE)
-    set_sparse_numeric_ticks(overview_ax, axis="both", nbins=5)
-    summary_bits = [f"events={len(event_runs)}"]
+    selected_windows = _select_event_example_windows(trace.size, event_runs, max_examples=10)
     if trace_kind == "spine":
-        summary_bits.append(f"coincident={len(coincident_event_runs)}")
-        summary_bits.append(f"noncoincident={len(noncoincident_event_runs)}")
-    summary_text = " | ".join(summary_bits)
-    overview_ax.text(
-        0.01,
-        0.98,
-        summary_text,
-        transform=overview_ax.transAxes,
-        va="top",
-        ha="left",
-        fontsize=POSTER_FONT_SIZE,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.8),
-    )
-    legend_handles = [
-        Line2D([], [], color=line_color, linewidth=1.2, label=trace_label),
-        Line2D([], [], color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold"),
-    ]
-    if trace_kind == "spine" and dendrite_event_runs:
-        legend_handles.extend(
-            [
-                Patch(facecolor="#4c78a8", edgecolor="none", alpha=0.18, label="Dendrite event"),
-                Patch(facecolor="#f58518", edgecolor="none", alpha=0.18, label="Spine event (noncoincident)"),
-                Patch(facecolor="#d62728", edgecolor="none", alpha=0.18, label="Spine event (coincident)"),
-            ]
-        )
-    else:
-        legend_handles.append(Patch(facecolor=trace_color, edgecolor="none", alpha=0.18, label="Detected event"))
-    overview_ax.legend(handles=legend_handles, frameon=False, fontsize=POSTER_LEGEND_SIZE, loc="upper right")
-
-    for zoom_idx, run in enumerate(zoom_runs, start=1):
-        zoom_ax = fig.add_subplot(gs[1 + zoom_idx, 0])
-        if run is None:
-            zoom_ax.text(0.5, 0.5, "No qualifying events detected", transform=zoom_ax.transAxes, ha="center", va="center", fontsize=POSTER_LABEL_SIZE)
-            zoom_ax.set_axis_off()
-            continue
-        zoom_start, zoom_end = _event_detection_run_bounds(time, run)
-        zoom_slice = slice(zoom_start, zoom_end)
-        zoom_time = time[zoom_slice]
-        zoom_trace = trace[zoom_slice]
-        zoom_valid = np.isfinite(zoom_time) & np.isfinite(zoom_trace)
-        if np.any(zoom_valid):
-            zoom_ax.plot(zoom_time[zoom_valid], zoom_trace[zoom_valid], color=line_color, linewidth=1.15, label=trace_label)
-        if np.isfinite(threshold):
-            zoom_ax.axhline(threshold, color="#8b0000", linestyle="--", linewidth=1.0, label="3σ threshold")
-        if trace_kind == "spine" and dendrite_event_runs:
-            _add_event_run_spans(zoom_ax, time, dendrite_event_runs, color="#4c78a8", alpha=0.06, zorder=1)
-            if run in coincident_event_runs:
-                _add_event_run_spans(zoom_ax, time, [run], color="#d62728", alpha=0.22, zorder=3)
-                run_label = f"Coincident event {zoom_idx}"
-            else:
-                _add_event_run_spans(zoom_ax, time, [run], color="#f58518", alpha=0.22, zorder=3)
-                run_label = f"Noncoincident event {zoom_idx}"
+        if dendrite_trace is None:
+            dendrite_trace = np.asarray(dendrite_event_info.get("trace") if isinstance(dendrite_event_info, dict) else None, dtype=float)
         else:
-            _add_event_run_spans(zoom_ax, time, [run], color=trace_color, alpha=0.22, zorder=3)
-            run_label = f"Event {zoom_idx}"
-        if np.any(zoom_valid):
-            y_values = zoom_trace[zoom_valid]
-            y_min = float(np.nanmin(y_values))
-            y_max = float(np.nanmax(y_values))
-            if np.isfinite(threshold):
-                y_min = min(y_min, float(threshold))
-                y_max = max(y_max, float(threshold))
-            if y_min == y_max:
-                pad = 0.1 if y_min == 0 else max(0.05 * abs(y_min), 0.05)
+            dendrite_trace = np.asarray(dendrite_trace, dtype=float).ravel()
+        if dendrite_time is None:
+            dendrite_time = time
+        else:
+            dendrite_time = np.asarray(dendrite_time, dtype=float).ravel()
+        if dendrite_time.size != dendrite_trace.size:
+            dendrite_time = np.arange(dendrite_trace.size, dtype=float)
+    else:
+        dendrite_trace = None
+        dendrite_time = None
+    trace_color = "#4477aa" if trace_kind == "dendrite" else "#7a5195"
+    spine_color = "#7a5195"
+    dendrite_color = "#4477aa"
+    event_color = "#8b0000"
+    spine_event_color = "#d62728"
+    noncoincident_color = "#f58518"
+
+    fig, axes = plt.subplots(5, 2, figsize=(12.6, 15.0), squeeze=False)
+    axes_flat = axes.ravel()
+    fig.suptitle(title, fontsize=POSTER_TITLE_SIZE)
+
+    for idx, window in enumerate(selected_windows):
+        ax = axes_flat[idx]
+        window_start = int(window["window_start"])
+        window_end = int(window["window_end"])
+        window_time = time[window_start:window_end]
+        window_trace = trace[window_start:window_end]
+        window_valid = np.isfinite(window_time) & np.isfinite(window_trace)
+        if not np.any(window_valid):
+            ax.text(0.5, 0.5, "No valid signal", transform=ax.transAxes, ha="center", va="center", fontsize=POSTER_LABEL_SIZE)
+            ax.set_axis_off()
+            continue
+        ax.plot(window_time[window_valid], window_trace[window_valid], color=trace_color, linewidth=1.2, label=trace_label)
+        if trace_kind == "spine" and dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
+            dend_window_trace = dendrite_trace[window_start:window_end]
+            dend_window_time = dendrite_time[window_start:window_end]
+            dend_valid = np.isfinite(dend_window_time) & np.isfinite(dend_window_trace)
+            if np.any(dend_valid):
+                ax.plot(dend_window_time[dend_valid], dend_window_trace[dend_valid], color=dendrite_color, linewidth=1.0, alpha=0.9, label="Dendrite dF/F")
+        if np.isfinite(threshold):
+            ax.axhline(threshold, color=event_color, linestyle="--", linewidth=0.9, alpha=0.95)
+        window_runs = [run for run in event_runs if _window_overlaps_any(window_start, window_end, [run])]
+        if trace_kind == "spine":
+            dend_window_runs = [run for run in dendrite_event_runs if _window_overlaps_any(window_start, window_end, [run])]
+            if dend_window_runs:
+                _add_event_run_spans(ax, time, dend_window_runs, color=dendrite_color, alpha=0.10, zorder=1)
+            if window_runs:
+                for run in window_runs:
+                    coincident = any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs)
+                    run_color = spine_event_color if coincident else noncoincident_color
+                    _add_event_run_spans(ax, time, [run], color=run_color, alpha=0.20, zorder=4)
+                    _annotate_run_callout(ax, time, trace, run, label="coincident" if coincident else "noncoincident", color=run_color)
             else:
-                pad = max(0.08 * (y_max - y_min), 0.05)
-            zoom_ax.set_ylim(y_min - pad, y_max + pad)
-        if zoom_time.size > 0:
-            zoom_ax.set_xlim(float(zoom_time[0]), float(zoom_time[-1]))
-        zoom_ax.set_ylabel(trace_label, fontsize=POSTER_LABEL_SIZE)
-        zoom_ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
-        zoom_ax.set_title(run_label, fontsize=POSTER_TITLE_SIZE)
-        zoom_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-        zoom_ax.grid(alpha=0.2)
-        set_sparse_numeric_ticks(zoom_ax, axis="both", nbins=5)
-    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.985])
+                ax.text(0.04, 0.92, "no detected spine event", transform=ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE, color="#555555", bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "none", "alpha": 0.75})
+        else:
+            if window_runs:
+                for run in window_runs:
+                    _add_event_run_spans(ax, time, [run], color=trace_color, alpha=0.20, zorder=4)
+                    _annotate_run_callout(ax, time, trace, run, label="event", color=trace_color)
+            else:
+                ax.text(0.04, 0.92, "context window", transform=ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE, color="#555555", bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "none", "alpha": 0.75})
+        panel_label = f"Example {idx + 1}"
+        if trace_kind == "spine":
+            if window_runs:
+                panel_label += " | coincident" if any(any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs) for run in window_runs) else " | noncoincident"
+            else:
+                panel_label += " | context"
+        else:
+            panel_label += " | event" if window_runs else " | context"
+        ax.set_title(panel_label, fontsize=POSTER_TITLE_SIZE)
+        ax.set_xlim(float(window_time[0]), float(window_time[-1]))
+        y_values = window_trace[window_valid]
+        if trace_kind == "spine" and dendrite_trace is not None and dendrite_time is not None:
+            dend_window_trace = dendrite_trace[window_start:window_end]
+            dend_window_valid = np.isfinite(dend_window_trace)
+            if np.any(dend_window_valid):
+                y_values = np.concatenate([y_values, dend_window_trace[dend_window_valid]])
+        if np.isfinite(threshold):
+            y_values = np.concatenate([y_values, np.asarray([threshold], dtype=float)])
+        y_min = float(np.nanmin(y_values))
+        y_max = float(np.nanmax(y_values))
+        if y_min == y_max:
+            pad = 0.1 if y_min == 0 else max(0.05 * abs(y_min), 0.05)
+        else:
+            pad = max(0.12 * (y_max - y_min), 0.05)
+        ax.set_ylim(y_min - pad, y_max + pad)
+        ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+        ax.grid(alpha=0.2)
+        ax.text(0.98, 0.04, trace_label if trace_kind == "dendrite" else "spine + dendrite", transform=ax.transAxes, ha="right", va="bottom", fontsize=POSTER_NOTE_SIZE, color="#333333")
+    for ax in axes_flat[len(selected_windows):]:
+        ax.set_axis_off()
+    fig.subplots_adjust(top=0.94, hspace=0.42, wspace=0.20)
     return fig
 
 
@@ -1719,6 +1827,8 @@ def plot_event_detection_example_figure(
     trace_label: str,
     trace_kind: str,
     dendrite_event_info: Optional[Dict[str, Any]] = None,
+    dendrite_trace: Optional[np.ndarray] = None,
+    dendrite_time: Optional[np.ndarray] = None,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -1730,6 +1840,8 @@ def plot_event_detection_example_figure(
         trace_label=trace_label,
         trace_kind=trace_kind,
         dendrite_event_info=dendrite_event_info,
+        dendrite_trace=dendrite_trace,
+        dendrite_time=dendrite_time,
     )
     if fig is None:
         return None
@@ -1765,7 +1877,9 @@ def generate_event_detection_example_gallery(cache: Dict[str, Any], fig_dir: Pat
                         "trace": d_obs.get("trace"),
                         "event_info": d_obs.get("event_info") or {},
                         "dendrite_event_info": None,
-                        "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} - event detection",
+                        "dendrite_trace": None,
+                        "dendrite_time": None,
+                        "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} - event examples",
                         "trace_label": "Dendrite dF/F",
                     }
                 )
@@ -1788,7 +1902,9 @@ def generate_event_detection_example_gallery(cache: Dict[str, Any], fig_dir: Pat
                             "trace": trace,
                             "event_info": s_obs.get("event_info") or {},
                             "dendrite_event_info": s_obs.get("dendrite_event_info") or d_obs.get("event_info") or {},
-                            "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} / {safe_filename_component(global_spine_id)} - event detection",
+                            "dendrite_trace": d_obs.get("trace"),
+                            "dendrite_time": d_obs.get("time"),
+                            "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} / {safe_filename_component(global_spine_id)} - event examples",
                             "trace_label": "Spine-specific dF/F",
                         }
                     )
@@ -1813,11 +1929,13 @@ def generate_event_detection_example_gallery(cache: Dict[str, Any], fig_dir: Pat
                 trace_label=str(job["trace_label"]),
                 trace_kind=str(job["kind"]),
                 dendrite_event_info=dict(job["dendrite_event_info"] or {}) if job["dendrite_event_info"] is not None else None,
+                dendrite_trace=np.asarray(job["dendrite_trace"], dtype=float) if job.get("dendrite_trace") is not None else None,
+                dendrite_time=np.asarray(job["dendrite_time"], dtype=float) if job.get("dendrite_time") is not None else None,
             )
             if saved_path:
                 saved.append(saved_path)
     return saved
-    return str(output_path)
+
 def plot_correlation_summary(
     results: Dict[str, Any],
     fig_dir: Path,
