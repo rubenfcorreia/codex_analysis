@@ -108,6 +108,7 @@ DEFAULT_CACHE_DIRNAME = "cache"
 DEFAULT_CHECKPOINT_GALLERY_DIRNAME = "checkpoint_examples"
 DEFAULT_REVIEW_FIGURES_DIRNAME = "review_figures"
 DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
+DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "plots"
 DEFAULT_MIXED_MODEL_FIGURES_DIRNAME = "mixed_model"
 DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
 DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME = "direct_trial_type_comparison"
@@ -1258,6 +1259,10 @@ def _render_state_summary_comparison_panel_figure(
     fig.tight_layout()
     return fig
 
+def state_summary_figure_dir(root: Path) -> Path:
+    return ensure_dir(Path(root) / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME / DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
+
+
 def _state_summary_metric_panel_spec(metric_name: str) -> str:
     metric_titles = {
         "dendrite_mean": "Dendrite mean dF/F",
@@ -2201,7 +2206,7 @@ def generate_analysis_figures(
         eprint("[ALERT] matplotlib is unavailable; skipping figure generation.")
         return []
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
-    summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
+    summary_fig_dir = state_summary_figure_dir(fig_dir)
     saved: List[str] = []
     coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     shuffle_n = int(results.get("run_parameters", {}).get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
@@ -2674,7 +2679,7 @@ def generate_review_figures(
         eprint("[ALERT] matplotlib is unavailable; skipping review figure generation.")
         return []
     review_dir = ensure_dir(Path(review_root) if review_root is not None else DEFAULT_REVIEW_FIGURES_DIR)
-    summary_review_dir = ensure_dir(review_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
+    summary_review_dir = state_summary_figure_dir(review_dir)
     saved: List[str] = []
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
@@ -5730,7 +5735,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     overview_results = build_state_summary_gallery_results(cache, state_labels, None)
     basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
     apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
-    summary_gallery_dir = ensure_dir(gallery_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
+    summary_gallery_dir = state_summary_figure_dir(gallery_dir)
     path = plot_state_summary_figure(
         overview_results,
         summary_gallery_dir,

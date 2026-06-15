@@ -157,3 +157,22 @@ def test_visual_response_classification_and_filtered_summaries() -> None:
     assert nonresponsive_basal["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]
     assert responsive_apical["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]
     assert nonresponsive_apical["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]
+
+
+def test_state_summary_outputs_use_dedicated_subfolder(tmp_path: Path) -> None:
+    cache = _build_cache()
+    results = pipeline.build_state_summary_gallery_results(cache, STATE_LABELS, None)
+    output_dir = pipeline.state_summary_figure_dir(tmp_path / "figures")
+
+    output_path = pipeline.plot_state_summary_figure(
+        results,
+        output_dir,
+        output_name="state_summary_boxplots.svg",
+        title="Selected-state summary distributions - All compartments",
+        state_labels=STATE_LABELS,
+    )
+
+    assert output_path is not None
+    assert Path(output_path).parent == output_dir
+    assert output_dir.parts[-2:] == ("state_summary", "plots")
+    assert Path(output_path).exists()
