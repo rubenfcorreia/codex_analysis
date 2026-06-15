@@ -109,6 +109,8 @@ DEFAULT_CHECKPOINT_GALLERY_DIRNAME = "checkpoint_examples"
 DEFAULT_REVIEW_FIGURES_DIRNAME = "review_figures"
 DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
 DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "plots"
+STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min"}
+STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
 DEFAULT_MIXED_MODEL_FIGURES_DIRNAME = "mixed_model"
 DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
 DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME = "direct_trial_type_comparison"
@@ -1259,8 +1261,16 @@ def _render_state_summary_comparison_panel_figure(
     fig.tight_layout()
     return fig
 
+def state_summary_metric_family(metric_name: str) -> str:
+    return "dendrites" if metric_name in STATE_SUMMARY_DENDRITE_METRICS else "spines"
+
+
 def state_summary_figure_dir(root: Path) -> Path:
     return ensure_dir(Path(root) / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME / DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
+
+
+def state_summary_metric_output_dir(root: Path, metric_name: str, cohort_label: str = "all") -> Path:
+    return ensure_dir(Path(root) / state_summary_metric_family(metric_name) / safe_filename_component(cohort_label or "all"))
 
 
 def _state_summary_metric_panel_spec(metric_name: str) -> str:
@@ -1285,6 +1295,7 @@ def plot_state_summary_metric_figure(
     state_labels: Optional[Sequence[str]] = None,
     y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    cohort_label: str = "all",
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -1345,6 +1356,7 @@ def plot_state_summary_figure(
     state_labels: Optional[Sequence[str]] = None,
     y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    cohort_label: str = "all",
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -1409,7 +1421,7 @@ def plot_state_summary_figure(
             comparison_rows=panel_comparisons,
         )
         if panel_fig is not None:
-            metric_output_path = fig_dir / f"{Path(output_name).stem}_{metric_name}.svg"
+            metric_output_path = state_summary_metric_output_dir(fig_dir, metric_name, cohort_label) / f"{Path(output_name).stem}_{metric_name}.svg"
             save_figure(panel_fig, metric_output_path, extra_formats=())
             output_paths.append(metric_output_path)
     return str(output_paths[0]) if output_paths else None
@@ -1422,6 +1434,7 @@ def plot_state_summary_compartment_comparison_figure(
     state_labels: Optional[Sequence[str]] = None,
     y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    cohort_label: str = "all",
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -1458,7 +1471,7 @@ def plot_state_summary_compartment_comparison_figure(
             comparison_rows=panel_comparisons,
         )
         if panel_fig is not None:
-            metric_output_path = fig_dir / f"{Path(output_name).stem}_{metric_name}.svg"
+            metric_output_path = state_summary_metric_output_dir(fig_dir, metric_name, cohort_label) / f"{Path(output_name).stem}_{metric_name}.svg"
             save_figure(panel_fig, metric_output_path, extra_formats=())
             output_paths.append(metric_output_path)
     return str(output_paths[0]) if output_paths else None
@@ -2300,6 +2313,7 @@ def generate_analysis_figures(
                         "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
                         "results": compartment_results,
                         "comparison_rows": cohort_metric_rows,
+                        "cohort_label": cohort,
                     }
                 )
             cohort_comparison_rows: List[Dict[str, Any]] = []
@@ -2321,6 +2335,7 @@ def generate_analysis_figures(
                     "title": f"Selected-state summary distributions - Basal vs apical ({cohort_title})",
                     "results": (cohort_basal_results, cohort_apical_results),
                     "comparison_rows": cohort_comparison_rows,
+                    "cohort_label": cohort,
                 }
             )
     for plot_idx, spec in enumerate(state_summary_specs, start=1):
@@ -2342,6 +2357,7 @@ def generate_analysis_figures(
                         state_labels=state_labels,
                         y_limits=y_limits,
                         comparison_rows=spec.get("comparison_rows"),
+                        cohort_label=str(spec.get("cohort_label") or "all"),
                     )
                 else:
                     basal_summary, apical_summary = spec["results"]
@@ -2360,6 +2376,7 @@ def generate_analysis_figures(
                             and is_significant_row(row)
                             and str(row.get("state")) in set(basal_apical_state_labels)
                         ],
+                        cohort_label=str(spec.get("cohort_label") or "all"),
                     )
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with state summary plotter ({scope_label}): {exc}")
@@ -2757,6 +2774,7 @@ def generate_review_figures(
                             and is_significant_row(row)
                             and str(row.get("state")) in set(basal_apical_state_labels)
                         ],
+                        cohort_label=str(spec.get("cohort_label") or "all"),
                     )
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create review figure ({scope_label}): {exc}")

@@ -40,6 +40,26 @@ def _make_observation(compartment: str, movie_value: float, blank_value: float) 
     }
 
 
+def _make_spine_observation(compartment: str, movie_value: float, blank_value: float) -> dict:
+    time = np.linspace(0.0, 19.0, 20, dtype=float)
+    trace = np.zeros_like(time)
+    trace[4:7] = 1.0
+    return {
+        "compartment": compartment,
+        "day_id": None,
+        "exp_id": None,
+        "time": time,
+        "trace": trace,
+        "trace_hp": trace,
+        "spine_specific": trace,
+        "cut_state_means": {
+            "quiet_awake_movies": float(movie_value),
+            "quiet_awake_blank": float(blank_value),
+        },
+        "event_info": pipeline.build_event_info(trace, time),
+    }
+
+
 def _build_cache() -> dict:
     experiments: dict = {}
     animals = {
@@ -69,33 +89,42 @@ def _build_cache() -> dict:
             },
         }
 
-    observations = {
+    dendrite_specs = {
         "basal_responsive": {
-            "basal_exp_1": _make_observation("basal", 1.00, 0.10),
-            "basal_exp_2": _make_observation("basal", 1.10, 0.15),
-            "basal_exp_3": _make_observation("basal", 0.95, 0.20),
+            "basal_exp_1": (1.00, 0.10),
+            "basal_exp_2": (1.10, 0.15),
+            "basal_exp_3": (0.95, 0.20),
         },
         "basal_nonresponsive": {
-            "basal_exp_1": _make_observation("basal", 0.20, 0.60),
-            "basal_exp_2": _make_observation("basal", 0.25, 0.55),
-            "basal_exp_3": _make_observation("basal", 0.15, 0.65),
+            "basal_exp_1": (0.20, 0.60),
+            "basal_exp_2": (0.25, 0.55),
+            "basal_exp_3": (0.15, 0.65),
         },
         "apical_responsive": {
-            "apical_exp_1": _make_observation("apical", 1.20, 0.05),
-            "apical_exp_2": _make_observation("apical", 1.30, 0.10),
-            "apical_exp_3": _make_observation("apical", 1.10, 0.08),
+            "apical_exp_1": (1.20, 0.05),
+            "apical_exp_2": (1.30, 0.10),
+            "apical_exp_3": (1.10, 0.08),
         },
         "apical_nonresponsive": {
-            "apical_exp_1": _make_observation("apical", 0.30, 0.70),
-            "apical_exp_2": _make_observation("apical", 0.25, 0.60),
-            "apical_exp_3": _make_observation("apical", 0.35, 0.80),
+            "apical_exp_1": (0.30, 0.70),
+            "apical_exp_2": (0.25, 0.60),
+            "apical_exp_3": (0.35, 0.80),
         },
     }
-    for dendrite_id, dendrite_observations in observations.items():
+    for dendrite_id, dendrite_observations in dendrite_specs.items():
         animal_dendrite = animals["animal_1"]["dendrites"][dendrite_id]
-        animal_dendrite["observations"].update(dendrite_observations)
-        for obs in dendrite_observations.values():
-            obs["spine_ids"] = []
+        for exp_id, (movie_value, blank_value) in dendrite_observations.items():
+            d_obs = _make_observation("basal" if dendrite_id.startswith("basal") else "apical", movie_value, blank_value)
+            spine_id = f"{dendrite_id}|{exp_id}|s1"
+            d_obs["spine_ids"] = [spine_id]
+            animal_dendrite["observations"][exp_id] = d_obs
+            animal_dendrite["spines"][spine_id] = {
+                "observations": {
+                    exp_id: _make_spine_observation("basal" if dendrite_id.startswith("basal") else "apical", movie_value, blank_value)
+                }
+            }
+            animal_dendrite["spines"][spine_id]["observations"][exp_id]["day_id"] = exp_id
+            animal_dendrite["spines"][spine_id]["observations"][exp_id]["exp_id"] = exp_id
 
     return {
         "animals": animals,
@@ -159,20 +188,40 @@ def test_visual_response_classification_and_filtered_summaries() -> None:
     assert nonresponsive_apical["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]
 
 
-def test_state_summary_outputs_use_dedicated_subfolder(tmp_path: Path) -> None:
+def test_state_summary_outputs_use_family_and_cohort_subfolders(tmp_path: Path) -> None:
     cache = _build_cache()
-    results = pipeline.build_state_summary_gallery_results(cache, STATE_LABELS, None)
+    response_summary = pipeline.classify_visual_responsive_dendrites(cache)
     output_dir = pipeline.state_summary_figure_dir(tmp_path / "figures")
 
-    output_path = pipeline.plot_state_summary_figure(
-        results,
+    overview_results = pipeline.build_state_summary_gallery_results(cache, STATE_LABELS, None)
+    overview_path = pipeline.plot_state_summary_figure(
+        overview_results,
         output_dir,
         output_name="state_summary_boxplots.svg",
         title="Selected-state summary distributions - All compartments",
         state_labels=STATE_LABELS,
+        cohort_label="all",
     )
+    assert overview_path is not None
+    assert Path(overview_path).parent == output_dir / "dendrites" / "all"
+    assert (output_dir / "dendrites" / "all" / "state_summary_boxplots_dendrite_mean.svg").exists()
+    assert (output_dir / "spines" / "all" / "state_summary_boxplots_spine_specific_mean.svg").exists()
 
-    assert output_path is not None
-    assert Path(output_path).parent == output_dir
-    assert output_dir.parts[-2:] == ("state_summary", "plots")
-    assert Path(output_path).exists()
+    responsive_results = pipeline.build_state_summary_gallery_results(
+        cache,
+        STATE_LABELS,
+        compartment_filter="basal",
+        dendrite_ids_filter=response_summary["cohort_ids"]["basal"]["responsive"],
+    )
+    responsive_path = pipeline.plot_state_summary_figure(
+        responsive_results,
+        output_dir,
+        output_name="state_summary_boxplots_basal_responsive.svg",
+        title="Selected-state summary distributions - Basal responsive",
+        state_labels=STATE_LABELS,
+        cohort_label="responsive",
+    )
+    assert responsive_path is not None
+    assert Path(responsive_path).parent == output_dir / "dendrites" / "responsive"
+    assert (output_dir / "dendrites" / "responsive" / "state_summary_boxplots_basal_responsive_dendrite_mean.svg").exists()
+    assert (output_dir / "spines" / "responsive" / "state_summary_boxplots_basal_responsive_spine_specific_mean.svg").exists()
