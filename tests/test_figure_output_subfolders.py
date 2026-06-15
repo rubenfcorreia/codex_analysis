@@ -185,3 +185,36 @@ def test_day_figure_helpers_use_family_subfolders(tmp_path: Path) -> None:
 
     assert matrix_path.parts[-5:-1] == ("matrix_similarity", "animal_1", "basal", "2024-06-01")
     assert coactivity_path.parts[-5:-1] == ("spine_coactivity", "animal_1", "basal", "2024-06-01")
+
+
+def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    figure_root = tmp_path / "figures"
+    output_dir = tmp_path / "results"
+    cache = {"animals": {}, "experiments": {}, "config": {}, "alerts": []}
+    results = {"state_comparisons": [{"state": "quiet_awake_movies"}]}
+
+    def _write_dummy(path: Path, label: str) -> str:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(label)
+        return str(path)
+
+    monkeypatch.setattr(pipeline, "generate_analysis_figures", lambda *args, **kwargs: [_write_dummy(figure_root / "analysis" / "figure.svg", "analysis")])
+    monkeypatch.setattr(pipeline, "generate_review_figures", lambda *args, **kwargs: [_write_dummy(figure_root / "review" / "figure.svg", "review")])
+    monkeypatch.setattr(pipeline, "generate_checkpoint_gallery", lambda *args, **kwargs: {"manifest_path": str(_write_dummy(output_dir / "checkpoint" / "manifest.json", "checkpoint")), "entries": [], "files": [str(_write_dummy(output_dir / "checkpoint" / "figure.svg", "checkpoint"))]})
+    monkeypatch.setattr(pipeline, "generate_event_detection_example_gallery", lambda *args, **kwargs: [str(_write_dummy(figure_root / "event_examples" / "figure.svg", "event"))])
+    monkeypatch.setattr(pipeline, "write_text_report", lambda *args, **kwargs: pytest.fail("report should not be written in plots_only mode"))
+    monkeypatch.setattr(pipeline, "write_csv_rows", lambda *args, **kwargs: pytest.fail("csv should not be written in plots_only mode"))
+    monkeypatch.setattr(pipeline, "save_npz_cache", lambda *args, **kwargs: pytest.fail("cache should not be saved in plots_only mode"))
+    monkeypatch.setattr(pipeline, "save_analysis_tables_cache", lambda *args, **kwargs: pytest.fail("analysis-tables cache should not be saved in plots_only mode"))
+    monkeypatch.setattr(pipeline, "save_analysis_results_cache", lambda *args, **kwargs: pytest.fail("analysis-results cache should not be saved in plots_only mode"))
+
+    written = pipeline.write_analysis_outputs(output_dir, results, cache, figure_root=figure_root, plots_only=True)
+
+    assert written
+    assert (figure_root / "analysis" / "figure.svg").exists()
+    assert (figure_root / "review" / "figure.svg").exists()
+    assert (output_dir / "checkpoint" / "figure.svg").exists()
+    assert (figure_root / "event_examples" / "figure.svg").exists()
+    assert not (output_dir / "analysis_results.json").exists()
+    assert not (output_dir / "state_comparisons.csv").exists()
+    assert not (output_dir / "analysis_report.txt").exists()

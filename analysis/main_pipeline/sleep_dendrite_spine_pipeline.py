@@ -264,6 +264,7 @@ USER_EDITABLE_DEFAULTS = {
     "spine_coactivity_only": False,
     "mixed_model_only": False,
     "mixed_model_contrast_p_source": "classical",
+    "plots_only": False,
     "source_cache_rebuild": False,
     "analysis_tables_rebuild": False,
     "analysis_results_rebuild": False,
@@ -11749,6 +11750,7 @@ def write_analysis_outputs(
     cache: Dict[str, Any],
     *,
     figure_root: Optional[Path] = None,
+    plots_only: bool = False,
 ) -> List[str]:
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
@@ -11776,6 +11778,8 @@ def write_analysis_outputs(
     results["event_example_gallery"] = event_example_gallery
     for path in event_example_gallery:
         written_artifacts.append(report_relative_path(path, output_dir))
+    if plots_only:
+        return list(dict.fromkeys(written_artifacts))
     json_path = output_dir / "analysis_results.json"
     with json_path.open("w") as handle:
         json.dump(jsonable(results), handle, indent=2, sort_keys=True)
@@ -12884,6 +12888,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fit-spine-coactivity-mixed-model", action="store_true", help="Enable the optional mixed-model inference layer for spine coactivity")
     parser.add_argument("--spine-coactivity-only", action="store_true", help="Skip the main state/correlation/matrix analyses and run only spine coactivity")
     parser.add_argument("--mixed-model-only", action="store_true", help="Skip the state/correlation/matrix analyses and run only the main mixed-model branch")
+    parser.add_argument("--plots-only", action="store_true", help="Reuse saved caches and only generate plots, without rewriting CSV/JSON/report artifacts")
     parser.add_argument(
         "--mixed-model-contrast-p-source",
         choices=["classical", "shuffle"],
@@ -12929,6 +12934,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "spine_coactivity_only": True if args.spine_coactivity_only else None,
         "mixed_model_only": True if args.mixed_model_only else None,
         "mixed_model_contrast_p_source": args.mixed_model_contrast_p_source,
+        "plots_only": True if args.plots_only else None,
         "demo": True if args.demo else None,
         "channel": args.channel,
         "shuffle_n": args.shuffle_n,
@@ -13023,24 +13029,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_tables_cache_file = Path(config.get("analysis_tables_cache_path")) if config.get("analysis_tables_cache_path") else analysis_table_cache_path(cache_path)
         analysis_results_cache_file = Path(config.get("analysis_results_cache_path")) if config.get("analysis_results_cache_path") else analysis_results_cache_path(cache_path)
         figure_output_dir = Path(config.get("figure_output_dir")) if config.get("figure_output_dir") else None
+        plots_only = bool(config.get("plots_only"))
         ensure_dir(output_dir)
     # Build or reuse the cache first; every later output comes from this normalized data structure.
     with step_scope("cache load or rebuild"):
-        if not source_cache_validate:
-            step_message("skipping source-cache validation")
-        source_cache = load_or_build_cache(
-            repo_base=repo_base,
-            movie_expids=movie_expids,
-            sleep_expids=sleep_expids,
-            basal_expids=basal_expids,
-            apical_expids=apical_expids,
-            channel=channel,
-            high_pass_hz=high_pass_hz,
-            explicit_locomotion_threshold=config.get("locomotion_threshold"),
-            cache_path=cache_path,
-            rebuild=source_cache_rebuild,
-            validate_existing_cache=source_cache_validate,
-        )
+        if plots_only:
+            if not cache_path.exists():
+                raise SystemExit(f"plots_only requires an existing cache file at {cache_path}")
+            try:
+                source_cache = load_npz_cache(cache_path)
+            except Exception as exc:
+                raise SystemExit(f"plots_only could not load cached source data from {cache_path}: {exc}") from exc
+            if not isinstance(source_cache, dict):
+                raise SystemExit(f"plots_only expected a cached source dictionary at {cache_path}")
+        else:
+            if not source_cache_validate:
+                step_message("skipping source-cache validation")
+            source_cache = load_or_build_cache(
+                repo_base=repo_base,
+                movie_expids=movie_expids,
+                sleep_expids=sleep_expids,
+                basal_expids=basal_expids,
+                apical_expids=apical_expids,
+                channel=channel,
+                high_pass_hz=high_pass_hz,
+                explicit_locomotion_threshold=config.get("locomotion_threshold"),
+                cache_path=cache_path,
+                rebuild=source_cache_rebuild,
+                validate_existing_cache=source_cache_validate,
+            )
     if config.get("demo_truth"):
         source_cache["demo_truth"] = config["demo_truth"]
         save_npz_cache(cache_path, source_cache)
@@ -13091,10 +13108,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "fit_spine_coactivity_mixed_model": bool(config.get("fit_spine_coactivity_mixed_model")),
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
         "mixed_model_only": bool(config.get("mixed_model_only")),
+        "plots_only": bool(config.get("plots_only")),
         "shared_shuffle_signature": str(shared_shuffle_cache.get("signature", "")) if isinstance(shared_shuffle_cache, dict) else "",
         "shared_shuffle_shuffle_n": int(shared_shuffle_cache.get("shuffle_n", shuffle_n)) if isinstance(shared_shuffle_cache, dict) else int(shuffle_n),
     }
-    analysis_results_cache = load_analysis_results_cache(analysis_results_cache_file, expected_meta=analysis_results_meta, rebuild=analysis_results_rebuild)
+    analysis_results_cache = load_analysis_results_cache(analysis_results_cache_file, expected_meta=analysis_results_meta, rebuild=False if plots_only else analysis_results_rebuild)
+    if plots_only and analysis_results_cache is None:
+        raise SystemExit(f"plots_only requires an existing analysis results cache at {analysis_results_cache_file}")
     source_summary = summarize_cache(source_cache)
     analysis_summary = summarize_cache(analysis_cache)
     # Print a compact cache summary so users can see what was loaded before the full analysis runs.
@@ -13114,7 +13134,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for alert in selection_meta.get("alerts", []):
         eprint(alert)
     with step_scope("analysis families"):
-        if analysis_results_cache is not None:
+        if plots_only:
+            results = dict(analysis_results_cache.get("analysis_results", {}))
+        elif analysis_results_cache is not None:
             results = dict(analysis_results_cache.get("analysis_results", {}))
         elif bool(config.get("spine_coactivity_only")):
             results = process_spine_coactivity_only(
@@ -13182,6 +13204,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shared_shuffle_cache_rebuild": shared_shuffle_cache_rebuild,
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
         "mixed_model_only": bool(config.get("mixed_model_only")),
+        "plots_only": bool(config.get("plots_only")),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
@@ -13209,56 +13232,61 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "alerts": list(selection_meta.get("alerts", [])),
     }
     with step_scope("analysis outputs"):
-        written_artifacts = write_analysis_outputs(output_dir, results, analysis_cache, figure_root=figure_output_dir)
+        written_artifacts = write_analysis_outputs(output_dir, results, analysis_cache, figure_root=figure_output_dir, plots_only=plots_only)
     with step_scope("poster figure generation"):
         written_artifacts.extend(write_poster_ready_figures(output_dir, analysis_cache, results))
-    report_path = output_dir / "analysis_report.txt"
-    results["analysis_report_path"] = str(report_path)
     results["shared_shuffle_cache"] = {
         "path": str(shared_shuffle_cache_file) if shared_shuffle_cache_file is not None else None,
         "reused": not bool(shared_shuffle_cache_rebuilt),
         "shuffle_n": shuffle_n,
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
     }
-    results["output_artifacts"] = list(
-        dict.fromkeys(
-            written_artifacts
-            + [report_relative_path(cache_path, output_dir), report_relative_path(report_path, output_dir)]
+    if plots_only:
+        results["analysis_mode"] = "plots_only"
+        results["output_artifacts"] = list(dict.fromkeys(written_artifacts))
+        results.pop("analysis_report_path", None)
+    else:
+        report_path = output_dir / "analysis_report.txt"
+        results["analysis_report_path"] = str(report_path)
+        results["output_artifacts"] = list(
+            dict.fromkeys(
+                written_artifacts
+                + [report_relative_path(cache_path, output_dir), report_relative_path(report_path, output_dir)]
+            )
         )
-    )
-    with step_scope("report / artifact writing"):
-        write_analysis_report(report_path, output_dir, results, analysis_cache, source_cache, cache_path, results["output_artifacts"])
-    source_cache_payload = dict(source_cache)
-    source_cache_payload.pop("analysis_tables", None)
-    source_cache_payload.pop("analysis_results", None)
-    save_npz_cache(cache_path, source_cache_payload)
-    analysis_tables_payload = {
-        "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
-        "meta": cacheable({
-            "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
-            "source_config_hash": str(source_cache.get("config_hash", "")),
-        }),
-        "meta_hash": analysis_cache_meta_hash({
-            "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
-            "source_config_hash": str(source_cache.get("config_hash", "")),
-        }),
-        "analysis_tables": cacheable(analysis_cache.get("analysis_tables", {}) if isinstance(analysis_cache.get("analysis_tables", {}), dict) else {}),
-    }
-    save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
-    analysis_results_payload = {
-        "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
-        "meta": cacheable(analysis_results_meta),
-        "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
-        "analysis_results": cacheable(analysis_results_cache_payload(results)),
-    }
-    save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
-    if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict):
-        save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
-    info(f"Cache saved to: {cache_path}")
-    info(f"Report saved to: {report_path}")
-    info(f"Checkpoint gallery saved to: {output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME}")
-    info(f"Review figures saved to: {output_dir / DEFAULT_REVIEW_FIGURES_DIRNAME}")
-    info(f"Results saved to: {output_dir}")
+        with step_scope("report / artifact writing"):
+            write_analysis_report(report_path, output_dir, results, analysis_cache, source_cache, cache_path, results["output_artifacts"])
+        source_cache_payload = dict(source_cache)
+        source_cache_payload.pop("analysis_tables", None)
+        source_cache_payload.pop("analysis_results", None)
+        save_npz_cache(cache_path, source_cache_payload)
+        analysis_tables_payload = {
+            "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
+            "meta": cacheable({
+                "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
+                "source_config_hash": str(source_cache.get("config_hash", "")),
+            }),
+            "meta_hash": analysis_cache_meta_hash({
+                "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
+                "source_config_hash": str(source_cache.get("config_hash", "")),
+            }),
+            "analysis_tables": cacheable(analysis_cache.get("analysis_tables", {}) if isinstance(analysis_cache.get("analysis_tables", {}), dict) else {}),
+        }
+        save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
+        analysis_results_payload = {
+            "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
+            "meta": cacheable(analysis_results_meta),
+            "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
+            "analysis_results": cacheable(analysis_results_cache_payload(results)),
+        }
+        save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
+        if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict):
+            save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
+        info(f"Cache saved to: {cache_path}")
+        info(f"Report saved to: {report_path}")
+        info(f"Checkpoint gallery saved to: {output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME}")
+        info(f"Review figures saved to: {output_dir / DEFAULT_REVIEW_FIGURES_DIRNAME}")
+        info(f"Results saved to: {output_dir}")
     return 0
 if __name__ == "__main__":
     raise SystemExit(main())
