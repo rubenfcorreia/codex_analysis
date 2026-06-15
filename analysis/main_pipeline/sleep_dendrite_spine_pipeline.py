@@ -111,8 +111,10 @@ DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
 DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "plots"
 STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min"}
 STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
+DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME = "matrix_similarity"
 DEFAULT_MIXED_MODEL_FIGURES_DIRNAME = "mixed_model"
 DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
+DEFAULT_CORRELATION_FIGURES_DIRNAME = "correlation_summary"
 DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME = "direct_trial_type_comparison"
 DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME = "event_examples"
 DEFAULT_REVIEW_FIGURES_DIR = ROOT_DIR / DEFAULT_REVIEW_FIGURES_DIRNAME
@@ -1261,16 +1263,31 @@ def _render_state_summary_comparison_panel_figure(
     fig.tight_layout()
     return fig
 
+def figure_nested_dir(root: Path, *parts: Any) -> Path:
+    path = Path(root)
+    for part in parts:
+        if part is None:
+            continue
+        text = safe_filename_component(part)
+        if text:
+            path /= text
+    return ensure_dir(path)
+
+
+def figure_family_dir(root: Path, family: str, *parts: Any) -> Path:
+    return figure_nested_dir(Path(root) / safe_filename_component(family), *parts)
+
+
 def state_summary_metric_family(metric_name: str) -> str:
     return "dendrites" if metric_name in STATE_SUMMARY_DENDRITE_METRICS else "spines"
 
 
 def state_summary_figure_dir(root: Path) -> Path:
-    return ensure_dir(Path(root) / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME / DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
+    return figure_family_dir(root, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME, DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
 
 
 def state_summary_metric_output_dir(root: Path, metric_name: str, cohort_label: str = "all") -> Path:
-    return ensure_dir(Path(root) / state_summary_metric_family(metric_name) / safe_filename_component(cohort_label or "all"))
+    return figure_nested_dir(root, state_summary_metric_family(metric_name), cohort_label)
 
 
 def _state_summary_metric_panel_spec(metric_name: str) -> str:
@@ -2221,7 +2238,7 @@ def generate_analysis_figures(
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     summary_fig_dir = state_summary_figure_dir(fig_dir)
     saved: List[str] = []
-    coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     shuffle_n = int(results.get("run_parameters", {}).get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
     summary_metrics = [
         "dendrite_mean",
@@ -2391,7 +2408,8 @@ def generate_analysis_figures(
     for plot_idx, plotter in enumerate(plotters, start=1):
         with step_scope(f"figure plotter: {plotter.__name__}", index=plot_idx, total=len(plotters)):
             try:
-                output_path = plotter(results, fig_dir)
+                target_dir = figure_family_dir(fig_dir, DEFAULT_CORRELATION_FIGURES_DIRNAME) if plotter is plot_correlation_summary else fig_dir
+                output_path = plotter(results, target_dir)
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with {plotter.__name__}: {exc}")
                 continue
@@ -2409,7 +2427,7 @@ def generate_analysis_figures(
                 compartment_results = build_filtered_matrix_similarity_results(results, compartment)
                 output_path = plot_matrix_similarity_distribution(
                     compartment_results,
-                    fig_dir,
+                    figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
                     output_name=f"review_matrix_similarity_distribution_{gallery_compartment_suffix(compartment)}.svg",
                     title=f"Review: Spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
                     compartment_filter=compartment,
@@ -2419,14 +2437,14 @@ def generate_analysis_figures(
                 continue
             if output_path:
                 saved.append(output_path)
-    mixed_model_dir = ensure_dir(fig_dir / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+    mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
     for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
         with step_scope(f"figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_plotters)):
             try:
                 kwargs = {
                     "results": results,
-                    "fig_dir": mixed_model_dir,
+                    "fig_dir": figure_nested_dir(mixed_model_dir, str(spec.get("scope") or "all_state")),
                     "output_name": spec["output_name"],
                     "title": spec["title"],
                     "model_key": str(spec.get("model_key", "mixed_model")),
@@ -2439,7 +2457,7 @@ def generate_analysis_figures(
                 continue
             if output_path:
                 saved.append(output_path)
-    coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
     coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
     for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
@@ -2559,7 +2577,7 @@ def generate_analysis_figures(
             try:
                 output_path = plot_matrix_similarity_heatmap(
                     results,
-                    fig_dir,
+                    figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
                     output_name=f"matrix_similarity_heatmap_{compartment}.svg",
                     title=f"Matrix spine-spine similarity\n{gallery_compartment_title(compartment)}",
                     compartment_filter=compartment,
@@ -2791,7 +2809,7 @@ def generate_review_figures(
             if component_dir.exists():
                 for component_path in sorted(component_dir.glob("*.svg")):
                     saved.append(str(component_path))
-    direct_review_dir = ensure_dir(review_dir / DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+    direct_review_dir = figure_family_dir(review_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
     direct_review_specs = [
         {
             "name": "direct_trial_type_distribution",
@@ -2826,14 +2844,14 @@ def generate_review_figures(
             svg_path = output_path_obj.with_suffix(".svg")
             if svg_path.exists():
                 saved.append(str(svg_path))
-    mixed_model_review_dir = ensure_dir(review_dir / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+    mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
     for plot_idx, spec in enumerate(mixed_model_specs, start=1):
         with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_specs)):
             try:
                 kwargs = {
                     "results": results,
-                    "fig_dir": mixed_model_review_dir,
+                    "fig_dir": figure_nested_dir(mixed_model_review_dir, str(spec.get("scope") or "all_state")),
                     "output_name": spec["output_name"],
                     "title": spec["title"],
                     "model_key": str(spec.get("model_key", "mixed_model")),
@@ -2852,7 +2870,7 @@ def generate_review_figures(
             svg_path = output_path_obj.with_suffix(".svg")
             if svg_path.exists():
                 saved.append(str(svg_path))
-    coactivity_review_dir = ensure_dir(review_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_review_dir = figure_family_dir(review_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
     coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
     for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
@@ -3180,7 +3198,7 @@ def build_matrix_similarity_day_figure_path(
     compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
     date_slug = safe_filename_component(day_date or "unknown_date")
     dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
-    figure_dir = ensure_dir(output_dir / animal_slug / compartment_slug / date_slug)
+    figure_dir = figure_family_dir(output_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME, animal_slug, compartment_slug, date_slug)
     figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_matrix_similarity_heatmap.svg"
     return figure_dir / figure_name
 
@@ -3200,7 +3218,7 @@ def build_event_example_day_figure_path(
     compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
     date_slug = safe_filename_component(day_date or "unknown_date")
     dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
-    figure_dir = ensure_dir(output_dir / DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME / animal_slug / compartment_slug / date_slug)
+    figure_dir = figure_family_dir(output_dir, DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME, animal_slug, compartment_slug, date_slug)
     if kind == "spine":
         spine_slug = safe_filename_component(extract_dendrite_token(global_spine_id))
         figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_{spine_slug}_spine_event_example.svg"
@@ -3219,7 +3237,7 @@ def build_spine_coactivity_day_figure_path(
     compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
     date_slug = safe_filename_component(day_date or "unknown_date")
     dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
-    figure_dir = ensure_dir(output_dir / animal_slug / compartment_slug / date_slug)
+    figure_dir = figure_family_dir(output_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME, animal_slug, compartment_slug, date_slug)
     figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_spine_coactivity_heatmap.svg"
     return figure_dir / figure_name
 def build_state_summary_gallery_results(
@@ -5340,9 +5358,9 @@ def render_analysis_family_figures(
             saved.append(path)
         else:
             step_message("plotter returned no output")
-    coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     if family == "state":
-        summary_fig_dir = ensure_dir(fig_dir / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
+        summary_fig_dir = figure_family_dir(fig_dir, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME, DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
         state_labels = selected_matrix_state_labels(results)
         basal_apical_state_labels = selected_basal_apical_state_labels(results)
         present_compartments = sorted_present_compartments(cache)
@@ -5426,7 +5444,7 @@ def render_analysis_family_figures(
     elif family == "basal_apical":
         record(plot_basal_apical_summary(results, fig_dir))
     elif family == "direct_trial_type_comparison":
-        direct_dir = ensure_dir(fig_dir / DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+        direct_dir = figure_family_dir(fig_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
         direct_plotters = [
             {
                 "name": "direct_trial_type_distribution",
@@ -5459,7 +5477,7 @@ def render_analysis_family_figures(
         record(
             plot_correlation_summary(
                 results,
-                fig_dir,
+                figure_family_dir(fig_dir, DEFAULT_CORRELATION_FIGURES_DIRNAME),
                 output_name="correlation_summary.svg",
                 title="Correlation summaries",
             )
@@ -5478,7 +5496,7 @@ def render_analysis_family_figures(
                     record(
                         plot_matrix_similarity_distribution(
                             compartment_results,
-                            fig_dir,
+                            figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
                             output_name=f"matrix_similarity_distribution_{compartment}.svg",
                             title=f"Spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
                             compartment_filter=compartment,
@@ -5534,14 +5552,14 @@ def render_analysis_family_figures(
                     except Exception as exc:
                         eprint(f"[ALERT] Failed to create matrix heatmap for {compartment} / {dendrite_id}: {exc}")
     elif family == "mixed_model":
-        mixed_model_dir = ensure_dir(fig_dir / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
         for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
             with step_scope(f"figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_plotters)):
                 try:
                     kwargs = {
                         "results": results,
-                        "fig_dir": mixed_model_dir,
+                        "fig_dir": figure_nested_dir(mixed_model_dir, str(spec.get("scope") or "all_state")),
                         "output_name": spec["output_name"],
                         "title": spec["title"],
                         "model_key": str(spec.get("model_key", "mixed_model")),
@@ -5553,7 +5571,7 @@ def render_analysis_family_figures(
                     eprint(f"[ALERT] Failed to create figure with {spec['name']}: {exc}")
         record(plot_demo_validation_figure(results, mixed_model_dir))
     elif family == "spine_coactivity":
-        coactivity_dir = ensure_dir(fig_dir / DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+        coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
         coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
         coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
         for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
@@ -5813,7 +5831,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         corr_results = build_filtered_correlation_results(results, compartment)
         path = plot_correlation_summary(
             corr_results,
-            gallery_dir,
+            figure_family_dir(gallery_dir, DEFAULT_CORRELATION_FIGURES_DIRNAME),
             output_name=f"05_correlation_summary_{gallery_compartment_suffix(compartment)}.svg",
             title=f"Correlation summaries - {gallery_compartment_title(compartment)}",
         )
@@ -5834,7 +5852,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         matrix_results = build_filtered_matrix_similarity_results(results, compartment)
         heatmap_path = plot_matrix_similarity_heatmap(
             matrix_results,
-            gallery_dir,
+            figure_family_dir(gallery_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
             output_name=f"06_matrix_similarity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
             title=f"Derived matrix similarity state-state r - {gallery_compartment_title(compartment)}",
             compartment_filter=compartment,
@@ -5865,7 +5883,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         compartment_results = build_filtered_matrix_similarity_results(results, compartment)
         dist_path = plot_matrix_similarity_distribution(
             compartment_results,
-            gallery_dir,
+            figure_family_dir(gallery_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
             output_name=f"06_matrix_similarity_distribution_{gallery_compartment_suffix(compartment)}.svg",
             title=f"Spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
             compartment_filter=compartment,
@@ -5886,7 +5904,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
         distribution_path = plot_spine_coactivity_distribution_figure(
             scope_results,
-            gallery_dir,
+            figure_family_dir(gallery_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME),
             output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
             title=f"Quiet awake movies coactive-pair distribution - {gallery_compartment_title(compartment)}",
             compartment_filter=compartment,
@@ -5902,7 +5920,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         )
         heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
             scope_results,
-            gallery_dir,
+            figure_family_dir(gallery_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME),
             output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
             title=f"Quiet awake movies coactive pairs across states - {gallery_compartment_title(compartment)}",
             compartment_filter=compartment,
@@ -5933,7 +5951,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         )
         summary_path = plot_spine_coactivity_pair_state_summary_figure(
             scope_results,
-            gallery_dir,
+            figure_family_dir(gallery_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME),
             output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
             title=f"Quiet awake movies coactive-pair summary - {gallery_compartment_title(compartment)}",
             compartment_filter=compartment,
@@ -5953,7 +5971,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
         path = spec["plotter"](
             results,
-            gallery_dir,
+            figure_nested_dir(figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME), str(spec["scope"])),
             scope=str(spec["scope"]),
             output_name=spec["output_name"],
             title=spec["title"],
@@ -5963,14 +5981,14 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     # Direct trial-type comparison checkpoint examples.
     path = plot_direct_trial_type_distribution_figure(
         results,
-        gallery_dir,
+        figure_family_dir(gallery_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME),
         output_name="08_direct_trial_type_distribution_all.svg",
         title="Direct trial-type comparison - video means by state",
     )
     append_entry("direct_trial_type_distribution", "all", path, scope="direct_trial_type_comparison")
     path = plot_direct_trial_type_state_comparison_figure(
         results,
-        gallery_dir,
+        figure_family_dir(gallery_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME),
         output_name="08_direct_trial_type_state_comparison_all.svg",
         title="Direct trial-type comparison - state pair scatter",
     )
