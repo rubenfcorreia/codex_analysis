@@ -13108,7 +13108,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "fit_spine_coactivity_mixed_model": bool(config.get("fit_spine_coactivity_mixed_model")),
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
         "mixed_model_only": bool(config.get("mixed_model_only")),
-        "plots_only": bool(config.get("plots_only")),
         "shared_shuffle_signature": str(shared_shuffle_cache.get("signature", "")) if isinstance(shared_shuffle_cache, dict) else "",
         "shared_shuffle_shuffle_n": int(shared_shuffle_cache.get("shuffle_n", shuffle_n)) if isinstance(shared_shuffle_cache, dict) else int(shuffle_n),
     }
@@ -13204,7 +13203,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shared_shuffle_cache_rebuild": shared_shuffle_cache_rebuild,
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
         "mixed_model_only": bool(config.get("mixed_model_only")),
-        "plots_only": bool(config.get("plots_only")),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
