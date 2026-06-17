@@ -132,6 +132,10 @@ def _count_threshold_lines(fig: object, threshold: float) -> int:
     return count
 
 
+def _all_line_colors(fig: object) -> list[str]:
+    return [line.get_color() for ax in fig.axes for line in ax.lines]
+
+
 def test_event_detection_example_figure_draws_annotated_contact_sheet() -> None:
     time = np.arange(24, dtype=float)
     trace = _make_trace([(4, 7), (14, 17)], n=time.size, peak=1.0)
@@ -152,6 +156,8 @@ def test_event_detection_example_figure_draws_annotated_contact_sheet() -> None:
     assert _count_threshold_lines(fig, threshold) == 10
     assert any("event" in text.lower() for text in _all_axis_text(fig))
     assert "Dendrite dF/F" in _all_line_labels(fig)
+    assert "#4477aa" in _all_line_colors(fig)
+    assert "#7a5195" not in _all_line_colors(fig)
 
     if pipeline.plt is not None:
         pipeline.plt.close(fig)
@@ -178,12 +184,16 @@ def test_spine_example_figure_includes_dendrite_context_and_coincidence_marker()
         dendrite_time=time,
     )
     assert fig is not None
-    assert len(fig.axes) == 10
+    assert len(fig.axes) == 20
 
     threshold = float(spine_event_info["threshold"])
     assert _count_threshold_lines(fig, threshold) == 10
     assert "Spine-specific dF/F" in _all_line_labels(fig)
     assert "Dendrite dF/F" in _all_line_labels(fig)
+    assert any(ax.get_ylabel() == "Spine-specific dF/F" for ax in fig.axes)
+    assert any(ax.get_ylabel() == "Dendrite dF/F" for ax in fig.axes)
+    assert "#7a5195" in _all_line_colors(fig)
+    assert "#4477aa" in _all_line_colors(fig)
     assert any("coincident" in text.lower() for text in _all_axis_text(fig))
     assert any("noncoincident" in text.lower() for text in _all_axis_text(fig))
 

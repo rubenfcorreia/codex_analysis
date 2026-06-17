@@ -113,7 +113,7 @@
   "cpu_thread_limit": 1,
   "high_pass_hz": null,
   "locomotion_threshold": 0.05,
-  "rebuild": true,
+  "rebuild": false,
   "source_cache_rebuild": false,
   "analysis_tables_rebuild": false,
   "analysis_results_rebuild": false,
@@ -123,7 +123,7 @@
   "analysis_tables_cache_path": "/home/rubencorreia/code/codex_analysis/results/main_pipeline/cache/sleep_dendrite_spine_cache_analysis_tables_cache.npz",
   "analysis_results_cache_path": "/home/rubencorreia/code/codex_analysis/results/main_pipeline/cache/sleep_dendrite_spine_cache_analysis_results_cache.npz",
   "spine_coactivity_anchor_state": "quiet_awake_movies",
-  "spine_coactivity_abs_threshold": 0.5,
+  "spine_coactivity_abs_threshold": 0.25,
   "source_cache_validate": true,
   "demo_spec": null,
   "stimulus_source_root": "/data/Remote_Repository/bv_resources/all_movie_clips_bv_sets",
@@ -135,5 +135,5 @@
   "demo": false,
   "mixed_model_contrast_p_source": "classical",
   "mixed_model_only": false,
-  "plots_only": false
+  "plots_only": true
 }
