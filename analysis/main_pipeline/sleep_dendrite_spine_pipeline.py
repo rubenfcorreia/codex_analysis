@@ -1917,6 +1917,7 @@ def plot_event_detection_example_figure(
     title: str,
     trace_label: str,
     trace_kind: str,
+    figure_kind: Optional[str] = None,
     dendrite_event_info: Optional[Dict[str, Any]] = None,
     dendrite_trace: Optional[np.ndarray] = None,
     dendrite_time: Optional[np.ndarray] = None,
