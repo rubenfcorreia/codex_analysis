@@ -1285,12 +1285,24 @@ SPINE_COACTIVITY_FIGURE_SUBDIRS = {
     "pair_state_heatmap": "pair_state_heatmap",
     "pair_state_summary": "pair_state_summary",
     "basal_apical_distribution": "basal_vs_apical",
+    "basal_vs_apical": "basal_vs_apical",
 }
 
 
 def spine_coactivity_figure_dir(root: Path, figure_kind: str, *parts: Any) -> Path:
-    subdir = SPINE_COACTIVITY_FIGURE_SUBDIRS.get(str(figure_kind), safe_filename_component(figure_kind))
-    return figure_family_dir(root, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME, subdir, *parts)
+    figure_kind = str(figure_kind)
+
+    if figure_kind not in SPINE_COACTIVITY_FIGURE_SUBDIRS:
+        raise ValueError(f"Unknown spine coactivity figure kind: {figure_kind}")
+
+    subdir = SPINE_COACTIVITY_FIGURE_SUBDIRS[figure_kind]
+
+    return figure_family_dir(
+        root,
+        DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME,
+        subdir,
+        *parts,
+    )
 
 
 def state_summary_metric_family(metric_name: str) -> str:
@@ -2296,7 +2308,7 @@ def generate_analysis_figures(
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     summary_fig_dir = state_summary_figure_dir(fig_dir)
     saved: List[str] = []
-    coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_dir = fig_dir
     shuffle_n = int(results.get("run_parameters", {}).get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
     summary_metrics = [
         "dendrite_mean",
@@ -2928,7 +2940,7 @@ def generate_review_figures(
             svg_path = output_path_obj.with_suffix(".svg")
             if svg_path.exists():
                 saved.append(str(svg_path))
-    coactivity_review_dir = figure_family_dir(review_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_review_dir = review_dir
     coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
     coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
     for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
@@ -13093,7 +13105,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_results_cache_file = Path(config.get("analysis_results_cache_path")) if config.get("analysis_results_cache_path") else analysis_results_cache_path(cache_path)
         figure_output_dir = Path(config.get("figure_output_dir")) if config.get("figure_output_dir") else None
         plots_only = bool(config.get("plots_only"))
+        if plots_only:
+            source_cache_rebuild = False
+            analysis_tables_rebuild = False
+            analysis_results_rebuild = False
+            shared_shuffle_cache_rebuild = False
         ensure_dir(output_dir)
+    
+    
     # Build or reuse the cache first; every later output comes from this normalized data structure.
     with step_scope("cache load or rebuild"):
         if plots_only:
@@ -13138,14 +13157,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if not shuffle_state_labels:
         shuffle_state_labels = list(PRIMARY_QUIET_STATES)
-    with step_scope("shared circular-shift cache"):
-        shared_shuffle_cache, shared_shuffle_cache_file, shared_shuffle_cache_rebuilt = load_or_build_shared_shuffle_cache(
-            analysis_cache,
-            shuffle_n,
-            state_labels=shuffle_state_labels,
-            cache_path=cache_path,
-            rebuild=shared_shuffle_cache_rebuild,
-        )
+    if not plots_only:
+        with step_scope("shared circular-shift cache"):
+            shared_shuffle_cache, shared_shuffle_cache_file, shared_shuffle_cache_rebuilt = load_or_build_shared_shuffle_cache(
+                analysis_cache,
+                shuffle_n,
+                state_labels=shuffle_state_labels,
+                cache_path=cache_path,
+                rebuild=shared_shuffle_cache_rebuild,
+            )
+    else:
+        shared_shuffle_cache = None
     source_signature = stable_hash(
         {
             str(exp_id): str(exp_meta.get("source_signature", ""))
@@ -13199,21 +13221,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if plots_only and analysis_results_cache_status == "ok" and analysis_results_cache is not None:
             results = dict(analysis_results_cache.get("analysis_results", {}))
         elif plots_only:
-            step_message(
-                f"plots_only will recompute analysis results in memory because {analysis_results_cache_file} is {analysis_results_cache_status.replace('_', ' ')}"
-            )
-            results = process_cached_analysis(
-                analysis_cache,
-                shuffle_n=shuffle_n,
-                state_comparison_states=state_comparison_states,
-                basal_apical_states=basal_apical_states,
-                source_cache=source_cache,
-                shared_shuffle_cache=shared_shuffle_cache,
-                output_dir=output_dir,
-                figure_root=figure_output_dir,
-                fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
-                mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
-                spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
+            raise SystemExit(
+                f"plots_only requires a valid compatible analysis-results cache at "
+                f"{analysis_results_cache_file}; status was {analysis_results_cache_status}"
             )
         elif analysis_results_cache is not None:
             results = dict(analysis_results_cache.get("analysis_results", {}))
