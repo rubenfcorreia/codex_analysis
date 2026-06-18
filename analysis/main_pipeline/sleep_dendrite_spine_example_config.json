@@ -113,7 +113,7 @@
   "cpu_thread_limit": 1,
   "high_pass_hz": null,
   "locomotion_threshold": 0.05,
-  "rebuild": false,
+  "rebuild": true,
   "source_cache_rebuild": false,
   "analysis_tables_rebuild": false,
   "analysis_results_rebuild": false,
@@ -135,5 +135,5 @@
   "demo": false,
   "mixed_model_contrast_p_source": "classical",
   "mixed_model_only": false,
-  "plots_only": true
+  "plots_only": false
 }

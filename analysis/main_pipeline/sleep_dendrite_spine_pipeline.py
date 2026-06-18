@@ -130,6 +130,14 @@ VISUAL_RESPONSE_MOVIE_STATE = "quiet_awake_movies"
 VISUAL_RESPONSE_BLANK_STATE = "quiet_awake_blank"
 DEFAULT_DENDRITE_RESPONSE_COHORT = "all"
 DENDRITE_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
+
+VISUAL_RESPONSE_CLASSIFIER_VERSION = 2
+VISUAL_RESPONSE_CLASSIFIER_METHOD = "ancova_wheel"
+VISUAL_RESPONSE_COVARIATE_NAME = "wheel_speed"
+VISUAL_RESPONSE_VISUAL_TRIAL_TYPES = ["movies", "gratings", "zebras"]
+VISUAL_RESPONSE_BLANK_TRIAL_TYPE = "blank"
+VISUAL_RESPONSE_VISUAL_SUFFIXES = tuple(f"_{trial_type}" for trial_type in VISUAL_RESPONSE_VISUAL_TRIAL_TYPES)
+VISUAL_RESPONSE_BLANK_SUFFIX = f"_{VISUAL_RESPONSE_BLANK_TRIAL_TYPE}"
 MOVIE_TRIAL_TYPE_SUFFIXES = {
     "blank": "blank",
     "grating": "gratings",
@@ -662,11 +670,382 @@ def apply_bonferroni_correction(test_records: List[Dict[str, Any]]) -> int:
     return n_tests
 
 
+def _visual_response_trial_group(state_label: Any) -> Optional[str]:
+    canonical = canonical_state_label(state_label)
+    if not canonical:
+        return None
+    if canonical.endswith(VISUAL_RESPONSE_BLANK_SUFFIX):
+        return "blank"
+    if any(canonical.endswith(suffix) for suffix in VISUAL_RESPONSE_VISUAL_SUFFIXES):
+        return "visual"
+    return None
+
+
+def _visual_response_trial_labels_from_meta(trial_meta: Sequence[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    visual_labels: List[str] = []
+    blank_labels: List[str] = []
+    for meta in trial_meta:
+        if not isinstance(meta, dict):
+            continue
+        label = canonical_state_label(meta.get("state_label"))
+        group = _visual_response_trial_group(label)
+        if group == "visual" and label not in visual_labels:
+            visual_labels.append(label)
+        elif group == "blank" and label not in blank_labels:
+            blank_labels.append(label)
+    return visual_labels, blank_labels
+
+
+def _load_visual_response_cut_data(
+    source_cache: Optional[Dict[str, Any]],
+    exp_id: str,
+    cut_cache: Dict[str, Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    if exp_id in cut_cache:
+        return cut_cache[exp_id]
+    if not isinstance(source_cache, dict):
+        cut_cache[exp_id] = None
+        return None
+    exp_meta = source_cache.get("experiments", {}).get(exp_id, {})
+    source_paths = exp_meta.get("source_paths", {}) if isinstance(exp_meta, dict) else {}
+    cut_dir = Path(str(source_paths.get("cut") or ""))
+    if not cut_dir.exists():
+        cut_cache[exp_id] = None
+        return None
+    channel = as_int(source_cache.get("config", {}).get("channel")) if isinstance(source_cache.get("config", {}), dict) else None
+    channel = int(channel) if channel is not None else DEFAULT_CHANNEL
+    cut_path = cut_dir / f"s2p_ch{channel}_dF_cut.pickle"
+    wheel_path = cut_dir / "wheel.pickle"
+    if not cut_path.exists() or not wheel_path.exists():
+        cut_cache[exp_id] = None
+        return None
+    try:
+        cut_time, cut_neural, _ = extract_cut_neural_bundle(cut_path)
+    except Exception:
+        cut_cache[exp_id] = None
+        return None
+    try:
+        wheel_bundle = read_pickle(wheel_path)
+    except Exception:
+        wheel_bundle = {}
+    wheel_speed = find_first_key(wheel_bundle, ["speed", "wheel", "motion", "velocity"])
+    if wheel_speed is None:
+        cut_cache[exp_id] = None
+        return None
+    trial_meta = [dict(meta) for meta in exp_meta.get("trial_meta", []) if isinstance(meta, dict)]
+    payload = {
+        "cut_time": np.asarray(cut_time, dtype=float),
+        "cut_neural": np.asarray(cut_neural, dtype=float),
+        "cut_wheel": np.asarray(wheel_speed, dtype=float),
+        "trial_meta": trial_meta,
+    }
+    cut_cache[exp_id] = payload
+    return payload
+
+
+def _collect_visual_response_trial_rows(
+    source_cache: Optional[Dict[str, Any]],
+    exp_id: str,
+    observation: Dict[str, Any],
+    *,
+    kind: str,
+    cut_cache: Dict[str, Optional[Dict[str, Any]]],
+    parent_dendrite_observation: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    cut_data = _load_visual_response_cut_data(source_cache, exp_id, cut_cache)
+    if not cut_data:
+        return []
+    roi_index = as_int(observation.get("local_ids", {}).get("conversion_index"))
+    if roi_index is None:
+        return []
+    cut_neural = np.asarray(cut_data.get("cut_neural"), dtype=float)
+    cut_wheel = np.asarray(cut_data.get("cut_wheel"), dtype=float)
+    trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
+    if roi_index < 0 or roi_index >= cut_neural.shape[0] or cut_wheel.ndim < 2:
+        return []
+    if kind == "spine":
+        if parent_dendrite_observation is None:
+            return []
+        dendrite_index = as_int(parent_dendrite_observation.get("local_ids", {}).get("conversion_index"))
+        alpha = as_float(observation.get("alpha"))
+        if dendrite_index is None or alpha is None:
+            return []
+        if dendrite_index < 0 or dendrite_index >= cut_neural.shape[0]:
+            return []
+        trial_matrix = np.asarray(cut_neural[roi_index] - alpha * cut_neural[dendrite_index], dtype=float)
+    else:
+        trial_matrix = np.asarray(cut_neural[roi_index], dtype=float)
+    rows: List[Dict[str, Any]] = []
+    for meta in trial_meta:
+        if not isinstance(meta, dict):
+            continue
+        trial_label = canonical_state_label(meta.get("state_label"))
+        trial_index = as_int(meta.get("trial_index"))
+        if trial_index is None or trial_index < 0 or trial_index >= trial_matrix.shape[0] or trial_index >= cut_wheel.shape[0]:
+            continue
+        group = _visual_response_trial_group(trial_label)
+        if group is None:
+            continue
+        response_values = np.asarray(trial_matrix[trial_index], dtype=float)
+        wheel_values = np.asarray(cut_wheel[trial_index], dtype=float)
+        response = float(np.nanmean(response_values)) if response_values.size else float("nan")
+        wheel_speed = float(np.nanmean(np.abs(wheel_values))) if wheel_values.size else float("nan")
+        if not np.isfinite(response) or not np.isfinite(wheel_speed):
+            continue
+        rows.append({"group": group, "trial_label": trial_label, "response": response, "wheel_speed": wheel_speed})
+    return rows
+
+
+def _ancova_visual_response_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    response = np.asarray([as_float(row.get("response")) for row in rows], dtype=float)
+    wheel_speed = np.asarray([as_float(row.get("wheel_speed")) for row in rows], dtype=float)
+    group = np.asarray([1.0 if str(row.get("group")) == "visual" else 0.0 for row in rows], dtype=float)
+    visual_trial_labels: List[str] = []
+    blank_trial_labels: List[str] = []
+    for row in rows:
+        trial_label = canonical_state_label(row.get("trial_label"))
+        if not trial_label:
+            continue
+        if str(row.get("group")) == "visual":
+            if trial_label not in visual_trial_labels:
+                visual_trial_labels.append(trial_label)
+        elif trial_label not in blank_trial_labels:
+            blank_trial_labels.append(trial_label)
+    finite_mask = np.isfinite(response) & np.isfinite(wheel_speed) & np.isfinite(group)
+    response = response[finite_mask]
+    wheel_speed = wheel_speed[finite_mask]
+    group = group[finite_mask]
+    visual_values = response[group >= 0.5]
+    blank_values = response[group < 0.5]
+    mean_visual = float(np.nanmean(visual_values)) if visual_values.size else float("nan")
+    mean_blank = float(np.nanmean(blank_values)) if blank_values.size else float("nan")
+    delta = mean_visual - mean_blank if visual_values.size and blank_values.size else float("nan")
+    if response.size < 4 or visual_values.size < 2 or blank_values.size < 2:
+        return {
+            "available": False,
+            "comparison": "visual_response_movie_vs_blank_ancova",
+            "test_name": "ancova_ols",
+            "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+            "statistic": float("nan"),
+            "raw_pvalue": float("nan"),
+            "adjusted_pvalue": float("nan"),
+            "n_visual_values": int(visual_values.size),
+            "n_blank_values": int(blank_values.size),
+            "mean_visual": mean_visual,
+            "mean_blank": mean_blank,
+            "delta": delta,
+            "visual_trial_labels": visual_trial_labels,
+            "blank_trial_labels": blank_trial_labels,
+            "significant": False,
+            "star": "",
+        }
+    design = np.column_stack([np.ones(response.size, dtype=float), group, wheel_speed])
+    try:
+        beta, _, rank, _ = np.linalg.lstsq(design, response, rcond=None)
+        residuals = response - design @ beta
+        dof = int(response.size - rank)
+        if dof <= 0:
+            raise ValueError("insufficient degrees of freedom")
+        xtx = design.T @ design
+        cov = np.linalg.pinv(xtx)
+        sigma2 = float(np.dot(residuals, residuals) / dof)
+        se = float(np.sqrt(max(sigma2 * cov[1, 1], 0.0)))
+        if not np.isfinite(se) or se <= 0:
+            raise ValueError("invalid standard error")
+        statistic = float(beta[1] / se)
+        raw_pvalue = float(2.0 * stats.t.sf(abs(statistic), dof))
+    except Exception:
+        fallback = welch_ttest_summary(visual_values, blank_values)
+        statistic = float(fallback.get("statistic", float("nan")))
+        raw_pvalue = float(fallback.get("raw_pvalue", float("nan")))
+    return {
+        "available": True,
+        "comparison": "visual_response_movie_vs_blank_ancova",
+        "test_name": "ancova_ols",
+        "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "statistic": statistic,
+        "raw_pvalue": raw_pvalue,
+        "adjusted_pvalue": raw_pvalue,
+        "n_visual_values": int(visual_values.size),
+        "n_blank_values": int(blank_values.size),
+        "mean_visual": mean_visual,
+        "mean_blank": mean_blank,
+        "delta": delta,
+        "visual_trial_labels": visual_trial_labels,
+        "blank_trial_labels": blank_trial_labels,
+        "significant": False,
+        "star": "",
+    }
+
+
+def _classify_visual_response_rows(
+    cache: Dict[str, Any],
+    source_cache: Optional[Dict[str, Any]],
+    *,
+    kind: str,
+) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    cut_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    for animal_id, animal_entry in sorted(cache.get("animals", {}).items()):
+        for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
+            compartments_seen: List[str] = []
+            observation_rows: List[Dict[str, Any]] = []
+            if kind == "dendrite":
+                for exp_id, d_obs in sorted(dendrite_record.get("observations", {}).items()):
+                    compartment = observation_compartment(cache, exp_id, d_obs)
+                    if compartment is not None:
+                        compartments_seen.append(str(compartment))
+                    observation_rows.extend(
+                        _collect_visual_response_trial_rows(
+                            source_cache,
+                            exp_id,
+                            d_obs,
+                            kind="dendrite",
+                            cut_cache=cut_cache,
+                        )
+                    )
+            else:
+                for global_spine_id, spine_record in sorted(dendrite_record.get("spines", {}).items()):
+                    spine_rows: List[Dict[str, Any]] = []
+                    for exp_id, s_obs in sorted(spine_record.get("observations", {}).items()):
+                        compartment = observation_compartment(cache, exp_id, s_obs)
+                        if compartment is not None:
+                            compartments_seen.append(str(compartment))
+                        parent_dendrite_observation = dendrite_record.get("observations", {}).get(exp_id)
+                        if parent_dendrite_observation is None:
+                            continue
+                        spine_rows.extend(
+                            _collect_visual_response_trial_rows(
+                                source_cache,
+                                exp_id,
+                                s_obs,
+                                kind="spine",
+                                cut_cache=cut_cache,
+                                parent_dendrite_observation=parent_dendrite_observation,
+                            )
+                        )
+                    summary = _ancova_visual_response_summary(spine_rows)
+                    if compartments_seen:
+                        unique_compartments = list(dict.fromkeys(compartments_seen))
+                        compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
+                    else:
+                        compartment = None
+                    row = {
+                        "animal_id": animal_id,
+                        "global_spine_id": global_spine_id,
+                        "compartment": compartment,
+                        "classifier_type": "spine",
+                        "comparison": summary.get("comparison", "visual_response_movie_vs_blank_ancova"),
+                        "test_name": summary.get("test_name", "ancova_ols"),
+                        "covariate": summary.get("covariate", VISUAL_RESPONSE_COVARIATE_NAME),
+                        "visual_trial_labels": list(dict.fromkeys(summary.get("visual_trial_labels", []))) if isinstance(summary.get("visual_trial_labels"), list) else [],
+                        "blank_trial_labels": list(dict.fromkeys(summary.get("blank_trial_labels", []))) if isinstance(summary.get("blank_trial_labels"), list) else [],
+                        "available": bool(summary.get("available", False)),
+                        "n_visual_values": int(summary.get("n_visual_values", 0)),
+                        "n_blank_values": int(summary.get("n_blank_values", 0)),
+                        "mean_visual": float(summary.get("mean_visual", float("nan"))),
+                        "mean_blank": float(summary.get("mean_blank", float("nan"))),
+                        "delta": float(summary.get("delta", float("nan"))),
+                        "effect_size": float(summary.get("delta", float("nan"))),
+                        "statistic": float(summary.get("statistic", float("nan"))),
+                        "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
+                        "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
+                        "significant": bool(summary.get("significant", False)),
+                        "responsive": False,
+                        "cohort": "nonresponsive",
+                    }
+                    rows.append(row)
+                continue
+            if compartments_seen:
+                unique_compartments = list(dict.fromkeys(compartments_seen))
+                compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
+            else:
+                compartment = None
+            summary = _ancova_visual_response_summary(observation_rows)
+            row = {
+                "animal_id": animal_id,
+                "global_dendrite_id": global_dendrite_id,
+                "compartment": compartment,
+                "classifier_type": "dendrite",
+                "comparison": summary.get("comparison", "visual_response_movie_vs_blank_ancova"),
+                "test_name": summary.get("test_name", "ancova_ols"),
+                "covariate": summary.get("covariate", VISUAL_RESPONSE_COVARIATE_NAME),
+                "visual_trial_labels": list(dict.fromkeys(summary.get("visual_trial_labels", []))) if isinstance(summary.get("visual_trial_labels"), list) else [],
+                "blank_trial_labels": list(dict.fromkeys(summary.get("blank_trial_labels", []))) if isinstance(summary.get("blank_trial_labels"), list) else [],
+                "available": bool(summary.get("available", False)),
+                "n_visual_values": int(summary.get("n_visual_values", 0)),
+                "n_blank_values": int(summary.get("n_blank_values", 0)),
+                "mean_visual": float(summary.get("mean_visual", float("nan"))),
+                "mean_blank": float(summary.get("mean_blank", float("nan"))),
+                "delta": float(summary.get("delta", float("nan"))),
+                "effect_size": float(summary.get("delta", float("nan"))),
+                "statistic": float(summary.get("statistic", float("nan"))),
+                "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
+                "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
+                "significant": bool(summary.get("significant", False)),
+                "responsive": False,
+                "cohort": "nonresponsive",
+            }
+            rows.append(row)
+    by_compartment: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment in {"basal", "apical"}:
+            by_compartment[compartment].append(row)
+    for compartment_rows in by_compartment.values():
+        n_tests = apply_bonferroni_correction(compartment_rows)
+        for row in compartment_rows:
+            row["n_tests_corrected"] = int(n_tests)
+            row["responsive"] = bool(row.get("significant", False) and np.isfinite(as_float(row.get("delta"))) and float(row.get("delta")) > 0)
+            row["cohort"] = "responsive" if row["responsive"] else "nonresponsive"
+    for row in rows:
+        if "n_tests_corrected" not in row:
+            row["n_tests_corrected"] = 0
+            row["responsive"] = False
+            row["cohort"] = "nonresponsive"
+    cohort_ids: Dict[str, Dict[str, List[str]]] = {
+        "basal": {"responsive": [], "nonresponsive": []},
+        "apical": {"responsive": [], "nonresponsive": []},
+    }
+    counts: Dict[str, Dict[str, int]] = {
+        "basal": {"responsive": 0, "nonresponsive": 0, "available": 0, "tested": 0},
+        "apical": {"responsive": 0, "nonresponsive": 0, "available": 0, "tested": 0},
+    }
+    id_field = "global_spine_id" if kind == "spine" else "global_dendrite_id"
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment not in cohort_ids:
+            continue
+        counts[compartment]["tested"] += 1
+        if row.get("available"):
+            counts[compartment]["available"] += 1
+        cohort = "responsive" if row.get("responsive") else "nonresponsive"
+        cohort_ids[compartment][cohort].append(str(row.get(id_field)))
+        counts[compartment][cohort] += 1
+    for compartment in cohort_ids:
+        for cohort in cohort_ids[compartment]:
+            cohort_ids[compartment][cohort] = sorted(dict.fromkeys(cohort_ids[compartment][cohort]))
+    return {
+        "classifier_type": kind,
+        "method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+        "version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+        "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "visual_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+        "blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+        "rows": rows,
+        "cohort_ids": cohort_ids,
+        "counts": counts,
+    }
+
+
 def classify_visual_responsive_dendrites(
     cache: Dict[str, Any],
+    source_cache: Optional[Dict[str, Any]] = None,
     movie_state: str = VISUAL_RESPONSE_MOVIE_STATE,
     blank_state: str = VISUAL_RESPONSE_BLANK_STATE,
 ) -> Dict[str, Any]:
+    if source_cache is not None:
+        return _classify_visual_response_rows(cache, source_cache, kind="dendrite")
     rows: List[Dict[str, Any]] = []
     for animal_id, animal_entry in sorted(cache.get("animals", {}).items()):
         for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
@@ -699,14 +1078,16 @@ def classify_visual_responsive_dendrites(
                     "animal_id": animal_id,
                     "global_dendrite_id": global_dendrite_id,
                     "compartment": compartment,
+                    "classifier_type": "dendrite",
                     "comparison": "visual_response_movie_vs_blank",
-                    "state_a": movie_state,
-                    "state_b": blank_state,
+                    "test_name": "welch_ttest",
+                    "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
                     "available": bool(test.get("available", False)),
-                    "n_movie_values": int(len(movie_values)),
+                    "n_visual_values": int(len(movie_values)),
                     "n_blank_values": int(len(blank_values)),
-                    "mean_movie": float(np.nanmean(movie_values)) if movie_values else float("nan"),
+                    "mean_visual": float(np.nanmean(movie_values)) if movie_values else float("nan"),
                     "mean_blank": float(np.nanmean(blank_values)) if blank_values else float("nan"),
+                    "delta": effect_size,
                     "effect_size": effect_size,
                     "raw_pvalue": float(test.get("raw_pvalue", float("nan"))),
                     "adjusted_pvalue": float(test.get("adjusted_pvalue", float("nan"))),
@@ -720,11 +1101,11 @@ def classify_visual_responsive_dendrites(
         compartment = str(row.get("compartment") or "")
         if compartment in {"basal", "apical"}:
             by_compartment[compartment].append(row)
-    for compartment, compartment_rows in by_compartment.items():
+    for compartment_rows in by_compartment.values():
         n_tests = apply_bonferroni_correction(compartment_rows)
         for row in compartment_rows:
             row["n_tests_corrected"] = int(n_tests)
-            row["responsive"] = bool(row.get("significant", False) and np.isfinite(as_float(row.get("effect_size"))) and float(row.get("effect_size")) > 0)
+            row["responsive"] = bool(row.get("significant", False) and np.isfinite(as_float(row.get("delta"))) and float(row.get("delta")) > 0)
             row["cohort"] = "responsive" if row["responsive"] else "nonresponsive"
     for row in rows:
         if "n_tests_corrected" not in row:
@@ -753,15 +1134,27 @@ def classify_visual_responsive_dendrites(
         for cohort in cohort_ids[compartment]:
             cohort_ids[compartment][cohort] = sorted(dict.fromkeys(cohort_ids[compartment][cohort]))
     return {
-        "movie_state": movie_state,
-        "blank_state": blank_state,
-        "comparison": "visual_response_movie_vs_blank",
-        "test_name": "welch_ttest",
-        "correction": "bonferroni",
+        "classifier_type": "dendrite",
+        "method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+        "version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+        "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "visual_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+        "blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
         "rows": rows,
         "cohort_ids": cohort_ids,
         "counts": counts,
     }
+
+
+def classify_visual_responsive_spines(
+    cache: Dict[str, Any],
+    source_cache: Optional[Dict[str, Any]] = None,
+    movie_state: str = VISUAL_RESPONSE_MOVIE_STATE,
+    blank_state: str = VISUAL_RESPONSE_BLANK_STATE,
+) -> Dict[str, Any]:
+    if source_cache is not None:
+        return _classify_visual_response_rows(cache, source_cache, kind="spine")
+    return classify_visual_responsive_dendrites(cache, source_cache=source_cache, movie_state=movie_state, blank_state=blank_state)
 
 
 def visual_response_dendrite_ids(
@@ -776,6 +1169,15 @@ def visual_response_dendrite_ids(
         if isinstance(ids, (list, tuple)):
             return [str(dendrite_id) for dendrite_id in ids if str(dendrite_id)]
     return []
+
+
+def visual_response_spine_ids(
+    response_summary: Dict[str, Any],
+    compartment: str,
+    cohort: str,
+) -> List[str]:
+    return visual_response_dendrite_ids(response_summary, compartment, cohort)
+
 
 def padded_value_limits(values: Sequence[float]) -> Tuple[float, float]:
     arr = np.asarray(list(values), dtype=float)
@@ -3567,6 +3969,18 @@ def build_visual_response_dendrite_summary_results(
                 compartment,
                 dendrite_ids,
             )
+    return cohort_results
+
+
+def build_visual_response_spine_summary_results(
+    response_summary: Dict[str, Any],
+) -> Dict[str, Dict[str, List[str]]]:
+    cohort_results: Dict[str, Dict[str, List[str]]] = {}
+    for cohort in DENDRITE_RESPONSE_COHORTS[1:]:
+        cohort_results[cohort] = {
+            "basal": visual_response_spine_ids(response_summary, "basal", cohort),
+            "apical": visual_response_spine_ids(response_summary, "apical", cohort),
+        }
     return cohort_results
 
 
@@ -10791,10 +11205,14 @@ def process_cached_analysis(
     analysis_unit = str(cache.get("analysis_unit", "day"))
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
-    visual_response_summary = classify_visual_responsive_dendrites(cache)
+    visual_response_summary = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
     visual_response_state_summaries = build_visual_response_dendrite_summary_results(cache, state_comparison_states, visual_response_summary)
+    spine_visual_response_summary = classify_visual_responsive_spines(cache, source_cache=source_cache)
+    spine_visual_response_state_summaries = build_visual_response_spine_summary_results(spine_visual_response_summary)
     results["dendrite_visual_response"] = visual_response_summary
     results["dendrite_visual_response_state_summaries"] = visual_response_state_summaries
+    results["spine_visual_response"] = spine_visual_response_summary
+    results["spine_visual_response_state_summaries"] = spine_visual_response_state_summaries
     with step_scope("state summary metrics"):
         # Build per-state summaries first because several later outputs reuse the same numbers.
         state_metric_names = [
@@ -12227,13 +12645,13 @@ def write_poster_ready_figures(
     results: Dict[str, Any],
     analysis_families: Optional[Sequence[str]] = None,
 ) -> List[str]:
-    from sleep_dendrite_spine_poster_figure import (
+    from posters.sleep_dendrite_spine_poster_figure import (
         DEFAULT_HEIGHT_CM as MIXED_POSTER_HEIGHT_CM,
         DEFAULT_OUTPUT_STEM as MIXED_POSTER_OUTPUT_STEM,
         DEFAULT_WIDTH_CM as MIXED_POSTER_WIDTH_CM,
         write_mixed_model_poster_figure,
     )
-    from sleep_dendrite_spine_spine_coactivity_poster_figure import (
+    from posters.sleep_dendrite_spine_spine_coactivity_poster_figure import (
         DEFAULT_SPINE_COACTIVITY_HEIGHT_CM,
         DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM,
         DEFAULT_SPINE_COACTIVITY_WIDTH_CM,
@@ -13450,6 +13868,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "analysis_families": list(config.get("analysis_families") or []),
         "shuffle_n": int(shuffle_n),
+        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        "spine_visual_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        "dendrite_visual_response_classifier_type": "dendrite",
+        "spine_visual_response_classifier_type": "spine",
+        "visual_response_classifier_method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+        "visual_response_classifier_version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+        "visual_response_covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+        "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
         "fit_spine_coactivity_mixed_model": bool(config.get("fit_spine_coactivity_mixed_model")),
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
         "mixed_model_only": bool(config.get("mixed_model_only")),
@@ -13584,6 +14011,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "movie_trial_types": selection_meta.get("movie_trial_types"),
         "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        "spine_visual_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),
