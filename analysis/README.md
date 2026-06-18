@@ -7,7 +7,7 @@ The runnable code now lives inside these folders, which keeps the root directory
 
 | Folder | Purpose |
 | --- | --- |
-| `main_pipeline/` | Main dendrite/spine analysis, day figures, and demo builder launchers. |
+| `main_pipeline/` | Main dendrite/spine analysis, day figures, demo builder, and poster launchers, now split into subfolders. |
 | `sleep_state_across_days/` | Sleep-state-only across-days launcher. |
 | `visual_response/` | Movie dendrite and rapid-retinotopy visual-response launcher. |
 

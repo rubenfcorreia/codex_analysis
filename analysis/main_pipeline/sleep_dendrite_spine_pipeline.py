@@ -44,6 +44,8 @@ warnings.filterwarnings(
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+if __name__ == "__main__":
+    sys.modules.setdefault("sleep_dendrite_spine_pipeline", sys.modules[__name__])
 # The file is intentionally grouped into: shared constants, low-level helpers,
 # cache builders, analysis, demo generation, and the CLI entrypoint.
 try:
@@ -1767,33 +1769,50 @@ def _build_event_detection_example_figure(
 ) -> Optional[Any]:
     if plt is None:
         return None
+
     time = np.asarray(time, dtype=float).ravel()
     trace = np.asarray(trace, dtype=float).ravel()
     if time.size != trace.size:
         time = np.arange(trace.size, dtype=float)
+
     valid = np.isfinite(time) & np.isfinite(trace)
     if not np.any(valid):
         return None
+
     event_info = event_info or {}
     dendrite_event_info = dendrite_event_info or {}
+
     threshold = as_float(event_info.get("threshold"))
     event_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
     dendrite_event_runs = [(int(start), int(end)) for start, end in (dendrite_event_info.get("event_runs") or [])]
+
     selected_windows = _select_event_example_windows(trace.size, event_runs, max_examples=10)
+    if not selected_windows:
+        return None
+
     if trace_kind == "spine":
         if dendrite_trace is None:
-            dendrite_trace = np.asarray(dendrite_event_info.get("trace") if isinstance(dendrite_event_info, dict) else None, dtype=float)
+            dendrite_trace = np.asarray(
+                dendrite_event_info.get("trace") if isinstance(dendrite_event_info, dict) else None,
+                dtype=float,
+            )
         else:
             dendrite_trace = np.asarray(dendrite_trace, dtype=float).ravel()
+
         if dendrite_time is None:
             dendrite_time = time
         else:
             dendrite_time = np.asarray(dendrite_time, dtype=float).ravel()
-        if dendrite_time.size != dendrite_trace.size:
+
+        if dendrite_trace is None or dendrite_trace.size == 0:
+            dendrite_trace = None
+            dendrite_time = None
+        elif dendrite_time.size != dendrite_trace.size:
             dendrite_time = np.arange(dendrite_trace.size, dtype=float)
     else:
         dendrite_trace = None
         dendrite_time = None
+
     trace_color = "#4477aa" if trace_kind == "dendrite" else "#7a5195"
     spine_color = "#7a5195"
     dendrite_color = "#4477aa"
@@ -1801,123 +1820,319 @@ def _build_event_detection_example_figure(
     spine_event_color = "#d62728"
     noncoincident_color = "#f58518"
 
-    fig, axes = plt.subplots(5, 2, figsize=(12.6, 15.0), squeeze=False)
-    axes_flat = axes.ravel()
-    fig.suptitle(title, fontsize=POSTER_TITLE_SIZE)
+    compact_rc = {
+        "font.size": 9,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "figure.titlesize": 16,
+    }
 
-    for idx, window in enumerate(selected_windows):
-        ax = axes_flat[idx]
-        window_start = int(window["window_start"])
-        window_end = int(window["window_end"])
-        window_time = time[window_start:window_end]
-        window_trace = trace[window_start:window_end]
-        window_valid = np.isfinite(window_time) & np.isfinite(window_trace)
-        if not np.any(window_valid):
-            ax.text(0.5, 0.5, "No valid signal", transform=ax.transAxes, ha="center", va="center", fontsize=POSTER_LABEL_SIZE)
-            ax.set_axis_off()
-            continue
-        window_runs = [run for run in event_runs if _window_overlaps_any(window_start, window_end, [run])]
-        if trace_kind == "spine":
-            ax_spine = ax
-            ax_dendrite = ax_spine.twinx()
-            ax_spine.plot(window_time[window_valid], window_trace[window_valid], color=spine_color, linewidth=1.2, label=trace_label)
-            if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
-                dend_window_trace = dendrite_trace[window_start:window_end]
-                dend_window_time = dendrite_time[window_start:window_end]
-                dend_valid = np.isfinite(dend_window_time) & np.isfinite(dend_window_trace)
-                if np.any(dend_valid):
-                    ax_dendrite.plot(dend_window_time[dend_valid], dend_window_trace[dend_valid], color=dendrite_color, linewidth=1.0, alpha=0.9, label="Dendrite dF/F")
-            if np.isfinite(threshold):
-                ax_spine.axhline(threshold, color=event_color, linestyle="--", linewidth=0.9, alpha=0.95)
-            dend_window_runs = [run for run in dendrite_event_runs if _window_overlaps_any(window_start, window_end, [run])]
-            if dend_window_runs:
-                _add_event_run_spans(ax_spine, time, dend_window_runs, color=dendrite_color, alpha=0.10, zorder=1)
+    with plt.rc_context(compact_rc):
+        fig, axes = plt.subplots(5, 2, figsize=(11.5, 13.0), squeeze=False)
+        axes_flat = axes.ravel()
+
+        fig.suptitle(title, fontsize=16, fontweight="bold", y=0.995)
+
+        for idx, window in enumerate(selected_windows):
+            ax = axes_flat[idx]
+            row = idx // 2
+            col = idx % 2
+
+            window_start = int(window["window_start"])
+            window_end = int(window["window_end"])
+
+            window_time = time[window_start:window_end]
+            window_trace = trace[window_start:window_end]
+            window_valid = np.isfinite(window_time) & np.isfinite(window_trace)
+
+            if not np.any(window_valid):
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No valid signal",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                )
+                ax.set_axis_off()
+                continue
+
+            window_runs = [run for run in event_runs if _window_overlaps_any(window_start, window_end, [run])]
+
+            # Use the first event in the window as t = 0.
+            # If there is no event, center the context window.
             if window_runs:
-                for run in window_runs:
-                    coincident = any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs)
-                    run_color = spine_event_color if coincident else noncoincident_color
-                    _add_event_run_spans(ax_spine, time, [run], color=run_color, alpha=0.20, zorder=4)
-                    _annotate_run_callout(ax_spine, time, trace, run, label="coincident" if coincident else "noncoincident", color=run_color)
+                reference_idx = int(window_runs[0][0])
+                reference_time = float(time[reference_idx]) if 0 <= reference_idx < time.size else float(window_time[0])
             else:
-                ax_spine.text(0.04, 0.92, "no detected spine event", transform=ax_spine.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE, color="#555555", bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "none", "alpha": 0.75})
-            ax_spine.set_ylabel("Spine-specific dF/F", fontsize=POSTER_LABEL_SIZE, color=spine_color)
-            ax_spine.tick_params(axis="y", colors=spine_color)
-            ax_spine.spines["left"].set_color(spine_color)
-            ax_spine.spines["right"].set_visible(False)
-            ax_spine.yaxis.label.set_color(spine_color)
-            ax_dendrite.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE, color=dendrite_color)
-            ax_dendrite.yaxis.set_label_position("right")
-            ax_dendrite.yaxis.tick_right()
-            ax_dendrite.tick_params(axis="y", colors=dendrite_color)
-            ax_dendrite.spines["right"].set_color(dendrite_color)
-            ax_dendrite.spines["left"].set_visible(False)
-            ax_dendrite.yaxis.label.set_color(dendrite_color)
-            ax_dendrite.grid(False)
-            ax_dendrite.patch.set_alpha(0.0)
-            spine_y_values = window_trace[window_valid]
-            if np.isfinite(threshold):
-                spine_y_values = np.concatenate([spine_y_values, np.asarray([threshold], dtype=float)])
-            spine_y_min = float(np.nanmin(spine_y_values))
-            spine_y_max = float(np.nanmax(spine_y_values))
-            if spine_y_min == spine_y_max:
-                spine_pad = 0.1 if spine_y_min == 0 else max(0.05 * abs(spine_y_min), 0.05)
-            else:
-                spine_pad = max(0.12 * (spine_y_max - spine_y_min), 0.05)
-            ax_spine.set_ylim(spine_y_min - spine_pad, spine_y_max + spine_pad)
-            dend_ylim_values = np.asarray([], dtype=float)
-            if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
-                dend_window_trace = dendrite_trace[window_start:window_end]
-                dend_window_valid = np.isfinite(dend_window_trace)
-                if np.any(dend_window_valid):
-                    dend_ylim_values = dend_window_trace[dend_window_valid]
-            if dend_ylim_values.size > 0:
-                dend_y_min = float(np.nanmin(dend_ylim_values))
-                dend_y_max = float(np.nanmax(dend_ylim_values))
-                if dend_y_min == dend_y_max:
-                    dend_pad = 0.1 if dend_y_min == 0 else max(0.05 * abs(dend_y_min), 0.05)
+                reference_time = float(np.nanmedian(window_time[window_valid]))
+
+            window_time_rel = window_time - reference_time
+
+            if trace_kind == "spine":
+                ax_spine = ax
+                ax_dendrite = ax_spine.twinx()
+
+                ax_spine.plot(
+                    window_time_rel[window_valid],
+                    window_trace[window_valid],
+                    color=spine_color,
+                    linewidth=1.1,
+                    label=trace_label,
+                )
+
+                if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
+                    dend_window_trace = dendrite_trace[window_start:window_end]
+                    dend_window_time = dendrite_time[window_start:window_end]
+                    dend_valid = np.isfinite(dend_window_time) & np.isfinite(dend_window_trace)
+
+                    if np.any(dend_valid):
+                        ax_dendrite.plot(
+                            dend_window_time[dend_valid] - reference_time,
+                            dend_window_trace[dend_valid],
+                            color=dendrite_color,
+                            linewidth=1.0,
+                            alpha=0.9,
+                            label="Dendrite dF/F",
+                        )
+
+                if np.isfinite(threshold):
+                    ax_spine.axhline(
+                        threshold,
+                        color=event_color,
+                        linestyle="--",
+                        linewidth=0.8,
+                        alpha=0.9,
+                    )
+
+                dend_window_runs = [
+                    run for run in dendrite_event_runs
+                    if _window_overlaps_any(window_start, window_end, [run])
+                ]
+
+                for run in dend_window_runs:
+                    start_i, end_i = run
+                    if 0 <= start_i < time.size and 0 <= end_i - 1 < time.size:
+                        ax_spine.axvspan(
+                            time[start_i] - reference_time,
+                            time[end_i - 1] - reference_time,
+                            color=dendrite_color,
+                            alpha=0.08,
+                            zorder=1,
+                            lw=0,
+                        )
+
+                if window_runs:
+                    for run in window_runs:
+                        coincident = any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs)
+                        run_color = spine_event_color if coincident else noncoincident_color
+                        run_label = "coincident" if coincident else "noncoincident"
+
+                        start_i, end_i = run
+                        if 0 <= start_i < time.size and 0 <= end_i - 1 < time.size:
+                            x0 = time[start_i] - reference_time
+                            x1 = time[end_i - 1] - reference_time
+                            ax_spine.axvspan(x0, x1, color=run_color, alpha=0.20, zorder=4, lw=0)
+
+                            y0, y1 = ax_spine.get_ylim()
+                            ax_spine.text(
+                                0.5 * (x0 + x1),
+                                y0 + 0.90 * (y1 - y0),
+                                run_label,
+                                ha="center",
+                                va="top",
+                                fontsize=8,
+                                color=run_color,
+                                bbox={
+                                    "boxstyle": "round,pad=0.15",
+                                    "facecolor": "white",
+                                    "edgecolor": "none",
+                                    "alpha": 0.75,
+                                },
+                            )
                 else:
-                    dend_pad = max(0.12 * (dend_y_max - dend_y_min), 0.05)
-                ax_dendrite.set_ylim(dend_y_min - dend_pad, dend_y_max + dend_pad)
-            ax_spine.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-            ax_dendrite.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-            ax_spine.text(0.98, 0.04, "spine + dendrite", transform=ax_spine.transAxes, ha="right", va="bottom", fontsize=POSTER_NOTE_SIZE, color="#333333")
-            ax = ax_spine
-        else:
-            ax.plot(window_time[window_valid], window_trace[window_valid], color=trace_color, linewidth=1.2, label=trace_label)
-            if np.isfinite(threshold):
-                ax.axhline(threshold, color=event_color, linestyle="--", linewidth=0.9, alpha=0.95)
-            if window_runs:
-                for run in window_runs:
-                    _add_event_run_spans(ax, time, [run], color=trace_color, alpha=0.20, zorder=4)
-                    _annotate_run_callout(ax, time, trace, run, label="event", color=trace_color)
+                    ax_spine.text(
+                        0.04,
+                        0.92,
+                        "no detected spine event",
+                        transform=ax_spine.transAxes,
+                        ha="left",
+                        va="top",
+                        fontsize=8,
+                        color="#555555",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "edgecolor": "none",
+                            "alpha": 0.75,
+                        },
+                    )
+
+                spine_y_values = window_trace[window_valid]
+                if np.isfinite(threshold):
+                    spine_y_values = np.concatenate([spine_y_values, np.asarray([threshold], dtype=float)])
+
+                spine_y_min = float(np.nanmin(spine_y_values))
+                spine_y_max = float(np.nanmax(spine_y_values))
+                spine_pad = max(0.12 * (spine_y_max - spine_y_min), 0.05) if spine_y_min != spine_y_max else 0.1
+                ax_spine.set_ylim(spine_y_min - spine_pad, spine_y_max + spine_pad)
+
+                if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
+                    dend_window_trace = dendrite_trace[window_start:window_end]
+                    dend_valid = np.isfinite(dend_window_trace)
+                    if np.any(dend_valid):
+                        dend_y_min = float(np.nanmin(dend_window_trace[dend_valid]))
+                        dend_y_max = float(np.nanmax(dend_window_trace[dend_valid]))
+                        dend_pad = max(0.12 * (dend_y_max - dend_y_min), 0.05) if dend_y_min != dend_y_max else 0.1
+                        ax_dendrite.set_ylim(dend_y_min - dend_pad, dend_y_max + dend_pad)
+
+                if col == 0:
+                    ax_spine.set_ylabel("Spine-specific dF/F", color=spine_color)
+                else:
+                    ax_spine.set_ylabel("")
+                    ax_spine.tick_params(axis="y", labelleft=False)
+
+                ax_spine.tick_params(axis="y", colors=spine_color)
+                ax_spine.spines["left"].set_color(spine_color)
+                ax_spine.spines["right"].set_visible(False)
+
+                if col == 1:
+                    ax_dendrite.set_ylabel("Dendrite dF/F", color=dendrite_color)
+                else:
+                    ax_dendrite.set_ylabel("")
+                    ax_dendrite.tick_params(axis="y", labelright=False)
+
+                ax_dendrite.yaxis.set_label_position("right")
+                ax_dendrite.yaxis.tick_right()
+                ax_dendrite.tick_params(axis="y", colors=dendrite_color)
+                ax_dendrite.spines["right"].set_color(dendrite_color)
+                ax_dendrite.spines["left"].set_visible(False)
+                ax_dendrite.grid(False)
+                ax_dendrite.patch.set_alpha(0.0)
+
+                ax_spine.text(
+                    0.98,
+                    0.04,
+                    "spine + dendrite",
+                    transform=ax_spine.transAxes,
+                    ha="right",
+                    va="bottom",
+                    fontsize=8,
+                    color="#333333",
+                )
+
+                ax = ax_spine
+
             else:
-                ax.text(0.04, 0.92, "context window", transform=ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE, color="#555555", bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "none", "alpha": 0.75})
-            y_values = window_trace[window_valid]
-            if np.isfinite(threshold):
-                y_values = np.concatenate([y_values, np.asarray([threshold], dtype=float)])
-            y_min = float(np.nanmin(y_values))
-            y_max = float(np.nanmax(y_values))
-            if y_min == y_max:
-                pad = 0.1 if y_min == 0 else max(0.05 * abs(y_min), 0.05)
+                ax.plot(
+                    window_time_rel[window_valid],
+                    window_trace[window_valid],
+                    color=trace_color,
+                    linewidth=1.1,
+                    label=trace_label,
+                )
+
+                if np.isfinite(threshold):
+                    ax.axhline(threshold, color=event_color, linestyle="--", linewidth=0.8, alpha=0.9)
+
+                if window_runs:
+                    for run in window_runs:
+                        start_i, end_i = run
+                        if 0 <= start_i < time.size and 0 <= end_i - 1 < time.size:
+                            ax.axvspan(
+                                time[start_i] - reference_time,
+                                time[end_i - 1] - reference_time,
+                                color=trace_color,
+                                alpha=0.20,
+                                zorder=4,
+                                lw=0,
+                            )
+                else:
+                    ax.text(
+                        0.04,
+                        0.92,
+                        "context window",
+                        transform=ax.transAxes,
+                        ha="left",
+                        va="top",
+                        fontsize=8,
+                        color="#555555",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "edgecolor": "none",
+                            "alpha": 0.75,
+                        },
+                    )
+
+                y_values = window_trace[window_valid]
+                if np.isfinite(threshold):
+                    y_values = np.concatenate([y_values, np.asarray([threshold], dtype=float)])
+
+                y_min = float(np.nanmin(y_values))
+                y_max = float(np.nanmax(y_values))
+                pad = max(0.12 * (y_max - y_min), 0.05) if y_min != y_max else 0.1
+                ax.set_ylim(y_min - pad, y_max + pad)
+
+                if col == 0:
+                    ax.set_ylabel(trace_label)
+                else:
+                    ax.set_ylabel("")
+                    ax.tick_params(axis="y", labelleft=False)
+
+                ax.text(
+                    0.98,
+                    0.04,
+                    trace_label,
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="bottom",
+                    fontsize=8,
+                    color="#333333",
+                )
+
+            panel_label = f"Example {idx + 1}"
+            if trace_kind == "spine":
+                if window_runs:
+                    any_coincident = any(
+                        any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs)
+                        for run in window_runs
+                    )
+                    panel_label += " | coincident" if any_coincident else " | noncoincident"
+                else:
+                    panel_label += " | context"
             else:
-                pad = max(0.12 * (y_max - y_min), 0.05)
-            ax.set_ylim(y_min - pad, y_max + pad)
-            ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-            ax.text(0.98, 0.04, trace_label, transform=ax.transAxes, ha="right", va="bottom", fontsize=POSTER_NOTE_SIZE, color="#333333")
-        panel_label = f"Example {idx + 1}"
-        if trace_kind == "spine":
-            if window_runs:
-                panel_label += " | coincident" if any(any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs) for run in window_runs) else " | noncoincident"
+                panel_label += " | event" if window_runs else " | context"
+
+            ax.set_title(panel_label, fontsize=10, pad=3)
+            ax.axvline(0, color="0.25", linewidth=0.7, alpha=0.45)
+            ax.axhline(0, color="0.4", linewidth=0.6, alpha=0.25)
+            ax.grid(alpha=0.18)
+
+            ax.set_xlim(float(np.nanmin(window_time_rel[window_valid])), float(np.nanmax(window_time_rel[window_valid])))
+            ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+
+            if row == 4:
+                ax.set_xlabel("Time from event/window center (s)")
             else:
-                panel_label += " | context"
-        else:
-            panel_label += " | event" if window_runs else " | context"
-        ax.set_title(panel_label, fontsize=POSTER_TITLE_SIZE)
-        ax.set_xlim(float(window_time[0]), float(window_time[-1]))
-        ax.grid(alpha=0.2)
-    for ax in axes_flat[len(selected_windows):]:
-        ax.set_axis_off()
-    fig.subplots_adjust(top=0.94, hspace=0.42, wspace=0.20)
+                ax.set_xlabel("")
+                ax.tick_params(axis="x", labelbottom=False)
+
+        for ax in axes_flat[len(selected_windows):]:
+            ax.set_axis_off()
+
+        fig.subplots_adjust(
+            top=0.955,
+            bottom=0.055,
+            left=0.075,
+            right=0.925,
+            hspace=0.34,
+            wspace=0.16,
+        )
+
     return fig
 
 def plot_event_detection_example_figure(
@@ -6877,6 +7092,7 @@ def load_analysis_results_cache(
     path: Path,
     *,
     expected_meta: Optional[Dict[str, Any]] = None,
+    ignore_meta_keys: Optional[Sequence[str]] = None,
     rebuild: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     if rebuild:
@@ -6897,9 +7113,30 @@ def load_analysis_results_cache(
         step_message("rebuilding analysis-results cache")
         return None, "schema_mismatch"
     if expected_meta is not None:
-        expected_hash = analysis_cache_meta_hash(expected_meta)
-        if str(cache.get("meta_hash") or "") != expected_hash:
-            step_message("rebuilding analysis-results cache")
+        ignore_keys = {str(key) for key in (ignore_meta_keys or []) if str(key)}
+        filtered_expected_meta = {key: value for key, value in expected_meta.items() if key not in ignore_keys}
+        expected_hash = analysis_cache_meta_hash(filtered_expected_meta)
+
+        saved_meta = cache.get("meta", {})
+        if not isinstance(saved_meta, dict):
+            saved_meta = {}
+        filtered_saved_meta = {key: value for key, value in saved_meta.items() if key not in ignore_keys}
+        saved_hash = analysis_cache_meta_hash(filtered_saved_meta)
+
+        if saved_hash != expected_hash:
+            step_message("analysis-results cache meta mismatch")
+            step_message(f"saved meta_hash:   {saved_hash}")
+            step_message(f"expected meta_hash:{expected_hash}")
+
+            for key in sorted(set(filtered_saved_meta) | set(filtered_expected_meta)):
+                saved_value = filtered_saved_meta.get(key)
+                expected_value = filtered_expected_meta.get(key)
+                if saved_value != expected_value:
+                    step_message(
+                        f"meta mismatch for {key!r}: "
+                        f"saved={saved_value!r} expected={expected_value!r}"
+                    )
+
             return None, "meta_mismatch"
     results = cache.get("analysis_results")
     if not isinstance(results, dict):
@@ -11984,7 +12221,12 @@ def write_analysis_outputs(
     return list(dict.fromkeys(written_artifacts))
 
 
-def write_poster_ready_figures(output_dir: Path, cache: Dict[str, Any], results: Dict[str, Any]) -> List[str]:
+def write_poster_ready_figures(
+    output_dir: Path,
+    cache: Dict[str, Any],
+    results: Dict[str, Any],
+    analysis_families: Optional[Sequence[str]] = None,
+) -> List[str]:
     from sleep_dendrite_spine_poster_figure import (
         DEFAULT_HEIGHT_CM as MIXED_POSTER_HEIGHT_CM,
         DEFAULT_OUTPUT_STEM as MIXED_POSTER_OUTPUT_STEM,
@@ -12000,9 +12242,12 @@ def write_poster_ready_figures(output_dir: Path, cache: Dict[str, Any], results:
 
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
     written: List[str] = []
+    selected_families = set(str(family) for family in (analysis_families or []) if str(family))
+    allow_all_families = not selected_families
 
-    with step_scope("poster figure generation: mixed_model"):
-        mixed_path = write_mixed_model_poster_figure(
+    if allow_all_families or "mixed_model" in selected_families:
+        with step_scope("poster figure generation: mixed_model"):
+            mixed_path = write_mixed_model_poster_figure(
             cache,
             poster_output_dir,
             results=results,
@@ -12010,10 +12255,11 @@ def write_poster_ready_figures(output_dir: Path, cache: Dict[str, Any], results:
             width_cm=float(MIXED_POSTER_WIDTH_CM),
             height_cm=float(MIXED_POSTER_HEIGHT_CM),
         )
-    written.append(report_relative_path(mixed_path, output_dir))
+        written.append(report_relative_path(mixed_path, output_dir))
 
-    with step_scope("poster figure generation: spine_coactivity"):
-        coactivity_path = write_spine_coactivity_poster_figure(
+    if allow_all_families or "spine_coactivity" in selected_families:
+        with step_scope("poster figure generation: spine_coactivity"):
+            coactivity_path = write_spine_coactivity_poster_figure(
             cache,
             poster_output_dir,
             results=results,
@@ -12021,7 +12267,7 @@ def write_poster_ready_figures(output_dir: Path, cache: Dict[str, Any], results:
             width_cm=float(DEFAULT_SPINE_COACTIVITY_WIDTH_CM),
             height_cm=float(DEFAULT_SPINE_COACTIVITY_HEIGHT_CM),
         )
-    written.append(report_relative_path(coactivity_path, output_dir))
+        written.append(report_relative_path(coactivity_path, output_dir))
 
     return written
 
@@ -12969,6 +13215,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["classical", "shuffle"],
         help="Choose the p-value source for mixed-model contrasts: classical or shuffle",
     )
+    parser.add_argument(
+        "--analysis-families",
+        nargs="*",
+        help="Optional subset of analysis families to select: state, basal_apical, direct_trial_type_comparison, correlation, matrix_similarity, mixed_model, spine_coactivity",
+    )
     parser.add_argument("--channel", type=int)
     parser.add_argument("--locomotion-threshold", type=float)
     parser.add_argument("--cache-path", type=Path)
@@ -13009,6 +13260,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "spine_coactivity_only": True if args.spine_coactivity_only else None,
         "mixed_model_only": True if args.mixed_model_only else None,
         "mixed_model_contrast_p_source": args.mixed_model_contrast_p_source,
+        "analysis_families": parse_list_argument(args.analysis_families) or None,
         "plots_only": True if args.plots_only else None,
         "demo": True if args.demo else None,
         "channel": args.channel,
@@ -13038,6 +13290,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if key not in config or config[key] is None:
             config[key] = value
     cpu_thread_limit = apply_cpu_thread_limit(config.get("cpu_thread_limit"))
+    from analysis_families.core import normalize_analysis_families
+    config["analysis_families"] = normalize_analysis_families(config.get("analysis_families"))
     if bool(config.get("demo")) or args.demo:
         # Demo mode first materializes a fake repository, then reroutes the analysis there.
         demo_output_dir = Path(config.get("output_dir")) if config.get("output_dir") else DEFAULT_RESULTS_DIR
@@ -13105,6 +13359,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_results_cache_file = Path(config.get("analysis_results_cache_path")) if config.get("analysis_results_cache_path") else analysis_results_cache_path(cache_path)
         figure_output_dir = Path(config.get("figure_output_dir")) if config.get("figure_output_dir") else None
         plots_only = bool(config.get("plots_only"))
+        step_message(
+            f"RUN FLAGS: rebuild={rebuild}, plots_only={plots_only}, "
+            f"analysis_results_rebuild={analysis_results_rebuild}"
+        )
         if plots_only:
             source_cache_rebuild = False
             analysis_tables_rebuild = False
@@ -13168,6 +13426,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
     else:
         shared_shuffle_cache = None
+    from analysis_families.core import run_cached_analysis
     source_signature = stable_hash(
         {
             str(exp_id): str(exp_meta.get("source_signature", ""))
@@ -13189,6 +13448,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_trial_types": list(selection_meta.get("movie_trial_types") or []),
         "compare_states": list(selection_meta.get("compare_states") or []) if selection_meta.get("compare_states") is not None else None,
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
+        "analysis_families": list(config.get("analysis_families") or []),
         "shuffle_n": int(shuffle_n),
         "fit_spine_coactivity_mixed_model": bool(config.get("fit_spine_coactivity_mixed_model")),
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
@@ -13196,7 +13456,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shared_shuffle_signature": str(shared_shuffle_cache.get("signature", "")) if isinstance(shared_shuffle_cache, dict) else "",
         "shared_shuffle_shuffle_n": int(shared_shuffle_cache.get("shuffle_n", shuffle_n)) if isinstance(shared_shuffle_cache, dict) else int(shuffle_n),
     }
-    analysis_results_cache, analysis_results_cache_status = load_analysis_results_cache(analysis_results_cache_file, expected_meta=analysis_results_meta, rebuild=False if plots_only else analysis_results_rebuild)
+    analysis_results_cache, analysis_results_cache_status = load_analysis_results_cache(
+            analysis_results_cache_file,
+            expected_meta=analysis_results_meta,
+            ignore_meta_keys=("shared_shuffle_signature", "shared_shuffle_shuffle_n") if plots_only else None,
+            rebuild=False if plots_only else analysis_results_rebuild,
+        )
     if plots_only and analysis_results_cache_status == "missing":
         raise SystemExit(f"plots_only requires an existing analysis results cache at {analysis_results_cache_file}")
     source_summary = summarize_cache(source_cache)
@@ -13228,30 +13493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif analysis_results_cache is not None:
             results = dict(analysis_results_cache.get("analysis_results", {}))
         elif bool(config.get("spine_coactivity_only")):
-            results = process_spine_coactivity_only(
-                analysis_cache,
-                shuffle_n=shuffle_n,
-                state_comparison_states=state_comparison_states,
-                basal_apical_states=basal_apical_states,
-                shared_shuffle_cache=shared_shuffle_cache,
-                output_dir=output_dir,
-                figure_root=figure_output_dir,
-                fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
-                mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
-                spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
-            )
-        elif bool(config.get("mixed_model_only")):
-            results = process_mixed_model_only(
-                analysis_cache,
-                shuffle_n=shuffle_n,
-                state_comparison_states=state_comparison_states,
-                basal_apical_states=basal_apical_states,
-                output_dir=output_dir,
-                figure_root=figure_output_dir,
-                mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
-            )
-        else:
-            results = process_cached_analysis(
+            results = run_cached_analysis(
                 analysis_cache,
                 shuffle_n=shuffle_n,
                 state_comparison_states=state_comparison_states,
@@ -13263,6 +13505,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
                 mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
+                analysis_families=["spine_coactivity"],
+            )
+        elif bool(config.get("mixed_model_only")):
+            results = run_cached_analysis(
+                analysis_cache,
+                shuffle_n=shuffle_n,
+                state_comparison_states=state_comparison_states,
+                basal_apical_states=basal_apical_states,
+                source_cache=source_cache,
+                shared_shuffle_cache=shared_shuffle_cache,
+                output_dir=output_dir,
+                figure_root=figure_output_dir,
+                fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
+                mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
+                spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
+                analysis_families=["mixed_model"],
+            )
+        else:
+            results = run_cached_analysis(
+                analysis_cache,
+                shuffle_n=shuffle_n,
+                state_comparison_states=state_comparison_states,
+                basal_apical_states=basal_apical_states,
+                source_cache=source_cache,
+                shared_shuffle_cache=shared_shuffle_cache,
+                output_dir=output_dir,
+                figure_root=figure_output_dir,
+                fit_spine_coactivity_mixed_model=bool(config.get("fit_spine_coactivity_mixed_model")),
+                mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
+                spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
+                analysis_families=config.get("analysis_families"),
             )
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
@@ -13294,6 +13567,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "spine_coactivity_only": bool(config.get("spine_coactivity_only")),
         "mixed_model_only": bool(config.get("mixed_model_only")),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
+        "analysis_families": list(config.get("analysis_families") or []),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
         "compare_states": selection_meta.get("compare_states"),
@@ -13322,7 +13596,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     with step_scope("analysis outputs"):
         written_artifacts = write_analysis_outputs(output_dir, results, analysis_cache, figure_root=figure_output_dir, plots_only=plots_only)
     with step_scope("poster figure generation"):
-        written_artifacts.extend(write_poster_ready_figures(output_dir, analysis_cache, results))
+        written_artifacts.extend(
+            write_poster_ready_figures(
+                output_dir,
+                analysis_cache,
+                results,
+                analysis_families=config.get("analysis_families"),
+            )
+        )
     results["shared_shuffle_cache"] = {
         "path": str(shared_shuffle_cache_file) if shared_shuffle_cache_file is not None else None,
         "reused": not bool(shared_shuffle_cache_rebuilt),

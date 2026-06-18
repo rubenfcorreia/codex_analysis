@@ -1,22 +1,24 @@
 # Main Dendrite/Spine Pipeline
 
-Use `sleep_dendrite_spine_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
-The day-figure helper and demo builder live in the same workflow family, so they are documented here too.
+Use `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
+The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces.
 
 ## Script Map
 
 | Script | What it does |
 | --- | --- |
-| `sleep_dendrite_spine_pipeline.py` | Main analysis CLI for real data and demo runs. |
-| `sleep_dendrite_spine_day_figures.py` | Rebuilds the day-level figures and checkpoint gallery from an existing cache. |
-| `sleep_demo_builder.py` | Builds and validates the synthetic demo repository. |
+| `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` | Main analysis CLI for real data and demo runs. |
+| `analysis/main_pipeline/figures/sleep_dendrite_spine_day_figures.py` | Rebuilds the day-level figures and checkpoint gallery from an existing cache. |
+| `analysis/main_pipeline/demo/sleep_demo_builder.py` | Builds and validates the synthetic demo repository. |
+| `analysis/main_pipeline/posters/` | Poster-generation scripts and shared poster helpers. |
+| `analysis/main_pipeline/analysis_families/` | Family-specific analysis runners and shared dispatcher logic. |
 
 ## Where To Set Inputs
 
-1. Edit `sleep_dendrite_spine_example_config.json` for the easiest real-data workflow.
+1. Edit `analysis/main_pipeline/sleep_dendrite_spine_example_config.json` for the easiest real-data workflow.
 2. Pass `--config <file>` when you run the script.
 3. Override any field on the CLI if you need a one-off change.
-4. If you want a single script-level place to edit defaults, use `USER_EDITABLE_DEFAULTS` near the top of `sleep_dendrite_spine_pipeline.py`.
+4. If you want a single script-level place to edit defaults, use `USER_EDITABLE_DEFAULTS` near the top of `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py`.
 5. By default, results are written to `/home/rubencorreia/code/codex_analysis/results/main_pipeline/`.
 
 The main fields you will usually set are:
@@ -112,16 +114,16 @@ python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dend
 The custom demo recipe is a compact builder recipe:
 
 ```bash
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_demo_builder.py build \
+python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/demo/sleep_demo_builder.py build \
   --recipe /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_custom_demo_spec.json \
   --output-dir /tmp/sleep_codex_custom_demo
 
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_demo_builder.py validate \
+python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/demo/sleep_demo_builder.py validate \
   --recipe /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_custom_demo_spec.json \
   --output-dir /tmp/sleep_codex_custom_demo
 ```
 
-If you omit `--output-dir` when using `sleep_demo_builder.py`, it writes under `/home/rubencorreia/code/codex_analysis/results/main_pipeline/demo/`.
+If you omit `--output-dir` when using `demo/sleep_demo_builder.py`, it writes under `/home/rubencorreia/code/codex_analysis/results/main_pipeline/demo/`.
 
 The recipe usually only needs:
 

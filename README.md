@@ -6,13 +6,13 @@ This directory is organized by workflow.
 
 | Folder | Purpose |
 | --- | --- |
-| `analysis/` | Runnable scripts grouped by analysis type. |
+| `analysis/` | Runnable scripts grouped by workflow, with `main_pipeline/` split into subfolders. |
 
 ## Docs
 
 | Folder | Purpose |
 | --- | --- |
-| `docs/main_pipeline/` | Main dendrite/spine analysis and demo builder notes. |
+| `docs/main_pipeline/` | Main dendrite/spine analysis, folder layout, and demo builder notes. |
 | `docs/methods/` | Repo-wide methods page for metrics, calculations, and statistical tests. |
 | `docs/sleep_state_across_days/` | Sleep-state-only across-days notes. |
 
