@@ -159,6 +159,9 @@ DEFAULT_MOVIE_PUPIL_STATE_FIGURE_DIRNAME = "movie_pupil_state"
 DEFAULT_MOVIE_PUPIL_STATE_FIGURE_STEM = "movie_pupil_by_state"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME = "movie_pupil_transition"
 DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME = "sleep_pupil_transition"
+DEFAULT_PUPIL_STATE_PERCENTILE_FIGURE_DIRNAME = "sleep_pupil_state_percentile"
+DEFAULT_PUPIL_STATE_PERCENTILE_FIGURE_STEM = "pupil_percentile_by_state"
+DEFAULT_PUPIL_STATE_Z_FIGURE_STEM = "pupil_z_by_state"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_STEM = "movie_pupil_transition_delta"
 DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_STEM = "sleep_pupil_transition_delta"
 DEFAULT_MOVIE_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM = "movie_pupil_transition_examples"
@@ -244,6 +247,14 @@ def write_csv_rows(path: Path, rows: Sequence[Mapping[str, Any]], fieldnames: Se
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
+def read_csv_rows(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        return [dict(row) for row in reader]
 
 
 def jsonable(value: Any) -> Any:
@@ -455,6 +466,14 @@ def finite_mean_and_sem(values: Sequence[Any]) -> Tuple[float, float]:
         return mean, float("nan")
     sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size))
     return mean, sem
+
+
+def finite_mean_and_median(values: Sequence[Any]) -> Tuple[float, float]:
+    arr = np.asarray([as_float(value) for value in values], dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return float("nan"), float("nan")
+    return float(np.nanmean(arr)), float(np.nanmedian(arr))
 
 
 def columnwise_finite_mean(matrix: np.ndarray) -> np.ndarray:
@@ -2607,6 +2626,138 @@ def load_session_pupil_series(exp_root: Path, category: str) -> Tuple[Optional[n
                 if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
                     return pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye'
     return None, None, None
+
+
+def compute_pupil_state_percentiles_for_expid(
+    summary: SessionSummary,
+    repo_base: Path,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    sample_rows: List[Dict[str, Any]] = []
+    summary_rows: List[Dict[str, Any]] = []
+    checks: Dict[str, Any] = {
+        'status': 'skipped',
+        'skip_reason': '',
+        'exp_id': str(summary.exp_ids[0]) if summary.exp_ids else '',
+        'animal_id': str(summary.animal_id),
+        'date': str(summary.date),
+        'category': str(summary.category),
+        'state_source': '',
+        'pupil_source': '',
+        'n_full_valid_pupil_samples': 0,
+        'n_state_aligned_samples': 0,
+        'n_state_valid_samples': 0,
+    }
+    exp_id = str(summary.exp_ids[0]) if summary.exp_ids else ''
+    if not exp_id:
+        checks['skip_reason'] = 'missing exp_id'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} on {summary.date}: missing exp_id')
+        return sample_rows, summary_rows, checks
+    if not summary.sleep_state_paths:
+        checks['skip_reason'] = 'missing sleep state path'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: missing sleep state path')
+        return sample_rows, summary_rows, checks
+
+    sleep_state_path = Path(summary.sleep_state_paths[0])
+    exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
+    try:
+        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+    except Exception as exc:
+        checks['skip_reason'] = f'failed to load sleep state bundle: {exc}'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: {exc}')
+        return sample_rows, summary_rows, checks
+
+    state_t, state_values, state_source = load_sleep_state_timeline(bundle)
+    checks['state_source'] = state_source
+    if state_t.size == 0 or state_values.size == 0:
+        checks['skip_reason'] = 'missing sleep state samples'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: empty sleep state timeline')
+        return sample_rows, summary_rows, checks
+
+    pupil_t, pupil_size, pupil_source = load_session_pupil_series(exp_root, summary.category)
+    if pupil_t is None or pupil_size is None or pupil_source is None:
+        checks['skip_reason'] = 'missing pupil data'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: missing pupil data')
+        return sample_rows, summary_rows, checks
+    checks['pupil_source'] = pupil_source
+
+    pupil_t = np.asarray(pupil_t, dtype=float).ravel()
+    pupil_size = np.asarray(pupil_size, dtype=float).ravel()
+    pupil_t, pupil_size = align_length(pupil_t, pupil_size)
+    finite_mask = np.isfinite(pupil_t) & np.isfinite(pupil_size)
+    valid_pupil = np.asarray(pupil_size[finite_mask], dtype=float)
+    checks['n_full_valid_pupil_samples'] = int(valid_pupil.size)
+    if valid_pupil.size < 2:
+        checks['skip_reason'] = 'too few valid pupil samples'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: too few valid pupil samples')
+        return sample_rows, summary_rows, checks
+
+    pupil_mean = float(np.nanmean(valid_pupil))
+    pupil_std = float(np.nanstd(valid_pupil, ddof=0))
+    if not np.isfinite(pupil_std) or pupil_std <= 0.0:
+        checks['skip_reason'] = 'invalid pupil standard deviation'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: pupil std is zero or invalid')
+        return sample_rows, summary_rows, checks
+
+    aligned_pupil = align_movie_pupil_series_to_timeline(pupil_t, pupil_size, state_t)
+    valid_state_mask = np.isfinite(aligned_pupil) & np.isfinite(state_values)
+    state_codes = {state: idx for idx, state in enumerate(DEFAULT_STATE_ORDER)}
+    checks['n_state_aligned_samples'] = int(np.count_nonzero(np.isfinite(aligned_pupil)))
+    checks['n_state_valid_samples'] = int(np.count_nonzero(valid_state_mask))
+    if checks['n_state_valid_samples'] == 0:
+        checks['skip_reason'] = 'no valid state-aligned pupil samples'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: no valid state-aligned pupil samples')
+        return sample_rows, summary_rows, checks
+
+    reference_sorted = np.sort(valid_pupil)
+    for state_order, state in enumerate(DEFAULT_STATE_ORDER, start=1):
+        state_code = state_codes[state]
+        state_mask = valid_state_mask & (state_values == state_code)
+        state_values_raw = np.asarray(aligned_pupil[state_mask], dtype=float)
+        if state_values_raw.size:
+            state_z = (state_values_raw - pupil_mean) / pupil_std
+            state_percentile = np.searchsorted(reference_sorted, state_values_raw, side='right') / float(reference_sorted.size) * 100.0
+        else:
+            state_z = np.asarray([], dtype=float)
+            state_percentile = np.asarray([], dtype=float)
+        for value, z_value, percentile_value in zip(state_values_raw, state_z, state_percentile):
+            sample_rows.append(
+                {
+                    'animal_id': str(summary.animal_id),
+                    'exp_id': exp_id,
+                    'state': state,
+                    'pupil_size': float(value),
+                    'pupil_z': float(z_value),
+                    'pupil_percentile': float(percentile_value),
+                }
+            )
+        mean_pupil_z, median_pupil_z = finite_mean_and_median(state_z)
+        mean_percentile, median_percentile = finite_mean_and_median(state_percentile)
+        _, sem_percentile = finite_mean_and_sem(state_percentile)
+        percentile_25 = float(np.nanpercentile(state_percentile, 25.0)) if state_percentile.size else float('nan')
+        percentile_75 = float(np.nanpercentile(state_percentile, 75.0)) if state_percentile.size else float('nan')
+        summary_rows.append(
+            {
+                'animal_id': str(summary.animal_id),
+                'exp_id': exp_id,
+                'state_order': state_order,
+                'state': state,
+                'state_display': format_display_state(state),
+                'n_samples': int(state_values_raw.size),
+                'mean_pupil_z': mean_pupil_z,
+                'median_pupil_z': median_pupil_z,
+                'mean_percentile': mean_percentile,
+                'median_percentile': median_percentile,
+                'sem_percentile': sem_percentile,
+                'percentile_25': percentile_25,
+                'percentile_75': percentile_75,
+            }
+        )
+
+    checks['status'] = 'ok'
+    checks['skip_reason'] = ''
+    sample_rows.sort(key=lambda row: (str(row.get('animal_id')), str(row.get('exp_id')), int(state_codes.get(str(row.get('state')), 0))))
+    summary_rows.sort(key=lambda row: (str(row.get('animal_id')), str(row.get('exp_id')), int(row.get('state_order', 0))))
+    return sample_rows, summary_rows, checks
 
 def summarize_movie_pupil_state(
     movie_exp_summaries: Sequence[SessionSummary],
@@ -5195,6 +5346,173 @@ def plot_movie_pupil_state_summary(
 
 
 
+def _plot_pupil_state_distribution(
+    sample_rows: Sequence[Mapping[str, Any]],
+    summary_rows: Sequence[Mapping[str, Any]],
+    sample_value_key: str,
+    summary_point_specs: Sequence[Mapping[str, Any]],
+    ylabel: str,
+    title: str,
+    figure_dirname: str,
+    figure_stem: str,
+    output_dir: Path,
+    y_limits: Optional[Tuple[float, float]] = None,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    state_sample_values: Dict[str, List[float]] = defaultdict(list)
+    state_summary_rows: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
+    for row in sample_rows:
+        state = str(row.get('state') or '').strip().lower()
+        value = as_float(row.get(sample_value_key))
+        if state in DEFAULT_STATE_ORDER and value is not None and np.isfinite(value):
+            state_sample_values[state].append(float(value))
+    for row in summary_rows:
+        state = str(row.get('state') or '').strip().lower()
+        if state in DEFAULT_STATE_ORDER:
+            state_summary_rows[state].append(row)
+
+    fig, ax = plt.subplots(figsize=(11.8, 8.2))
+    x_positions = np.arange(len(DEFAULT_STATE_ORDER), dtype=float)
+    rng = np.random.default_rng(0)
+    if not any(values for values in state_sample_values.values()):
+        ax.text(0.5, 0.5, 'No pupil data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels([format_display_state(state) for state in DEFAULT_STATE_ORDER])
+        ax.set_ylabel(ylabel, fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+        ax.set_title(title, fontsize=POSTER_TITLE_SIZE, pad=10)
+        fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.96])
+        figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / figure_dirname)
+        return _save_svg_and_png(fig, figure_dir / f'{figure_stem}.svg', dpi=POSTER_DPI)
+
+    for xpos, state in zip(x_positions, DEFAULT_STATE_ORDER):
+        values = np.asarray(state_sample_values.get(state, []), dtype=float)
+        values = values[np.isfinite(values)]
+        color = DEFAULT_STACKED_STATE_COLORS.get(state, '#7A7A7A')
+        if values.size:
+            violin = ax.violinplot([values], positions=[xpos], widths=0.72, showmeans=False, showextrema=False, showmedians=False)
+            for body in violin['bodies']:
+                body.set_facecolor(color)
+                body.set_edgecolor(color)
+                body.set_alpha(0.24)
+                body.set_linewidth(1.2)
+            box = ax.boxplot(
+                [values],
+                positions=[xpos],
+                widths=0.34,
+                patch_artist=True,
+                showfliers=False,
+                medianprops={'color': '#222222', 'linewidth': 1.8},
+                whiskerprops={'color': '#444444', 'linewidth': 1.1},
+                capprops={'color': '#444444', 'linewidth': 1.1},
+            )
+            for patch in box['boxes']:
+                patch.set_facecolor(color)
+                patch.set_alpha(0.48)
+                patch.set_edgecolor(color)
+                patch.set_linewidth(1.4)
+        summary_rows_for_state = [row for row in state_summary_rows.get(state, []) if any(as_float(row.get(spec.get('field'))) is not None and np.isfinite(as_float(row.get(spec.get('field')))) for spec in summary_point_specs)]
+        for spec_index, spec in enumerate(summary_point_specs):
+            field = str(spec.get('field') or '')
+            marker = str(spec.get('marker') or 'o')
+            point_color = str(spec.get('color') or '#222222')
+            point_values = np.asarray([as_float(row.get(field)) for row in summary_rows_for_state], dtype=float)
+            point_values = point_values[np.isfinite(point_values)]
+            if point_values.size:
+                jitter = rng.uniform(-0.1, 0.1, size=point_values.size)
+                ax.scatter(
+                    np.full(point_values.size, xpos) + jitter,
+                    point_values,
+                    s=28 if marker == 'o' else 30,
+                    marker=marker,
+                    color=point_color,
+                    alpha=0.82,
+                    edgecolors='white',
+                    linewidths=0.4,
+                    zorder=4 + spec_index,
+                )
+        state_summary_count = len([row for row in state_summary_rows.get(state, []) if int(as_float(row.get('n_samples')) or 0) > 0])
+        if values.size:
+            ax.text(xpos, 0.98 if y_limits == (0.0, 100.0) else 0.96, f'n={state_summary_count}', transform=ax.get_xaxis_transform(), ha='center', va='top', fontsize=max(9, POSTER_NOTE_SIZE - 4), color='#444444')
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([format_display_state(state) for state in DEFAULT_STATE_ORDER])
+    ax.set_xlabel('Sleep state', fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+    ax.set_ylabel(ylabel, fontsize=max(11, POSTER_LABEL_SIZE - 8), labelpad=6)
+    ax.set_title(title, fontsize=POSTER_TITLE_SIZE, pad=10)
+    if y_limits is not None:
+        ax.set_ylim(*y_limits)
+    else:
+        finite_values = np.concatenate([np.asarray(values, dtype=float)[np.isfinite(values)] for values in state_sample_values.values() if values]) if any(values for values in state_sample_values.values()) else np.asarray([], dtype=float)
+        if finite_values.size:
+            lower = float(np.nanpercentile(finite_values, 1.0))
+            upper = float(np.nanpercentile(finite_values, 99.0))
+            if not np.isfinite(lower) or not np.isfinite(upper) or lower == upper:
+                lower = float(np.nanmin(finite_values))
+                upper = float(np.nanmax(finite_values))
+            pad = max(0.12 * max(upper - lower, 1.0), 0.35)
+            ax.set_ylim(lower - pad, upper + pad)
+    ax.grid(axis='y', alpha=0.18)
+    set_sparse_numeric_ticks(ax, axis='y', nbins=5)
+    ax.tick_params(axis='both', labelsize=max(9, POSTER_FONT_SIZE - 7))
+    if summary_point_specs:
+        legend_handles = []
+        legend_labels = []
+        for spec in summary_point_specs:
+            label = str(spec.get('label') or '')
+            if not label:
+                continue
+            legend_handles.append(Line2D([0], [0], marker=str(spec.get('marker') or 'o'), linestyle='None', markersize=6.0, markerfacecolor=str(spec.get('color') or '#222222'), markeredgecolor='white'))
+            legend_labels.append(label)
+        if legend_handles:
+            ax.legend(legend_handles, legend_labels, frameon=False, fontsize=max(9, POSTER_NOTE_SIZE - 3), loc='upper right')
+    fig.tight_layout(rect=[0.01, 0.02, 0.99, 0.96])
+    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / figure_dirname)
+    return _save_svg_and_png(fig, figure_dir / f'{figure_stem}.svg', dpi=POSTER_DPI)
+
+
+
+def plot_pupil_percentile_by_sleep_state(
+    sample_rows: Sequence[Mapping[str, Any]],
+    summary_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    return _plot_pupil_state_distribution(
+        sample_rows,
+        summary_rows,
+        sample_value_key='pupil_percentile',
+        summary_point_specs=[{'field': 'mean_percentile', 'marker': 'o', 'color': '#222222', 'label': 'Mean per expID'}],
+        ylabel='Pupil size percentile of full-expID distribution',
+        title='Pupil size percentile by sleep state',
+        figure_dirname=DEFAULT_PUPIL_STATE_PERCENTILE_FIGURE_DIRNAME,
+        figure_stem=DEFAULT_PUPIL_STATE_PERCENTILE_FIGURE_STEM,
+        output_dir=output_dir,
+        y_limits=(0.0, 100.0),
+    )
+
+
+
+def plot_pupil_z_by_sleep_state(
+    sample_rows: Sequence[Mapping[str, Any]],
+    summary_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    return _plot_pupil_state_distribution(
+        sample_rows,
+        summary_rows,
+        sample_value_key='pupil_z',
+        summary_point_specs=[
+            {'field': 'mean_pupil_z', 'marker': 'o', 'color': '#222222', 'label': 'Mean per expID'},
+            {'field': 'median_pupil_z', 'marker': 'D', 'color': '#6B6B6B', 'label': 'Median per expID'},
+        ],
+        ylabel='Pupil z-score relative to full expID',
+        title='Pupil z-score by sleep state',
+        figure_dirname=DEFAULT_PUPIL_STATE_PERCENTILE_FIGURE_DIRNAME,
+        figure_stem=DEFAULT_PUPIL_STATE_Z_FIGURE_STEM,
+        output_dir=output_dir,
+    )
+
+
 def plot_movie_pupil_transition_summary(
     summary_rows: Sequence[Mapping[str, Any]],
     output_dir: Path,
@@ -5598,6 +5916,8 @@ def write_sleep_state_report(
     append_kv("sleep REM per-exp CSV", report_relative_path(manifest.get("rem_exp_transition_summary_path"), output_dir))
     append_kv("sleep REM per-day CSV", report_relative_path(manifest.get("rem_day_transition_summary_path"), output_dir))
     append_kv("REM probability curve CSV", report_relative_path(manifest.get("rem_probability_curve_path"), output_dir))
+    append_kv("sleep pupil percentile by-exp CSV", report_relative_path(manifest.get("sleep_pupil_state_percentile_by_exp_summary_path"), output_dir))
+    append_kv("sleep pupil percentile summary CSV", report_relative_path(manifest.get("sleep_pupil_state_percentile_summary_path"), output_dir))
     append_kv("fraction-vs-time figures", format_report_list(manifest.get("probability_artifacts")))
     append_kv("elapsed-time percent fraction figures", format_report_list(manifest.get("probability_percent_artifacts")))
     append_kv("REM fraction curve CSV", report_relative_path(manifest.get("rem_fraction_curve_path"), output_dir))
@@ -5625,6 +5945,7 @@ def write_sleep_state_report(
     append_kv("pupil transition example rows", manifest.get("movie_pupil_transition_example_row_count", 0))
     append_kv("sleep pupil transition rows", manifest.get("sleep_pupil_transition_row_count", 0))
     append_kv("sleep pupil transition example rows", manifest.get("sleep_pupil_transition_example_row_count", 0))
+    append_kv("sleep pupil percentile exp checks", manifest.get("sleep_pupil_percentile_exp_checks", 0))
     append_kv("movie trial summary CSV", report_relative_path(manifest.get("movie_trial_summary_path"), output_dir))
     append_kv("movie trial wake CSV", report_relative_path(manifest.get("movie_trial_wake_summary_path"), output_dir))
     append_kv("movie video summary CSV", report_relative_path(manifest.get("movie_video_summary_path"), output_dir))
@@ -5883,6 +6204,7 @@ def write_sleep_state_report(
     lines.append("- pupil diameter is normalized per animal using the mean and standard deviation of that animal's pupil samples across all expIDs; if both eyes are present, the traces are averaged on the shared time base")
     lines.append("- the sleep-state summary reports mean normalized pupil diameter per state, using equal weight per experiment for the pooled summary")
     lines.append("- the transition summary uses the 20 s window before and after each state boundary, with change defined as post minus pre")
+    lines.append("- the percentile summary ranks each state-aligned pupil sample against the full valid pupil distribution from the same expID")
     lines.append("- the per-exp pupil transition figures add the same EEG spectrogram window beneath each normalized pupil trace")
 
     figure_artifacts = list(manifest.get("figure_artifacts", []))
@@ -5906,6 +6228,8 @@ def write_sleep_state_report(
     movie_pupil_transition_artifacts = list(manifest.get("movie_pupil_transition_artifacts", []))
     movie_pupil_transition_example_artifacts = list(manifest.get("movie_pupil_transition_example_artifacts", []))
     movie_pupil_transition_example_per_exp_artifacts = list(manifest.get("movie_pupil_transition_example_per_exp_artifacts", []))
+    pupil_percentile_artifacts = list(manifest.get("pupil_percentile_artifacts", []))
+    pupil_z_artifacts = list(manifest.get("pupil_z_artifacts", []))
     poster_ready_artifacts = list(manifest.get("poster_ready_artifacts", []))
     render_table(
         "Overall sleep-state composition",
@@ -5985,6 +6309,14 @@ def write_sleep_state_report(
         lines.append("- movie pupil transition example figures per expID")
         for artifact in movie_pupil_transition_example_per_exp_artifacts:
             lines.append(f"  - {artifact}")
+    if pupil_percentile_artifacts:
+        lines.append("- sleep pupil percentile figures")
+        for artifact in pupil_percentile_artifacts:
+            lines.append(f"  - {artifact}")
+    if pupil_z_artifacts:
+        lines.append("- sleep pupil z-score figures")
+        for artifact in pupil_z_artifacts:
+            lines.append(f"  - {artifact}")
     if state_montage_artifacts:
         lines.append("- state montage figures")
         for artifact in state_montage_artifacts:
@@ -5997,7 +6329,7 @@ def write_sleep_state_report(
         lines.append("- poster-ready composite")
         for artifact in poster_ready_artifacts:
             lines.append(f"  - {artifact}")
-    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or movie_pupil_transition_example_per_exp_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
+    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or movie_pupil_transition_example_per_exp_artifacts or pupil_percentile_artifacts or pupil_z_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
         lines.append("- none")
 
     render_table(
@@ -6152,6 +6484,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--movie-expids", type=str, default=None, help="Override movie expIDs as a comma-separated list.")
     parser.add_argument("--sleep-expids", type=str, default=None, help="Override sleep expIDs as a comma-separated list.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Override the analysis output directory.")
+    parser.add_argument("--plots-only", action="store_true", help="Reuse cached pupil percentile CSVs when available and only regenerate the pupil percentile figures.")
     return parser
 
 
@@ -6314,6 +6647,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(movie_exp_summaries, repo_base)
     sleep_pupil_transition_rows, sleep_pupil_transition_example_rows, sleep_pupil_transition_example_traces, sleep_pupil_transition_example_per_exp_traces, sleep_pupil_transition_checks = summarize_movie_pupil_transitions(sleep_exp_summaries, repo_base)
 
+    pupil_percentile_by_exp_table_path = output_dir / 'sleep_pupil_state_percentile_by_exp_summary.csv'
+    pupil_percentile_table_path = output_dir / 'sleep_pupil_state_percentile_summary.csv'
+    if args.plots_only and pupil_percentile_by_exp_table_path.exists() and pupil_percentile_table_path.exists():
+        pupil_percentile_by_exp_rows = read_csv_rows(pupil_percentile_by_exp_table_path)
+        pupil_percentile_rows = read_csv_rows(pupil_percentile_table_path)
+        pupil_percentile_checks = {
+            'n_expids': int(len(pupil_exp_summaries)),
+            'n_expids_with_data': int(len({str(row.get('exp_id')) for row in pupil_percentile_rows if str(row.get('exp_id'))})),
+            'n_expids_skipped': 0,
+            'loaded_from_cache': True,
+            'exp_checks': [],
+        }
+    else:
+        pupil_percentile_by_exp_rows = []
+        pupil_percentile_rows = []
+        pupil_percentile_exp_checks: List[Dict[str, Any]] = []
+        for summary in pupil_exp_summaries:
+            sample_rows, summary_rows, check = compute_pupil_state_percentiles_for_expid(summary, repo_base)
+            pupil_percentile_by_exp_rows.extend(sample_rows)
+            pupil_percentile_rows.extend(summary_rows)
+            pupil_percentile_exp_checks.append(check)
+        pupil_percentile_checks = {
+            'n_expids': int(len(pupil_exp_summaries)),
+            'n_expids_with_data': int(sum(1 for row in pupil_percentile_exp_checks if str(row.get('status')) == 'ok')),
+            'n_expids_skipped': int(sum(1 for row in pupil_percentile_exp_checks if str(row.get('status')) != 'ok')),
+            'loaded_from_cache': False,
+            'exp_checks': pupil_percentile_exp_checks,
+        }
+
     movie_trial_table_path = output_dir / 'movie_trial_level_summary.csv'
     movie_trial_wake_table_path = output_dir / 'movie_trial_wake_summary.csv'
     movie_video_table_path = output_dir / 'movie_video_level_summary.csv'
@@ -6332,6 +6694,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_transition_example_table_path = output_dir / 'movie_pupil_transition_examples.csv'
     sleep_pupil_transition_table_path = output_dir / 'sleep_pupil_transition_summary.csv'
     sleep_pupil_transition_example_table_path = output_dir / 'sleep_pupil_transition_examples.csv'
+
+    pupil_percentile_by_exp_fieldnames = [
+        'animal_id',
+        'exp_id',
+        'state',
+        'pupil_size',
+        'pupil_z',
+        'pupil_percentile',
+    ]
+    pupil_percentile_fieldnames = [
+        'animal_id',
+        'exp_id',
+        'state_order',
+        'state',
+        'state_display',
+        'n_samples',
+        'mean_pupil_z',
+        'median_pupil_z',
+        'mean_percentile',
+        'median_percentile',
+        'sem_percentile',
+        'percentile_25',
+        'percentile_75',
+    ]
 
     movie_trial_fieldnames = [
         'scope',
@@ -6663,6 +7049,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_csv_rows(movie_pupil_transition_example_table_path, movie_pupil_transition_example_rows, fieldnames=movie_pupil_transition_example_fieldnames)
     write_csv_rows(sleep_pupil_transition_table_path, sleep_pupil_transition_rows, fieldnames=movie_pupil_transition_fieldnames)
     write_csv_rows(sleep_pupil_transition_example_table_path, sleep_pupil_transition_example_rows, fieldnames=movie_pupil_transition_example_fieldnames)
+    write_csv_rows(pupil_percentile_by_exp_table_path, pupil_percentile_by_exp_rows, fieldnames=pupil_percentile_by_exp_fieldnames)
+    write_csv_rows(pupil_percentile_table_path, pupil_percentile_rows, fieldnames=pupil_percentile_fieldnames)
 
     figure_artifacts: List[str] = []
     stacked_area_artifacts: List[str] = []
@@ -6686,6 +7074,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sleep_pupil_transition_artifacts: List[str] = []
     sleep_pupil_transition_example_artifacts: List[str] = []
     sleep_pupil_transition_example_per_exp_artifacts: List[str] = []
+    pupil_percentile_artifacts: List[str] = []
+    pupil_z_artifacts: List[str] = []
     state_montage_artifacts: List[str] = []
     poster_ready_artifacts: List[str] = []
     per_animal_rows = group_rows_by_animal(day_rows)
@@ -6769,6 +7159,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         group['output_stem_suffix'] = DEFAULT_SLEEP_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM
     saved = plot_movie_pupil_transition_examples_per_exp(sleep_pupil_transition_example_per_exp_traces, repo_base, output_dir)
     sleep_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_pupil_percentile_by_sleep_state(pupil_percentile_by_exp_rows, pupil_percentile_rows, output_dir)
+    pupil_percentile_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_pupil_z_by_sleep_state(pupil_percentile_by_exp_rows, pupil_percentile_rows, output_dir)
+    pupil_z_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
     for summary in sorted(sleep_exp_summaries, key=lambda s: (str(s.animal_id), str(s.date), str(s.exp_ids[0]) if s.exp_ids else "", str(s.sleep_state_paths[0]) if s.sleep_state_paths else "")):
         saved = plot_state_montage_per_exp(summary, output_dir)
@@ -6807,7 +7201,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sleep_pupil_transition_artifacts = sorted(set(sleep_pupil_transition_artifacts))
     sleep_pupil_transition_example_artifacts = sorted(set(sleep_pupil_transition_example_artifacts))
     sleep_pupil_transition_example_per_exp_artifacts = sorted(set(sleep_pupil_transition_example_per_exp_artifacts))
-    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + sleep_pupil_transition_artifacts + sleep_pupil_transition_example_artifacts + sleep_pupil_transition_example_per_exp_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
+    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + sleep_pupil_transition_artifacts + sleep_pupil_transition_example_artifacts + sleep_pupil_transition_example_per_exp_artifacts + pupil_percentile_artifacts + pupil_z_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
 
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -6839,6 +7233,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_transition_example_artifacts": movie_pupil_transition_example_artifacts,
         "movie_pupil_transition_example_per_exp_artifacts": movie_pupil_transition_example_per_exp_artifacts,
         "sleep_pupil_transition_artifacts": sleep_pupil_transition_artifacts,
+        "pupil_percentile_artifacts": pupil_percentile_artifacts,
+        "pupil_z_artifacts": pupil_z_artifacts,
         "sleep_pupil_transition_example_artifacts": sleep_pupil_transition_example_artifacts,
         "sleep_pupil_transition_example_per_exp_artifacts": sleep_pupil_transition_example_per_exp_artifacts,
         "all_figure_artifacts": all_figure_artifacts,
@@ -6874,12 +7270,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_transition_expids_with_state_and_pupil": int(movie_pupil_transition_checks.get('n_expids_with_state_and_pupil', 0)),
         "sleep_pupil_transition_expids_with_pupil": int(sleep_pupil_transition_checks.get('n_expids_with_pupil', 0)),
         "sleep_pupil_transition_expids_with_state_and_pupil": int(sleep_pupil_transition_checks.get('n_expids_with_state_and_pupil', 0)),
+        "sleep_pupil_percentile_expids_with_data": int(pupil_percentile_checks.get('n_expids_with_data', 0)),
         "movie_pupil_state_by_exp_row_count": len(movie_pupil_state_by_exp_rows),
         "movie_pupil_state_row_count": len(movie_pupil_state_rows),
         "movie_pupil_transition_row_count": len(movie_pupil_transition_rows),
         "movie_pupil_transition_example_row_count": len(movie_pupil_transition_example_rows),
         "sleep_pupil_transition_row_count": len(sleep_pupil_transition_rows),
         "sleep_pupil_transition_example_row_count": len(sleep_pupil_transition_example_rows),
+        "sleep_pupil_percentile_row_count": len(pupil_percentile_rows),
+        "sleep_pupil_percentile_by_exp_row_count": len(pupil_percentile_by_exp_rows),
+        "sleep_pupil_percentile_exp_checks": len(pupil_percentile_checks.get('exp_checks', [])),
         "within_day_fraction_row_count": len(day_summaries),
         "movie_trial_skip_count": len(movie_trial_skip_rows),
         "movie_trial_exp_checks": movie_trial_exp_checks,
@@ -6927,6 +7327,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             report_relative_path(movie_pupil_transition_example_table_path, output_dir),
             report_relative_path(sleep_pupil_transition_table_path, output_dir),
             report_relative_path(sleep_pupil_transition_example_table_path, output_dir),
+            report_relative_path(pupil_percentile_by_exp_table_path, output_dir),
+            report_relative_path(pupil_percentile_table_path, output_dir),
             report_relative_path(movie_skip_table_path, output_dir),
             report_relative_path(rem_exp_table_path, output_dir),
             report_relative_path(rem_day_table_path, output_dir),
@@ -6952,6 +7354,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_pupil_transition_example_summary_path": report_relative_path(movie_pupil_transition_example_table_path, output_dir),
         "sleep_pupil_transition_summary_path": report_relative_path(sleep_pupil_transition_table_path, output_dir),
         "sleep_pupil_transition_example_summary_path": report_relative_path(sleep_pupil_transition_example_table_path, output_dir),
+        "sleep_pupil_state_percentile_by_exp_summary_path": report_relative_path(pupil_percentile_by_exp_table_path, output_dir),
+        "sleep_pupil_state_percentile_summary_path": report_relative_path(pupil_percentile_table_path, output_dir),
         "movie_skip_summary_path": report_relative_path(movie_skip_table_path, output_dir),
         "rem_exp_transition_summary_path": report_relative_path(rem_exp_table_path, output_dir),
         "rem_day_transition_summary_path": report_relative_path(rem_day_table_path, output_dir),
@@ -6992,6 +7396,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "movie_after_blank_or_zebra_summary_path": report_relative_path(movie_after_table_path, output_dir),
             "movie_prev_group_summary_path": report_relative_path(movie_prev_group_table_path, output_dir),
             "movie_prev_group_comparison_path": report_relative_path(movie_prev_group_comparison_table_path, output_dir),
+            "sleep_pupil_state_percentile_by_exp_summary_path": report_relative_path(pupil_percentile_by_exp_table_path, output_dir),
+            "sleep_pupil_state_percentile_summary_path": report_relative_path(pupil_percentile_table_path, output_dir),
         },
         indent=2,
         sort_keys=True,
