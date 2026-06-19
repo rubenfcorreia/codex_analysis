@@ -111,6 +111,7 @@ DEFAULT_CHECKPOINT_GALLERY_DIRNAME = "checkpoint_examples"
 DEFAULT_REVIEW_FIGURES_DIRNAME = "review_figures"
 DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
 DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "plots"
+DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME = "visual_response"
 STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min"}
 STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
 DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME = "matrix_similarity"
@@ -1672,7 +1673,7 @@ def _render_state_summary_comparison_panel_figure(
         }
         for row in (comparison_rows or [])
         if str(row.get("comparison")) == "basal_vs_apical"
-        and str(row.get("metric")) == metric_name
+        and str(row.get("metric")) == metric_key
         and is_significant_row(row)
         and str(row.get("state")) in state_order
         for idx in [state_order.index(str(row.get("state"))) + 1]
