@@ -132,9 +132,9 @@ VISUAL_RESPONSE_BLANK_STATE = "quiet_awake_blank"
 DEFAULT_DENDRITE_RESPONSE_COHORT = "all"
 DENDRITE_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
 
-VISUAL_RESPONSE_CLASSIFIER_VERSION = 2
-VISUAL_RESPONSE_CLASSIFIER_METHOD = "ancova_wheel"
-VISUAL_RESPONSE_COVARIATE_NAME = "wheel_speed"
+VISUAL_RESPONSE_CLASSIFIER_VERSION = 3
+VISUAL_RESPONSE_CLASSIFIER_METHOD = "movie_style_blank_vs_movies"
+VISUAL_RESPONSE_COVARIATE_NAME = "none"
 VISUAL_RESPONSE_VISUAL_TRIAL_TYPES = ["movies", "gratings", "zebras"]
 VISUAL_RESPONSE_BLANK_TRIAL_TYPE = "blank"
 VISUAL_RESPONSE_VISUAL_SUFFIXES = tuple(f"_{trial_type}" for trial_type in VISUAL_RESPONSE_VISUAL_TRIAL_TYPES)
@@ -647,6 +647,47 @@ def welch_ttest_summary(values_a: Sequence[float], values_b: Sequence[float]) ->
     }
 
 
+def paired_ttest_summary(baseline_values: Sequence[float], stimulus_values: Sequence[float]) -> Dict[str, Any]:
+    baseline = np.asarray(baseline_values, dtype=float)
+    stimulus = np.asarray(stimulus_values, dtype=float)
+    mask = np.isfinite(baseline) & np.isfinite(stimulus)
+    baseline = baseline[mask]
+    stimulus = stimulus[mask]
+    if baseline.size < 2 or stimulus.size < 2:
+        return {
+            "available": False,
+            "comparison": "paired_pre_vs_stimulus",
+            "statistic": float("nan"),
+            "raw_pvalue": float("nan"),
+            "adjusted_pvalue": float("nan"),
+            "n_pairs": int(min(baseline.size, stimulus.size)),
+            "significant": False,
+            "star": "",
+        }
+    result = stats.ttest_rel(stimulus, baseline, nan_policy="omit")
+    raw_pvalue = float(result.pvalue) if np.isfinite(result.pvalue) else float("nan")
+    return {
+        "available": True,
+        "comparison": "paired_pre_vs_stimulus",
+        "statistic": float(result.statistic),
+        "raw_pvalue": raw_pvalue,
+        "adjusted_pvalue": raw_pvalue,
+        "n_pairs": int(baseline.size),
+        "significant": False,
+        "star": "",
+    }
+
+
+def response_amplitude(trace: np.ndarray, t: np.ndarray, response_end_s: Optional[float]) -> float:
+    return window_mean(trace, t, 0.0, response_end_s)
+
+
+def trial_activity_means(trace: np.ndarray, t: np.ndarray, duration_s: Optional[float]) -> Tuple[float, float]:
+    baseline = window_mean(trace, t, None, 0.0)
+    stimulus = response_amplitude(trace, t, duration_s)
+    return baseline, stimulus
+
+
 def apply_bonferroni_correction(test_records: List[Dict[str, Any]]) -> int:
     valid_records = [record for record in test_records if record.get("available") and np.isfinite(as_float(record.get("raw_pvalue")))]
     valid_ids = {id(record) for record in valid_records}
@@ -709,19 +750,24 @@ def _load_visual_response_cut_data(
         return None
     exp_meta = source_cache.get("experiments", {}).get(exp_id, {})
     source_paths = exp_meta.get("source_paths", {}) if isinstance(exp_meta, dict) else {}
-    cut_dir = Path(str(source_paths.get("cut") or ""))
+    exp_root = Path(str(source_paths.get("exp_root") or ""))
+    cut_dir = Path(str(source_paths.get("cut") or (exp_root / "cut" if exp_root else "")))
     if not cut_dir.exists():
         cut_cache[exp_id] = None
         return None
     channel = as_int(source_cache.get("config", {}).get("channel")) if isinstance(source_cache.get("config", {}), dict) else None
     channel = int(channel) if channel is not None else DEFAULT_CHANNEL
-    cut_path = cut_dir / f"s2p_ch{channel}_dF_cut.pickle"
+    selected_path = exp_root / "cut_with_intertrials" / f"s2p_ch{channel}_dF_cut.pickle"
+    if not selected_path.exists():
+        eprint(f"[ALERT] {exp_id}: missing cut_with_intertrials bundle at {selected_path}")
+        cut_cache[exp_id] = None
+        return None
     wheel_path = cut_dir / "wheel.pickle"
-    if not cut_path.exists() or not wheel_path.exists():
+    if not wheel_path.exists():
         cut_cache[exp_id] = None
         return None
     try:
-        cut_time, cut_neural, _ = extract_cut_neural_bundle(cut_path)
+        cut_time, cut_neural, _ = extract_cut_neural_bundle(selected_path)
     except Exception:
         cut_cache[exp_id] = None
         return None
@@ -739,6 +785,8 @@ def _load_visual_response_cut_data(
         "cut_neural": np.asarray(cut_neural, dtype=float),
         "cut_wheel": np.asarray(wheel_speed, dtype=float),
         "trial_meta": trial_meta,
+        "source_label": selected_label,
+        "source_path": str(selected_path),
     }
     cut_cache[exp_id] = payload
     return payload
@@ -760,9 +808,9 @@ def _collect_visual_response_trial_rows(
     if roi_index is None:
         return []
     cut_neural = np.asarray(cut_data.get("cut_neural"), dtype=float)
-    cut_wheel = np.asarray(cut_data.get("cut_wheel"), dtype=float)
+    cut_time = np.asarray(cut_data.get("cut_time"), dtype=float)
     trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
-    if roi_index < 0 or roi_index >= cut_neural.shape[0] or cut_wheel.ndim < 2:
+    if roi_index < 0 or roi_index >= cut_neural.shape[0] or cut_time.size == 0:
         return []
     if kind == "spine":
         if parent_dendrite_observation is None:
@@ -782,100 +830,112 @@ def _collect_visual_response_trial_rows(
             continue
         trial_label = canonical_state_label(meta.get("state_label"))
         trial_index = as_int(meta.get("trial_index"))
-        if trial_index is None or trial_index < 0 or trial_index >= trial_matrix.shape[0] or trial_index >= cut_wheel.shape[0]:
+        if trial_index is None or trial_index < 0 or trial_index >= trial_matrix.shape[0]:
             continue
         group = _visual_response_trial_group(trial_label)
         if group is None:
             continue
-        response_values = np.asarray(trial_matrix[trial_index], dtype=float)
-        wheel_values = np.asarray(cut_wheel[trial_index], dtype=float)
-        response = float(np.nanmean(response_values)) if response_values.size else float("nan")
-        wheel_speed = float(np.nanmean(np.abs(wheel_values))) if wheel_values.size else float("nan")
-        if not np.isfinite(response) or not np.isfinite(wheel_speed):
+        trial_trace = np.asarray(trial_matrix[trial_index], dtype=float)
+        trial_duration = as_float(meta.get("duration"))
+        baseline, stimulus = trial_activity_means(trial_trace, cut_time, trial_duration)
+        if not np.isfinite(stimulus):
             continue
-        rows.append({"group": group, "trial_label": trial_label, "response": response, "wheel_speed": wheel_speed})
+        if group == "visual" and not np.isfinite(baseline):
+            baseline = float("nan")
+        rows.append(
+            {
+                "group": group,
+                "trial_label": trial_label,
+                "response": float(stimulus),
+                "baseline": float(baseline),
+            }
+        )
     return rows
 
 
 def _ancova_visual_response_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    response = np.asarray([as_float(row.get("response")) for row in rows], dtype=float)
-    wheel_speed = np.asarray([as_float(row.get("wheel_speed")) for row in rows], dtype=float)
-    group = np.asarray([1.0 if str(row.get("group")) == "visual" else 0.0 for row in rows], dtype=float)
     visual_trial_labels: List[str] = []
     blank_trial_labels: List[str] = []
+    paired_baseline_values: List[float] = []
+    paired_stimulus_values: List[float] = []
+    blank_reference_values: List[float] = []
+    visual_values: List[float] = []
     for row in rows:
         trial_label = canonical_state_label(row.get("trial_label"))
-        if not trial_label:
-            continue
-        if str(row.get("group")) == "visual":
-            if trial_label not in visual_trial_labels:
+        group = str(row.get("group") or "")
+        baseline_value = as_float(row.get("baseline"))
+        stimulus_value = as_float(row.get("response"))
+        if group == "visual":
+            if trial_label and trial_label not in visual_trial_labels:
                 visual_trial_labels.append(trial_label)
-        elif trial_label not in blank_trial_labels:
-            blank_trial_labels.append(trial_label)
-    finite_mask = np.isfinite(response) & np.isfinite(wheel_speed) & np.isfinite(group)
-    response = response[finite_mask]
-    wheel_speed = wheel_speed[finite_mask]
-    group = group[finite_mask]
-    visual_values = response[group >= 0.5]
-    blank_values = response[group < 0.5]
-    mean_visual = float(np.nanmean(visual_values)) if visual_values.size else float("nan")
-    mean_blank = float(np.nanmean(blank_values)) if blank_values.size else float("nan")
-    delta = mean_visual - mean_blank if visual_values.size and blank_values.size else float("nan")
-    if response.size < 4 or visual_values.size < 2 or blank_values.size < 2:
+            if baseline_value is not None and stimulus_value is not None and np.isfinite(baseline_value) and np.isfinite(stimulus_value):
+                paired_baseline_values.append(float(baseline_value))
+                paired_stimulus_values.append(float(stimulus_value))
+                visual_values.append(float(stimulus_value))
+        elif group == "blank":
+            if trial_label and trial_label not in blank_trial_labels:
+                blank_trial_labels.append(trial_label)
+            if stimulus_value is not None and np.isfinite(stimulus_value):
+                blank_reference_values.append(float(stimulus_value))
+    visual_arr = np.asarray(visual_values, dtype=float)
+    blank_arr = np.asarray(blank_reference_values, dtype=float)
+    mean_visual = float(np.nanmean(visual_arr)) if visual_arr.size else float("nan")
+    mean_blank = float(np.nanmean(blank_arr)) if blank_arr.size else float("nan")
+    delta = mean_visual - mean_blank if visual_arr.size and blank_arr.size else float("nan")
+    paired = paired_ttest_summary(paired_baseline_values, paired_stimulus_values)
+    blank = welch_ttest_summary(visual_arr, blank_arr)
+    tests = [record for record in (paired, blank) if record.get("available")]
+    if tests:
+        apply_bonferroni_correction(tests)
+    available = bool(visual_arr.size and blank_arr.size)
+    if not available:
         return {
             "available": False,
-            "comparison": "visual_response_movie_vs_blank_ancova",
-            "test_name": "ancova_ols",
+            "comparison": "visual_response_movie_vs_blank",
+            "test_name": "movie_style_blank_vs_movies",
             "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
             "statistic": float("nan"),
             "raw_pvalue": float("nan"),
             "adjusted_pvalue": float("nan"),
-            "n_visual_values": int(visual_values.size),
-            "n_blank_values": int(blank_values.size),
+            "n_visual_values": int(visual_arr.size),
+            "n_blank_values": int(blank_arr.size),
             "mean_visual": mean_visual,
             "mean_blank": mean_blank,
             "delta": delta,
+            "paired_baseline_values": paired_baseline_values,
+            "paired_stimulus_values": paired_stimulus_values,
+            "blank_reference_values": blank_reference_values,
             "visual_trial_labels": visual_trial_labels,
             "blank_trial_labels": blank_trial_labels,
+            "paired_pre_vs_stimulus": paired,
+            "stimulus_vs_blank": blank,
             "significant": False,
             "star": "",
         }
-    design = np.column_stack([np.ones(response.size, dtype=float), group, wheel_speed])
-    try:
-        beta, _, rank, _ = np.linalg.lstsq(design, response, rcond=None)
-        residuals = response - design @ beta
-        dof = int(response.size - rank)
-        if dof <= 0:
-            raise ValueError("insufficient degrees of freedom")
-        xtx = design.T @ design
-        cov = np.linalg.pinv(xtx)
-        sigma2 = float(np.dot(residuals, residuals) / dof)
-        se = float(np.sqrt(max(sigma2 * cov[1, 1], 0.0)))
-        if not np.isfinite(se) or se <= 0:
-            raise ValueError("invalid standard error")
-        statistic = float(beta[1] / se)
-        raw_pvalue = float(2.0 * stats.t.sf(abs(statistic), dof))
-    except Exception:
-        fallback = welch_ttest_summary(visual_values, blank_values)
-        statistic = float(fallback.get("statistic", float("nan")))
-        raw_pvalue = float(fallback.get("raw_pvalue", float("nan")))
+    paired_test = paired
+    blank_test = blank
     return {
         "available": True,
-        "comparison": "visual_response_movie_vs_blank_ancova",
-        "test_name": "ancova_ols",
+        "comparison": "visual_response_movie_vs_blank",
+        "test_name": "movie_style_blank_vs_movies",
         "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
-        "statistic": statistic,
-        "raw_pvalue": raw_pvalue,
-        "adjusted_pvalue": raw_pvalue,
-        "n_visual_values": int(visual_values.size),
-        "n_blank_values": int(blank_values.size),
+        "statistic": float(blank_test.get("statistic", float("nan"))),
+        "raw_pvalue": float(blank_test.get("raw_pvalue", float("nan"))),
+        "adjusted_pvalue": float(blank_test.get("adjusted_pvalue", float("nan"))),
+        "n_visual_values": int(visual_arr.size),
+        "n_blank_values": int(blank_arr.size),
         "mean_visual": mean_visual,
         "mean_blank": mean_blank,
         "delta": delta,
+        "paired_baseline_values": paired_baseline_values,
+        "paired_stimulus_values": paired_stimulus_values,
+        "blank_reference_values": blank_reference_values,
         "visual_trial_labels": visual_trial_labels,
         "blank_trial_labels": blank_trial_labels,
-        "significant": False,
-        "star": "",
+        "paired_pre_vs_stimulus": paired_test,
+        "stimulus_vs_blank": blank_test,
+        "significant": bool(blank_test.get("significant", False)),
+        "star": str(blank_test.get("star", "")),
     }
 
 
@@ -1155,7 +1215,121 @@ def classify_visual_responsive_spines(
 ) -> Dict[str, Any]:
     if source_cache is not None:
         return _classify_visual_response_rows(cache, source_cache, kind="spine")
-    return classify_visual_responsive_dendrites(cache, source_cache=source_cache, movie_state=movie_state, blank_state=blank_state)
+    rows: List[Dict[str, Any]] = []
+    for animal_id, animal_entry in sorted(cache.get("animals", {}).items()):
+        for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
+            compartments_seen: List[str] = []
+            for global_spine_id, spine_record in sorted(dendrite_record.get("spines", {}).items()):
+                spine_observation_rows: List[Dict[str, Any]] = []
+                for exp_id, s_obs in sorted(spine_record.get("observations", {}).items()):
+                    compartment = observation_compartment(cache, exp_id, s_obs)
+                    if compartment is not None:
+                        compartments_seen.append(str(compartment))
+                    cut_means = s_obs.get("cut_state_means")
+                    if not isinstance(cut_means, dict):
+                        continue
+                    movie_value = as_float(cut_means.get(movie_state))
+                    blank_value = as_float(cut_means.get(blank_state))
+                    if movie_value is None or blank_value is None:
+                        continue
+                    if not np.isfinite(movie_value) or not np.isfinite(blank_value):
+                        continue
+                    spine_observation_rows.append(
+                        {
+                            "group": "visual",
+                            "trial_label": movie_state,
+                            "response": float(movie_value),
+                            "baseline": float(blank_value),
+                        }
+                    )
+                    spine_observation_rows.append(
+                        {
+                            "group": "blank",
+                            "trial_label": blank_state,
+                            "response": float(blank_value),
+                            "baseline": float(blank_value),
+                        }
+                    )
+                summary = _ancova_visual_response_summary(spine_observation_rows)
+                if compartments_seen:
+                    unique_compartments = list(dict.fromkeys(compartments_seen))
+                    compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
+                else:
+                    compartment = None
+                rows.append(
+                    {
+                        "animal_id": animal_id,
+                        "global_spine_id": global_spine_id,
+                        "compartment": compartment,
+                        "classifier_type": "spine",
+                        "comparison": summary.get("comparison", "visual_response_movie_vs_blank"),
+                        "test_name": summary.get("test_name", "movie_style_blank_vs_movies"),
+                        "covariate": summary.get("covariate", VISUAL_RESPONSE_COVARIATE_NAME),
+                        "visual_trial_labels": list(dict.fromkeys(summary.get("visual_trial_labels", []))) if isinstance(summary.get("visual_trial_labels"), list) else [],
+                        "blank_trial_labels": list(dict.fromkeys(summary.get("blank_trial_labels", []))) if isinstance(summary.get("blank_trial_labels"), list) else [],
+                        "available": bool(summary.get("available", False)),
+                        "n_visual_values": int(summary.get("n_visual_values", 0)),
+                        "n_blank_values": int(summary.get("n_blank_values", 0)),
+                        "mean_visual": float(summary.get("mean_visual", float("nan"))),
+                        "mean_blank": float(summary.get("mean_blank", float("nan"))),
+                        "delta": float(summary.get("delta", float("nan"))),
+                        "effect_size": float(summary.get("delta", float("nan"))),
+                        "statistic": float(summary.get("statistic", float("nan"))),
+                        "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
+                        "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
+                        "significant": bool(summary.get("significant", False)),
+                        "responsive": False,
+                        "cohort": "nonresponsive",
+                    }
+                )
+    by_compartment: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment in {"basal", "apical"}:
+            by_compartment[compartment].append(row)
+    for compartment_rows in by_compartment.values():
+        n_tests = apply_bonferroni_correction(compartment_rows)
+        for row in compartment_rows:
+            row["n_tests_corrected"] = int(n_tests)
+            row["responsive"] = bool(row.get("significant", False) and np.isfinite(as_float(row.get("delta"))) and float(row.get("delta")) > 0)
+            row["cohort"] = "responsive" if row["responsive"] else "nonresponsive"
+    for row in rows:
+        if "n_tests_corrected" not in row:
+            row["n_tests_corrected"] = 0
+            row["responsive"] = False
+            row["cohort"] = "nonresponsive"
+    cohort_ids: Dict[str, Dict[str, List[str]]] = {
+        "basal": {"responsive": [], "nonresponsive": []},
+        "apical": {"responsive": [], "nonresponsive": []},
+    }
+    counts: Dict[str, Dict[str, int]] = {
+        "basal": {"responsive": 0, "nonresponsive": 0, "available": 0, "tested": 0},
+        "apical": {"responsive": 0, "nonresponsive": 0, "available": 0, "tested": 0},
+    }
+    for row in rows:
+        compartment = str(row.get("compartment") or "")
+        if compartment not in cohort_ids:
+            continue
+        counts[compartment]["tested"] += 1
+        if row.get("available"):
+            counts[compartment]["available"] += 1
+        cohort = "responsive" if row.get("responsive") else "nonresponsive"
+        cohort_ids[compartment][cohort].append(str(row.get("global_spine_id")))
+        counts[compartment][cohort] += 1
+    for compartment in cohort_ids:
+        for cohort in cohort_ids[compartment]:
+            cohort_ids[compartment][cohort] = sorted(dict.fromkeys(cohort_ids[compartment][cohort]))
+    return {
+        "classifier_type": "spine",
+        "method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+        "version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+        "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "visual_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+        "blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+        "rows": rows,
+        "cohort_ids": cohort_ids,
+        "counts": counts,
+    }
 
 
 def visual_response_dendrite_ids(
@@ -3110,238 +3284,30 @@ def generate_analysis_figures(
                 continue
             if output_path:
                 saved.append(output_path)
-    visual_response_fig_dir = visual_response_figure_dir(fig_dir)
-    visual_response_dendrite_state_summaries = results.get("dendrite_visual_response_state_summaries", {})
     visual_response_dendrite_summary = results.get("dendrite_visual_response", {})
     visual_response_spine_summary = results.get("spine_visual_response", {})
-    visual_response_spine_state_summaries = build_visual_response_spine_state_summary_results(cache, state_labels, visual_response_spine_summary)
-    visual_response_specs: List[Dict[str, Any]] = []
-    if isinstance(visual_response_dendrite_state_summaries, dict):
-        for cohort in [cohort for cohort in DENDRITE_RESPONSE_COHORTS[1:] if cohort in visual_response_dendrite_state_summaries]:
-            cohort_results = visual_response_dendrite_state_summaries.get(cohort, {})
-            if not isinstance(cohort_results, dict):
-                continue
-            cohort_basal_results = cohort_results.get("basal")
-            cohort_apical_results = cohort_results.get("apical")
-            if not isinstance(cohort_basal_results, dict) or not isinstance(cohort_apical_results, dict):
-                continue
-            cohort_title = cohort.capitalize()
-            cohort_filters = {
-                "basal": visual_response_dendrite_ids(visual_response_dendrite_summary, "basal", cohort),
-                "apical": visual_response_dendrite_ids(visual_response_dendrite_summary, "apical", cohort),
-            }
-            all_ids = sorted(dict.fromkeys(cohort_filters["basal"] + cohort_filters["apical"]))
-            visual_response_specs.extend(
-                [
-                    {
-                        "kind": "overview",
-                        "cohort": cohort,
-                        "compartment": None,
-                        "output_name": f"visual_response_boxplots_{cohort}.svg",
-                        "title": f"ANCOVA visual-response summary distributions - {cohort_title}",
-                        "results": build_state_summary_gallery_results(cache, state_labels, None, dendrite_ids_filter=all_ids),
-                        "comparison_rows": [
-                            row
-                            for metric_name in summary_metrics
-                            for row in pairwise_state_comparisons(
-                                cache,
-                                metric_name,
-                                state_labels,
-                                shuffle_n,
-                                dendrite_ids_filter=all_ids,
-                            )
-                            if is_significant_row(row)
-                        ],
-                        "cohort_label": cohort,
-                        "summary_dir": visual_response_fig_dir,
-                    },
-                ]
-            )
-            for compartment, compartment_results in [("basal", cohort_basal_results), ("apical", cohort_apical_results)]:
-                if compartment not in present_compartments:
+    for kind, response_summary in (("dendrites", visual_response_dendrite_summary), ("spines", visual_response_spine_summary)):
+        if not isinstance(response_summary, dict):
+            continue
+        for cohort in DENDRITE_RESPONSE_COHORTS:
+            cohort_dir = visual_response_figure_output_dir(fig_dir, kind, cohort)
+            output_name = "visual_response_blank_vs_movies.svg"
+            title = f"{kind[:-1].capitalize()} visual response - {cohort.capitalize()}"
+            with step_scope(f"figure plotter: visual_response_boxplots[{kind}][{cohort}]", index=DENDRITE_RESPONSE_COHORTS.index(cohort) + 1, total=len(DENDRITE_RESPONSE_COHORTS)):
+                try:
+                    output_path = plot_visual_response_boxplot_figure(
+                        response_summary,
+                        cohort_dir,
+                        output_name=output_name,
+                        title=title,
+                        cohort_label=cohort,
+                        kind=kind,
+                    )
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create figure with visual response plotter ({kind}, {cohort}): {exc}")
                     continue
-                compartment_filter = cohort_filters.get(compartment, [])
-                cohort_metric_rows: List[Dict[str, Any]] = []
-                for metric_name in summary_metrics:
-                    cohort_metric_rows.extend(
-                        pairwise_state_comparisons(
-                            cache,
-                            metric_name,
-                            state_labels,
-                            shuffle_n,
-                            compartment_filter=compartment,
-                            dendrite_ids_filter=compartment_filter,
-                        )
-                    )
-                visual_response_specs.append(
-                    {
-                        "kind": "overview",
-                        "cohort": cohort,
-                        "compartment": compartment,
-                        "output_name": f"visual_response_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}.svg",
-                        "title": f"ANCOVA visual-response summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
-                        "results": compartment_results,
-                        "comparison_rows": cohort_metric_rows,
-                        "cohort_label": cohort,
-                        "summary_dir": visual_response_fig_dir,
-                    }
-                )
-            cohort_comparison_rows: List[Dict[str, Any]] = []
-            for metric_name in summary_metrics:
-                for state_label in basal_apical_state_labels:
-                    cohort_comparison_rows.append(
-                        basal_apical_comparison(
-                            cache,
-                            metric_name,
-                            state_label,
-                            shuffle_n,
-                            dendrite_ids_filter_by_compartment=cohort_filters,
-                        )
-                    )
-            visual_response_specs.append(
-                {
-                    "kind": "comparison",
-                    "cohort": cohort,
-                    "output_name": f"visual_response_boxplots_basal_vs_apical_{cohort}.svg",
-                    "title": f"ANCOVA visual-response summary distributions - Basal vs apical ({cohort_title})",
-                    "results": (cohort_basal_results, cohort_apical_results),
-                    "comparison_rows": cohort_comparison_rows,
-                    "cohort_label": cohort,
-                    "summary_dir": visual_response_fig_dir,
-                }
-            )
-    if isinstance(visual_response_spine_state_summaries, dict):
-        for cohort in [cohort for cohort in DENDRITE_RESPONSE_COHORTS[1:] if cohort in visual_response_spine_state_summaries]:
-            cohort_results = visual_response_spine_state_summaries.get(cohort, {})
-            if not isinstance(cohort_results, dict):
-                continue
-            cohort_basal_results = cohort_results.get("basal")
-            cohort_apical_results = cohort_results.get("apical")
-            if not isinstance(cohort_basal_results, dict) or not isinstance(cohort_apical_results, dict):
-                continue
-            cohort_title = cohort.capitalize()
-            cohort_filters = {
-                "basal": visual_response_spine_ids(visual_response_spine_summary, "basal", cohort),
-                "apical": visual_response_spine_ids(visual_response_spine_summary, "apical", cohort),
-            }
-            all_ids = sorted(dict.fromkeys(cohort_filters["basal"] + cohort_filters["apical"]))
-            visual_response_specs.extend(
-                [
-                    {
-                        "kind": "overview",
-                        "cohort": cohort,
-                        "compartment": None,
-                        "output_name": f"visual_response_boxplots_{cohort}_spine.svg",
-                        "title": f"ANCOVA visual-response summary distributions - {cohort_title} (spines)",
-                        "results": build_state_summary_gallery_results(cache, state_labels, None, spine_ids_filter=all_ids),
-                        "comparison_rows": [
-                            row
-                            for metric_name in summary_metrics
-                            for row in pairwise_state_comparisons(
-                                cache,
-                                metric_name,
-                                state_labels,
-                                shuffle_n,
-                                spine_ids_filter=all_ids,
-                            )
-                            if is_significant_row(row)
-                        ],
-                        "cohort_label": cohort,
-                        "summary_dir": visual_response_fig_dir,
-                    },
-                ]
-            )
-            for compartment, compartment_results in [("basal", cohort_basal_results), ("apical", cohort_apical_results)]:
-                if compartment not in present_compartments:
-                    continue
-                compartment_filter = cohort_filters.get(compartment, [])
-                cohort_metric_rows: List[Dict[str, Any]] = []
-                for metric_name in summary_metrics:
-                    cohort_metric_rows.extend(
-                        pairwise_state_comparisons(
-                            cache,
-                            metric_name,
-                            state_labels,
-                            shuffle_n,
-                            compartment_filter=compartment,
-                            spine_ids_filter=compartment_filter,
-                        )
-                    )
-                visual_response_specs.append(
-                    {
-                        "kind": "overview",
-                        "cohort": cohort,
-                        "compartment": compartment,
-                        "output_name": f"visual_response_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}_spine.svg",
-                        "title": f"ANCOVA visual-response summary distributions - {gallery_compartment_title(compartment)} ({cohort_title}, spines)",
-                        "results": compartment_results,
-                        "comparison_rows": cohort_metric_rows,
-                        "cohort_label": cohort,
-                        "summary_dir": visual_response_fig_dir,
-                    }
-                )
-            cohort_comparison_rows = []
-            for metric_name in summary_metrics:
-                for state_label in basal_apical_state_labels:
-                    cohort_comparison_rows.append(
-                        basal_apical_comparison(
-                            cache,
-                            metric_name,
-                            state_label,
-                            shuffle_n,
-                            spine_ids_filter_by_compartment=cohort_filters,
-                        )
-                    )
-            visual_response_specs.append(
-                {
-                    "kind": "comparison",
-                    "cohort": cohort,
-                    "output_name": f"visual_response_boxplots_basal_vs_apical_{cohort}_spine.svg",
-                    "title": f"ANCOVA visual-response summary distributions - Basal vs apical ({cohort_title}, spines)",
-                    "results": (cohort_basal_results, cohort_apical_results),
-                    "comparison_rows": cohort_comparison_rows,
-                    "cohort_label": cohort,
-                    "summary_dir": visual_response_fig_dir,
-                }
-            )
-    for plot_idx, spec in enumerate(visual_response_specs, start=1):
-        compartment = spec.get("compartment")
-        scope_label = gallery_compartment_suffix(compartment) if spec["kind"] == "overview" else "basal_vs_apical"
-        with step_scope(
-            f"figure plotter: visual_response_boxplots[{scope_label}][{spec.get('cohort', 'all')}]",
-            index=plot_idx,
-            total=len(visual_response_specs),
-        ):
-            try:
-                if spec["kind"] == "overview":
-                    output_path = plot_state_summary_figure(
-                        spec["results"],
-                        spec["summary_dir"],
-                        output_name=spec["output_name"],
-                        title=spec["title"],
-                        state_labels=state_labels,
-                        y_limits=y_limits,
-                        comparison_rows=spec.get("comparison_rows"),
-                        cohort_label=str(spec.get("cohort_label") or "all"),
-                    )
-                else:
-                    basal_summary, apical_summary = spec["results"]
-                    output_path = plot_state_summary_compartment_comparison_figure(
-                        basal_summary,
-                        apical_summary,
-                        spec["summary_dir"],
-                        output_name=spec["output_name"],
-                        title=spec["title"],
-                        state_labels=basal_apical_state_labels,
-                        y_limits=comparison_y_limits,
-                        comparison_rows=spec.get("comparison_rows"),
-                        cohort_label=str(spec.get("cohort_label") or "all"),
-                    )
-            except Exception as exc:
-                eprint(f"[ALERT] Failed to create figure with visual response plotter ({scope_label}): {exc}")
-                continue
-            if output_path:
-                saved.append(output_path)
+                if output_path:
+                    saved.append(output_path)
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,
@@ -4262,6 +4228,79 @@ def build_visual_response_spine_state_summary_results(
             ),
         }
     return cohort_results
+
+
+def visual_response_figure_output_dir(root: Path, kind: str, cohort_label: str) -> Path:
+    return figure_nested_dir(visual_response_figure_dir(root), kind, cohort_label)
+
+
+def plot_visual_response_boxplot_figure(
+    response_summary: Dict[str, Any],
+    fig_dir: Path,
+    *,
+    output_name: str,
+    title: str,
+    cohort_label: str = "all",
+    kind: str = "dendrites",
+) -> Optional[str]:
+    if plt is None:
+        return None
+    rows = response_summary.get("rows", []) if isinstance(response_summary, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    rows = [row for row in rows if isinstance(row, dict) and str(row.get("cohort") or "all") == cohort_label]
+    if not rows:
+        return None
+    blank_values: List[float] = []
+    visual_values: List[float] = []
+    paired_rows: List[Tuple[float, float, bool]] = []
+    for row in rows:
+        blank_value = as_float(row.get("mean_blank"))
+        visual_value = as_float(row.get("mean_visual"))
+        if blank_value is None or visual_value is None:
+            continue
+        if not np.isfinite(blank_value) or not np.isfinite(visual_value):
+            continue
+        blank_values.append(float(blank_value))
+        visual_values.append(float(visual_value))
+        paired_rows.append((float(blank_value), float(visual_value), bool(row.get("responsive"))))
+    if not blank_values or not visual_values:
+        return None
+    fig, ax = plt.subplots(1, 1, figsize=(4.6, 4.7))
+    data = [np.asarray(blank_values, dtype=float), np.asarray(visual_values, dtype=float)]
+    bp = ax.boxplot(data, positions=[1, 2], widths=0.58, patch_artist=True, showfliers=False)
+    box_colors = ["#D9D9D9", "#4C78A8"]
+    for patch, color in zip(bp.get("boxes", []), box_colors):
+        patch.set_facecolor(color)
+        patch.set_edgecolor("#444444")
+        patch.set_alpha(0.92)
+    for whisker in bp.get("whiskers", []):
+        whisker.set_color("#555555")
+    for cap in bp.get("caps", []):
+        cap.set_color("#555555")
+    for median in bp.get("medians", []):
+        median.set_color("#222222")
+        median.set_linewidth(1.5)
+    rng = np.random.default_rng(7)
+    for blank_value, visual_value, responsive in paired_rows:
+        line_color = "#2F855A" if responsive else "#888888"
+        ax.plot([1, 2], [blank_value, visual_value], color=line_color, alpha=0.20, linewidth=0.9, zorder=0)
+    for xpos, values, color in [(1, data[0], "#6B6B6B"), (2, data[1], "#2F5D8A")]:
+        jitter = rng.uniform(-0.08, 0.08, size=values.size)
+        ax.scatter(np.full(values.size, xpos) + jitter, values, s=14, alpha=0.45, color=color, edgecolor="none")
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(["Blank", "Movies"], fontsize=POSTER_FONT_SIZE)
+    ax.set_ylabel("Mean activity during cut stimulus", fontsize=POSTER_LABEL_SIZE)
+    ax.set_title(title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=4)
+    ax.grid(axis="y", alpha=0.22)
+    ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
+    all_values = np.concatenate(data)
+    _pad_boxplot_ylim(ax, [all_values])
+    ax.text(0.02, 0.98, f"n={len(blank_values)} ROI pairs", transform=ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 1, color="#444444")
+    fig.subplots_adjust(left=0.18, right=0.98, bottom=0.14, top=0.88)
+    output_path = Path(fig_dir) / output_name
+    save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("svg",))
+    return str(output_path)
 
 
 def build_filtered_correlation_results(results: Dict[str, Any], compartment_filter: Optional[str] = None) -> Dict[str, Any]:
@@ -7821,16 +7860,20 @@ def load_analysis_results_cache(
             step_message("analysis-results cache meta mismatch")
             step_message(f"saved meta_hash:   {saved_hash}")
             step_message(f"expected meta_hash:{expected_hash}")
-
-            for key in sorted(set(filtered_saved_meta) | set(filtered_expected_meta)):
+            differing_keys = [
+                key
+                for key in sorted(set(filtered_saved_meta) | set(filtered_expected_meta))
+                if filtered_saved_meta.get(key) != filtered_expected_meta.get(key)
+            ]
+            if differing_keys:
+                step_message(f"meta mismatch keys: {', '.join(differing_keys)}")
+            for key in differing_keys:
                 saved_value = filtered_saved_meta.get(key)
                 expected_value = filtered_expected_meta.get(key)
-                if saved_value != expected_value:
-                    step_message(
-                        f"meta mismatch for {key!r}: "
-                        f"saved={saved_value!r} expected={expected_value!r}"
-                    )
-
+                step_message(
+                    f"meta mismatch for {key!r}: "
+                    f"saved={saved_value!r} expected={expected_value!r}"
+                )
             return None, "meta_mismatch"
     results = cache.get("analysis_results")
     if not isinstance(results, dict):
@@ -14138,6 +14181,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if not shuffle_state_labels:
         shuffle_state_labels = list(PRIMARY_QUIET_STATES)
+    shared_shuffle_cache = None
+    shared_shuffle_cache_file = None
+    shared_shuffle_cache_rebuilt = False
     if not plots_only:
         with step_scope("shared circular-shift cache"):
             shared_shuffle_cache, shared_shuffle_cache_file, shared_shuffle_cache_rebuilt = load_or_build_shared_shuffle_cache(
@@ -14206,6 +14252,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ) if plots_only else None,
             rebuild=False if plots_only else analysis_results_rebuild,
         )
+    if plots_only and analysis_results_cache_status == "meta_mismatch":
+        try:
+            fallback_cache = load_npz_cache(analysis_results_cache_file)
+        except Exception:
+            fallback_cache = None
+        if isinstance(fallback_cache, dict) and fallback_cache.get("schema_version") == ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION and isinstance(fallback_cache.get("analysis_results"), dict):
+            step_message("plots_only cache metadata differed, but the saved analysis-results cache is structurally valid; reusing it for figure regeneration")
+            analysis_results_cache = fallback_cache
+            analysis_results_cache_status = "ok"
     if plots_only and analysis_results_cache_status == "missing":
         raise SystemExit(f"plots_only requires an existing analysis results cache at {analysis_results_cache_file}")
     source_summary = summarize_cache(source_cache)
