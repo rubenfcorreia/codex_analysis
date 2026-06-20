@@ -13,6 +13,12 @@ The day-figure helper, demo builder, and poster scripts now live in dedicated su
 | `analysis/main_pipeline/posters/` | Poster-generation scripts and shared poster helpers. |
 | `analysis/main_pipeline/analysis_families/` | Family-specific analysis runners and shared dispatcher logic. |
 
+## Visual Response
+
+- The main pipeline writes dendrite and spine visual-response summaries under `results/main_pipeline/figures/visual_response/`.
+- Those metrics use the stimulus-period cut activity from `cut_with_intertrials/` only.
+- If `cut_with_intertrials/` is missing, the loader prints an alert and skips the visual-response metric for that experiment.
+
 ## Where To Set Inputs
 
 1. Edit `analysis/main_pipeline/sleep_dendrite_spine_example_config.json` for the easiest real-data workflow.
@@ -238,6 +244,8 @@ Typical outputs are:
 - `figures/state_summary/state_summary_boxplots.svg`
 - `figures/state_summary/state_summary_boxplots_basal.svg`
 - `figures/state_summary/state_summary_boxplots_apical.svg`
+- `figures/visual_response/dendrites/<cohort>/visual_response_blank_vs_movies.svg`
+- `figures/visual_response/spines/<cohort>/visual_response_blank_vs_movies.svg`
 - `figures/state_summary/state_summary_boxplots_basal_vs_apical.svg`
 - `figures/state_summary/state_summary_boxplots_components/` and matching `*_components/` folders for the per-panel SVG pieces used to build the combined SVGs
 - `figures/<animal_id>/<compartment>/<date>/<animal_id>_<compartment>_<date>_<dendrite>_matrix_similarity_heatmap.svg` - one per dendrite, grouped into animal/compartment/date folders like the day figures

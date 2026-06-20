@@ -88,3 +88,4 @@ The run writes:
 - The REM day-presence pie chart shows how many pooled sleep days contained REM versus did not.
 - The pie chart summarizes the total canonical sleep-state time across all processed recordings.
 - The workflow does not depend on neuronal activity files, so experiments without those files can still be included when the sleep bundle exists.
+It is unaffected by the main pipeline's visual-response loader split.

@@ -2,6 +2,7 @@
 
 This folder contains the organized entry point for the sleep-state-only across-days workflow.
 It hands off to the root script so the defaults and imports stay unchanged.
+This workflow is independent of the main pipeline's visual-response cut-bundle choices.
 
 ## Launcher
 

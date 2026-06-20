@@ -10,7 +10,7 @@ This folder contains the visual-response launcher for the movie dendrite cohorts
 
 - treats `basal_expids` and `apical_expids` as movie experiments
 - treats `soma_expids` as optional rapid-retinotopy experiments
-- prefers `cut_intertrials/` and `cut_with_intertrials/` before the standard `cut/` bundle
+- prefers `cut_with_intertrials/` for the movie visual-response metrics
 - pools repeated expIDs within each basal/apical compartment
 - uses the native time axes already stored in the aligned data instead of a fixed pre/post plotting window
 - uses an explicit `soma_group_map` only when soma-enabled runs are requested
@@ -40,5 +40,5 @@ python3 /home/rubencorreia/code/codex_analysis/analysis/visual_response/movie_vi
 
 - The script expects the soma pairing to be explicit in `soma_group_map` only when soma-enabled runs are used; movie-only basal/apical runs do not need somas.
 - The example config does not include pre/post plotting windows; the launcher uses the native time axes stored in the data and only keeps internal fallback windows for raw soma traces when needed.
-- If a session has both `cut_intertrials/` and `cut_with_intertrials/`, the first one wins.
+- If a session is missing `cut_with_intertrials/`, the launcher prints an alert and skips that session for the visual-response metrics.
 - The output manifest is written to `results/visual_response/manifest.json`.

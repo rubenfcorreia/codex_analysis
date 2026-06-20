@@ -3,6 +3,8 @@
 This page explains how the main analysis metrics are computed in `codex_analysis` and how the statistical tests are applied.
 It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository.
 
+Visual-response note: the main pipeline now treats dendrite and spine visual-response metrics as separate cohorts, uses movie-style blank-versus-movies comparisons, and reads those metrics from `cut_with_intertrials/` only.
+
 ## Main Dendrite/Spine Pipeline
 
 ### Preprocessing
@@ -46,6 +48,7 @@ It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and z
 - Spine-spine matrix similarity uses Pearson `r` between the upper triangles of state-specific correlation matrices, with a shuffle null made by reassigning spine vectors across the two state groups.
 - Spine coactivity uses Pearson `r` on state-masked `spine_specific` traces and a circular-shift shuffle null.
 - The repository treats `shuffle_p < 0.05` as the primary significance rule for the state, correlation, matrix, and coactivity families.
+- For visual-response boxplots, compare the mean cut-period activity during blank trials against the mean cut-period activity during movie trials, and only use the `cut_with_intertrials/` bundle for that metric.
 
 ### Mixed-Model Layer
 

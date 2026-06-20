@@ -14,7 +14,7 @@ This page documents the visual-response launcher in `analysis/visual_response/`.
 - Movie dendrites are grouped by the movie categories `blank`, `zebra`, `movies`, and `gratings`.
 - Soma sessions are summarized with separate onset, boxplot, and retinotopy-map figures, using the processed repository first and rapid-ret fallback only when the processed soma bundle is absent. The soma onset panel uses the trial-table stimulus duration directly, which is 1 s for the ESRC028 rapid-ret data. For ESRC028-style retinotopy tables, the map figure becomes a 2D x/y response map averaged across repeated stimulus positions.
 - The plots use the time vectors already stored in the aligned data; the example config does not need to specify a fixed pre/post plotting window.
-- `cut_intertrials/` is preferred over `cut_with_intertrials/`, which is preferred over the standard `cut/` bundle.
+- `cut_with_intertrials/` is required for the movie visual-response metrics. If that bundle is missing, the launcher prints an alert and skips the session rather than silently falling back to a different cut bundle.
 
 ## Poster Composite
 

@@ -26,6 +26,13 @@ The top-level driver stays at the root so it remains the single orchestrator.
 - `posters/sleep_dendrite_spine_poster_figure.py`
 - `posters/sleep_dendrite_spine_spine_coactivity_poster_figure.py`
 
+## Visual Response
+
+- The main pipeline now writes dendrite and spine visual-response summaries and boxplots under `results/main_pipeline/figures/visual_response/`.
+- Visual-response metrics use the stimulus-period cut activity from `cut_with_intertrials/` only.
+- If `cut_with_intertrials/` is missing, the pipeline prints an alert instead of silently mixing in a different cut bundle.
+- Dendrite visual-response classification stays dendrite-based, and spine visual-response classification stays spine-specific.
+
 ## Config Files
 
 - `sleep_dendrite_spine_example_config.json`
