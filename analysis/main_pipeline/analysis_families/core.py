@@ -14,6 +14,7 @@ if str(MAIN_PIPELINE_DIR) not in sys.path:
 from sleep_dendrite_spine_pipeline import (
     ALL_REQUESTED_STATES,
     DEFAULT_BASAL_APICAL_STATES,
+    DENDRITE_RESPONSE_COHORTS,
     DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
     PRIMARY_QUIET_STATES,
     analysis_cache_meta_hash,
@@ -22,7 +23,11 @@ from sleep_dendrite_spine_pipeline import (
     build_shared_shuffle_cache_key,
     build_state_summary_gallery_results,
     build_visual_response_dendrite_summary_results,
+    build_visual_response_spine_summary_results,
     classify_visual_responsive_dendrites,
+    classify_visual_responsive_spines,
+    plot_visual_response_boxplot_figure,
+    plot_visual_response_entity_figure,
     cleanup_stale_state_coverage_artifacts,
     correlation_analysis_for_observation,
     derive_animal_id,
@@ -54,6 +59,7 @@ from sleep_dendrite_spine_pipeline import (
     summarize_state_values_by_dendrite,
     summarize_cache,
     state_summary_y_limits,
+    visual_response_figure_output_dir,
     build_filtered_matrix_similarity_results,
     matrix_similarity_output_compartments,
     build_filtered_spine_coactivity_results,
@@ -114,6 +120,103 @@ def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:
         "direct_trial_type_comparison": {},
         "spine_coactivity": {},
         "spine_coactivity_model": {},
+    }
+
+
+def _visual_response_count_text(summary: Dict[str, Any]) -> str:
+    counts = summary.get("counts", {}) if isinstance(summary, dict) else {}
+    total_responsive = 0
+    total_nonresponsive = 0
+    total_tested = 0
+    parts: List[str] = []
+    for compartment in ("basal", "apical"):
+        compartment_counts = counts.get(compartment, {}) if isinstance(counts, dict) else {}
+        responsive = int(compartment_counts.get("responsive", 0) or 0)
+        nonresponsive = int(compartment_counts.get("nonresponsive", 0) or 0)
+        tested = int(compartment_counts.get("tested", 0) or 0)
+        total_responsive += responsive
+        total_nonresponsive += nonresponsive
+        total_tested += tested
+        if tested > 0:
+            parts.append(f"{compartment}: {responsive}/{tested} responsive")
+    if parts:
+        return f"{total_responsive}/{total_tested} responsive ({', '.join(parts)})"
+    return f"{total_responsive}/{total_tested} responsive"
+
+
+def prepare_visual_response_cohorts(
+    cache: Dict[str, Any],
+    *,
+    state_comparison_states: Sequence[str],
+    source_cache: Optional[Dict[str, Any]] = None,
+    output_dir: Optional[Any] = None,
+    figure_root: Optional[Any] = None,
+) -> Dict[str, Any]:
+    dendrite_visual_response = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
+    step_message(f"visual response dendrites: {_visual_response_count_text(dendrite_visual_response)}")
+    dendrite_visual_response_state_summaries = build_visual_response_dendrite_summary_results(
+        cache,
+        state_comparison_states,
+        dendrite_visual_response,
+    )
+    spine_visual_response = classify_visual_responsive_spines(cache, source_cache=source_cache)
+    step_message(f"visual response spines: {_visual_response_count_text(spine_visual_response)}")
+    spine_visual_response_state_summaries = build_visual_response_spine_summary_results(spine_visual_response)
+    if output_dir is not None:
+        fig_root = Path(figure_root) if figure_root is not None else (Path(output_dir) / "figures")
+        fig_root.mkdir(parents=True, exist_ok=True)
+        cut_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        with step_scope("visual response figures"):
+            for kind, response_summary in (("dendrites", dendrite_visual_response), ("spines", spine_visual_response)):
+                if not isinstance(response_summary, dict):
+                    continue
+                rows = response_summary.get("rows", []) if isinstance(response_summary, dict) else []
+                for cohort in DENDRITE_RESPONSE_COHORTS:
+                    cohort_rows = rows if cohort == "all" else [row for row in rows if isinstance(row, dict) and str(row.get("cohort") or "all") == cohort]
+                    cohort_dir = visual_response_figure_output_dir(fig_root, kind, cohort)
+                    entity_dir = cohort_dir / "entities"
+                    finite_pairs = 0
+                    saved_entities = 0
+                    for row in cohort_rows:
+                        blank_value = row.get("mean_blank")
+                        visual_value = row.get("mean_visual")
+                        if blank_value is None or visual_value is None:
+                            continue
+                        try:
+                            blank_value = float(blank_value)
+                            visual_value = float(visual_value)
+                        except Exception:
+                            continue
+                        if np.isfinite(blank_value) and np.isfinite(visual_value):
+                            finite_pairs += 1
+                        output_path = plot_visual_response_entity_figure(
+                            row,
+                            cache,
+                            source_cache,
+                            entity_dir,
+                            kind=kind[:-1],
+                            cohort_label=cohort,
+                            cut_cache=cut_cache,
+                        )
+                        if output_path:
+                            saved_entities += 1
+                    output_path = plot_visual_response_boxplot_figure(
+                        response_summary,
+                        cohort_dir,
+                        output_name="visual_response_blank_vs_movies.svg",
+                        title=f"{kind[:-1].capitalize()} visual response - {cohort.capitalize()}",
+                        cohort_label=cohort,
+                        kind=kind,
+                    )
+                    if output_path:
+                        step_message(f"saved visual response figure: {output_path} (rows={len(cohort_rows)}, finite_pairs={finite_pairs}, entities={saved_entities})")
+                    else:
+                        step_message(f"no visual response figure for {kind}/{cohort} (rows={len(cohort_rows)}, finite_pairs={finite_pairs}, entities={saved_entities})")
+    return {
+        "dendrite_visual_response": dendrite_visual_response,
+        "dendrite_visual_response_state_summaries": dendrite_visual_response_state_summaries,
+        "spine_visual_response": spine_visual_response,
+        "spine_visual_response_state_summaries": spine_visual_response_state_summaries,
     }
 
 
@@ -435,10 +538,17 @@ def run_cached_analysis(
     analysis_unit = str(cache.get("analysis_unit", "day"))
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
-    visual_response_summary = classify_visual_responsive_dendrites(cache)
-    visual_response_state_summaries = build_visual_response_dendrite_summary_results(cache, state_comparison_states, visual_response_summary)
-    results["dendrite_visual_response"] = visual_response_summary
-    results["dendrite_visual_response_state_summaries"] = visual_response_state_summaries
+    # Prepare visual-response cohorts before family dispatch so downstream analyses can reuse all/responsive/nonresponsive splits.
+    with step_scope("visual response cohorts"):
+        results.update(
+            prepare_visual_response_cohorts(
+                cache,
+                state_comparison_states=state_comparison_states,
+                source_cache=source_cache,
+                output_dir=output_dir,
+                figure_root=figure_root,
+            )
+        )
     if "state" in selected_families:
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
     if "direct_trial_type_comparison" in selected_families:

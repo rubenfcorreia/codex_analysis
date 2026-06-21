@@ -29,9 +29,11 @@ The top-level driver stays at the root so it remains the single orchestrator.
 ## Visual Response
 
 - The main pipeline now writes dendrite and spine visual-response summaries and boxplots under `results/main_pipeline/figures/visual_response/`.
-- Visual-response metrics use the stimulus-period cut activity from `cut_with_intertrials/` only.
-- If `cut_with_intertrials/` is missing, the pipeline prints an alert instead of silently mixing in a different cut bundle.
-- Dendrite visual-response classification stays dendrite-based, and spine visual-response classification stays spine-specific.
+- Dendrite responsiveness is computed from dendrite cut activity only.
+- Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
+- The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.
+- Visual-response metrics use the stimulus-period cut activity from `cut_intertrials/` when available, with `cut_with_intertrials/` as a fallback.
+- If both `cut_intertrials/` and `cut_with_intertrials/` are missing, the pipeline prints an alert instead of silently mixing in a different cut bundle.
 
 ## Config Files
 

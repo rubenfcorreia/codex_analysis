@@ -678,6 +678,24 @@ def paired_ttest_summary(baseline_values: Sequence[float], stimulus_values: Sequ
     }
 
 
+def window_mean(trace: np.ndarray, t: np.ndarray, start_s: Optional[float] = None, end_s: Optional[float] = None) -> float:
+    trace = np.asarray(trace, dtype=float)
+    t = np.asarray(t, dtype=float)
+    if trace.shape != t.shape:
+        if trace.size == t.size:
+            trace = trace.reshape(t.shape)
+        else:
+            raise ValueError("Trace and time vector must have matching shapes for window averaging")
+    mask = np.isfinite(trace) & np.isfinite(t)
+    if start_s is not None:
+        mask &= t >= float(start_s)
+    if end_s is not None:
+        mask &= t < float(end_s)
+    if not np.any(mask):
+        return float("nan")
+    return float(np.nanmean(trace[mask]))
+
+
 def response_amplitude(trace: np.ndarray, t: np.ndarray, response_end_s: Optional[float]) -> float:
     return window_mean(trace, t, 0.0, response_end_s)
 
@@ -716,9 +734,9 @@ def _visual_response_trial_group(state_label: Any) -> Optional[str]:
     canonical = canonical_state_label(state_label)
     if not canonical:
         return None
-    if canonical.endswith(VISUAL_RESPONSE_BLANK_SUFFIX):
+    if canonical == VISUAL_RESPONSE_BLANK_TRIAL_TYPE or canonical.endswith(VISUAL_RESPONSE_BLANK_SUFFIX):
         return "blank"
-    if any(canonical.endswith(suffix) for suffix in VISUAL_RESPONSE_VISUAL_SUFFIXES):
+    if canonical in VISUAL_RESPONSE_VISUAL_TRIAL_TYPES or any(canonical.endswith(suffix) for suffix in VISUAL_RESPONSE_VISUAL_SUFFIXES):
         return "visual"
     return None
 
@@ -738,17 +756,40 @@ def _visual_response_trial_labels_from_meta(trial_meta: Sequence[Dict[str, Any]]
     return visual_labels, blank_labels
 
 
+def _resolve_visual_response_source_exp_id(
+    source_cache: Optional[Dict[str, Any]],
+    exp_id: str,
+    observation: Optional[Dict[str, Any]] = None,
+) -> str:
+    if not isinstance(source_cache, dict):
+        return exp_id
+    experiments = source_cache.get("experiments", {})
+    if exp_id in experiments:
+        return exp_id
+    if isinstance(observation, dict):
+        for candidate in (
+            observation.get("representative_exp_id"),
+            *(observation.get("source_exp_ids", []) or []),
+        ):
+            candidate = str(candidate or "")
+            if candidate and candidate in experiments:
+                return candidate
+    return exp_id
+
+
 def _load_visual_response_cut_data(
     source_cache: Optional[Dict[str, Any]],
     exp_id: str,
     cut_cache: Dict[str, Optional[Dict[str, Any]]],
+    observation: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if exp_id in cut_cache:
         return cut_cache[exp_id]
     if not isinstance(source_cache, dict):
         cut_cache[exp_id] = None
         return None
-    exp_meta = source_cache.get("experiments", {}).get(exp_id, {})
+    resolved_exp_id = _resolve_visual_response_source_exp_id(source_cache, exp_id, observation)
+    exp_meta = source_cache.get("experiments", {}).get(resolved_exp_id, {})
     source_paths = exp_meta.get("source_paths", {}) if isinstance(exp_meta, dict) else {}
     exp_root = Path(str(source_paths.get("exp_root") or ""))
     cut_dir = Path(str(source_paths.get("cut") or (exp_root / "cut" if exp_root else "")))
@@ -757,9 +798,21 @@ def _load_visual_response_cut_data(
         return None
     channel = as_int(source_cache.get("config", {}).get("channel")) if isinstance(source_cache.get("config", {}), dict) else None
     channel = int(channel) if channel is not None else DEFAULT_CHANNEL
-    selected_path = exp_root / "cut_with_intertrials" / f"s2p_ch{channel}_dF_cut.pickle"
-    if not selected_path.exists():
-        eprint(f"[ALERT] {exp_id}: missing cut_with_intertrials bundle at {selected_path}")
+    selected_path = None
+    selected_label = None
+    for candidate_path, candidate_label in (
+        (exp_root / "cut_intertrials" / f"s2p_ch{channel}_dF_cut.pickle", "cut_intertrials"),
+        (exp_root / "cut_with_intertrials" / f"s2p_ch{channel}_dF_cut.pickle", "cut_with_intertrials"),
+    ):
+        if candidate_path.exists():
+            selected_path = candidate_path
+            selected_label = candidate_label
+            break
+    if selected_path is None:
+        eprint(
+            f"[ALERT] {exp_id}: missing cut_intertrials/cut_with_intertrials bundle at "
+            f"{exp_root / 'cut_intertrials' / f's2p_ch{channel}_dF_cut.pickle'}"
+        )
         cut_cache[exp_id] = None
         return None
     wheel_path = cut_dir / "wheel.pickle"
@@ -780,6 +833,15 @@ def _load_visual_response_cut_data(
         cut_cache[exp_id] = None
         return None
     trial_meta = [dict(meta) for meta in exp_meta.get("trial_meta", []) if isinstance(meta, dict)]
+    visual_trial_labels, blank_trial_labels = _visual_response_trial_labels_from_meta(trial_meta)
+    step_message(
+        f"{exp_id}: loaded {selected_label} cut bundle; "
+        f"cut_neural_shape={tuple(np.asarray(cut_neural, dtype=float).shape)}, "
+        f"cut_time_len={int(np.asarray(cut_time, dtype=float).size)}, "
+        f"wheel_len={int(np.asarray(wheel_speed, dtype=float).size)}, "
+        f"trials={len(trial_meta)}, "
+        f"visual_labels={len(visual_trial_labels)}, blank_labels={len(blank_trial_labels)}"
+    )
     payload = {
         "cut_time": np.asarray(cut_time, dtype=float),
         "cut_neural": np.asarray(cut_neural, dtype=float),
@@ -787,9 +849,49 @@ def _load_visual_response_cut_data(
         "trial_meta": trial_meta,
         "source_label": selected_label,
         "source_path": str(selected_path),
+        "source_exp_id": resolved_exp_id,
     }
     cut_cache[exp_id] = payload
     return payload
+
+
+def _visual_response_entity_observation(
+    cache: Dict[str, Any],
+    kind: str,
+    response_row: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    animal_id = str(response_row.get("animal_id") or "")
+    if not animal_id:
+        return None, None, None, None
+    animals = cache.get("animals", {}) if isinstance(cache, dict) else {}
+    animal_entry = animals.get(animal_id, {}) if isinstance(animals, dict) else {}
+    if kind == "dendrite":
+        entity_id = str(response_row.get("global_dendrite_id") or "")
+        dendrite_record = animal_entry.get("dendrites", {}).get(entity_id) if isinstance(animal_entry, dict) else None
+        if not isinstance(dendrite_record, dict):
+            return None, None, None, None
+        observations = dendrite_record.get("observations", {}) if isinstance(dendrite_record, dict) else {}
+        if not isinstance(observations, dict) or not observations:
+            return None, None, dendrite_record, None
+        exp_id, observation = next(iter(sorted(observations.items())))
+        return str(exp_id), observation if isinstance(observation, dict) else None, dendrite_record, None
+    entity_id = str(response_row.get("global_spine_id") or "")
+    dendrites = animal_entry.get("dendrites", {}) if isinstance(animal_entry, dict) else {}
+    if not isinstance(dendrites, dict):
+        return None, None, None, None
+    for dendrite_record in dendrites.values():
+        if not isinstance(dendrite_record, dict):
+            continue
+        spine_record = dendrite_record.get("spines", {}).get(entity_id) if isinstance(dendrite_record.get("spines", {}), dict) else None
+        if not isinstance(spine_record, dict):
+            continue
+        observations = spine_record.get("observations", {}) if isinstance(spine_record, dict) else {}
+        if not isinstance(observations, dict) or not observations:
+            return None, None, dendrite_record, None
+        exp_id, observation = next(iter(sorted(observations.items())))
+        parent_observation = dendrite_record.get("observations", {}).get(exp_id) if isinstance(dendrite_record.get("observations", {}), dict) else None
+        return str(exp_id), observation if isinstance(observation, dict) else None, dendrite_record, parent_observation if isinstance(parent_observation, dict) else None
+    return None, None, None, None
 
 
 def _collect_visual_response_trial_rows(
@@ -801,7 +903,7 @@ def _collect_visual_response_trial_rows(
     cut_cache: Dict[str, Optional[Dict[str, Any]]],
     parent_dendrite_observation: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    cut_data = _load_visual_response_cut_data(source_cache, exp_id, cut_cache)
+    cut_data = _load_visual_response_cut_data(source_cache, exp_id, cut_cache, observation)
     if not cut_data:
         return []
     roi_index = as_int(observation.get("local_ids", {}).get("conversion_index"))
@@ -853,89 +955,55 @@ def _collect_visual_response_trial_rows(
     return rows
 
 
-def _ancova_visual_response_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def _movie_style_blank_vs_movies_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     visual_trial_labels: List[str] = []
     blank_trial_labels: List[str] = []
-    paired_baseline_values: List[float] = []
-    paired_stimulus_values: List[float] = []
-    blank_reference_values: List[float] = []
     visual_values: List[float] = []
+    blank_reference_values: List[float] = []
     for row in rows:
         trial_label = canonical_state_label(row.get("trial_label"))
         group = str(row.get("group") or "")
-        baseline_value = as_float(row.get("baseline"))
         stimulus_value = as_float(row.get("response"))
+        if not np.isfinite(stimulus_value) if stimulus_value is not None else True:
+            continue
         if group == "visual":
             if trial_label and trial_label not in visual_trial_labels:
                 visual_trial_labels.append(trial_label)
-            if baseline_value is not None and stimulus_value is not None and np.isfinite(baseline_value) and np.isfinite(stimulus_value):
-                paired_baseline_values.append(float(baseline_value))
-                paired_stimulus_values.append(float(stimulus_value))
-                visual_values.append(float(stimulus_value))
+            visual_values.append(float(stimulus_value))
         elif group == "blank":
             if trial_label and trial_label not in blank_trial_labels:
                 blank_trial_labels.append(trial_label)
-            if stimulus_value is not None and np.isfinite(stimulus_value):
-                blank_reference_values.append(float(stimulus_value))
+            blank_reference_values.append(float(stimulus_value))
     visual_arr = np.asarray(visual_values, dtype=float)
     blank_arr = np.asarray(blank_reference_values, dtype=float)
     mean_visual = float(np.nanmean(visual_arr)) if visual_arr.size else float("nan")
     mean_blank = float(np.nanmean(blank_arr)) if blank_arr.size else float("nan")
     delta = mean_visual - mean_blank if visual_arr.size and blank_arr.size else float("nan")
-    paired = paired_ttest_summary(paired_baseline_values, paired_stimulus_values)
     blank = welch_ttest_summary(visual_arr, blank_arr)
-    tests = [record for record in (paired, blank) if record.get("available")]
-    if tests:
-        apply_bonferroni_correction(tests)
-    available = bool(visual_arr.size and blank_arr.size)
-    if not available:
-        return {
-            "available": False,
-            "comparison": "visual_response_movie_vs_blank",
-            "test_name": "movie_style_blank_vs_movies",
-            "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
-            "statistic": float("nan"),
-            "raw_pvalue": float("nan"),
-            "adjusted_pvalue": float("nan"),
-            "n_visual_values": int(visual_arr.size),
-            "n_blank_values": int(blank_arr.size),
-            "mean_visual": mean_visual,
-            "mean_blank": mean_blank,
-            "delta": delta,
-            "paired_baseline_values": paired_baseline_values,
-            "paired_stimulus_values": paired_stimulus_values,
-            "blank_reference_values": blank_reference_values,
-            "visual_trial_labels": visual_trial_labels,
-            "blank_trial_labels": blank_trial_labels,
-            "paired_pre_vs_stimulus": paired,
-            "stimulus_vs_blank": blank,
-            "significant": False,
-            "star": "",
-        }
-    paired_test = paired
-    blank_test = blank
+    if blank.get("available"):
+        apply_bonferroni_correction([blank])
     return {
-        "available": True,
+        "available": bool(visual_arr.size and blank_arr.size),
         "comparison": "visual_response_movie_vs_blank",
         "test_name": "movie_style_blank_vs_movies",
         "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
-        "statistic": float(blank_test.get("statistic", float("nan"))),
-        "raw_pvalue": float(blank_test.get("raw_pvalue", float("nan"))),
-        "adjusted_pvalue": float(blank_test.get("adjusted_pvalue", float("nan"))),
+        "statistic": float(blank.get("statistic", float("nan"))),
+        "raw_pvalue": float(blank.get("raw_pvalue", float("nan"))),
+        "adjusted_pvalue": float(blank.get("adjusted_pvalue", float("nan"))),
         "n_visual_values": int(visual_arr.size),
         "n_blank_values": int(blank_arr.size),
         "mean_visual": mean_visual,
         "mean_blank": mean_blank,
         "delta": delta,
-        "paired_baseline_values": paired_baseline_values,
-        "paired_stimulus_values": paired_stimulus_values,
+        "paired_baseline_values": [],
+        "paired_stimulus_values": visual_values,
         "blank_reference_values": blank_reference_values,
         "visual_trial_labels": visual_trial_labels,
         "blank_trial_labels": blank_trial_labels,
-        "paired_pre_vs_stimulus": paired_test,
-        "stimulus_vs_blank": blank_test,
-        "significant": bool(blank_test.get("significant", False)),
-        "star": str(blank_test.get("star", "")),
+        "paired_pre_vs_stimulus": {"available": False},
+        "stimulus_vs_blank": blank,
+        "significant": bool(blank.get("significant", False)),
+        "star": str(blank.get("star", "")),
     }
 
 
@@ -985,7 +1053,7 @@ def _classify_visual_response_rows(
                                 parent_dendrite_observation=parent_dendrite_observation,
                             )
                         )
-                    summary = _ancova_visual_response_summary(spine_rows)
+                    summary = _movie_style_blank_vs_movies_summary(spine_rows)
                     if compartments_seen:
                         unique_compartments = list(dict.fromkeys(compartments_seen))
                         compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
@@ -1006,6 +1074,9 @@ def _classify_visual_response_rows(
                         "n_blank_values": int(summary.get("n_blank_values", 0)),
                         "mean_visual": float(summary.get("mean_visual", float("nan"))),
                         "mean_blank": float(summary.get("mean_blank", float("nan"))),
+                        "paired_baseline_values": list(summary.get("paired_baseline_values", [])) if isinstance(summary.get("paired_baseline_values"), list) else [],
+                        "paired_stimulus_values": list(summary.get("paired_stimulus_values", [])) if isinstance(summary.get("paired_stimulus_values"), list) else [],
+                        "blank_reference_values": list(summary.get("blank_reference_values", [])) if isinstance(summary.get("blank_reference_values"), list) else [],
                         "delta": float(summary.get("delta", float("nan"))),
                         "effect_size": float(summary.get("delta", float("nan"))),
                         "statistic": float(summary.get("statistic", float("nan"))),
@@ -1022,7 +1093,7 @@ def _classify_visual_response_rows(
                 compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
             else:
                 compartment = None
-            summary = _ancova_visual_response_summary(observation_rows)
+            summary = _movie_style_blank_vs_movies_summary(observation_rows)
             row = {
                 "animal_id": animal_id,
                 "global_dendrite_id": global_dendrite_id,
@@ -1038,6 +1109,9 @@ def _classify_visual_response_rows(
                 "n_blank_values": int(summary.get("n_blank_values", 0)),
                 "mean_visual": float(summary.get("mean_visual", float("nan"))),
                 "mean_blank": float(summary.get("mean_blank", float("nan"))),
+                "paired_baseline_values": list(summary.get("paired_baseline_values", [])) if isinstance(summary.get("paired_baseline_values"), list) else [],
+                "paired_stimulus_values": list(summary.get("paired_stimulus_values", [])) if isinstance(summary.get("paired_stimulus_values"), list) else [],
+                "blank_reference_values": list(summary.get("blank_reference_values", [])) if isinstance(summary.get("blank_reference_values"), list) else [],
                 "delta": float(summary.get("delta", float("nan"))),
                 "effect_size": float(summary.get("delta", float("nan"))),
                 "statistic": float(summary.get("statistic", float("nan"))),
@@ -3284,30 +3358,6 @@ def generate_analysis_figures(
                 continue
             if output_path:
                 saved.append(output_path)
-    visual_response_dendrite_summary = results.get("dendrite_visual_response", {})
-    visual_response_spine_summary = results.get("spine_visual_response", {})
-    for kind, response_summary in (("dendrites", visual_response_dendrite_summary), ("spines", visual_response_spine_summary)):
-        if not isinstance(response_summary, dict):
-            continue
-        for cohort in DENDRITE_RESPONSE_COHORTS:
-            cohort_dir = visual_response_figure_output_dir(fig_dir, kind, cohort)
-            output_name = "visual_response_blank_vs_movies.svg"
-            title = f"{kind[:-1].capitalize()} visual response - {cohort.capitalize()}"
-            with step_scope(f"figure plotter: visual_response_boxplots[{kind}][{cohort}]", index=DENDRITE_RESPONSE_COHORTS.index(cohort) + 1, total=len(DENDRITE_RESPONSE_COHORTS)):
-                try:
-                    output_path = plot_visual_response_boxplot_figure(
-                        response_summary,
-                        cohort_dir,
-                        output_name=output_name,
-                        title=title,
-                        cohort_label=cohort,
-                        kind=kind,
-                    )
-                except Exception as exc:
-                    eprint(f"[ALERT] Failed to create figure with visual response plotter ({kind}, {cohort}): {exc}")
-                    continue
-                if output_path:
-                    saved.append(output_path)
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,
@@ -4248,15 +4298,22 @@ def plot_visual_response_boxplot_figure(
     rows = response_summary.get("rows", []) if isinstance(response_summary, dict) else []
     if not isinstance(rows, list):
         rows = []
-    rows = [row for row in rows if isinstance(row, dict) and str(row.get("cohort") or "all") == cohort_label]
-    if not rows:
-        return None
+    if cohort_label != "all":
+        rows = [row for row in rows if isinstance(row, dict) and str(row.get("cohort") or "all") == cohort_label]
     blank_values: List[float] = []
     visual_values: List[float] = []
     paired_rows: List[Tuple[float, float, bool]] = []
     for row in rows:
         blank_value = as_float(row.get("mean_blank"))
         visual_value = as_float(row.get("mean_visual"))
+        if blank_value is None or visual_value is None or not np.isfinite(blank_value) or not np.isfinite(visual_value):
+            paired_blank_values = [as_float(value) for value in (row.get("blank_reference_values") or row.get("paired_baseline_values") or [])]
+            paired_visual_values = [as_float(value) for value in (row.get("paired_stimulus_values") or [])]
+            paired_blank_values = [float(value) for value in paired_blank_values if value is not None and np.isfinite(value)]
+            paired_visual_values = [float(value) for value in paired_visual_values if value is not None and np.isfinite(value)]
+            if paired_blank_values and paired_visual_values:
+                blank_value = float(np.nanmean(np.asarray(paired_blank_values, dtype=float)))
+                visual_value = float(np.nanmean(np.asarray(paired_visual_values, dtype=float)))
         if blank_value is None or visual_value is None:
             continue
         if not np.isfinite(blank_value) or not np.isfinite(visual_value):
@@ -4300,6 +4357,166 @@ def plot_visual_response_boxplot_figure(
     fig.subplots_adjust(left=0.18, right=0.98, bottom=0.14, top=0.88)
     output_path = Path(fig_dir) / output_name
     save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("svg",))
+    return str(output_path)
+
+
+def _visual_response_entity_plot_data(
+    source_cache: Optional[Dict[str, Any]],
+    kind: str,
+    response_row: Dict[str, Any],
+    cut_cache: Dict[str, Optional[Dict[str, Any]]],
+    observation: Dict[str, Any],
+    parent_dendrite_observation: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    exp_id = str(response_row.get("source_exp_id") or response_row.get("exp_id") or response_row.get("day_id") or "")
+    if not exp_id:
+        return None
+    cut_data = _load_visual_response_cut_data(source_cache, exp_id, cut_cache, observation)
+    if not cut_data:
+        return None
+    roi_index = as_int(observation.get("local_ids", {}).get("conversion_index"))
+    if roi_index is None:
+        return None
+    cut_neural = np.asarray(cut_data.get("cut_neural"), dtype=float)
+    cut_time = np.asarray(cut_data.get("cut_time"), dtype=float)
+    trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
+    if roi_index < 0 or roi_index >= cut_neural.shape[0] or cut_time.size == 0:
+        return None
+    if kind == "spine":
+        if parent_dendrite_observation is None:
+            return None
+        dendrite_index = as_int(parent_dendrite_observation.get("local_ids", {}).get("conversion_index"))
+        alpha = as_float(observation.get("alpha"))
+        if dendrite_index is None or alpha is None:
+            return None
+        if dendrite_index < 0 or dendrite_index >= cut_neural.shape[0]:
+            return None
+        trial_matrix = np.asarray(cut_neural[roi_index] - alpha * cut_neural[dendrite_index], dtype=float)
+    else:
+        trial_matrix = np.asarray(cut_neural[roi_index], dtype=float)
+
+    visual_traces: List[np.ndarray] = []
+    blank_traces: List[np.ndarray] = []
+    visual_values: List[float] = []
+    blank_values: List[float] = []
+    for meta in trial_meta:
+        if not isinstance(meta, dict):
+            continue
+        trial_label = canonical_state_label(meta.get("state_label"))
+        group = _visual_response_trial_group(trial_label)
+        if group is None:
+            continue
+        trial_index = as_int(meta.get("trial_index"))
+        if trial_index is None or trial_index < 0 or trial_index >= trial_matrix.shape[0]:
+            continue
+        trial_trace = np.asarray(trial_matrix[trial_index], dtype=float)
+        if not np.isfinite(trial_trace).any():
+            continue
+        trial_duration = as_float(meta.get("duration"))
+        _, stimulus = trial_activity_means(trial_trace, cut_time, trial_duration)
+        if not np.isfinite(stimulus):
+            continue
+        if group == "visual":
+            visual_traces.append(trial_trace)
+            visual_values.append(float(stimulus))
+        else:
+            blank_traces.append(trial_trace)
+            blank_values.append(float(stimulus))
+
+    if not visual_values or not blank_values:
+        return None
+
+    def _mean_trace(traces: Sequence[np.ndarray]) -> np.ndarray:
+        if not traces:
+            return np.asarray([], dtype=float)
+        stacked = np.asarray([np.asarray(trace, dtype=float) for trace in traces], dtype=float)
+        return np.asarray(np.nanmean(stacked, axis=0), dtype=float)
+
+    return {
+        "cut_time": cut_time,
+        "visual_mean_trace": _mean_trace(visual_traces),
+        "blank_mean_trace": _mean_trace(blank_traces),
+        "visual_values": np.asarray(visual_values, dtype=float),
+        "blank_values": np.asarray(blank_values, dtype=float),
+        "visual_label": VISUAL_RESPONSE_VISUAL_TRIAL_TYPES[0],
+        "blank_label": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+    }
+
+
+def plot_visual_response_entity_figure(
+    response_row: Dict[str, Any],
+    cache: Dict[str, Any],
+    source_cache: Optional[Dict[str, Any]],
+    fig_dir: Path,
+    *,
+    kind: str,
+    cohort_label: str,
+    cut_cache: Dict[str, Optional[Dict[str, Any]]],
+) -> Optional[str]:
+    if plt is None:
+        return None
+    exp_id, observation, parent_dendrite_record, parent_dendrite_observation = _visual_response_entity_observation(cache, kind, response_row)
+    if exp_id is None or observation is None:
+        return None
+    entity_id = str(response_row.get("global_dendrite_id") if kind == "dendrite" else response_row.get("global_spine_id") or "")
+    plot_data = _visual_response_entity_plot_data(source_cache, kind, response_row, cut_cache, observation, parent_dendrite_observation)
+    if not plot_data:
+        return None
+    cut_time = np.asarray(plot_data.get("cut_time", []), dtype=float)
+    visual_mean_trace = np.asarray(plot_data.get("visual_mean_trace", []), dtype=float)
+    blank_mean_trace = np.asarray(plot_data.get("blank_mean_trace", []), dtype=float)
+    visual_values = np.asarray(plot_data.get("visual_values", []), dtype=float)
+    blank_values = np.asarray(plot_data.get("blank_values", []), dtype=float)
+    if cut_time.size == 0 or visual_mean_trace.size == 0 or blank_mean_trace.size == 0:
+        return None
+
+    title_label = f"{response_row.get('animal_id', '')} {entity_id}".strip()
+    fig, axes = plt.subplots(1, 2, figsize=(7.8, 3.6), gridspec_kw={"width_ratios": [1.6, 1.0], "wspace": 0.28})
+    trace_ax, box_ax = axes
+
+    trace_ax.plot(cut_time, blank_mean_trace, color="#9AA0A6", linewidth=2.0, label="Blank mean")
+    trace_ax.plot(cut_time, visual_mean_trace, color="#F58518", linewidth=2.0, label="Movies mean")
+    trace_ax.set_title("Cut stimulus traces", fontsize=POSTER_TITLE_SIZE - 4)
+    trace_ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
+    trace_ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
+    trace_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    set_sparse_numeric_ticks(trace_ax, axis="both", nbins=4)
+    trace_ax.grid(axis="y", alpha=0.2)
+    trace_ax.legend(frameon=False, fontsize=POSTER_NOTE_SIZE - 2, loc="best")
+
+    data = [blank_values, visual_values]
+    bp = box_ax.boxplot(data, positions=[1.0, 2.0], widths=0.58, patch_artist=True, showfliers=False)
+    for patch, color in zip(bp.get("boxes", []), ["#D9D9D9", "#F8C38B"]):
+        patch.set_facecolor(color)
+        patch.set_edgecolor("#444444")
+        patch.set_alpha(0.95)
+    for whisker in bp.get("whiskers", []):
+        whisker.set_color("#555555")
+        whisker.set_linewidth(1.0)
+    for cap in bp.get("caps", []):
+        cap.set_color("#555555")
+        cap.set_linewidth(1.0)
+    for median in bp.get("medians", []):
+        median.set_color("#222222")
+        median.set_linewidth(1.5)
+    rng = np.random.default_rng(7)
+    for xpos, values, color in [(1.0, blank_values, "#6B6B6B"), (2.0, visual_values, "#C96E00")]:
+        jitter = rng.uniform(-0.08, 0.08, size=values.size)
+        box_ax.scatter(np.full(values.size, xpos) + jitter, values, s=12, alpha=0.42, color=color, edgecolor="none")
+    all_values = np.concatenate([blank_values, visual_values])
+    _pad_boxplot_ylim(box_ax, [all_values])
+    box_ax.set_xticks([1.0, 2.0])
+    box_ax.set_xticklabels(["blank", "movies"], fontsize=POSTER_FONT_SIZE - 1)
+    box_ax.set_ylabel("Mean cut-stimulus activity", fontsize=POSTER_LABEL_SIZE)
+    box_ax.set_title("Blank vs movies", fontsize=POSTER_TITLE_SIZE - 4)
+    box_ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
+    box_ax.grid(axis="y", alpha=0.2)
+    box_ax.text(0.02, 0.98, f"n={int(blank_values.size)} blank, n={int(visual_values.size)} visual", transform=box_ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 2, color="#444444")
+    cohort_text = f" ({cohort_label})" if cohort_label and cohort_label != "all" else ""
+    fig.suptitle(f"{kind.capitalize()} {title_label}{cohort_text}", fontsize=POSTER_SUPTITLE_SIZE - 3, y=0.985)
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.16, top=0.84)
+    output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}.svg"
+    save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
     return str(output_path)
 
 

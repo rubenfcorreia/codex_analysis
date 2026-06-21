@@ -3,6 +3,25 @@
 Use `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
 The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces.
 
+## Current Workflow
+
+1. Load the config and resolve repository, cache, output, and figure paths.
+2. Build or reuse the source cache, analysis-table cache, analysis-results cache, and shared shuffle cache so the pipeline can reuse prior work when the source data and settings match.
+3. Normalize the data to day-level analysis units.
+   - Multiple source expIDs from the same day are pooled into one day-level unit.
+   - The pooled unit keeps the source provenance, but downstream summaries are reported per day rather than per raw session.
+   - Dendrite and spine IDs are normalized to pooled identifiers so repeated references to the same biological unit stay stable across caches and plots.
+4. Prepare visual-response cohorts before any family analysis runs.
+   - Dendrite responsiveness is computed from dendrite cut activity only.
+   - Spine responsiveness is computed from spine cut activity only.
+   - The classifier compares visual stimulus trials against blank trials using the cut stimulus-period data, preferring `cut_intertrials/` and falling back to `cut_with_intertrials/` for the visual-response metric inputs.
+   - This produces the `all`, `responsive`, and `nonresponsive` cohorts that downstream families can reuse immediately.
+5. Run the analysis families through the top-level driver.
+   - Each family reads the normalized day-level cache rather than raw source files.
+   - Family-specific summaries, comparisons, and figures operate on the already-pooled units and selected cohorts.
+6. Write the CSV tables, JSON summaries, SVG figures, checkpoint gallery, and run report.
+   - Output paths remain organized under the main pipeline results tree so `plots_only` can regenerate figures from compatible caches without recomputing the underlying analyses.
+
 ## Script Map
 
 | Script | What it does |
@@ -16,8 +35,11 @@ The day-figure helper, demo builder, and poster scripts now live in dedicated su
 ## Visual Response
 
 - The main pipeline writes dendrite and spine visual-response summaries under `results/main_pipeline/figures/visual_response/`.
-- Those metrics use the stimulus-period cut activity from `cut_with_intertrials/` only.
-- If `cut_with_intertrials/` is missing, the loader prints an alert and skips the visual-response metric for that experiment.
+- Dendrite responsiveness is computed from dendrite cut activity only.
+- Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
+- The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.
+- Those metrics use the stimulus-period cut activity from `cut_intertrials/` when available, with `cut_with_intertrials/` as a fallback.
+- If both `cut_intertrials/` and `cut_with_intertrials/` are missing, the loader prints an alert and skips the visual-response metric for that experiment.
 
 ## Where To Set Inputs
 
