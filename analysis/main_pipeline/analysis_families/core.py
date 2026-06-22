@@ -309,6 +309,7 @@ def run_mixed_model_family_block(
     basal_apical_states: Sequence[str],
     shuffle_n: int,
     mixed_model_contrast_p_source: str,
+    source_cache: Optional[Dict[str, Any]] = None,
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
 ) -> None:
@@ -319,6 +320,7 @@ def run_mixed_model_family_block(
             state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+            source_cache=source_cache,
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
@@ -554,7 +556,7 @@ def run_cached_analysis(
     if "direct_trial_type_comparison" in selected_families:
         run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
     if "mixed_model" in selected_families:
-        run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, output_dir=output_dir, figure_root=figure_root)
+        run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
     if "spine_coactivity" in selected_families:
         run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root)
     if "correlation" in selected_families:

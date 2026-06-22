@@ -4363,12 +4363,12 @@ def plot_visual_response_boxplot_figure(
 def _visual_response_entity_plot_data(
     source_cache: Optional[Dict[str, Any]],
     kind: str,
-    response_row: Dict[str, Any],
+    exp_id: str,
     cut_cache: Dict[str, Optional[Dict[str, Any]]],
     observation: Dict[str, Any],
     parent_dendrite_observation: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    exp_id = str(response_row.get("source_exp_id") or response_row.get("exp_id") or response_row.get("day_id") or "")
+    exp_id = str(exp_id or "")
     if not exp_id:
         return None
     cut_data = _load_visual_response_cut_data(source_cache, exp_id, cut_cache, observation)
@@ -4434,6 +4434,8 @@ def _visual_response_entity_plot_data(
 
     return {
         "cut_time": cut_time,
+        "visual_traces": [np.asarray(trace, dtype=float) for trace in visual_traces],
+        "blank_traces": [np.asarray(trace, dtype=float) for trace in blank_traces],
         "visual_mean_trace": _mean_trace(visual_traces),
         "blank_mean_trace": _mean_trace(blank_traces),
         "visual_values": np.asarray(visual_values, dtype=float),
@@ -4441,6 +4443,53 @@ def _visual_response_entity_plot_data(
         "visual_label": VISUAL_RESPONSE_VISUAL_TRIAL_TYPES[0],
         "blank_label": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
     }
+
+
+def _plot_visual_response_entity_trace_figure(
+    response_row: Dict[str, Any],
+    cut_time: np.ndarray,
+    traces: Sequence[np.ndarray],
+    mean_trace: np.ndarray,
+    label: str,
+    color: str,
+    fig_dir: Path,
+    *,
+    kind: str,
+    cohort_label: str,
+    entity_id: str,
+    count_label: str,
+) -> Optional[str]:
+    if plt is None:
+        return None
+    if cut_time.size == 0 or mean_trace.size == 0 or not traces:
+        return None
+    fig, ax = plt.subplots(1, 1, figsize=(5.0, 3.8))
+    for trace in traces:
+        ax.plot(cut_time, trace, color=color, linewidth=0.8, alpha=0.24, zorder=1)
+    ax.plot(cut_time, mean_trace, color=color, linewidth=2.2, zorder=3)
+    ax.set_title(f"{label.capitalize()} traces", fontsize=POSTER_TITLE_SIZE - 4)
+    ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
+    ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    set_sparse_numeric_ticks(ax, axis="both", nbins=4)
+    ax.grid(axis="y", alpha=0.2)
+    ax.text(
+        0.02,
+        0.98,
+        f"trials: {count_label}={len(traces)}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=POSTER_NOTE_SIZE - 3,
+        color="#444444",
+    )
+    cohort_text = f" ({cohort_label})" if cohort_label and cohort_label != "all" else ""
+    title_prefix = kind.capitalize()
+    fig.suptitle(f"{title_prefix} {response_row.get('animal_id', '')} {entity_id}{cohort_text}", fontsize=POSTER_SUPTITLE_SIZE - 3, y=0.985)
+    fig.subplots_adjust(left=0.12, right=0.98, bottom=0.16, top=0.84)
+    output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}_{label}_traces.svg"
+    save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
+    return str(output_path)
 
 
 def plot_visual_response_entity_figure(
@@ -4459,7 +4508,7 @@ def plot_visual_response_entity_figure(
     if exp_id is None or observation is None:
         return None
     entity_id = str(response_row.get("global_dendrite_id") if kind == "dendrite" else response_row.get("global_spine_id") or "")
-    plot_data = _visual_response_entity_plot_data(source_cache, kind, response_row, cut_cache, observation, parent_dendrite_observation)
+    plot_data = _visual_response_entity_plot_data(source_cache, kind, exp_id, cut_cache, observation, parent_dendrite_observation)
     if not plot_data:
         return None
     cut_time = np.asarray(plot_data.get("cut_time", []), dtype=float)
@@ -4467,22 +4516,36 @@ def plot_visual_response_entity_figure(
     blank_mean_trace = np.asarray(plot_data.get("blank_mean_trace", []), dtype=float)
     visual_values = np.asarray(plot_data.get("visual_values", []), dtype=float)
     blank_values = np.asarray(plot_data.get("blank_values", []), dtype=float)
+    visual_traces = [np.asarray(trace, dtype=float) for trace in (plot_data.get("visual_traces", []) or [])]
+    blank_traces = [np.asarray(trace, dtype=float) for trace in (plot_data.get("blank_traces", []) or [])]
     if cut_time.size == 0 or visual_mean_trace.size == 0 or blank_mean_trace.size == 0:
         return None
 
     title_label = f"{response_row.get('animal_id', '')} {entity_id}".strip()
-    fig, axes = plt.subplots(1, 2, figsize=(7.8, 3.6), gridspec_kw={"width_ratios": [1.6, 1.0], "wspace": 0.28})
-    trace_ax, box_ax = axes
+    fig, axes = plt.subplots(1, 3, figsize=(11.8, 4.1), gridspec_kw={"width_ratios": [1.05, 1.05, 0.95]})
+    blank_ax, movie_ax, box_ax = axes
 
-    trace_ax.plot(cut_time, blank_mean_trace, color="#9AA0A6", linewidth=2.0, label="Blank mean")
-    trace_ax.plot(cut_time, visual_mean_trace, color="#F58518", linewidth=2.0, label="Movies mean")
-    trace_ax.set_title("Cut stimulus traces", fontsize=POSTER_TITLE_SIZE - 4)
-    trace_ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
-    trace_ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
-    trace_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-    set_sparse_numeric_ticks(trace_ax, axis="both", nbins=4)
-    trace_ax.grid(axis="y", alpha=0.2)
-    trace_ax.legend(frameon=False, fontsize=POSTER_NOTE_SIZE - 2, loc="best")
+    for trace in blank_traces:
+        blank_ax.plot(cut_time, trace, color="#9AA0A6", linewidth=0.7, alpha=0.10, zorder=1)
+    blank_ax.plot(cut_time, blank_mean_trace, color="#7F8790", linewidth=2.6, zorder=3)
+    blank_ax.set_title("Blank traces", fontsize=POSTER_TITLE_SIZE - 4)
+    blank_ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
+    blank_ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
+    blank_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    set_sparse_numeric_ticks(blank_ax, axis="both", nbins=4)
+    blank_ax.grid(axis="y", alpha=0.2)
+    blank_ax.text(0.02, 0.98, f"trials: blank={len(blank_traces)}", transform=blank_ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 3, color="#444444")
+
+    for trace in visual_traces:
+        movie_ax.plot(cut_time, trace, color="#F58518", linewidth=0.7, alpha=0.10, zorder=1)
+    movie_ax.plot(cut_time, visual_mean_trace, color="#D97706", linewidth=2.6, zorder=3)
+    movie_ax.set_title("Movies traces", fontsize=POSTER_TITLE_SIZE - 4)
+    movie_ax.set_xlabel("Time (s)", fontsize=POSTER_LABEL_SIZE)
+    movie_ax.set_ylabel("dF/F", fontsize=POSTER_LABEL_SIZE)
+    movie_ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    set_sparse_numeric_ticks(movie_ax, axis="both", nbins=4)
+    movie_ax.grid(axis="y", alpha=0.2)
+    movie_ax.text(0.02, 0.98, f"trials: movies={len(visual_traces)}", transform=movie_ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 3, color="#444444")
 
     data = [blank_values, visual_values]
     bp = box_ax.boxplot(data, positions=[1.0, 2.0], widths=0.58, patch_artist=True, showfliers=False)
@@ -4512,10 +4575,11 @@ def plot_visual_response_entity_figure(
     box_ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
     box_ax.grid(axis="y", alpha=0.2)
     box_ax.text(0.02, 0.98, f"n={int(blank_values.size)} blank, n={int(visual_values.size)} visual", transform=box_ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 2, color="#444444")
+
     cohort_text = f" ({cohort_label})" if cohort_label and cohort_label != "all" else ""
     fig.suptitle(f"{kind.capitalize()} {title_label}{cohort_text}", fontsize=POSTER_SUPTITLE_SIZE - 3, y=0.985)
-    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.16, top=0.84)
-    output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}.svg"
+    fig.subplots_adjust(left=0.06, right=0.99, bottom=0.16, top=0.84, wspace=0.36)
+    output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}_blank_vs_movies.svg"
     save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
     return str(output_path)
 
@@ -4991,6 +5055,50 @@ def mixed_model_branch_render_specs(results: Dict[str, Any], review: bool = Fals
             "predicted_title": "Mixed-model predicted means - selected state",
             "contrast_title": "Mixed-model contrasts - selected state",
         },
+        {
+            "key": "mixed_model_visual_response_responsive",
+            "scope": "visual_response_responsive_all_state",
+            "name": "mixed_model_visual_response_responsive",
+            "forest_output_name": "mixed_model_visual_response_responsive_forest.svg",
+            "predicted_output_name": "mixed_model_visual_response_responsive_predicted_means.svg",
+            "contrast_output_name": "mixed_model_visual_response_responsive_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - visual response responsive",
+            "predicted_title": "Mixed-model predicted means - visual response responsive",
+            "contrast_title": "Mixed-model contrasts - visual response responsive",
+        },
+        {
+            "key": "mixed_model_visual_response_nonresponsive",
+            "scope": "visual_response_nonresponsive_all_state",
+            "name": "mixed_model_visual_response_nonresponsive",
+            "forest_output_name": "mixed_model_visual_response_nonresponsive_forest.svg",
+            "predicted_output_name": "mixed_model_visual_response_nonresponsive_predicted_means.svg",
+            "contrast_output_name": "mixed_model_visual_response_nonresponsive_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - visual response nonresponsive",
+            "predicted_title": "Mixed-model predicted means - visual response nonresponsive",
+            "contrast_title": "Mixed-model contrasts - visual response nonresponsive",
+        },
+        {
+            "key": "mixed_model_visual_response_responsive_selected_state",
+            "scope": "visual_response_responsive_selected_state",
+            "name": "mixed_model_visual_response_responsive_selected_state",
+            "forest_output_name": "mixed_model_visual_response_responsive_selected_state_forest.svg",
+            "predicted_output_name": "mixed_model_visual_response_responsive_selected_state_predicted_means.svg",
+            "contrast_output_name": "mixed_model_visual_response_responsive_selected_state_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - visual response responsive selected state",
+            "predicted_title": "Mixed-model predicted means - visual response responsive selected state",
+            "contrast_title": "Mixed-model contrasts - visual response responsive selected state",
+        },
+        {
+            "key": "mixed_model_visual_response_nonresponsive_selected_state",
+            "scope": "visual_response_nonresponsive_selected_state",
+            "name": "mixed_model_visual_response_nonresponsive_selected_state",
+            "forest_output_name": "mixed_model_visual_response_nonresponsive_selected_state_forest.svg",
+            "predicted_output_name": "mixed_model_visual_response_nonresponsive_selected_state_predicted_means.svg",
+            "contrast_output_name": "mixed_model_visual_response_nonresponsive_selected_state_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - visual response nonresponsive selected state",
+            "predicted_title": "Mixed-model predicted means - visual response nonresponsive selected state",
+            "contrast_title": "Mixed-model contrasts - visual response nonresponsive selected state",
+        },
     ]
     review_prefix = "review_" if review else ""
     specs: List[Dict[str, Any]] = []
@@ -5052,6 +5160,8 @@ def _mixed_model_term_kind(term: str) -> str:
         return "state"
     if term.startswith("compartment["):
         return "compartment"
+    if term.startswith("visual_response_cohort["):
+        return "cohort"
     return "covariate"
 def _mixed_model_term_component_label(term: str) -> str:
     if term == "Intercept":
@@ -5157,7 +5267,15 @@ def _mixed_model_contrast_sort_key(row: Dict[str, Any]) -> Tuple[int, int, int, 
             0,
             str(row.get("contrast_name")),
         )
-    return (2, 0, 0, 0, str(row.get("contrast_name")))
+    if contrast_type == "visual_response_cohort":
+        return (
+            2,
+            0,
+            0,
+            0,
+            str(row.get("contrast_name")),
+        )
+    return (3, 0, 0, 0, str(row.get("contrast_name")))
 def normalize_mixed_model_contrast_p_source(value: Any) -> str:
     text = str(value).strip().lower() if value is not None else "classical"
     return text if text in {"classical", "shuffle"} else "classical"
@@ -6174,6 +6292,7 @@ def plot_mixed_model_forest_figure(
         "state": "#1f77b4",
         "compartment": "#2ca02c",
         "interaction": "#ff7f0e",
+        "cohort": "#17a2b8",
         "covariate": "#9467bd",
     }
     legend_handles = [
@@ -6183,6 +6302,7 @@ def plot_mixed_model_forest_figure(
             ("state", term_colors["state"]),
             ("compartment", term_colors["compartment"]),
             ("interaction", term_colors["interaction"]),
+            ("cohort", term_colors["cohort"]),
             ("covariate", term_colors["covariate"]),
         ]
     ]
@@ -6476,10 +6596,12 @@ def plot_mixed_model_contrasts_checkpoint(
     type_colors = {
         "state_pair": "#1f77b4",
         "basal_apical": "#d95f02",
+        "visual_response_cohort": "#17a2b8",
     }
     legend_handles = [
         Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["state_pair"], markeredgecolor="white", markersize=8, label="state pair"),
         Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["basal_apical"], markeredgecolor="white", markersize=8, label="basal/apical"),
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["visual_response_cohort"], markeredgecolor="white", markersize=8, label="visual response cohort"),
         Line2D([0], [0], marker="*", linestyle="none", markerfacecolor="#111111", markeredgecolor="#111111", markersize=10, label="p < 0.05"),
     ]
     component_dir = ensure_dir(Path(fig_dir) / f"{Path(output_name or f'07_mixed_model_contrasts_{scope}.svg').stem}_components")
@@ -10298,6 +10420,7 @@ def process_mixed_model_only(
             state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+            source_cache=source_cache,
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
@@ -10636,12 +10759,18 @@ def run_direct_trial_type_comparison(
         "state_pair_rows": state_pair_rows,
         "overall_summary_rows": overall_summary_rows,
     }
-def build_mixed_model_table(cache: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def build_mixed_model_table(cache: Dict[str, Any], source_cache: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     # Turn the normalized cache into one long dendrite-state table that the mixed models can read directly.
     experiments = cache.get("experiments", {})
     animals = cache.get("animals", {})
     table_rows: List[Dict[str, Any]] = []
     spine_mean_errors: List[float] = []
+    visual_response_summary = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
+    visual_response_lookup = {
+        str(row.get("global_dendrite_id")): str(row.get("cohort") or "nonresponsive")
+        for row in visual_response_summary.get("rows", [])
+        if isinstance(row, dict) and str(row.get("global_dendrite_id") or "")
+    }
     for animal_id in sorted(animals):
         animal_entry = animals[animal_id]
         for global_dend_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
@@ -10732,6 +10861,9 @@ def build_mixed_model_table(cache: Dict[str, Any]) -> Tuple[List[Dict[str, Any]]
                             "global_dendrite_id": global_dend_id,
                             "compartment": observation_compartment(cache, day_id, d_obs),
                             "state": state_label,
+                            "visual_response_classifier_type": "dendrite",
+                            "visual_response_cohort": visual_response_lookup.get(str(global_dend_id), "nonresponsive"),
+                            "visual_response_category": visual_response_lookup.get(str(global_dend_id), "nonresponsive"),
                             "state_family": state_family,
                             "state_duration_s": state_duration_s,
                             "state_n_frames": n_frames,
@@ -10778,6 +10910,11 @@ def build_mixed_model_design(
     if include_compartment:
         compartment_reference = "basal" if "basal" in compartment_levels else compartment_levels[0]
         interaction_compartments = [compartment for compartment in compartment_levels if compartment != compartment_reference]
+    visual_response_levels = [str(value) for value in dict.fromkeys(str(row.get("visual_response_cohort") or "nonresponsive") for row in working_rows)]
+    visual_response_reference: Optional[str] = None
+    include_visual_response = len(visual_response_levels) >= 2
+    if include_visual_response:
+        visual_response_reference = "nonresponsive" if "nonresponsive" in visual_response_levels else visual_response_levels[0]
     covariate_specs: List[Dict[str, Any]] = []
     if response == "mean_spine_activity_per_dendrite":
         raw = np.asarray([math.log1p(float(row.get("n_spines", 0) or 0.0)) for row in working_rows], dtype=float)
@@ -10794,6 +10931,8 @@ def build_mixed_model_design(
         fixed_effect_names.extend([f"compartment[{compartment}]" for compartment in interaction_compartments])
         for state in state_levels[1:]:
             fixed_effect_names.extend([f"state[{state}]:compartment[{compartment}]" for compartment in interaction_compartments])
+    if include_visual_response:
+        fixed_effect_names.extend([f"visual_response_cohort[{cohort}]" for cohort in visual_response_levels if cohort != visual_response_reference])
     fixed_effect_names.extend([spec["name"] for spec in covariate_specs])
     X_rows: List[List[float]] = []
     y: List[float] = []
@@ -10815,6 +10954,12 @@ def build_mixed_model_design(
                 state_dummy = 1.0 if row.get("state") == state else 0.0
                 for compartment in interaction_compartments:
                     row_values.append(state_dummy * compartment_dummies[compartment])
+        if include_visual_response:
+            cohort_value = str(row.get("visual_response_cohort") or "nonresponsive")
+            for cohort in visual_response_levels:
+                if cohort == visual_response_reference:
+                    continue
+                row_values.append(1.0 if cohort_value == cohort else 0.0)
         for spec in covariate_specs:
             row_values.append(float(spec["values"][index]))
         X_rows.append(row_values)
@@ -10838,6 +10983,9 @@ def build_mixed_model_design(
         "compartment_reference": compartment_reference,
         "interaction_compartments": interaction_compartments,
         "include_compartment": include_compartment,
+        "visual_response_levels": visual_response_levels,
+        "visual_response_reference": visual_response_reference,
+        "include_visual_response": include_visual_response,
         "covariate_specs": covariate_specs,
         "groups": group_labels,
         "blocks": blocks,
@@ -11074,6 +11222,13 @@ def mixed_model_design_row(design: Dict[str, Any], state: str, compartment: Opti
             for compartment_name in interaction_compartments:
                 row[index] = state_dummy * compartment_dummies[compartment_name]
                 index += 1
+    if design.get("include_visual_response"):
+        visual_response_reference = str(design.get("visual_response_reference") or "nonresponsive")
+        for cohort in design.get("visual_response_levels", []):
+            if cohort == visual_response_reference:
+                continue
+            row[index] = 1.0 if str(design.get("visual_response_cohort") or "nonresponsive") == cohort else 0.0
+            index += 1
     for spec in design["covariate_specs"]:
         row[index] = 0.0
         index += 1
@@ -11082,6 +11237,8 @@ def mixed_model_equation_string(design: Dict[str, Any], fit_info: Dict[str, Any]
     fixed_terms = ["state"]
     if design.get("include_compartment"):
         fixed_terms.extend(["compartment", "state:compartment"])
+    if design.get("include_visual_response"):
+        fixed_terms.append("visual_response_cohort")
     fixed_terms.extend([spec["name"] for spec in design.get("covariate_specs", [])])
     random_bits: List[str] = []
     if fit_info.get("random_structure_name") == "ols_fallback":
@@ -11123,6 +11280,19 @@ def contrast_from_result(result: Any, design: Dict[str, Any], contrast_spec: Dic
         row_basal = mixed_model_design_row(design, str(contrast_spec["state"]), "basal")
         contrast_row = row_apical - row_basal
         contrast_name = f"{contrast_spec['state']} : apical - basal"
+    elif contrast_spec["kind"] == "visual_response_cohort":
+        if not design.get("include_visual_response"):
+            raise ValueError("visual_response_cohort contrast requested without visual-response factor")
+        contrast_row = np.zeros_like(beta)
+        target_term = None
+        for term in design.get("fixed_effect_names", []):
+            if term.startswith("visual_response_cohort["):
+                target_term = term
+                break
+        if target_term is None:
+            raise ValueError("visual_response_cohort contrast requested but no cohort term was fitted")
+        contrast_row[design["fixed_effect_names"].index(target_term)] = 1.0 if "responsive" in target_term else -1.0
+        contrast_name = "responsive - nonresponsive"
     else:
         raise ValueError(f"Unknown contrast kind: {contrast_spec['kind']}")
     estimate = float(np.dot(contrast_row, beta))
@@ -11186,6 +11356,7 @@ def summarize_mixed_model_result(
                 "n_dendrites": int(design.get("n_dendrites", 0)),
                 "state_reference": design.get("state_reference"),
                 "compartment_reference": design.get("compartment_reference"),
+                "visual_response_reference": design.get("visual_response_reference"),
             }
         )
     return rows
@@ -11256,6 +11427,10 @@ def run_mixed_model_family(
                     alerts.append(
                         f"[ALERT] Skipping mixed-model basal/apical contrast for {response} ({scope}) because the model does not contain state {state}."
                     )
+                continue
+            valid_contrast_specs.append(contrast_spec)
+        elif contrast_spec["kind"] == "visual_response_cohort":
+            if not design.get("include_visual_response"):
                 continue
             valid_contrast_specs.append(contrast_spec)
         else:
@@ -11350,6 +11525,10 @@ def run_mixed_model_family(
                 f"{contrast_spec['kind']}:{contrast_spec.get('state_a')}:{contrast_spec.get('state_b')}"
                 if contrast_spec["kind"] == "state_pair"
                 else f"{contrast_spec['kind']}:{contrast_spec.get('state')}"
+                if contrast_spec["kind"] == "basal_apical"
+                else "visual_response_cohort:responsive_vs_nonresponsive"
+                if contrast_spec["kind"] == "visual_response_cohort"
+                else contrast_spec["kind"]
             )
             for contrast_spec in valid_contrast_specs
         ],
@@ -11361,32 +11540,47 @@ def run_mixed_model_analysis(
     state_comparison_states: Optional[Sequence[str]],
     basal_apical_states: Optional[Sequence[str]],
     mixed_model_contrast_p_source: str = "classical",
+    source_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # The mixed-model layer uses a long dendrite-by-state table and reports the fitted-test p-values directly.
     rebuild_requested = bool(cache.get("config", {}).get("analysis_tables_rebuild")) or bool(cache.get("config", {}).get("rebuild"))
     cached_table = load_cached_analysis_table(
         cache,
         "mixed_model_table",
-        expected_meta={"analysis_unit": str(cache.get("analysis_unit", "day"))},
+        expected_meta={
+            "analysis_unit": str(cache.get("analysis_unit", "day")),
+            "visual_response_classifier_type": "dendrite",
+            "visual_response_classifier_method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+            "visual_response_classifier_version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+            "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+            "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+        },
         rebuild=rebuild_requested,
     )
     if cached_table is not None:
         table_rows = list(cached_table["table_rows"])
         table_checks = dict(cached_table["table_checks"])
     else:
-        table_rows, table_checks = build_mixed_model_table(cache)
+        table_rows, table_checks = build_mixed_model_table(cache, source_cache=source_cache)
         store_cached_analysis_table(
             cache,
             "mixed_model_table",
             table_rows,
             table_checks,
-            meta={"analysis_unit": str(cache.get("analysis_unit", "day"))},
+            meta={
+                "analysis_unit": str(cache.get("analysis_unit", "day")),
+                "visual_response_classifier_type": "dendrite",
+                "visual_response_classifier_method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+                "visual_response_classifier_version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+                "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+                "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+            },
         )
     alerts: List[str] = []
     state_comparison_states = list(state_comparison_states) if state_comparison_states is not None else list(PRIMARY_QUIET_STATES)
     basal_apical_states = list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES)
     p_value_source = normalize_mixed_model_contrast_p_source(mixed_model_contrast_p_source)
-    def empty_branch(state_pair_states: Sequence[str], basal_apical_state_subset: Sequence[str]) -> Dict[str, Any]:
+    def empty_branch(state_pair_states: Sequence[str], basal_apical_state_subset: Sequence[str], visual_response_cohort: Optional[str] = None) -> Dict[str, Any]:
         return {
             "available": bool(MixedLM is not None),
             "p_value_source": p_value_source,
@@ -11408,6 +11602,7 @@ def run_mixed_model_analysis(
             "selection": {
                 "state_comparison_states": list(state_pair_states),
                 "basal_apical_states": list(basal_apical_state_subset),
+                "visual_response_cohort": visual_response_cohort,
             },
         }
     def build_branch(
@@ -11417,11 +11612,14 @@ def run_mixed_model_analysis(
         state_order: Sequence[str],
         state_pair_states: Sequence[str],
         basal_apical_state_subset: Sequence[str],
+        visual_response_cohort: Optional[str] = None,
         include_validation: bool = False,
     ) -> Dict[str, Any]:
-        branch = empty_branch(state_pair_states, basal_apical_state_subset)
+        branch = empty_branch(state_pair_states, basal_apical_state_subset, visual_response_cohort=visual_response_cohort)
         state_filter = {str(state) for state in row_filter_states if state is not None and str(state).strip()}
         filtered_rows = [row for row in table_rows if str(row.get("state")) in state_filter]
+        if visual_response_cohort not in (None, "all"):
+            filtered_rows = [row for row in filtered_rows if str(row.get("visual_response_cohort") or "nonresponsive") == str(visual_response_cohort)]
         if scope == "selected_state":
             present_states = [state for state in state_order if any(str(row.get("state")) == state for row in filtered_rows)]
             if len(present_states) < 2:
@@ -11436,7 +11634,8 @@ def run_mixed_model_analysis(
             branch_state_order = list(ALL_REQUESTED_STATES)
         state_pairs = [{"kind": "state_pair", "state_a": state_a, "state_b": state_b} for state_a, state_b in combinations(state_pair_states, 2)]
         basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in basal_apical_state_subset]
-        contrast_specs = state_pairs + basal_apical_pairs
+        visual_response_pairs = [{"kind": "visual_response_cohort"}] if any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in filtered_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in filtered_rows) else []
+        contrast_specs = state_pairs + basal_apical_pairs + visual_response_pairs
         for response in ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
             result = run_mixed_model_family(
                 filtered_rows,
@@ -11530,6 +11729,42 @@ def run_mixed_model_analysis(
         basal_apical_state_subset=selected_basal_apical_states,
         include_validation=False,
     )
+    visual_response_responsive_branch = build_branch(
+        "all_state",
+        row_filter_states=[state for state in ALL_REQUESTED_STATES if state in ALL_REQUESTED_STATES],
+        state_order=ALL_REQUESTED_STATES,
+        state_pair_states=state_comparison_states,
+        basal_apical_state_subset=basal_apical_states,
+        visual_response_cohort="responsive",
+        include_validation=False,
+    )
+    visual_response_nonresponsive_branch = build_branch(
+        "all_state",
+        row_filter_states=[state for state in ALL_REQUESTED_STATES if state in ALL_REQUESTED_STATES],
+        state_order=ALL_REQUESTED_STATES,
+        state_pair_states=state_comparison_states,
+        basal_apical_state_subset=basal_apical_states,
+        visual_response_cohort="nonresponsive",
+        include_validation=False,
+    )
+    visual_response_responsive_selected_branch = build_branch(
+        "selected_state",
+        row_filter_states=selected_state_order,
+        state_order=selected_state_order,
+        state_pair_states=selected_state_order,
+        basal_apical_state_subset=selected_basal_apical_states,
+        visual_response_cohort="responsive",
+        include_validation=False,
+    )
+    visual_response_nonresponsive_selected_branch = build_branch(
+        "selected_state",
+        row_filter_states=selected_state_order,
+        state_order=selected_state_order,
+        state_pair_states=selected_state_order,
+        basal_apical_state_subset=selected_basal_apical_states,
+        visual_response_cohort="nonresponsive",
+        include_validation=False,
+    )
     return {
         "available": bool(MixedLM is not None),
         "alerts": list(dict.fromkeys(alerts)),
@@ -11539,11 +11774,16 @@ def run_mixed_model_analysis(
             "state_comparison_states": list(state_comparison_states),
             "basal_apical_states": list(basal_apical_states),
             "p_value_source": p_value_source,
+            "visual_response_cohorts": ["responsive", "nonresponsive"],
         },
         "p_value_source": p_value_source,
         "p_value_source_requested": p_value_source,
         "all_state": all_state_branch,
         "selected_state": selected_state_branch,
+        "mixed_model_visual_response_responsive": visual_response_responsive_branch,
+        "mixed_model_visual_response_nonresponsive": visual_response_nonresponsive_branch,
+        "mixed_model_visual_response_responsive_selected_state": visual_response_responsive_selected_branch,
+        "mixed_model_visual_response_nonresponsive_selected_state": visual_response_nonresponsive_selected_branch,
         "validation_rows": list(all_state_branch.get("validation_rows", [])),
     }
 def run_mixed_model_analysis(
@@ -11552,32 +11792,47 @@ def run_mixed_model_analysis(
     state_comparison_states: Optional[Sequence[str]],
     basal_apical_states: Optional[Sequence[str]],
     mixed_model_contrast_p_source: str = "classical",
+    source_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # The mixed-model layer uses a long dendrite-by-state table and reports the fitted-test p-values directly.
     rebuild_requested = bool(cache.get("config", {}).get("analysis_tables_rebuild")) or bool(cache.get("config", {}).get("rebuild"))
     cached_table = load_cached_analysis_table(
         cache,
         "mixed_model_table",
-        expected_meta={"analysis_unit": str(cache.get("analysis_unit", "day"))},
+        expected_meta={
+            "analysis_unit": str(cache.get("analysis_unit", "day")),
+            "visual_response_classifier_type": "dendrite",
+            "visual_response_classifier_method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+            "visual_response_classifier_version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+            "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+            "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+        },
         rebuild=rebuild_requested,
     )
     if cached_table is not None:
         table_rows = list(cached_table["table_rows"])
         table_checks = dict(cached_table["table_checks"])
     else:
-        table_rows, table_checks = build_mixed_model_table(cache)
+        table_rows, table_checks = build_mixed_model_table(cache, source_cache=source_cache)
         store_cached_analysis_table(
             cache,
             "mixed_model_table",
             table_rows,
             table_checks,
-            meta={"analysis_unit": str(cache.get("analysis_unit", "day"))},
+            meta={
+                "analysis_unit": str(cache.get("analysis_unit", "day")),
+                "visual_response_classifier_type": "dendrite",
+                "visual_response_classifier_method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
+                "visual_response_classifier_version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
+                "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+                "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+            },
         )
     alerts: List[str] = []
     state_comparison_states = list(state_comparison_states) if state_comparison_states is not None else list(PRIMARY_QUIET_STATES)
     basal_apical_states = list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES)
     p_value_source = normalize_mixed_model_contrast_p_source(mixed_model_contrast_p_source)
-    def empty_branch(state_pair_states: Sequence[str], basal_apical_state_subset: Sequence[str]) -> Dict[str, Any]:
+    def empty_branch(state_pair_states: Sequence[str], basal_apical_state_subset: Sequence[str], visual_response_cohort: Optional[str] = None) -> Dict[str, Any]:
         return {
             "available": bool(MixedLM is not None),
             "p_value_source": p_value_source,
@@ -11599,6 +11854,7 @@ def run_mixed_model_analysis(
             "selection": {
                 "state_comparison_states": list(state_pair_states),
                 "basal_apical_states": list(basal_apical_state_subset),
+                "visual_response_cohort": visual_response_cohort,
             },
         }
     def build_branch(
@@ -11608,11 +11864,14 @@ def run_mixed_model_analysis(
         state_order: Sequence[str],
         state_pair_states: Sequence[str],
         basal_apical_state_subset: Sequence[str],
+        visual_response_cohort: Optional[str] = None,
         include_validation: bool = False,
     ) -> Dict[str, Any]:
-        branch = empty_branch(state_pair_states, basal_apical_state_subset)
+        branch = empty_branch(state_pair_states, basal_apical_state_subset, visual_response_cohort=visual_response_cohort)
         state_filter = {str(state) for state in row_filter_states if state is not None and str(state).strip()}
         filtered_rows = [row for row in table_rows if str(row.get("state")) in state_filter]
+        if visual_response_cohort not in (None, "all"):
+            filtered_rows = [row for row in filtered_rows if str(row.get("visual_response_cohort") or "nonresponsive") == str(visual_response_cohort)]
         if scope == "selected_state":
             present_states = [state for state in state_order if any(str(row.get("state")) == state for row in filtered_rows)]
             if len(present_states) < 2:
@@ -11627,7 +11886,8 @@ def run_mixed_model_analysis(
             branch_state_order = list(ALL_REQUESTED_STATES)
         state_pairs = [{"kind": "state_pair", "state_a": state_a, "state_b": state_b} for state_a, state_b in combinations(state_pair_states, 2)]
         basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in basal_apical_state_subset]
-        contrast_specs = state_pairs + basal_apical_pairs
+        visual_response_pairs = [{"kind": "visual_response_cohort"}] if any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in filtered_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in filtered_rows) else []
+        contrast_specs = state_pairs + basal_apical_pairs + visual_response_pairs
         for response in ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
             result = run_mixed_model_family(
                 filtered_rows,
@@ -11870,6 +12130,7 @@ def process_cached_analysis(
             state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+            source_cache=source_cache,
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
