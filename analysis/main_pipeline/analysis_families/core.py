@@ -117,9 +117,14 @@ def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:
         "state_coverage": [],
         "mixed_model": {},
         "mixed_model_selected_state": {},
+        "mixed_model_visual_response_responsive": {},
+        "mixed_model_visual_response_nonresponsive": {},
+        "mixed_model_visual_response_responsive_selected_state": {},
+        "mixed_model_visual_response_nonresponsive_selected_state": {},
         "direct_trial_type_comparison": {},
         "spine_coactivity": {},
         "spine_coactivity_model": {},
+
     }
 
 
@@ -279,9 +284,111 @@ def run_state_family(
             for metric in state_metric_names:
                 results["basal_apical_comparisons"].append(basal_apical_comparison(cache, metric, state, shuffle_n))
     if output_dir is not None:
-        with step_scope("figure generation: basal_apical"):
-            render_analysis_family_figures(output_dir, results, cache, "basal_apical", figure_root=figure_root)
+        with step_scope("figure generation: state"):
+            render_analysis_family_figures(output_dir, results, cache, "state", figure_root=figure_root)
 
+        _render_visual_response_state_summary_figures(
+            output_dir,
+            results,
+            cache,
+            figure_root=figure_root,
+        )
+
+def _render_visual_response_state_summary_figures(
+    output_dir: Any,
+    results: Dict[str, Any],
+    cache: Dict[str, Any],
+    *,
+    figure_root: Optional[Any] = None,
+) -> None:
+    """
+    Render state-summary boxplots for visual-response cohorts.
+
+    The cohort state summaries are prepared earlier by
+    prepare_visual_response_cohorts(), but the normal state family renderer
+    only draws the global all/basal/apical/basal_vs_apical state plots.
+    """
+    fig_root = Path(figure_root) if figure_root is not None else Path(output_dir) / "figures"
+
+    cohort_specs = (
+        (
+            "dendrites",
+            "dendrite_visual_response_state_summaries",
+            "state_dendrite_summaries",
+        ),
+        (
+            "spines",
+            "spine_visual_response_state_summaries",
+            "state_summaries",
+        ),
+    )
+
+    for kind, source_key, target_key in cohort_specs:
+        cohort_summaries = results.get(source_key, {})
+        if not isinstance(cohort_summaries, dict) or not cohort_summaries:
+            step_message(f"no visual-response state summaries found for {kind}")
+            continue
+
+        for cohort in DENDRITE_RESPONSE_COHORTS:
+            cohort_result = _cohort_state_summary_view(cohort_summaries, cohort)
+            if not isinstance(cohort_result, dict) or not cohort_result:
+                step_message(f"no visual-response state boxplots for {kind}/{cohort}: empty summary")
+                continue
+
+            cohort_results = _base_results(cache)
+            cohort_results.update(results)
+
+            # Route the cohort-filtered summaries into the normal state plotter.
+            # Dendrite cohorts should use dendrite-level summaries.
+            # Spine cohorts should use spine/state summaries.
+            if target_key == "state_dendrite_summaries":
+                cohort_results["state_dendrite_summaries"] = cohort_result
+                cohort_results["state_summaries"] = {}
+            else:
+                cohort_results["state_summaries"] = cohort_result
+                cohort_results["state_dendrite_summaries"] = {}
+
+            cohort_figure_root = (
+                fig_root
+                / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME
+                / "visual_response"
+                / kind
+                / cohort
+            )
+
+            with step_scope(f"figure generation: state visual_response/{kind}/{cohort}"):
+                render_analysis_family_figures(
+                    output_dir,
+                    cohort_results,
+                    cache,
+                    "state",
+                    figure_root=cohort_figure_root,
+                )
+
+def _cohort_state_summary_view(summary: Dict[str, Any], cohort: str) -> Dict[str, Any]:
+    """
+    Accept either:
+      {cohort: metric_summary}
+    or:
+      {metric_name: {cohort: metric_summary}}
+    and return:
+      {metric_name: metric_summary}
+    """
+    if not isinstance(summary, dict):
+        return {}
+
+    direct = summary.get(cohort)
+    if isinstance(direct, dict):
+        return direct
+
+    out: Dict[str, Any] = {}
+    for metric_name, metric_value in summary.items():
+        if not isinstance(metric_value, dict):
+            continue
+        cohort_value = metric_value.get(cohort)
+        if isinstance(cohort_value, dict):
+            out[metric_name] = cohort_value
+    return out
 
 def run_direct_trial_type_family(
     cache: Dict[str, Any],
@@ -324,6 +431,20 @@ def run_mixed_model_family_block(
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
+
+    results["mixed_model_visual_response_responsive"] = mixed_model_results.get(
+        "mixed_model_visual_response_responsive", {}
+    )
+    results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get(
+        "mixed_model_visual_response_nonresponsive", {}
+    )
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get(
+        "mixed_model_visual_response_responsive_selected_state", {}
+    )
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get(
+        "mixed_model_visual_response_nonresponsive_selected_state", {}
+    )
+
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
     if output_dir is not None:
