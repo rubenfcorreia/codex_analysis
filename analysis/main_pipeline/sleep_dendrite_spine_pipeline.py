@@ -82,7 +82,6 @@ ZEBRA_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\02"
 NORMAL_CONVERSION_FILENAME = "ROIs_normal_mode_conversion.npy"
 DEND_AXON_CONVERSION_FILENAME = "ROIs_dendrite_axon_mode_conversion.npy"
 DEFAULT_CHANNEL = 0
-DEFAULT_HIGH_PASS_HZ = 0.02
 DEFAULT_SHUFFLES = 200
 DEFAULT_CPU_THREAD_LIMIT = 1
 DEFAULT_Locomotion_THRESHOLD_FRACTION = 3.0
@@ -90,10 +89,10 @@ DEFAULT_CACHE_NAME = "sleep_dendrite_spine_cache.npz"
 DEFAULT_ANALYSIS_TABLES_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_tables.npz"
 DEFAULT_ANALYSIS_RESULTS_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_results.npz"
 DEFAULT_SHARED_SHUFFLE_CACHE_NAME = "sleep_dendrite_spine_cache_shuffle_cache.npz"
-CACHE_SCHEMA_VERSION = 2
-ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 2
-ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 2
-SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 3
+ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 3
+ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 3
+SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 2
 REPORT_SIGNIFICANCE_ALPHA = 0.05
 CPU_THREAD_LIMIT_ENV_VARS = (
     "OMP_NUM_THREADS",
@@ -284,7 +283,6 @@ USER_EDITABLE_DEFAULTS = {
     "channel": DEFAULT_CHANNEL,
     "shuffle_n": DEFAULT_SHUFFLES,
     "cpu_thread_limit": DEFAULT_CPU_THREAD_LIMIT,
-    "high_pass_hz": DEFAULT_HIGH_PASS_HZ,
     "locomotion_threshold": None,
     "rebuild": False,
     "cache_path": None,
@@ -1601,7 +1599,7 @@ def summarize_state_values_by_dendrite(
                                 continue
                             spine_full_info = s_obs.get("event_info") or {}
                             spine_event_info = build_state_masked_event_info(
-                                s_obs.get("trace_hp", s_obs.get("trace")),
+                                s_obs.get("trace"),
                                 s_obs.get("time"),
                                 mask,
                                 spine_full_info,
@@ -2873,7 +2871,7 @@ def generate_event_detection_example_gallery(cache: Dict[str, Any], fig_dir: Pat
                         continue
                     compartment = observation_compartment(cache, day_id, s_obs)
                     spine_specific = s_obs.get("spine_specific")
-                    trace = spine_specific if spine_specific is not None else s_obs.get("trace_hp", s_obs.get("trace"))
+                    trace = spine_specific if spine_specific is not None else s_obs.get("trace")
                     jobs.append(
                         {
                             "kind": "spine",
@@ -3994,7 +3992,7 @@ def select_representative_trace_record(
                             continue
                         if not gallery_compartment_filter_matches(observation_compartment(cache, exp_id, s_obs), compartment_filter):
                             continue
-                        spine_trace = np.asarray(s_obs.get("trace_hp"), dtype=float)
+                        spine_trace = np.asarray(s_obs.get("trace"), dtype=float)
                         spine_specific = np.asarray(s_obs.get("spine_specific"), dtype=float)
                         if spine_trace.size == 0 or spine_specific.size == 0:
                             continue
@@ -4775,7 +4773,7 @@ def plot_spine_regression_qc_checkpoint(
         return None
     time = np.asarray(d_obs.get("time"), dtype=float)
     dend_trace = np.asarray(d_obs.get("trace"), dtype=float)
-    spine_trace = np.asarray(s_obs.get("trace_hp"), dtype=float)
+    spine_trace = np.asarray(s_obs.get("trace"), dtype=float)
     spine_specific = np.asarray(s_obs.get("spine_specific"), dtype=float)
     fit = s_obs.get("fit") or {}
     event_info = s_obs.get("event_info") or {}
@@ -7571,24 +7569,6 @@ def estimate_sampling_rate(t: np.ndarray) -> Optional[float]:
     if median_dt <= 0:
         return None
     return 1.0 / median_dt
-def highpass_filter_trace(trace: np.ndarray, t: np.ndarray, cutoff_hz: float = DEFAULT_HIGH_PASS_HZ, order: int = 2) -> np.ndarray:
-    trace = np.asarray(trace, dtype=float)
-    if trace.size == 0:
-        return trace
-    trace = fill_nan_linear(trace)
-    fs = estimate_sampling_rate(t)
-    if fs is None or fs <= 2 * cutoff_hz or trace.size < 10:
-        return trace - np.nanmedian(trace)
-    nyq = 0.5 * fs
-    wn = cutoff_hz / nyq
-    if not (0 < wn < 1):
-        return trace - np.nanmedian(trace)
-    b, a = signal.butter(order, wn, btype="highpass")
-    try:
-        filtered = signal.filtfilt(b, a, trace)
-    except Exception:
-        return trace - np.nanmedian(trace)
-    return np.asarray(filtered, dtype=float)
 def robust_bisquare_fit(x: np.ndarray, y: np.ndarray, max_iter: int = 50, tol: float = 1e-9, tuning_constant: float = 4.685) -> Dict[str, Any]:
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
@@ -8589,11 +8569,11 @@ def build_shared_shuffle_cache(
                     s_obs = dendrite_record.get("spines", {}).get(spine_id, {}).get("observations", {}).get(day_id)
                     if s_obs is None:
                         continue
-                    spine_trace = np.asarray(s_obs.get("trace_hp"), dtype=float)
+                    spine_trace = np.asarray(s_obs.get("trace"), dtype=float)
                     if spine_trace.size > 1 and np.any(np.isfinite(spine_trace)):
                         key = build_shared_shuffle_cache_key(
                             family="correlation",
-                            signal="spine_trace_hp",
+                            signal="spine_trace",
                             analysis_unit=analysis_unit,
                             animal_id=str(animal_id),
                             day_id=day_id,
@@ -8706,7 +8686,6 @@ def process_experiment(
     repo_base: Path,
     exp_id: str,
     channel: int,
-    high_pass_hz: float,
     movie_expids: Sequence[str],
     sleep_expids: Sequence[str],
     basal_expids: Sequence[str],
@@ -8942,7 +8921,7 @@ def process_experiment(
         if conversion_index < 0 or conversion_index >= calcium_matrix.shape[0]:
             continue
         dend_trace = np.asarray(calcium_matrix[conversion_index], dtype=float)
-        dend_trace_hp = highpass_filter_trace(dend_trace, exp_time, high_pass_hz)
+        dend_trace_hp = np.asarray(dend_trace, dtype=float)
         g_d_id = global_dendrite_id(
             animal_id,
             exp_meta["date"],
@@ -8969,7 +8948,7 @@ def process_experiment(
                 "compartment": compartment,
                 "time": np.asarray(exp_time, dtype=np.float32),
                 "trace": np.asarray(dend_trace, dtype=np.float32),
-                "trace_hp": np.asarray(dend_trace, dtype=np.float32),
+                "trace_hp": np.asarray(dend_trace_hp, dtype=np.float32),
                 "spine_ids": [],
             },
         )
@@ -9003,7 +8982,7 @@ def process_experiment(
             if spine_conversion_index is None or spine_conversion_index < 0 or spine_conversion_index >= calcium_matrix.shape[0]:
                 continue
             spine_trace = np.asarray(calcium_matrix[spine_conversion_index], dtype=float)
-            spine_trace_hp = highpass_filter_trace(spine_trace, exp_time, high_pass_hz)
+            spine_trace_hp = np.asarray(spine_trace, dtype=float)
             alpha_fit = robust_bisquare_fit(dend_trace_hp, spine_trace_hp)
             alpha = alpha_fit["alpha"]
             spine_specific = spine_trace_hp - alpha * dend_trace_hp
@@ -9596,7 +9575,7 @@ def per_experiment_state_metrics(
                             continue
                         spine_full_info = s_obs.get("event_info") or {}
                         spine_event_info = build_state_masked_event_info(
-                            s_obs.get("trace_hp", s_obs.get("trace")),
+                            s_obs.get("trace"),
                             s_obs.get("time"),
                             mask,
                             spine_full_info,
@@ -10962,7 +10941,7 @@ def build_mixed_model_table(cache: Dict[str, Any], source_cache: Optional[Dict[s
                             continue
                         spine_full_info = s_obs.get("event_info") or {}
                         spine_event_info = build_state_masked_event_info(
-                            s_obs.get("trace_hp", s_obs.get("trace")),
+                            s_obs.get("trace"),
                             exp_time,
                             mask,
                             spine_full_info,
@@ -12434,7 +12413,7 @@ def process_cached_analysis(
                     continue
                 spine_raw_key = build_shared_shuffle_cache_key(
                     family="correlation",
-                    signal="spine_trace_hp",
+                    signal="spine_trace",
                     analysis_unit=analysis_unit,
                     animal_id=animal_id,
                     day_id=exp_id,
@@ -13237,7 +13216,6 @@ def write_analysis_report(
     append_kv("shared_shuffle_cache", shared_shuffle_cache.get("path", "n/a"))
     append_kv("shared_shuffle_cache_reused", shared_shuffle_cache.get("reused", "n/a"))
     append_kv("shared_shuffle_cache_entries", shared_shuffle_cache.get("entry_count", "n/a"))
-    append_kv("high_pass_hz", format_report_number(runtime.get("high_pass_hz", config.get("high_pass_hz"))))
     locomotion_threshold = runtime.get("locomotion_threshold", config.get("locomotion_threshold"))
     spine_coactivity_abs_threshold = runtime.get("spine_coactivity_abs_threshold", config.get("spine_coactivity_abs_threshold", DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD))
     append_kv("locomotion_threshold", "auto" if locomotion_threshold is None else format_report_number(locomotion_threshold))
@@ -13719,7 +13697,6 @@ def load_or_build_cache(
     basal_expids: Sequence[str],
     apical_expids: Sequence[str],
     channel: int,
-    high_pass_hz: float,
     explicit_locomotion_threshold: Optional[float],
     cache_path: Path,
     rebuild: bool,
@@ -13761,7 +13738,6 @@ def load_or_build_cache(
                             repo_base=repo_base,
                             exp_id=exp_id,
                             channel=channel,
-                            high_pass_hz=high_pass_hz,
                             movie_expids=movie_expids,
                             sleep_expids=sleep_expids,
                             basal_expids=basal_expids,
@@ -13806,7 +13782,6 @@ def load_or_build_cache(
                     repo_base=repo_base,
                     exp_id=exp_id,
                     channel=channel,
-                    high_pass_hz=high_pass_hz,
                     movie_expids=movie_expids,
                     sleep_expids=sleep_expids,
                     basal_expids=basal_expids,
@@ -14672,7 +14647,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shared-shuffle-cache-rebuild", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--shuffle-n", type=int)
-    parser.add_argument("--high-pass-hz", type=float)
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--demo-spec", type=Path, help="Optional JSON file describing custom demo characteristics")
@@ -14706,7 +14680,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "demo": True if args.demo else None,
         "channel": args.channel,
         "shuffle_n": args.shuffle_n,
-        "high_pass_hz": args.high_pass_hz,
         "locomotion_threshold": args.locomotion_threshold,
         "cache_path": str(args.cache_path) if args.cache_path else None,
         "analysis_tables_cache_path": str(args.analysis_tables_cache_path) if args.analysis_tables_cache_path else None,
@@ -14782,7 +14755,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         channel = int(config.get("channel") or DEFAULT_CHANNEL)
         shuffle_n = int(config.get("shuffle_n") or DEFAULT_SHUFFLES)
         mixed_model_contrast_p_source = normalize_mixed_model_contrast_p_source(config.get("mixed_model_contrast_p_source"))
-        high_pass_hz = float(config.get("high_pass_hz") or DEFAULT_HIGH_PASS_HZ)
         spine_coactivity_abs_threshold = normalize_non_negative_float(
             config.get("spine_coactivity_abs_threshold"),
             DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
@@ -14833,7 +14805,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 basal_expids=basal_expids,
                 apical_expids=apical_expids,
                 channel=channel,
-                high_pass_hz=high_pass_hz,
                 explicit_locomotion_threshold=config.get("locomotion_threshold"),
                 cache_path=cache_path,
                 rebuild=source_cache_rebuild,
@@ -15030,7 +15001,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "channel": channel,
         "shuffle_n": shuffle_n,
         "cpu_thread_limit": cpu_thread_limit,
-        "high_pass_hz": high_pass_hz,
         "locomotion_threshold": config.get("locomotion_threshold"),
         "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "rebuild": rebuild,

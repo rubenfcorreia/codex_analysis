@@ -3,20 +3,40 @@
 This page explains how the main analysis metrics are computed in `codex_analysis` and how the statistical tests are applied.
 It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository.
 
-Visual-response note: the main pipeline now treats dendrite and spine visual-response metrics as separate cohorts, uses movie-style blank-versus-movies comparisons, and reads those metrics from `cut_with_intertrials/` only.
+Visual-response note: the main pipeline now treats dendrite and spine visual-response metrics as separate cohorts, uses movie-style blank-versus-movies comparisons, and reads those metrics from cut stimulus-period data, preferring `cut_intertrials/` and falling back to `cut_with_intertrials/`.
 
 ## Main Dendrite/Spine Pipeline
 
 ### Preprocessing
 
-- The pipeline starts from the recorded `dF/F` traces.
-- Dendrite traces are kept in raw dF/F form for dendrite activity metrics.
-- High-pass filtering is still used internally when estimating spine-specific residual activity from the spine and dendrite traces.
+- The pipeline starts from the recorded `dF/F` traces and keeps them in raw form for the main preprocessing path.
+- Event detection is run directly on the trace being analyzed. The detector subtracts the trace median, estimates noise with a robust sigma around that centered trace, and counts threshold crossings that last for at least the minimum consecutive-frame window.
+- The baseline for the event detector is therefore the trace median, not a separate baseline fit or high-pass filtered series.
+- Event frequency is computed from the event count and the analyzed duration, so state-masked event rates simply reuse the same detector on the masked trace segment.
+- Dendrite traces are used as raw dF/F for dendrite activity metrics.
 - Spine-specific activity is computed with robust regression by subtracting the fitted dendrite contribution from the spine trace.
-- In code terms, the backbone is `spine_specific = spine_trace_hp - alpha * dend_trace_hp`.
+- In code terms, the backbone is `spine_specific = spine_trace - alpha * dendrite_trace`.
+- The spine event and coactivity metrics use that residual when they need a spine-specific signal, while the raw trace is still retained for trace plots and other comparisons.
 - When the same-day SpinesGUI conversion is missing for an experiment, the pipeline falls back to a same-day experiment from the same animal.
-- Movie experiments keep their trial-type masks, and the state-comparison list is derived from `state_mode` plus the explicit `movie_trial_types` selection. When a `sleep_state.pickle` bundle is present the sleep-scoring labels are added too, so quiet periods can be split into `quiet_awake`, `nrem`, and `rem`.
+- Movie experiments keep their trial-type masks, and the state-comparison list is derived from `state_mode` plus the explicit `movie_trial_types` selection.
+- When a `sleep_state.pickle` bundle is present the sleep-scoring labels are added too, so quiet periods can be split into `quiet_awake`, `nrem`, and `rem`.
+- Those same masks are reused for the state-comparison, basal-vs-apical, spine coactivity, and mixed-model branches so every family sees the same pooled day-level observations.
 - Observations are pooled into day-level analysis units before the summary statistics and mixed models are fit.
+- Visual-response cohorts are built from cut stimulus-period activity, using `cut_intertrials/` when available and `cut_with_intertrials/` as the fallback source.
+- Dendrite responsiveness is computed from dendrite cut activity only.
+- Spine responsiveness is computed from spine-specific cut activity only.
+- The classifier then assigns each unit to the `all`, `responsive`, or `nonresponsive` cohort for downstream plots and summaries.
+
+### State Groups and Responsiveness Cohorts
+
+- State groups are built from the experiment metadata before the day-level summaries are computed.
+- Movie experiments use the trial table plus the locomotion threshold and any available sleep scoring to build the per-trial masks.
+- Sleep experiments add the scored quiet-awake, NREM, and REM masks directly from `sleep_state.pickle` when that bundle exists.
+- The state masks are then pooled at the day level, so repeated source sessions from the same day share the same state labels in the downstream tables.
+- The visual-response cohort is separate from the state masks.
+- It uses the cut stimulus-period activity only, with `cut_intertrials/` preferred and `cut_with_intertrials/` used as a fallback.
+- Dendrite responsiveness is computed from the dendrite cut trace, while spine responsiveness is computed from the spine-specific residual trace.
+- The resulting `all`, `responsive`, and `nonresponsive` cohorts are reused by the visual-response figures and the summary tables.
 
 ### Summary Metrics
 
