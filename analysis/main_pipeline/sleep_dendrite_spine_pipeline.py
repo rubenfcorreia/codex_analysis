@@ -834,14 +834,6 @@ def _load_visual_response_cut_data(
         return None
     trial_meta = [dict(meta) for meta in exp_meta.get("trial_meta", []) if isinstance(meta, dict)]
     visual_trial_labels, blank_trial_labels = _visual_response_trial_labels_from_meta(trial_meta)
-    step_message(
-        f"{exp_id}: loaded {selected_label} cut bundle; "
-        f"cut_neural_shape={tuple(np.asarray(cut_neural, dtype=float).shape)}, "
-        f"cut_time_len={int(np.asarray(cut_time, dtype=float).size)}, "
-        f"wheel_len={int(np.asarray(wheel_speed, dtype=float).size)}, "
-        f"trials={len(trial_meta)}, "
-        f"visual_labels={len(visual_trial_labels)}, blank_labels={len(blank_trial_labels)}"
-    )
     payload = {
         "cut_time": np.asarray(cut_time, dtype=float),
         "cut_neural": np.asarray(cut_neural, dtype=float),
@@ -6241,62 +6233,88 @@ def plot_mixed_model_forest_figure(
 ) -> Optional[str]:
     if plt is None:
         return None
+
     mixed_model = results.get(model_key, {})
     if not isinstance(mixed_model, dict):
         return None
+
     summary_rows = mixed_model.get("summary_rows", {})
     if not isinstance(summary_rows, dict):
         return None
-    preferred_responses = ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min", "coactivity_r"]
-    response_order = [response for response in preferred_responses if isinstance(summary_rows.get(response), list) and summary_rows.get(response)]
+
+    preferred_responses = [
+        "mean_dendrite_activity",
+        "mean_spine_activity_per_dendrite",
+        "dendrite_event_frequency_per_min",
+        "spine_event_frequency_per_min",
+        "coincident_event_frequency_per_min",
+        "noncoincident_event_frequency_per_min",
+        "coactivity_r",
+    ]
+
+    response_order = [
+        response
+        for response in preferred_responses
+        if isinstance(summary_rows.get(response), list) and summary_rows.get(response)
+    ]
     for response in summary_rows:
-        if response not in response_order and isinstance(summary_rows.get(response), list) and summary_rows.get(response):
+        if (
+            response not in response_order
+            and isinstance(summary_rows.get(response), list)
+            and summary_rows.get(response)
+        ):
             response_order.append(response)
+
     if not response_order:
         return None
+
     payloads: List[Tuple[str, Dict[str, Any], Dict[str, Dict[str, Any]], List[str]]] = []
-    all_bounds: List[float] = []
+
     for response in response_order:
         design, rows = _mixed_model_response_payload(results, response, model_key=model_key)
         if design is None or not rows:
             continue
+
         term_lookup = {str(row.get("term")): dict(row) for row in rows}
         fixed_effect_names = [str(term) for term in design.get("fixed_effect_names", [])]
-        selected_state_set = {canonical_state_label(state) for state in selected_mixed_model_state_labels(results)}
+        selected_state_set = {
+            canonical_state_label(state)
+            for state in selected_mixed_model_state_labels(results)
+        }
+
         display_terms: List[str] = []
         for term in fixed_effect_names:
             kind = _mixed_model_term_kind(term)
+
             if kind == "state":
                 if canonical_state_label(_mixed_model_term_value_label(term)) not in selected_state_set:
                     continue
+
             elif kind == "interaction":
-                state_terms = [part for part in str(term).split(":") if part.startswith("state[")]
-                if state_terms and not any(canonical_state_label(_mixed_model_term_value_label(part)) in selected_state_set for part in state_terms):
+                state_terms = [
+                    part for part in str(term).split(":")
+                    if part.startswith("state[")
+                ]
+                if state_terms and not any(
+                    canonical_state_label(_mixed_model_term_value_label(part)) in selected_state_set
+                    for part in state_terms
+                ):
                     continue
+
             display_terms.append(term)
+
         if not display_terms:
             continue
+
         payloads.append((response, design, term_lookup, display_terms))
-        for term in display_terms:
-            row = term_lookup.get(term)
-            if row is None:
-                continue
-            estimate = as_float(row.get("estimate"))
-            se = as_float(row.get("se"))
-            if estimate is None or not np.isfinite(estimate):
-                continue
-            if se is None or not np.isfinite(se):
-                all_bounds.append(estimate)
-                continue
-            ci = 1.96 * se
-            all_bounds.extend([estimate - ci, estimate + ci])
+
     if not payloads:
         return None
-    all_bounds.append(0.0)
-    x_limits = padded_value_limits(all_bounds)
+
     component_dir = ensure_dir(Path(fig_dir) / f"{Path(output_name).stem}_components")
     panel_paths: List[Path] = []
     label_fontsize = max(9, POSTER_FONT_SIZE - 4)
+
     term_colors = {
         "intercept": "#7f7f7f",
         "state": "#1f77b4",
@@ -6305,8 +6323,18 @@ def plot_mixed_model_forest_figure(
         "cohort": "#17a2b8",
         "covariate": "#9467bd",
     }
+
     legend_handles = [
-        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=color, markeredgecolor="white", markersize=8, label=label)
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=color,
+            markeredgecolor="white",
+            markersize=8,
+            label=label,
+        )
         for label, color in [
             ("intercept", term_colors["intercept"]),
             ("state", term_colors["state"]),
@@ -6316,29 +6344,73 @@ def plot_mixed_model_forest_figure(
             ("covariate", term_colors["covariate"]),
         ]
     ]
-    legend_handles.append(Line2D([0], [0], marker="*", linestyle="none", markerfacecolor="#111111", markeredgecolor="#111111", markersize=10, label="p < 0.05"))
+    legend_handles.append(
+        Line2D(
+            [0],
+            [0],
+            marker="*",
+            linestyle="none",
+            markerfacecolor="#111111",
+            markeredgecolor="#111111",
+            markersize=10,
+            label="p < 0.05",
+        )
+    )
+
     figure_title = title or "Mixed-model fixed effects"
-    figure_subtitle = "Colors: intercept, state, compartment, interaction, covariate; stars indicate p < 0.05."
+    figure_subtitle = (
+        "Colors: intercept, state, compartment, interaction, covariate; "
+        "stars indicate p < 0.05."
+    )
+
     for index, (response, design, term_lookup, fixed_effect_names) in enumerate(payloads, start=1):
         y_positions = np.arange(len(fixed_effect_names))[::-1]
         significance_map: Dict[str, bool] = {}
+        panel_bounds: List[float] = []
+
         fig_width = min(max(6.4, 0.62 * max(len(fixed_effect_names), 1) + 2.4), 8.8)
         fig_height = min(max(0.42 * max(len(fixed_effect_names), 1) + 1.7, 3.8), 7.2)
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
         ax.axvline(0.0, color="#333333", linewidth=1)
+
         for y_pos, term in zip(y_positions, fixed_effect_names):
             row = term_lookup.get(term, {})
             estimate = as_float(row.get("estimate"))
             se = as_float(row.get("se"))
             p_value = as_float(row.get("p_value"))
-            significant = bool(p_value is not None and np.isfinite(p_value) and p_value < REPORT_SIGNIFICANCE_ALPHA)
+
+            significant = bool(
+                p_value is not None
+                and np.isfinite(p_value)
+                and p_value < REPORT_SIGNIFICANCE_ALPHA
+            )
             significance_map[term] = significant
+
             if estimate is None or not np.isfinite(estimate):
                 continue
+
             ci = 1.96 * se if se is not None and np.isfinite(se) else float("nan")
-            color = term_colors.get(_mixed_model_term_kind(term), term_colors["covariate"])
+
             if np.isfinite(ci):
-                ax.errorbar(estimate, y_pos, xerr=ci, fmt="none", ecolor=color, elinewidth=1.5, capsize=3, zorder=1)
+                panel_bounds.extend([estimate - ci, estimate + ci])
+            else:
+                panel_bounds.append(estimate)
+
+            color = term_colors.get(_mixed_model_term_kind(term), term_colors["covariate"])
+
+            if np.isfinite(ci):
+                ax.errorbar(
+                    estimate,
+                    y_pos,
+                    xerr=ci,
+                    fmt="none",
+                    ecolor=color,
+                    elinewidth=1.5,
+                    capsize=3,
+                    zorder=1,
+                )
+
             ax.scatter(
                 estimate,
                 y_pos,
@@ -6348,22 +6420,43 @@ def plot_mixed_model_forest_figure(
                 linewidth=0.9,
                 zorder=2,
             )
+
             if significant:
-                ax.scatter(estimate, y_pos, s=120, marker="*", color="#111111", zorder=3)
-        ax.set_xlim(x_limits)
+                ax.scatter(
+                    estimate,
+                    y_pos,
+                    s=120,
+                    marker="*",
+                    color="#111111",
+                    zorder=3,
+                )
+
+        panel_bounds.append(0.0)
+        ax.set_xlim(padded_value_limits(panel_bounds))
+
         ax.set_yticks(y_positions)
-        ax.set_yticklabels([_mixed_model_term_label(term) for term in fixed_effect_names], fontsize=label_fontsize)
+        ax.set_yticklabels(
+            [_mixed_model_term_label(term) for term in fixed_effect_names],
+            fontsize=label_fontsize,
+        )
+
         for tick_label, term in zip(ax.get_yticklabels(), fixed_effect_names):
             if significance_map.get(term, False):
                 tick_label.set_fontweight("bold")
                 tick_label.set_color("#8b0000")
+
         ax.tick_params(axis="y", pad=4)
-        ax.set_title(mixed_model_response_display_label(response), fontsize=max(16, POSTER_TITLE_SIZE - 7), pad=2)
+        ax.set_title(
+            mixed_model_response_display_label(response),
+            fontsize=max(16, POSTER_TITLE_SIZE - 7),
+            pad=2,
+        )
         ax.set_xlabel("Estimate (95% CI)", fontsize=max(17, POSTER_LABEL_SIZE - 1))
         ax.set_ylabel("Term", fontsize=max(15, POSTER_LABEL_SIZE - 3))
         ax.tick_params(axis="x", labelsize=POSTER_FONT_SIZE)
         ax.grid(axis="x", alpha=0.25)
         set_sparse_numeric_ticks(ax, axis="x", nbins=5)
+
         ax.text(
             0.99,
             0.02,
@@ -6374,6 +6467,7 @@ def plot_mixed_model_forest_figure(
             fontsize=POSTER_NOTE_SIZE,
             color="#444444",
         )
+
         if index == 1:
             fig.legend(
                 handles=legend_handles,
@@ -6385,13 +6479,19 @@ def plot_mixed_model_forest_figure(
                 columnspacing=1.0,
                 handletextpad=0.5,
             )
+
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.93), pad=0.95)
+
         panel_path = component_dir / f"{Path(output_name).stem}_{index:02d}_{response}.svg"
         save_figure(fig, panel_path, extra_formats=())
         panel_paths.append(panel_path)
+        plt.close(fig)
+
     if not panel_paths:
         return None
+
     return str(panel_paths[0])
+
 def plot_mixed_model_predicted_means_figure(
     results: Dict[str, Any],
     fig_dir: Path,
