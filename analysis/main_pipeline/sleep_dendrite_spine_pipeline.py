@@ -3283,6 +3283,7 @@ def generate_analysis_figures(
                 state_summary_specs.append(
                     {
                         "kind": "overview",
+                        "name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}",
                         "compartment": compartment,
                         "output_name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}.svg",
                         "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
@@ -3306,6 +3307,7 @@ def generate_analysis_figures(
             state_summary_specs.append(
                 {
                     "kind": "comparison",
+                    "name": f"state_summary_boxplots_basal_vs_apical_{cohort}",
                     "output_name": f"state_summary_boxplots_basal_vs_apical_{cohort}.svg",
                     "title": f"Selected-state summary distributions - Basal vs apical ({cohort_title})",
                     "results": (cohort_basal_results, cohort_apical_results),
@@ -3357,7 +3359,9 @@ def generate_analysis_figures(
                 eprint(f"[ALERT] Failed to create figure with state summary plotter ({scope_label}): {exc}")
                 continue
             if output_path:
-                saved.append(output_path)
+                record(output_path, plot_name=str(spec.get("name") or spec.get("output_name") or scope_label))
+            else:
+                record(None, plot_name=str(spec.get("name") or spec.get("output_name") or scope_label))
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,
