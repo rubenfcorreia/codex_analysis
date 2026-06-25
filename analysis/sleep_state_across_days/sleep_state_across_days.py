@@ -1242,7 +1242,14 @@ def group_rows_by_animal(rows: Sequence[Mapping[str, Any]]) -> Dict[str, List[Di
     for row in rows:
         grouped[str(row.get("animal_id"))].append(dict(row))
     for key in grouped:
-        grouped[key].sort(key=lambda row: (str(row.get("date")), str(row.get("category")), str(row.get("state"))))
+        grouped[key].sort(
+            key=lambda row: (
+                float(as_float(row.get("animal_day_index")) or float("inf")),
+                str(row.get("date")),
+                str(row.get("category")),
+                str(row.get("state")),
+            )
+        )
     return dict(sorted(grouped.items(), key=lambda item: item[0]))
 
 
@@ -2635,9 +2642,51 @@ def load_session_pupil_series(exp_root: Path, category: str) -> Tuple[Optional[n
     return None, None, None
 
 
+def build_animal_pupil_normalization(
+    exp_summaries: Sequence[SessionSummary],
+    repo_base: Path,
+) -> Dict[str, Dict[str, Any]]:
+    pooled_by_animal: Dict[str, List[np.ndarray]] = defaultdict(list)
+    for summary in exp_summaries:
+        exp_id = str(summary.exp_ids[0]) if summary.exp_ids else ''
+        if not exp_id:
+            continue
+        exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
+        pupil_t, pupil_size, pupil_source = load_session_pupil_series(exp_root, summary.category)
+        if pupil_t is None or pupil_size is None or pupil_source is None:
+            continue
+        pupil_t = np.asarray(pupil_t, dtype=float).ravel()
+        pupil_size = np.asarray(pupil_size, dtype=float).ravel()
+        pupil_t, pupil_size = align_length(pupil_t, pupil_size)
+        finite_mask = np.isfinite(pupil_t) & np.isfinite(pupil_size)
+        valid_pupil = np.asarray(pupil_size[finite_mask], dtype=float)
+        if valid_pupil.size:
+            pooled_by_animal[str(summary.animal_id)].append(valid_pupil)
+    normalization: Dict[str, Dict[str, Any]] = {}
+    for animal_id, series_list in pooled_by_animal.items():
+        if not series_list:
+            continue
+        pooled = np.concatenate(series_list)
+        pooled = pooled[np.isfinite(pooled)]
+        if pooled.size < 2:
+            continue
+        center = float(np.nanmean(pooled))
+        scale = float(np.nanstd(pooled, ddof=0))
+        if not np.isfinite(scale) or scale <= 0.0:
+            continue
+        normalization[animal_id] = {
+            'center': center,
+            'scale': scale,
+            'reference_sorted': np.sort(pooled),
+            'n_samples': int(pooled.size),
+        }
+    return normalization
+
+
 def compute_pupil_state_percentiles_for_expid(
     summary: SessionSummary,
     repo_base: Path,
+    animal_pupil_normalization: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     sample_rows: List[Dict[str, Any]] = []
     summary_rows: List[Dict[str, Any]] = []
@@ -2698,9 +2747,15 @@ def compute_pupil_state_percentiles_for_expid(
         warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: too few valid pupil samples')
         return sample_rows, summary_rows, checks
 
-    pupil_mean = float(np.nanmean(valid_pupil))
-    pupil_std = float(np.nanstd(valid_pupil, ddof=0))
-    if not np.isfinite(pupil_std) or pupil_std <= 0.0:
+    animal_norm = dict((animal_pupil_normalization or {}).get(str(summary.animal_id), {}))
+    pupil_mean = as_float(animal_norm.get('center')) if animal_norm else None
+    pupil_std = as_float(animal_norm.get('scale')) if animal_norm else None
+    reference_sorted = np.asarray(animal_norm.get('reference_sorted', []), dtype=float) if animal_norm else np.asarray([], dtype=float)
+    if pupil_mean is None or pupil_std is None or not np.isfinite(pupil_mean) or not np.isfinite(pupil_std) or pupil_std <= 0.0 or reference_sorted.size < 2:
+        pupil_mean = float(np.nanmean(valid_pupil))
+        pupil_std = float(np.nanstd(valid_pupil, ddof=0))
+        reference_sorted = np.sort(valid_pupil)
+    if not np.isfinite(pupil_std) or pupil_std <= 0.0 or reference_sorted.size < 2:
         checks['skip_reason'] = 'invalid pupil standard deviation'
         warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: pupil std is zero or invalid')
         return sample_rows, summary_rows, checks
@@ -2715,7 +2770,6 @@ def compute_pupil_state_percentiles_for_expid(
         warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: no valid state-aligned pupil samples')
         return sample_rows, summary_rows, checks
 
-    reference_sorted = np.sort(valid_pupil)
     for state_order, state in enumerate(DEFAULT_STATE_ORDER, start=1):
         state_code = state_codes[state]
         state_mask = valid_state_mask & (state_values == state_code)
@@ -2784,11 +2838,12 @@ def summarize_pupil_state_percentiles_by_category(
             'exp_checks': [],
         }
 
+    animal_pupil_normalization = build_animal_pupil_normalization(exp_summaries, repo_base)
     by_exp_rows: List[Dict[str, Any]] = []
     summary_rows: List[Dict[str, Any]] = []
     exp_checks: List[Dict[str, Any]] = []
     for summary in exp_summaries:
-        sample_rows, exp_summary_rows, check = compute_pupil_state_percentiles_for_expid(summary, repo_base)
+        sample_rows, exp_summary_rows, check = compute_pupil_state_percentiles_for_expid(summary, repo_base, animal_pupil_normalization)
         by_exp_rows.extend(sample_rows)
         summary_rows.extend(exp_summary_rows)
         exp_checks.append(check)
@@ -4058,22 +4113,30 @@ def format_date_axis(ax: Any) -> None:
 
 
 def _metric_series_by_state(rows: Sequence[Mapping[str, Any]], metric_name: str) -> Dict[str, List[Tuple[float, float]]]:
-    series: Dict[str, List[Tuple[float, float]]] = {state: [] for state in DEFAULT_STATE_ORDER}
+    grouped_series: Dict[str, Dict[float, List[float]]] = {state: defaultdict(list) for state in DEFAULT_STATE_ORDER}
     for row in rows:
         state = str(row.get('state'))
-        if state not in series:
+        if state not in grouped_series:
             continue
         metric_value = as_float(row.get(metric_name))
         if metric_value is None or not np.isfinite(metric_value):
             continue
-        date_value = str(row.get('date', ''))
-        try:
-            x_value = mdates.date2num(dt.date.fromisoformat(date_value)) if mdates is not None else float(row.get('animal_day_index', 0) or 0)
-        except Exception:
-            x_value = float(row.get('animal_day_index', 0) or 0)
-        series[state].append((float(x_value), float(metric_value)))
-    for state in series:
-        series[state].sort(key=lambda item: item[0])
+        x_value = as_float(row.get('animal_day_index'))
+        if x_value is None or not np.isfinite(x_value):
+            date_value = str(row.get('date', ''))
+            try:
+                x_value = float(mdates.date2num(dt.date.fromisoformat(date_value))) if mdates is not None else float('nan')
+            except Exception:
+                x_value = float('nan')
+        if x_value is None or not np.isfinite(x_value):
+            continue
+        grouped_series[state][float(x_value)].append(float(metric_value))
+    series: Dict[str, List[Tuple[float, float]]] = {state: [] for state in DEFAULT_STATE_ORDER}
+    for state, x_to_values in grouped_series.items():
+        series[state] = sorted(
+            [(float(x_value), float(np.nanmean(np.asarray(values, dtype=float)))) for x_value, values in x_to_values.items()],
+            key=lambda item: item[0],
+        )
     return series
 
 
@@ -4618,15 +4681,13 @@ def _plot_metric_panels(
             xs = np.asarray([p[0] for p in points], dtype=float)
             ys = np.asarray([p[1] for p in points], dtype=float)
             ax.plot(xs, ys, marker='o', markersize=3.5, color=DEFAULT_STACKED_STATE_COLORS[state], label=format_display_state(state), alpha=0.95)
-        if mdates is not None:
-            ax.xaxis_date()
-            format_date_axis(ax)
         ax.grid(axis='y', alpha=0.2)
         ax.set_ylabel(f'{metric_label}\n{format_display_category(category)}', fontsize=max(11, POSTER_LABEL_SIZE - 6), labelpad=6)
         ax.tick_params(axis='both', labelsize=max(9, POSTER_FONT_SIZE - 7))
+        set_sparse_numeric_ticks(ax, axis='x', nbins=6, integer=True)
         if row_idx == 0:
             ax.tick_params(axis='x', labelbottom=False)
-    axes[1, 0].set_xlabel('Calendar date', fontsize=max(11, POSTER_LABEL_SIZE - 6), labelpad=6)
+    axes[1, 0].set_xlabel('Within-animal day index', fontsize=max(11, POSTER_LABEL_SIZE - 6), labelpad=6)
     axes[0, 0].set_title(title, fontsize=max(16, POSTER_TITLE_SIZE - 8), pad=8, loc='left')
     handles = [Line2D([0], [0], color=DEFAULT_STACKED_STATE_COLORS[state], label=format_display_state(state)) for state in DEFAULT_STATE_ORDER]
     axes[0, 0].legend(handles=handles, loc='upper right', frameon=False, ncol=2, fontsize=max(10, POSTER_NOTE_SIZE - 2))
@@ -4644,7 +4705,7 @@ def plot_per_animal_metric(animal_id: str, animal_rows: Sequence[Mapping[str, An
         {category: [row for row in rows if str(row.get('category')) == category] for category in DEFAULT_CATEGORY_ORDER},
         metric_name,
         metric_label,
-        f'{animal_id} {metric_label.lower()} across days',
+        f'{animal_id} {metric_label.lower()} across within-animal day index',
         output_dir,
         Path('per_animal') / safe_filename_component(animal_id),
         f'{safe_filename_component(animal_id)}_{safe_filename_component(metric_name)}',
@@ -4657,7 +4718,7 @@ def plot_combined_metric(day_rows: Sequence[Mapping[str, Any]], metric_name: str
         {category: [row for row in rows if str(row.get('category')) == category] for category in DEFAULT_CATEGORY_ORDER},
         metric_name,
         metric_label,
-        f'Combined {metric_label.lower()} across days',
+        f'Combined {metric_label.lower()} across within-animal day index',
         output_dir,
         Path('combined'),
         f'combined_{safe_filename_component(metric_name)}',
@@ -4736,17 +4797,10 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
 
-    day_timeline = select_poster_ready_day_summaries(exp_summaries, DEFAULT_POSTER_READY_STATE_MONTAGE_EXAMPLE_EXP_ID)
-    if not day_timeline:
-        day_timeline = select_poster_ready_day_summaries(exp_summaries, DEFAULT_REVIEW_STATE_MONTAGE_EXAMPLE_EXP_ID)
-    if not day_timeline:
-        day_timeline = [summary for summary in exp_summaries if summary.sleep_state_paths][:1]
-
     fig, ax_frac = plt.subplots(2, 2, figsize=(10.8, 8.4), squeeze=False)
     day_summaries = aggregate_day_summaries(exp_summaries)
     time_s, profile = average_probability_summaries(day_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
-    _, _, sleep_start_min = build_day_timeline_profile(day_timeline)
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
@@ -4775,10 +4829,6 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
             )
         else:
             ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=max(8, POSTER_FONT_SIZE - 7), color='#666666')
-        if sleep_start_min is not None and np.isfinite(sleep_start_min):
-            if sleep_start_min > 0.0:
-                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
-            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
         ax.set_xlim(0.0, x_max)
         ax.set_ylim(0.0, 1.05)
         ax.grid(axis='y', alpha=0.22)
@@ -4803,7 +4853,6 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
     frac_block_x0 = min(ax.get_position().x0 for ax in fraction_axes)
     frac_block_x1 = max(ax.get_position().x1 for ax in fraction_axes)
     frac_block_y0 = min(ax.get_position().y0 for ax in fraction_axes)
-    frac_block_y1 = max(ax.get_position().y1 for ax in fraction_axes)
     fig.text(
         0.5 * (float(frac_block_x0) + float(frac_block_x1)),
         float(frac_block_y0) - 0.070,
@@ -4813,21 +4862,11 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
         fontsize=max(11, POSTER_LABEL_SIZE - 7),
         linespacing=0.8,
     )
-    if sleep_start_min is not None and np.isfinite(sleep_start_min):
-        fig.text(
-            float(frac_block_x1),
-            float(frac_block_y1) + 0.006,
-            'sleep session starts',
-            ha='right',
-            va='bottom',
-            fontsize=max(8, POSTER_FONT_SIZE - 7),
-            color='#666666',
-        )
     fig.suptitle('Sleep-state fractions through experimental time', fontsize=max(22, POSTER_SUPTITLE_SIZE - 2), y=0.985)
     fig.text(
         0.5,
         0.93,
-        'Representative day; dashed line marks sleep-session start and gray shading shows pre-sleep time.',
+        'Averaged across all sessions; each panel shows the mean fraction in that state over elapsed time.',
         ha='center',
         va='top',
         fontsize=max(15, POSTER_NOTE_SIZE + 2),
@@ -4839,13 +4878,14 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
     figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_OVERALL_FIGURE_DIRNAME / DEFAULT_WITHIN_DAY_FIGURE_DIRNAME / 'overall')
     return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_WITHIN_DAY_FIGURE_STEM}.svg', dpi=POSTER_DPI)
 
+
 def plot_per_animal_stacked_area(animal_id: str, day_summaries: Sequence[SessionSummary], output_dir: Path) -> List[Path]:
     animal_summaries = [summary for summary in day_summaries if str(summary.animal_id) == animal_id]
-    return _plot_stacked_area_panel({category: [summary for summary in animal_summaries if str(summary.category) == category] for category in DEFAULT_CATEGORY_ORDER}, x_mode='date', x_label='Calendar date', title=f'{animal_id} sleep-state composition across days', note='Stacked areas show the fraction of time in each state; gray is Unclassified when present.', output_dir=output_dir, figure_subdir=Path('per_animal') / safe_filename_component(animal_id), output_stem=f'{safe_filename_component(animal_id)}_stacked_area')
+    return _plot_stacked_area_panel({category: [summary for summary in animal_summaries if str(summary.category) == category] for category in DEFAULT_CATEGORY_ORDER}, x_mode='day_index', x_label='Within-animal day index', title=f'{animal_id} sleep-state composition across within-animal day index', note='Stacked areas show the fraction of time in each state; gray is Unclassified when present.', output_dir=output_dir, figure_subdir=Path('per_animal') / safe_filename_component(animal_id), output_stem=f'{safe_filename_component(animal_id)}_stacked_area')
 
 
 def plot_combined_stacked_area(day_summaries: Sequence[SessionSummary], output_dir: Path) -> List[Path]:
-    return _plot_stacked_area_panel({category: [summary for summary in day_summaries if str(summary.category) == category] for category in DEFAULT_CATEGORY_ORDER}, x_mode='day_index', x_label='Within-animal day index', title='Sleep-state composition across days - all animals', note='Stacked areas show the mean fraction across animals at each within-animal day index; gray is Unclassified when present.', output_dir=output_dir, figure_subdir=Path('combined'), output_stem='combined_stacked_area')
+    return _plot_stacked_area_panel({category: [summary for summary in day_summaries if str(summary.category) == category] for category in DEFAULT_CATEGORY_ORDER}, x_mode='day_index', x_label='Within-animal day index', title='Sleep-state composition across within-animal day index - all animals', note='Stacked areas show the mean fraction across animals at each within-animal day index; gray is Unclassified when present.', output_dir=output_dir, figure_subdir=Path('combined'), output_stem='combined_stacked_area')
 
 
 def _probability_heatmap_axes(ax: Any, summaries: Sequence[SessionSummary], *, percent: bool = False) -> None:
