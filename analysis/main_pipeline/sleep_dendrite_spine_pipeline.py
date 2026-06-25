@@ -3437,7 +3437,7 @@ def generate_analysis_figures(
                 if distribution_path:
                     saved.append(distribution_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
                 distribution_pvalue_path = plot_spine_coactivity_distribution_figure(
                     compartment_results,
                     spine_coactivity_figure_dir(coactivity_dir, "distribution"),
@@ -3449,7 +3449,7 @@ def generate_analysis_figures(
                 if distribution_pvalue_path:
                     saved.append(distribution_pvalue_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: spine_coactivity_distribution_pvalue[{gallery_compartment_suffix(compartment)}]")
                 heatmap_path = plot_spine_coactivity_tendency_figure(
                     compartment_results,
                     spine_coactivity_figure_dir(coactivity_dir, "pair_state_heatmap"),
@@ -3461,7 +3461,7 @@ def generate_analysis_figures(
                 if heatmap_path:
                     saved.append(heatmap_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: spine_coactivity_heatmap_coefficient[{gallery_compartment_suffix(compartment)}]")
                 heatmap_pvalue_path = plot_spine_coactivity_tendency_figure(
                     compartment_results,
                     spine_coactivity_figure_dir(coactivity_dir, "pair_state_heatmap"),
@@ -3473,7 +3473,7 @@ def generate_analysis_figures(
                 if heatmap_pvalue_path:
                     saved.append(heatmap_pvalue_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: spine_coactivity_heatmap_pvalue[{gallery_compartment_suffix(compartment)}]")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with spine coactivity plotter ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
@@ -3497,6 +3497,8 @@ def generate_analysis_figures(
                 )
                 if distribution_path:
                     saved.append(distribution_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_anchor_distribution[{gallery_compartment_suffix(compartment)}]")
                 heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
                     scope_results,
                     spine_coactivity_figure_dir(coactivity_dir, "pair_state_heatmap"),
@@ -3508,6 +3510,8 @@ def generate_analysis_figures(
                 )
                 if heatmap_path:
                     saved.append(heatmap_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
                 summary_path = plot_spine_coactivity_pair_state_summary_figure(
                     scope_results,
                     spine_coactivity_figure_dir(coactivity_dir, "pair_state_summary"),
@@ -3520,7 +3524,7 @@ def generate_analysis_figures(
                 if summary_path:
                     saved.append(summary_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: spine_coactivity_anchor_summary[{gallery_compartment_suffix(compartment)}]")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity figures ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
@@ -3660,7 +3664,7 @@ def generate_analysis_figures(
     if basal_vs_apical_path:
         saved.append(basal_vs_apical_path)
     else:
-        step_message("plotter returned no output")
+        step_message("plotter returned no output: spine_coactivity_basal_apical_distribution")
     return saved
 def generate_review_figures(
     output_dir: Path,
@@ -3756,7 +3760,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({scope_label}): {exc}")
                 continue
             if not output_path:
-                step_message("plotter returned no output")
+                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -3795,7 +3799,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
                 continue
             if not output_path:
-                step_message("plotter returned no output")
+                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -3821,7 +3825,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
                 continue
             if not output_path:
-                step_message("plotter returned no output")
+                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -3867,7 +3871,7 @@ def generate_review_figures(
                 if pair_heatmap_path:
                     saved.append(pair_heatmap_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
                 pair_summary_path = plot_spine_coactivity_pair_state_summary_figure(
                     compartment_results,
                     spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
@@ -3878,7 +3882,7 @@ def generate_review_figures(
                 if pair_summary_path:
                     saved.append(pair_summary_path)
                 else:
-                    step_message("plotter returned no output")
+                    step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
     anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
@@ -3923,6 +3927,8 @@ def generate_review_figures(
                 )
                 if summary_path:
                     saved.append(summary_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity review figures ({gallery_compartment_suffix(compartment)}): {exc}")
     basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
@@ -6712,11 +6718,25 @@ def render_analysis_family_figures(
         return []
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     saved: List[str] = []
-    def record(path: Optional[str]) -> None:
+    def record(path: Optional[str], plot_name: Optional[str] = None) -> None:
         if path:
             saved.append(path)
-        else:
-            step_message("plotter returned no output")
+            return
+        resolved_plot_name = plot_name or "unknown plot"
+        try:
+            import inspect
+            frame = inspect.currentframe()
+            caller = frame.f_back if frame is not None else None
+            locals_map = caller.f_locals if caller is not None else {}
+            if resolved_plot_name == "unknown plot":
+                spec = locals_map.get("spec")
+                if isinstance(spec, dict):
+                    resolved_plot_name = str(spec.get("name") or spec.get("output_name") or spec.get("title") or resolved_plot_name)
+                else:
+                    resolved_plot_name = str(locals_map.get("scope_label") or locals_map.get("plot_name") or resolved_plot_name)
+        except Exception:
+            pass
+        step_message(f"plotter returned no output: {resolved_plot_name}")
     coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     if family == "state":
         summary_fig_dir = figure_family_dir(fig_dir, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME, DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
@@ -6731,6 +6751,7 @@ def render_analysis_family_figures(
         state_summary_specs = [
             {
                 "kind": "overview",
+                "name": "state_summary_boxplots_all",
                 "compartment": None,
                 "output_name": "state_summary_boxplots.svg",
                 "title": "Selected-state summary distributions - All compartments",
@@ -6741,6 +6762,7 @@ def render_analysis_family_figures(
             state_summary_specs.append(
                 {
                     "kind": "overview",
+                    "name": f"state_summary_boxplots_{compartment}",
                     "compartment": compartment,
                     "output_name": f"state_summary_boxplots_{compartment}.svg",
                     "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)}",
@@ -6751,6 +6773,7 @@ def render_analysis_family_figures(
             [
                 {
                     "kind": "comparison",
+                    "name": "state_summary_boxplots_basal_vs_apical",
                     "output_name": "state_summary_boxplots_basal_vs_apical.svg",
                     "title": "Selected-state summary distributions - Basal vs apical",
                     "results": (basal_results, apical_results),
@@ -6801,7 +6824,7 @@ def render_analysis_family_figures(
                 except Exception as exc:
                     eprint(f"[ALERT] Failed to create figure with state summary plotter ({scope_label}): {exc}")
     elif family == "basal_apical":
-        record(plot_basal_apical_summary(results, fig_dir))
+        record(plot_basal_apical_summary(results, fig_dir), plot_name="basal_apical_summary")
     elif family == "direct_trial_type_comparison":
         direct_dir = figure_family_dir(fig_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
         direct_plotters = [
@@ -6839,7 +6862,8 @@ def render_analysis_family_figures(
                 figure_family_dir(fig_dir, DEFAULT_CORRELATION_FIGURES_DIRNAME),
                 output_name="correlation_summary.svg",
                 title="Correlation summaries",
-            )
+            ),
+            plot_name="correlation_summary",
         )
     elif family == "matrix_similarity":
         matrix_rows = results.get("matrix_similarity", [])
@@ -6859,7 +6883,8 @@ def render_analysis_family_figures(
                             output_name=f"matrix_similarity_distribution_{compartment}.svg",
                             title=f"Spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
                             compartment_filter=compartment,
-                        )
+                        ),
+                        plot_name=f"matrix_similarity_distribution[{compartment}]",
                     )
                 except Exception as exc:
                     eprint(f"[ALERT] Failed to create matrix distribution for {compartment}: {exc}")
@@ -6906,7 +6931,8 @@ def render_analysis_family_figures(
                                 ),
                                 compartment_filter=compartment,
                                 dendrite_filter=dendrite_id,
-                            )
+                            ),
+                            plot_name=f"matrix_similarity_heatmap[{compartment}/{dendrite_id}]",
                         )
                     except Exception as exc:
                         eprint(f"[ALERT] Failed to create matrix heatmap for {compartment} / {dendrite_id}: {exc}")
@@ -6928,7 +6954,7 @@ def render_analysis_family_figures(
                     record(spec["plotter"](**kwargs))
                 except Exception as exc:
                     eprint(f"[ALERT] Failed to create figure with {spec['name']}: {exc}")
-        record(plot_demo_validation_figure(results, mixed_model_dir))
+        record(plot_demo_validation_figure(results, mixed_model_dir), plot_name="mixed_model_demo_validation")
     elif family == "spine_coactivity":
         coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
         coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
@@ -6948,7 +6974,8 @@ def render_analysis_family_figures(
                             output_name=f"spine_coactivity_distribution_{gallery_compartment_suffix(compartment)}.svg",
                             title=f"Spine coactivity distributions - {gallery_compartment_title(compartment)}",
                             compartment_filter=compartment,
-                        )
+                        ),
+                        plot_name=f"spine_coactivity_distribution[{gallery_compartment_suffix(compartment)}]",
                     )
                     record(
                         plot_spine_coactivity_tendency_figure(
@@ -6957,7 +6984,8 @@ def render_analysis_family_figures(
                             output_name=f"spine_coactivity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
                             title=f"Derived state-state similarity of coactivity coefficient - {gallery_compartment_title(compartment)}",
                             compartment_filter=compartment,
-                        )
+                        ),
+                        plot_name=f"spine_coactivity_heatmap[{gallery_compartment_suffix(compartment)}]",
                     )
                     record(
                         plot_spine_coactivity_pair_state_heatmap_figure(
@@ -6966,7 +6994,8 @@ def render_analysis_family_figures(
                             output_name=f"spine_coactivity_pair_state_heatmap_{gallery_compartment_suffix(compartment)}.svg",
                             title=f"Spine coactivity coefficient across selected states - {gallery_compartment_title(compartment)}",
                             compartment_filter=compartment,
-                        )
+                        ),
+                        plot_name=f"spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]",
                     )
                     record(
                         plot_spine_coactivity_pair_state_summary_figure(
@@ -6975,7 +7004,8 @@ def render_analysis_family_figures(
                             output_name=f"spine_coactivity_pair_state_summary_{gallery_compartment_suffix(compartment)}.svg",
                             title=f"Spine coactivity state-change summary - {gallery_compartment_title(compartment)}",
                             compartment_filter=compartment,
-                        )
+                        ),
+                        plot_name=f"spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]",
                     )
                 except Exception as exc:
                     eprint(f"[ALERT] Failed to create figure with spine coactivity plotter ({gallery_compartment_suffix(compartment)}): {exc}")
@@ -7022,7 +7052,8 @@ def render_analysis_family_figures(
                                     f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
                                 ),
                                 compartment_filter=compartment,
-                            )
+                            ),
+                            plot_name=f"spine_coactivity_heatmap[{gallery_compartment_suffix(compartment)}/{dendrite_id}]",
                         )
                     except Exception as exc:
                         eprint(f"[ALERT] Failed to create spine coactivity heatmap for {compartment} / {dendrite_id}: {exc}")
@@ -7035,7 +7066,8 @@ def render_analysis_family_figures(
                 title=f"Quiet awake movies coactive-pair distribution - basal vs apical",
                 anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
                 coactive_only=True,
-            )
+            ),
+            plot_name="spine_coactivity_basal_apical_distribution",
         )
     except Exception as exc:
         eprint(f"[ALERT] Failed to create basal-vs-apical coactivity figure: {exc}")
@@ -10424,6 +10456,14 @@ def process_mixed_model_only(
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
+    results["mixed_model_visual_response_responsive"] = mixed_model_results.get("mixed_model_visual_response_responsive", {})
+    results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive", {})
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {})
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
+    results["mixed_model_visual_response_responsive"] = mixed_model_results.get("mixed_model_visual_response_responsive", {})
+    results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive", {})
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {})
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
     if output_dir is not None:
@@ -11978,6 +12018,42 @@ def run_mixed_model_analysis(
         basal_apical_state_subset=selected_basal_apical_states,
         include_validation=False,
     )
+    visual_response_responsive_branch = build_branch(
+        "all_state",
+        row_filter_states=[state for state in ALL_REQUESTED_STATES if state in ALL_REQUESTED_STATES],
+        state_order=ALL_REQUESTED_STATES,
+        state_pair_states=state_comparison_states,
+        basal_apical_state_subset=basal_apical_states,
+        visual_response_cohort="responsive",
+        include_validation=False,
+    )
+    visual_response_nonresponsive_branch = build_branch(
+        "all_state",
+        row_filter_states=[state for state in ALL_REQUESTED_STATES if state in ALL_REQUESTED_STATES],
+        state_order=ALL_REQUESTED_STATES,
+        state_pair_states=state_comparison_states,
+        basal_apical_state_subset=basal_apical_states,
+        visual_response_cohort="nonresponsive",
+        include_validation=False,
+    )
+    visual_response_responsive_selected_branch = build_branch(
+        "selected_state",
+        row_filter_states=selected_state_order,
+        state_order=selected_state_order,
+        state_pair_states=selected_state_order,
+        basal_apical_state_subset=selected_basal_apical_states,
+        visual_response_cohort="responsive",
+        include_validation=False,
+    )
+    visual_response_nonresponsive_selected_branch = build_branch(
+        "selected_state",
+        row_filter_states=selected_state_order,
+        state_order=selected_state_order,
+        state_pair_states=selected_state_order,
+        basal_apical_state_subset=selected_basal_apical_states,
+        visual_response_cohort="nonresponsive",
+        include_validation=False,
+    )
     return {
         "available": bool(MixedLM is not None),
         "alerts": list(dict.fromkeys(alerts)),
@@ -11987,10 +12063,15 @@ def run_mixed_model_analysis(
             "state_comparison_states": list(state_comparison_states),
             "basal_apical_states": list(basal_apical_states),
             "p_value_source": p_value_source,
+            "visual_response_cohorts": ["responsive", "nonresponsive"],
         },
         "p_value_source": p_value_source,
         "all_state": all_state_branch,
         "selected_state": selected_state_branch,
+        "mixed_model_visual_response_responsive": visual_response_responsive_branch,
+        "mixed_model_visual_response_nonresponsive": visual_response_nonresponsive_branch,
+        "mixed_model_visual_response_responsive_selected_state": visual_response_responsive_selected_branch,
+        "mixed_model_visual_response_nonresponsive_selected_state": visual_response_nonresponsive_selected_branch,
         "validation_rows": list(all_state_branch.get("validation_rows", [])),
     }
 def process_cached_analysis(
@@ -12134,6 +12215,10 @@ def process_cached_analysis(
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
+    results["mixed_model_visual_response_responsive"] = mixed_model_results.get("mixed_model_visual_response_responsive", {})
+    results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive", {})
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {})
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
     if output_dir is not None:
@@ -13389,9 +13474,17 @@ def write_analysis_outputs(
             written_artifacts.append(report_relative_path(csv_path, output_dir))
     mixed_model = results.get("mixed_model", {})
     mixed_model_selected = results.get("mixed_model_selected_state", {})
+    mixed_model_visual_response_responsive = results.get("mixed_model_visual_response_responsive", {})
+    mixed_model_visual_response_nonresponsive = results.get("mixed_model_visual_response_nonresponsive", {})
+    mixed_model_visual_response_responsive_selected_state = results.get("mixed_model_visual_response_responsive_selected_state", {})
+    mixed_model_visual_response_nonresponsive_selected_state = results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
     mixed_model_branches = [
         ("mixed_model", mixed_model, ""),
         ("mixed_model_selected_state", mixed_model_selected, "selected_state"),
+        ("mixed_model_visual_response_responsive", mixed_model_visual_response_responsive, "visual_response_responsive_all_state"),
+        ("mixed_model_visual_response_nonresponsive", mixed_model_visual_response_nonresponsive, "visual_response_nonresponsive_all_state"),
+        ("mixed_model_visual_response_responsive_selected_state", mixed_model_visual_response_responsive_selected_state, "visual_response_responsive_selected_state"),
+        ("mixed_model_visual_response_nonresponsive_selected_state", mixed_model_visual_response_nonresponsive_selected_state, "visual_response_nonresponsive_selected_state"),
     ]
     for branch_key, branch_data, branch_suffix in mixed_model_branches:
         if not isinstance(branch_data, dict) or not branch_data:
