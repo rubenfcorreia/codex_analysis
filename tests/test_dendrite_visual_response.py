@@ -188,6 +188,42 @@ def test_visual_response_classification_and_filtered_summaries() -> None:
     assert nonresponsive_apical["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]
 
 
+def test_event_info_records_parallel_detection_methods_for_dendrite_and_spine() -> None:
+    time = np.arange(30, dtype=float)
+    dendrite_trace = np.concatenate([
+        np.zeros(8, dtype=float),
+        np.array([1.0, 2.0, 3.0], dtype=float),
+        np.zeros(3, dtype=float),
+        np.array([1.0, 2.0, 3.0], dtype=float),
+        np.zeros(13, dtype=float),
+    ])
+    spine_trace = np.concatenate([
+        np.zeros(8, dtype=float),
+        np.array([1.0, 2.0, 3.0], dtype=float),
+        np.zeros(4, dtype=float),
+        np.array([1.0, 2.0, 3.0], dtype=float),
+        np.zeros(12, dtype=float),
+    ])
+
+    dendrite_event_info = pipeline.build_event_info(dendrite_trace, time)
+    spine_event_info = pipeline.annotate_spine_event_info(pipeline.build_event_info(spine_trace, time), dendrite_event_info)
+
+    for event_info in [dendrite_event_info, spine_event_info]:
+        assert event_info["method"] == "derivative"
+        assert event_info["primary_method"] == "derivative"
+        assert set(event_info["event_detection_methods"]) == {"amplitude", "derivative"}
+        assert set(event_info["methods"].keys()) == {"amplitude", "derivative"}
+        assert event_info["methods"]["derivative"]["method"] == "derivative"
+        assert event_info["methods"]["amplitude"]["method"] == "amplitude"
+        assert np.isfinite(event_info["threshold"])
+        assert np.isfinite(event_info["methods"]["derivative"]["threshold"])
+        assert np.isfinite(event_info["methods"]["amplitude"]["threshold"])
+
+    assert np.isfinite(spine_event_info["coincident_event_frequency_per_min"])
+    assert np.isfinite(spine_event_info["methods"]["derivative"]["coincident_event_frequency_per_min"])
+    assert np.isfinite(spine_event_info["methods"]["amplitude"]["coincident_event_frequency_per_min"])
+
+
 def test_state_summary_outputs_use_family_and_cohort_subfolders(tmp_path: Path) -> None:
     cache = _build_cache()
     response_summary = pipeline.classify_visual_responsive_dendrites(cache)
@@ -203,9 +239,9 @@ def test_state_summary_outputs_use_family_and_cohort_subfolders(tmp_path: Path) 
         cohort_label="all",
     )
     assert overview_path is not None
-    assert Path(overview_path).parent == output_dir / "dendrites" / "all"
-    assert (output_dir / "dendrites" / "all" / "state_summary_boxplots_dendrite_mean.svg").exists()
-    assert (output_dir / "spines" / "all" / "state_summary_boxplots_spine_specific_mean.svg").exists()
+    assert Path(overview_path).parent == output_dir / "dendrites" / "selected_states" / "all"
+    assert (output_dir / "dendrites" / "selected_states" / "all" / "state_summary_boxplots_dendrite_mean.svg").exists()
+    assert (output_dir / "spines" / "selected_states" / "all" / "state_summary_boxplots_spine_specific_mean.svg").exists()
 
     responsive_results = pipeline.build_state_summary_gallery_results(
         cache,
@@ -222,6 +258,6 @@ def test_state_summary_outputs_use_family_and_cohort_subfolders(tmp_path: Path) 
         cohort_label="responsive",
     )
     assert responsive_path is not None
-    assert Path(responsive_path).parent == output_dir / "dendrites" / "responsive"
-    assert (output_dir / "dendrites" / "responsive" / "state_summary_boxplots_basal_responsive_dendrite_mean.svg").exists()
-    assert (output_dir / "spines" / "responsive" / "state_summary_boxplots_basal_responsive_spine_specific_mean.svg").exists()
+    assert Path(responsive_path).parent == output_dir / "dendrites" / "selected_states" / "responsive"
+    assert (output_dir / "dendrites" / "selected_states" / "responsive" / "state_summary_boxplots_basal_responsive_dendrite_mean.svg").exists()
+    assert (output_dir / "spines" / "selected_states" / "responsive" / "state_summary_boxplots_basal_responsive_spine_specific_mean.svg").exists()

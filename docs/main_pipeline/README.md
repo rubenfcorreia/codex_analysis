@@ -47,18 +47,19 @@ The day-figure helper, demo builder, and poster scripts now live in dedicated su
 
 ## Preprocessing
 
-The preprocessing stage is intentionally simple and keeps the event logic tied to the recorded `dF/F` traces rather than a separate filtered signal.
+The preprocessing stage keeps event detection tied to the cached `dF/F` traces rather than to a separate high-pass filtered signal.
 
-- Event detection runs on the raw per-ROI trace that is stored in the cache.
-- The event baseline is the trace median, and the event threshold is set from a robust noise estimate around that centered trace.
-- An event is counted when the trace stays above threshold for at least the minimum run length used by the detector.
+- The primary detector is the positive first derivative of the recorded trace. The derivative series is centered per trace and thresholded at `+3 SD`, and an event is counted when that derivative run stays above threshold for the minimum consecutive-frame window.
+- The legacy amplitude detector is still stored in parallel under `event_info["methods"]["amplitude"]`; that branch uses the raw-trace median as its baseline and a noise estimate from the raw trace itself.
 - Event frequency is the event count divided by the effective duration of the analyzed trace or state mask.
 - For spines, the pipeline fits the spine trace against the paired dendrite trace with a robust bisquare regression and keeps the residual as the spine-specific signal.
 - That residual is `spine_specific = spine_trace - alpha * dendrite_trace`, where `alpha` is the fitted dendritic contribution.
+- No high-pass filter is applied to the spine-specific activity before event detection or state averaging.
 - State masks come from the experiment metadata: movie trials use the trial table and locomotion/sleep labeling, and sleep recordings add the scored quiet-awake, NREM, and REM masks when the sleep bundle is present.
 - Visual-response cohorts are computed after the state masks exist, using cut stimulus-period activity from `cut_intertrials/` when possible and `cut_with_intertrials/` as the fallback source.
 - Dendrite responsiveness is measured from dendrite cut activity only, while spine responsiveness is measured from spine-specific cut activity only.
 - The response classifier then assigns each unit to the `all`, `responsive`, or `nonresponsive` cohort for reuse by downstream summaries and figures.
+- State-summary and mixed-model summaries reuse the cached event-info records, so they inherit whichever detector method is stored as the primary one for that observation.
 
 ## Where To Set Inputs
 

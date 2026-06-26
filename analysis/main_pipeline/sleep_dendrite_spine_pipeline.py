@@ -109,7 +109,7 @@ DEFAULT_CACHE_DIRNAME = "cache"
 DEFAULT_CHECKPOINT_GALLERY_DIRNAME = "checkpoint_examples"
 DEFAULT_REVIEW_FIGURES_DIRNAME = "review_figures"
 DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
-DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "plots"
+DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "selected_states"
 DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME = "visual_response"
 STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min"}
 STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
@@ -130,6 +130,9 @@ VISUAL_RESPONSE_MOVIE_STATE = "quiet_awake_movies"
 VISUAL_RESPONSE_BLANK_STATE = "quiet_awake_blank"
 DEFAULT_DENDRITE_RESPONSE_COHORT = "all"
 DENDRITE_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
+EVENT_DETECTION_METHODS = ("amplitude", "derivative")
+DEFAULT_EVENT_DETECTION_METHOD = "derivative"
+LEGACY_EVENT_DETECTION_METHOD = "amplitude"
 
 VISUAL_RESPONSE_CLASSIFIER_VERSION = 3
 VISUAL_RESPONSE_CLASSIFIER_METHOD = "movie_style_blank_vs_movies"
@@ -318,7 +321,7 @@ def current_step_prefix() -> str:
     return f"[{timestamp}]"
 def step_message(message: str) -> None:
     prefix = current_step_prefix()
-    print(f"{prefix} {message}", file=sys.stderr)
+    print(f"{prefix} {message}", file=sys.stderr, flush=True)
 @contextmanager
 def step_scope(name: str, index: Optional[int] = None, total: Optional[int] = None):
     frame = StepFrame(name=name, index=index, total=total, started_at=time.perf_counter())
@@ -1970,16 +1973,21 @@ def state_summary_metric_family(metric_name: str) -> str:
     return "dendrites" if metric_name in STATE_SUMMARY_DENDRITE_METRICS else "spines"
 
 
-def state_summary_figure_dir(root: Path) -> Path:
-    return figure_family_dir(root, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME, DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
+def state_summary_figure_dir(root: Path, state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME) -> Path:
+    return figure_family_dir(root, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME, state_group)
 
 
 def visual_response_figure_dir(root: Path) -> Path:
     return figure_family_dir(root, DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME)
 
 
-def state_summary_metric_output_dir(root: Path, metric_name: str, cohort_label: str = "all") -> Path:
-    return figure_nested_dir(root, state_summary_metric_family(metric_name), cohort_label)
+def state_summary_metric_output_dir(
+    root: Path,
+    metric_name: str,
+    cohort_label: str = "all",
+    state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
+) -> Path:
+    return figure_nested_dir(root, state_summary_metric_family(metric_name), state_group, cohort_label)
 
 
 def _state_summary_metric_panel_spec(metric_name: str) -> str:
@@ -2005,6 +2013,7 @@ def plot_state_summary_metric_figure(
     y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
     cohort_label: str = "all",
+    state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -2066,6 +2075,7 @@ def plot_state_summary_figure(
     y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
     cohort_label: str = "all",
+    state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -2130,7 +2140,12 @@ def plot_state_summary_figure(
             comparison_rows=panel_comparisons,
         )
         if panel_fig is not None:
-            metric_output_path = state_summary_metric_output_dir(fig_dir, metric_name, cohort_label) / f"{Path(output_name).stem}_{metric_name}.svg"
+            metric_output_path = state_summary_metric_output_dir(
+                fig_dir,
+                metric_name,
+                cohort_label,
+                state_group,
+            ) / f"{Path(output_name).stem}_{metric_name}.svg"
             save_figure(panel_fig, metric_output_path, extra_formats=())
             output_paths.append(metric_output_path)
     return str(output_paths[0]) if output_paths else None
@@ -2144,6 +2159,7 @@ def plot_state_summary_compartment_comparison_figure(
     y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
     cohort_label: str = "all",
+    state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -2180,7 +2196,12 @@ def plot_state_summary_compartment_comparison_figure(
             comparison_rows=panel_comparisons,
         )
         if panel_fig is not None:
-            metric_output_path = state_summary_metric_output_dir(fig_dir, metric_name, cohort_label) / f"{Path(output_name).stem}_{metric_name}.svg"
+            metric_output_path = state_summary_metric_output_dir(
+                fig_dir,
+                metric_name,
+                cohort_label,
+                state_group,
+            ) / f"{Path(output_name).stem}_{metric_name}.svg"
             save_figure(panel_fig, metric_output_path, extra_formats=())
             output_paths.append(metric_output_path)
     return str(output_paths[0]) if output_paths else None
@@ -2445,6 +2466,14 @@ def _build_event_detection_example_figure(
     event_info = event_info or {}
     dendrite_event_info = dendrite_event_info or {}
 
+    event_method = str(event_info.get("method") or "amplitude").strip().lower()
+    if event_method not in EVENT_DETECTION_METHODS:
+        event_method = "amplitude"
+    display_trace = np.diff(trace, prepend=np.nan) if event_method == "derivative" else trace
+    display_trace_label = f"First derivative of {trace_label}" if event_method == "derivative" else trace_label
+    dendrite_display_trace = None
+    dendrite_display_label = "Dendrite dF/F"
+
     threshold = as_float(event_info.get("threshold"))
     event_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
     dendrite_event_runs = [(int(start), int(end)) for start, end in (dendrite_event_info.get("event_runs") or [])]
@@ -2472,6 +2501,9 @@ def _build_event_detection_example_figure(
             dendrite_time = None
         elif dendrite_time.size != dendrite_trace.size:
             dendrite_time = np.arange(dendrite_trace.size, dtype=float)
+        if dendrite_trace is not None:
+            dendrite_display_trace = np.diff(dendrite_trace, prepend=np.nan) if event_method == "derivative" else dendrite_trace
+            dendrite_display_label = "First derivative of Dendrite dF/F" if event_method == "derivative" else "Dendrite dF/F"
     else:
         dendrite_trace = None
         dendrite_time = None
@@ -2507,7 +2539,7 @@ def _build_event_detection_example_figure(
             window_end = int(window["window_end"])
 
             window_time = time[window_start:window_end]
-            window_trace = trace[window_start:window_end]
+            window_trace = display_trace[window_start:window_end]
             window_valid = np.isfinite(window_time) & np.isfinite(window_trace)
 
             if not np.any(window_valid):
@@ -2544,11 +2576,11 @@ def _build_event_detection_example_figure(
                     window_trace[window_valid],
                     color=spine_color,
                     linewidth=1.1,
-                    label=trace_label,
+                    label=display_trace_label,
                 )
 
                 if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
-                    dend_window_trace = dendrite_trace[window_start:window_end]
+                    dend_window_trace = dendrite_display_trace[window_start:window_end]
                     dend_window_time = dendrite_time[window_start:window_end]
                     dend_valid = np.isfinite(dend_window_time) & np.isfinite(dend_window_trace)
 
@@ -2559,7 +2591,7 @@ def _build_event_detection_example_figure(
                             color=dendrite_color,
                             linewidth=1.0,
                             alpha=0.9,
-                            label="Dendrite dF/F",
+                            label=dendrite_display_label,
                         )
 
                 if np.isfinite(threshold):
@@ -2590,7 +2622,7 @@ def _build_event_detection_example_figure(
 
                 if window_runs:
                     for run in window_runs:
-                        coincident = any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs)
+                        coincident = any(int(run[0]) == int(dend_run[0]) for dend_run in dendrite_event_runs)
                         run_color = spine_event_color if coincident else noncoincident_color
                         run_label = "coincident" if coincident else "noncoincident"
 
@@ -2644,7 +2676,7 @@ def _build_event_detection_example_figure(
                 ax_spine.set_ylim(spine_y_min - spine_pad, spine_y_max + spine_pad)
 
                 if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
-                    dend_window_trace = dendrite_trace[window_start:window_end]
+                    dend_window_trace = dendrite_display_trace[window_start:window_end]
                     dend_valid = np.isfinite(dend_window_trace)
                     if np.any(dend_valid):
                         dend_y_min = float(np.nanmin(dend_window_trace[dend_valid]))
@@ -2653,7 +2685,7 @@ def _build_event_detection_example_figure(
                         ax_dendrite.set_ylim(dend_y_min - dend_pad, dend_y_max + dend_pad)
 
                 if col == 0:
-                    ax_spine.set_ylabel("Spine-specific dF/F", color=spine_color)
+                    ax_spine.set_ylabel(display_trace_label, color=spine_color)
                 else:
                     ax_spine.set_ylabel("")
                     ax_spine.tick_params(axis="y", labelleft=False)
@@ -2663,7 +2695,7 @@ def _build_event_detection_example_figure(
                 ax_spine.spines["right"].set_visible(False)
 
                 if col == 1:
-                    ax_dendrite.set_ylabel("Dendrite dF/F", color=dendrite_color)
+                    ax_dendrite.set_ylabel(dendrite_display_label, color=dendrite_color)
                 else:
                     ax_dendrite.set_ylabel("")
                     ax_dendrite.tick_params(axis="y", labelright=False)
@@ -2695,7 +2727,7 @@ def _build_event_detection_example_figure(
                     window_trace[window_valid],
                     color=trace_color,
                     linewidth=1.1,
-                    label=trace_label,
+                    label=display_trace_label,
                 )
 
                 if np.isfinite(threshold):
@@ -2741,7 +2773,7 @@ def _build_event_detection_example_figure(
                 ax.set_ylim(y_min - pad, y_max + pad)
 
                 if col == 0:
-                    ax.set_ylabel(trace_label)
+                    ax.set_ylabel(display_trace_label)
                 else:
                     ax.set_ylabel("")
                     ax.tick_params(axis="y", labelleft=False)
@@ -2749,7 +2781,7 @@ def _build_event_detection_example_figure(
                 ax.text(
                     0.98,
                     0.04,
-                    trace_label,
+                    display_trace_label,
                     transform=ax.transAxes,
                     ha="right",
                     va="bottom",
@@ -2761,7 +2793,7 @@ def _build_event_detection_example_figure(
             if trace_kind == "spine":
                 if window_runs:
                     any_coincident = any(
-                        any(event_run_overlaps(run, dend_run) for dend_run in dendrite_event_runs)
+                        any(int(run[0]) == int(dend_run[0]) for dend_run in dendrite_event_runs)
                         for run in window_runs
                     )
                     panel_label += " | coincident" if any_coincident else " | noncoincident"
@@ -3349,9 +3381,56 @@ def generate_analysis_figures(
                 eprint(f"[ALERT] Failed to create figure with state summary plotter ({scope_label}): {exc}")
                 continue
             if output_path:
-                record(output_path, plot_name=str(spec.get("name") or spec.get("output_name") or scope_label))
+                saved.append(output_path)
             else:
-                record(None, plot_name=str(spec.get("name") or spec.get("output_name") or scope_label))
+                step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or scope_label}")
+    all_state_labels = list(ALL_REQUESTED_STATES)
+    all_summary_fig_dir = state_summary_figure_dir(fig_dir, "all_states")
+    all_y_limits = state_summary_y_limits(cache, all_state_labels)
+    all_overview_results = build_state_summary_gallery_results(cache, all_state_labels, None)
+    all_basal_results = build_state_summary_gallery_results(cache, all_state_labels, "basal")
+    all_apical_results = build_state_summary_gallery_results(cache, all_state_labels, "apical")
+    all_state_output_path = plot_state_summary_figure(
+        all_overview_results,
+        all_summary_fig_dir,
+        output_name="state_summary_boxplots_all_states.svg",
+        title="All-state summary distributions - All compartments",
+        state_labels=all_state_labels,
+        y_limits=all_y_limits,
+        cohort_label="all",
+        state_group="all_states",
+    )
+    if all_state_output_path:
+        saved.append(all_state_output_path)
+    for compartment, compartment_results in [("basal", all_basal_results), ("apical", all_apical_results)]:
+        if compartment not in present_compartments:
+            continue
+        output_path = plot_state_summary_figure(
+            compartment_results,
+            all_summary_fig_dir,
+            output_name=f"state_summary_boxplots_{compartment}_all_states.svg",
+            title=f"All-state summary distributions - {gallery_compartment_title(compartment)}",
+            state_labels=all_state_labels,
+            y_limits=all_y_limits,
+            cohort_label="all",
+            state_group="all_states",
+        )
+        if output_path:
+            saved.append(output_path)
+    comparison_path = plot_state_summary_compartment_comparison_figure(
+        all_basal_results,
+        all_apical_results,
+        all_summary_fig_dir,
+        output_name="state_summary_boxplots_basal_vs_apical_all_states.svg",
+        title="All-state summary distributions - Basal vs apical",
+        state_labels=all_state_labels,
+        y_limits=state_summary_y_limits(cache, all_state_labels),
+        cohort_label="all",
+        state_group="all_states",
+    )
+    if comparison_path:
+        saved.append(comparison_path)
+
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,
@@ -6841,7 +6920,7 @@ def render_analysis_family_figures(
         step_message(f"plotter returned no output: {resolved_plot_name}")
     coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
     if family == "state":
-        summary_fig_dir = figure_family_dir(fig_dir, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME, DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME)
+        summary_fig_dir = state_summary_figure_dir(fig_dir)
         state_labels = selected_matrix_state_labels(results)
         basal_apical_state_labels = selected_basal_apical_state_labels(results)
         present_compartments = sorted_present_compartments(cache)
@@ -7608,26 +7687,23 @@ def robust_bisquare_fit(x: np.ndarray, y: np.ndarray, max_iter: int = 50, tol: f
         "n": int(x.size),
         "scale": float(scale),
     }
-def detect_events(
-    trace: np.ndarray,
-    min_consecutive_frames: int = 3,
-    sigma_factor: float = 3.0,
-    threshold: Optional[float] = None,
-) -> Dict[str, Any]:
+def _canonical_event_detection_method(method: Any) -> str:
+    text = str(method or "").strip().lower()
+    if text in EVENT_DETECTION_METHODS:
+        return text
+    raise ValueError(f"Unknown event detection method: {method}")
+
+
+def _event_detection_source_series(trace: np.ndarray, method: str) -> Tuple[np.ndarray, str]:
+    method = _canonical_event_detection_method(method)
     trace = np.asarray(trace, dtype=float)
-    if trace.size == 0:
-        return {
-            "noise_std": float("nan"),
-            "threshold": float("nan") if threshold is None else float(threshold),
-            "event_count": 0,
-            "event_runs": [],
-            "event_frequency_per_min": float("nan"),
-            "active": False,
-        }
-    centered = trace - np.nanmedian(trace)
-    noise_std = robust_sigma(centered)
-    active_threshold = float(threshold) if threshold is not None and np.isfinite(threshold) else float(sigma_factor * noise_std)
-    above = np.isfinite(trace) & (trace > active_threshold)
+    if method == "derivative":
+        return np.diff(trace), "first_derivative"
+    return trace, "trace"
+
+
+def _event_detection_runs(series: np.ndarray, threshold: float, min_consecutive_frames: int, *, index_offset: int = 0) -> List[Tuple[int, int]]:
+    above = np.isfinite(series) & (series > threshold)
     runs: List[Tuple[int, int]] = []
     start = None
     for idx, flag in enumerate(above):
@@ -7635,11 +7711,53 @@ def detect_events(
             start = idx
         elif not flag and start is not None:
             if idx - start >= min_consecutive_frames:
-                runs.append((start, idx))
+                runs.append((start + index_offset, idx + index_offset))
             start = None
-    if start is not None and trace.size - start >= min_consecutive_frames:
-        runs.append((start, trace.size))
+    if start is not None and series.size - start >= min_consecutive_frames:
+        runs.append((start + index_offset, series.size + index_offset))
+    return runs
+
+
+def detect_events(
+    trace: np.ndarray,
+    min_consecutive_frames: int = 3,
+    sigma_factor: float = 3.0,
+    threshold: Optional[float] = None,
+    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+) -> Dict[str, Any]:
+    method = _canonical_event_detection_method(method)
+    trace = np.asarray(trace, dtype=float)
+    source_series, source_series_name = _event_detection_source_series(trace, method)
+    trace_median = float(np.nanmedian(trace)) if trace.size else float("nan")
+    if source_series.size == 0:
+        return {
+            "method": method,
+            "source_series": source_series_name,
+            "trace_median": trace_median,
+            "baseline_median": trace_median if method == "amplitude" else float("nan"),
+            "noise_std": float("nan"),
+            "threshold": float("nan") if threshold is None else float(threshold),
+            "event_count": 0,
+            "event_runs": [],
+            "event_frequency_per_min": float("nan"),
+            "active": False,
+        }
+    if method == "amplitude":
+        centered = source_series - np.nanmedian(source_series)
+        baseline_median = float(np.nanmedian(source_series))
+        index_offset = 0
+    else:
+        centered = source_series - np.nanmedian(source_series)
+        baseline_median = float(np.nanmedian(source_series))
+        index_offset = 1
+    noise_std = robust_sigma(centered)
+    active_threshold = float(threshold) if threshold is not None and np.isfinite(threshold) else float(sigma_factor * noise_std)
+    runs = _event_detection_runs(source_series, active_threshold, min_consecutive_frames, index_offset=index_offset)
     return {
+        "method": method,
+        "source_series": source_series_name,
+        "trace_median": trace_median,
+        "baseline_median": baseline_median,
         "noise_std": float(noise_std),
         "threshold": float(active_threshold),
         "event_count": int(len(runs)),
@@ -7647,9 +7765,12 @@ def detect_events(
         "event_frequency_per_min": float("nan"),
         "active": bool(len(runs) >= 3),
     }
+
+
 def interval_mask(t: np.ndarray, start: float, end: float) -> np.ndarray:
     t = np.asarray(t, dtype=float)
     return (t >= start) & (t < end)
+
 
 def estimate_trace_duration_seconds(time: np.ndarray) -> float:
     try:
@@ -7667,6 +7788,7 @@ def estimate_trace_duration_seconds(time: np.ndarray) -> float:
     if not np.isfinite(step) or step <= 0:
         return float(finite.size)
     return float(max(finite[-1] - finite[0] + step, step))
+
 
 def event_frequency_per_minute(event_count: int, duration_seconds: float) -> float:
     if duration_seconds is None or not np.isfinite(duration_seconds) or duration_seconds <= 0:
@@ -7689,17 +7811,53 @@ def estimate_trace_step_seconds(time: np.ndarray) -> float:
     return float(np.nanmedian(valid_diffs))
 
 
-def build_event_info(trace: np.ndarray, time: Optional[np.ndarray] = None) -> Dict[str, Any]:
+def _build_event_detection_info(
+    trace: np.ndarray,
+    time: Optional[np.ndarray],
+    *,
+    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+    min_consecutive_frames: int = 3,
+    sigma_factor: float = 3.0,
+    threshold: Optional[float] = None,
+) -> Dict[str, Any]:
+    method = _canonical_event_detection_method(method)
     trace = np.asarray(trace, dtype=float)
-    event_info = detect_events(trace)
+    event_info = detect_events(
+        trace,
+        min_consecutive_frames=min_consecutive_frames,
+        sigma_factor=sigma_factor,
+        threshold=threshold,
+        method=method,
+    )
     fallback_time = np.arange(trace.size, dtype=float)
     duration_seconds = estimate_trace_duration_seconds(time if time is not None else fallback_time)
     if not np.isfinite(duration_seconds):
         duration_seconds = estimate_trace_duration_seconds(fallback_time)
     event_info["duration_seconds"] = float(duration_seconds)
     event_info["event_frequency_per_min"] = event_frequency_per_minute(int(event_info.get("event_count", 0) or 0), duration_seconds)
-    event_info["min_consecutive_frames"] = 3
-    event_info["sigma_factor"] = 3.0
+    event_info["min_consecutive_frames"] = int(min_consecutive_frames)
+    event_info["sigma_factor"] = float(sigma_factor)
+    event_info["method"] = method
+    return event_info
+
+
+def build_event_info(
+    trace: np.ndarray,
+    time: Optional[np.ndarray] = None,
+    *,
+    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+    include_all_methods: bool = True,
+) -> Dict[str, Any]:
+    trace = np.asarray(trace, dtype=float)
+    method = _canonical_event_detection_method(method)
+    event_info = _build_event_detection_info(trace, time, method=method)
+    event_info["primary_method"] = method
+    event_info["event_detection_methods"] = list(EVENT_DETECTION_METHODS)
+    if include_all_methods:
+        event_info["methods"] = {
+            method_name: _build_event_detection_info(trace, time, method=method_name)
+            for method_name in EVENT_DETECTION_METHODS
+        }
     return event_info
 
 
@@ -7708,20 +7866,47 @@ def build_masked_event_info(
     time: Optional[np.ndarray],
     mask: np.ndarray,
     *,
+    method: str = DEFAULT_EVENT_DETECTION_METHOD,
     threshold: Optional[float] = None,
     min_consecutive_frames: int = 3,
+    include_all_methods: bool = True,
 ) -> Dict[str, Any]:
     trace = np.asarray(trace, dtype=float)
     mask = np.asarray(mask, dtype=bool)
+    method = _canonical_event_detection_method(method)
     if trace.size == 0 or mask.size != trace.size or not np.any(mask):
-        event_info = detect_events(np.asarray([], dtype=float), min_consecutive_frames=min_consecutive_frames, threshold=threshold)
+        event_info = detect_events(
+            np.asarray([], dtype=float),
+            min_consecutive_frames=min_consecutive_frames,
+            threshold=threshold,
+            method=method,
+        )
         event_info["duration_seconds"] = float("nan")
         event_info["event_frequency_per_min"] = float("nan")
         event_info["min_consecutive_frames"] = int(min_consecutive_frames)
         event_info["sigma_factor"] = 3.0
+        event_info["primary_method"] = method
+        event_info["event_detection_methods"] = list(EVENT_DETECTION_METHODS)
+        if include_all_methods:
+            event_info["methods"] = {
+                method_name: _build_event_detection_info(
+                    np.asarray([], dtype=float),
+                    None,
+                    method=method_name,
+                    min_consecutive_frames=min_consecutive_frames,
+                    threshold=threshold,
+                )
+                for method_name in EVENT_DETECTION_METHODS
+            }
         return event_info
     masked_trace = trace[mask]
-    event_info = detect_events(masked_trace, min_consecutive_frames=min_consecutive_frames, threshold=threshold)
+    event_info = _build_event_detection_info(
+        masked_trace,
+        time,
+        method=method,
+        min_consecutive_frames=min_consecutive_frames,
+        threshold=threshold,
+    )
     step_seconds = estimate_trace_step_seconds(time if time is not None else np.arange(trace.size, dtype=float))
     if not np.isfinite(step_seconds) or step_seconds <= 0:
         duration_seconds = float(masked_trace.size)
@@ -7731,6 +7916,21 @@ def build_masked_event_info(
     event_info["event_frequency_per_min"] = event_frequency_per_minute(int(event_info.get("event_count", 0) or 0), duration_seconds)
     event_info["min_consecutive_frames"] = int(min_consecutive_frames)
     event_info["sigma_factor"] = 3.0
+    event_info["primary_method"] = method
+    event_info["event_detection_methods"] = list(EVENT_DETECTION_METHODS)
+    if include_all_methods:
+        event_info["methods"] = {
+            method_name: build_masked_event_info(
+                trace,
+                time,
+                mask,
+                method=method_name,
+                threshold=threshold,
+                min_consecutive_frames=min_consecutive_frames,
+                include_all_methods=False,
+            )
+            for method_name in EVENT_DETECTION_METHODS
+        }
     return event_info
 
 
@@ -7740,27 +7940,41 @@ def build_state_masked_event_info(
     mask: np.ndarray,
     full_event_info: Optional[Dict[str, Any]] = None,
     *,
+    method: Optional[str] = None,
     min_consecutive_frames: int = 3,
 ) -> Dict[str, Any]:
-    threshold = as_float((full_event_info or {}).get("threshold"))
+    source_info = full_event_info if isinstance(full_event_info, dict) else {}
+    selected_method = _canonical_event_detection_method(method or source_info.get("method") or source_info.get("primary_method") or DEFAULT_EVENT_DETECTION_METHOD)
+    threshold = as_float(source_info.get("threshold"))
     return build_masked_event_info(
         trace,
         time,
         mask,
+        method=selected_method,
         threshold=threshold,
         min_consecutive_frames=min_consecutive_frames,
     )
 
-def event_run_overlaps(run_a: Tuple[int, int], run_b: Tuple[int, int]) -> bool:
-    return bool(max(int(run_a[0]), int(run_b[0])) < min(int(run_a[1]), int(run_b[1])))
 
-def annotate_spine_event_info(spine_event_info: Dict[str, Any], dendrite_event_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def event_run_onsets_match(run_a: Tuple[int, int], run_b: Tuple[int, int]) -> bool:
+    return int(run_a[0]) == int(run_b[0])
+
+
+def event_run_overlaps(run_a: Tuple[int, int], run_b: Tuple[int, int]) -> bool:
+    return event_run_onsets_match(run_a, run_b)
+
+
+def _annotate_spine_event_info_for_method(
+    spine_event_info: Dict[str, Any],
+    dendrite_event_info: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     event_info = dict(spine_event_info or {})
     spine_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
     dend_runs = [(int(start), int(end)) for start, end in ((dendrite_event_info or {}).get("event_runs") or [])]
+    dend_onsets = {int(start) for start, _ in dend_runs}
     coincident_runs: List[Tuple[int, int]] = []
     for spine_run in spine_runs:
-        if any(event_run_overlaps(spine_run, dend_run) for dend_run in dend_runs):
+        if int(spine_run[0]) in dend_onsets:
             coincident_runs.append(spine_run)
     coincident_count = len(coincident_runs)
     event_count = int(event_info.get("event_count", len(spine_runs)) or 0)
@@ -7782,6 +7996,23 @@ def annotate_spine_event_info(spine_event_info: Dict[str, Any], dendrite_event_i
     event_info["coincident"] = bool(coincident_count > 0)
     if dendrite_event_info is not None:
         event_info["dendrite_event_info"] = dict(dendrite_event_info)
+    return event_info
+
+
+def annotate_spine_event_info(spine_event_info: Dict[str, Any], dendrite_event_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    event_info = _annotate_spine_event_info_for_method(spine_event_info, dendrite_event_info)
+    methods = event_info.get("methods")
+    if isinstance(methods, dict):
+        dend_methods = (dendrite_event_info or {}).get("methods") if isinstance(dendrite_event_info, dict) else {}
+        annotated_methods: Dict[str, Any] = {}
+        for method_name, method_spine_info in methods.items():
+            method_dendrite_info = None
+            if isinstance(dend_methods, dict):
+                method_dendrite_info = dend_methods.get(method_name)
+            if method_dendrite_info is None:
+                method_dendrite_info = dendrite_event_info
+            annotated_methods[method_name] = _annotate_spine_event_info_for_method(method_spine_info, method_dendrite_info)
+        event_info["methods"] = annotated_methods
     return event_info
 def extract_movie_feature_prefixes(columns: Sequence[str]) -> List[str]:
     prefixes = set()
@@ -8248,6 +8479,65 @@ def analysis_table_cache_path(cache_path: Path) -> Path:
 
 def analysis_results_cache_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}_analysis_results_cache.npz")
+
+
+FAMILY_RESULT_CACHE_STAGES = (
+    "visual_response",
+    "state",
+    "direct_trial_type_comparison",
+    "mixed_model",
+    "spine_coactivity",
+    "correlation",
+    "matrix_similarity",
+)
+
+
+def family_results_cache_dir(cache_path: Path) -> Path:
+    return cache_path.parent / "results"
+
+
+def family_results_cache_path(cache_path: Path, stage: str) -> Path:
+    return family_results_cache_dir(cache_path) / f"{cache_path.stem}_{stage}_results_cache.npz"
+
+
+def family_results_cache_index(cache_path: Path) -> Dict[str, str]:
+    return {stage: str(family_results_cache_path(cache_path, stage)) for stage in FAMILY_RESULT_CACHE_STAGES}
+
+
+def family_results_cache_stage_for_selection(selected_families: Optional[Sequence[str]]) -> str:
+    if isinstance(selected_families, str):
+        raw_values = [part.strip() for part in selected_families.split(",") if part.strip()]
+    else:
+        raw_values = [str(value).strip() for value in (selected_families or []) if str(value).strip()]
+    selected = set(raw_values)
+    if not selected:
+        selected = set(FAMILY_RESULT_CACHE_STAGES[1:])
+    if "basal_apical" in selected:
+        selected.add("state")
+    for stage in reversed(FAMILY_RESULT_CACHE_STAGES[1:]):
+        if stage in selected:
+            return stage
+    return FAMILY_RESULT_CACHE_STAGES[-1]
+
+
+def save_family_results_cache(
+    cache_path: Path,
+    stage: str,
+    results: Dict[str, Any],
+    *,
+    base_meta: Dict[str, Any],
+) -> Path:
+    family_meta = dict(base_meta)
+    family_meta["family_result_stage"] = stage
+    payload = {
+        "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
+        "meta": cacheable(family_meta),
+        "meta_hash": analysis_cache_meta_hash(family_meta),
+        "analysis_results": cacheable(analysis_results_cache_payload(results)),
+    }
+    path = family_results_cache_path(cache_path, stage)
+    save_npz_cache(path, payload)
+    return path
 
 
 def load_analysis_tables_cache(path: Path, *, rebuild: bool = False) -> Optional[Dict[str, Any]]:
@@ -13478,6 +13768,7 @@ def write_analysis_outputs(
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
     # Save figures first so the JSON report can include their exact file paths.
+    step_message("figure generation starting; this may take a while")
     with step_scope("figure generation"):
         figure_files = generate_analysis_figures(output_dir, results, cache, figure_root=figure_root)
     results["figure_files"] = figure_files
@@ -14880,22 +15171,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shared_shuffle_signature": str(shared_shuffle_cache.get("signature", "")) if isinstance(shared_shuffle_cache, dict) else "",
         "shared_shuffle_shuffle_n": int(shared_shuffle_cache.get("shuffle_n", shuffle_n)) if isinstance(shared_shuffle_cache, dict) else int(shuffle_n),
     }
+    plots_only_ignore_meta_keys = (
+        "shared_shuffle_signature",
+        "shared_shuffle_shuffle_n",
+        "dendrite_response_cohort",
+        "spine_visual_response_cohort",
+        "dendrite_visual_response_classifier_type",
+        "spine_visual_response_classifier_type",
+        "visual_response_classifier_method",
+        "visual_response_classifier_version",
+        "visual_response_covariate",
+        "visual_response_trial_types",
+        "visual_response_blank_trial_type",
+    ) if plots_only else None
+    family_result_stage = family_results_cache_stage_for_selection(config.get("analysis_families"))
+    family_results_cache_file = family_results_cache_path(cache_path, family_result_stage)
+    analysis_results_cache_file_for_run = analysis_results_cache_file
     analysis_results_cache, analysis_results_cache_status = load_analysis_results_cache(
             analysis_results_cache_file,
             expected_meta=analysis_results_meta,
-            ignore_meta_keys=(
-                "shared_shuffle_signature",
-                "shared_shuffle_shuffle_n",
-                "dendrite_response_cohort",
-                "spine_visual_response_cohort",
-                "dendrite_visual_response_classifier_type",
-                "spine_visual_response_classifier_type",
-                "visual_response_classifier_method",
-                "visual_response_classifier_version",
-                "visual_response_covariate",
-                "visual_response_trial_types",
-                "visual_response_blank_trial_type",
-            ) if plots_only else None,
+            ignore_meta_keys=plots_only_ignore_meta_keys,
             rebuild=False if plots_only else analysis_results_rebuild,
         )
     if plots_only and analysis_results_cache_status == "meta_mismatch":
@@ -14907,8 +15202,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             step_message("plots_only cache metadata differed, but the saved analysis-results cache is structurally valid; reusing it for figure regeneration")
             analysis_results_cache = fallback_cache
             analysis_results_cache_status = "ok"
-    if plots_only and analysis_results_cache_status == "missing":
-        raise SystemExit(f"plots_only requires an existing analysis results cache at {analysis_results_cache_file}")
+    if plots_only and analysis_results_cache_status != "ok":
+        family_expected_meta = dict(analysis_results_meta)
+        family_expected_meta["family_result_stage"] = family_result_stage
+        family_results_cache, family_results_cache_status = load_analysis_results_cache(
+            family_results_cache_file,
+            expected_meta=family_expected_meta,
+            ignore_meta_keys=plots_only_ignore_meta_keys,
+            rebuild=False,
+        )
+        if family_results_cache_status == "meta_mismatch":
+            try:
+                fallback_cache = load_npz_cache(family_results_cache_file)
+            except Exception:
+                fallback_cache = None
+            if isinstance(fallback_cache, dict) and fallback_cache.get("schema_version") == ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION and isinstance(fallback_cache.get("analysis_results"), dict):
+                step_message(f"plots_only family cache metadata differed, but the saved family-results cache is structurally valid; reusing it for figure regeneration: {family_results_cache_file}")
+                family_results_cache = fallback_cache
+                family_results_cache_status = "ok"
+        if family_results_cache_status == "ok":
+            step_message(f"plots_only family-results cache reused for figure regeneration: {family_results_cache_file}")
+            analysis_results_cache = family_results_cache
+            analysis_results_cache_status = "ok"
+            analysis_results_cache_file_for_run = family_results_cache_file
+    if plots_only and analysis_results_cache_status != "ok":
+        raise SystemExit(f"plots_only requires a valid compatible analysis results cache at {analysis_results_cache_file} or family cache at {family_results_cache_file}; status was {analysis_results_cache_status}")
     source_summary = summarize_cache(source_cache)
     analysis_summary = summarize_cache(analysis_cache)
     # Print a compact cache summary so users can see what was loaded before the full analysis runs.
@@ -14951,6 +15269,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
                 analysis_families=["spine_coactivity"],
+                analysis_results_meta=analysis_results_meta,
+                cache_path=cache_path,
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
@@ -14966,6 +15286,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
                 analysis_families=["mixed_model"],
+                analysis_results_meta=analysis_results_meta,
+                cache_path=cache_path,
             )
         else:
             results = run_cached_analysis(
@@ -14981,6 +15303,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
                 analysis_families=config.get("analysis_families"),
+                analysis_results_meta=analysis_results_meta,
+                cache_path=cache_path,
             )
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
@@ -15020,7 +15344,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "output_dir": str(output_dir),
         "cache_path": str(cache_path),
         "analysis_tables_cache_path": str(analysis_tables_cache_file),
-        "analysis_results_cache_path": str(analysis_results_cache_file),
+        "analysis_results_cache_path": str(analysis_results_cache_file_for_run),
     }
     results["analysis_state_selection"] = {
         "compare_states": selection_meta.get("compare_states"),
@@ -15038,6 +15362,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_trial_types_source": selection_meta.get("movie_trial_types_source"),
         "alerts": list(selection_meta.get("alerts", [])),
     }
+    results["family_result_cache_index"] = family_results_cache_index(cache_path)
+    # Save the analysis-results cache before figure generation so `plots_only` can still reuse it
+    # even if a later plot or poster step fails.
+    early_analysis_results_payload = {
+        "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
+        "meta": cacheable(analysis_results_meta),
+        "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
+        "analysis_results": cacheable(analysis_results_cache_payload(results)),
+    }
+    save_analysis_results_cache(analysis_results_cache_file, early_analysis_results_payload)
     with step_scope("analysis outputs"):
         written_artifacts = write_analysis_outputs(output_dir, results, analysis_cache, figure_root=figure_output_dir, plots_only=plots_only)
     with step_scope("poster figure generation"):

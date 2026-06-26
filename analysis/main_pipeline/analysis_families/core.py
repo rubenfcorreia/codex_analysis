@@ -24,8 +24,11 @@ from sleep_dendrite_spine_pipeline import (
     build_state_summary_gallery_results,
     build_visual_response_dendrite_summary_results,
     build_visual_response_spine_summary_results,
+    build_visual_response_spine_state_summary_results,
+    build_visual_response_spine_state_summary_results,
     classify_visual_responsive_dendrites,
     classify_visual_responsive_spines,
+    plot_state_summary_figure,
     plot_visual_response_boxplot_figure,
     plot_visual_response_entity_figure,
     cleanup_stale_state_coverage_artifacts,
@@ -45,6 +48,7 @@ from sleep_dendrite_spine_pipeline import (
     derive_date,
     pairwise_state_comparisons,
     render_analysis_family_figures,
+    save_family_results_cache,
     run_direct_trial_type_comparison,
     run_mixed_model_analysis,
     run_spine_coactivity_analysis,
@@ -58,6 +62,8 @@ from sleep_dendrite_spine_pipeline import (
     summarize_state_values,
     summarize_state_values_by_dendrite,
     summarize_cache,
+    selected_matrix_state_labels,
+    state_summary_figure_dir,
     state_summary_y_limits,
     visual_response_figure_output_dir,
     build_filtered_matrix_similarity_results,
@@ -166,7 +172,11 @@ def prepare_visual_response_cohorts(
     )
     spine_visual_response = classify_visual_responsive_spines(cache, source_cache=source_cache)
     step_message(f"visual response spines: {_visual_response_count_text(spine_visual_response)}")
-    spine_visual_response_state_summaries = build_visual_response_spine_summary_results(spine_visual_response)
+    spine_visual_response_state_summaries = build_visual_response_spine_state_summary_results(
+        cache,
+        state_comparison_states,
+        spine_visual_response,
+    )
     if output_dir is not None:
         fig_root = Path(figure_root) if figure_root is not None else (Path(output_dir) / "figures")
         fig_root.mkdir(parents=True, exist_ok=True)
@@ -305,63 +315,71 @@ def _render_visual_response_state_summary_figures(
     figure_root: Optional[Any] = None,
 ) -> None:
     fig_root = Path(figure_root) if figure_root is not None else (Path(output_dir) / "figures")
-
+    state_groups = (
+        ("selected_states", selected_matrix_state_labels(results)),
+        ("all_states", list(ALL_REQUESTED_STATES)),
+    )
     cohort_specs = (
-        (
-            "dendrites",
-            "dendrite_visual_response_state_summaries",
-            "state_dendrite_summaries",
-        ),
-        (
-            "spines",
-            "spine_visual_response_state_summaries",
-            "state_summaries",
-        ),
+        ("dendrites", "dendrite_visual_response", "global_dendrite_id", "dendrite"),
+        ("spines", "spine_visual_response", "global_spine_id", "spine"),
     )
 
-    for kind, source_key, target_key in cohort_specs:
-        cohort_summaries = results.get(source_key, {})
-        if not isinstance(cohort_summaries, dict) or not cohort_summaries:
-            step_message(f"no visual-response state summaries found for {kind}")
-            continue
-
-        for cohort in ("responsive", "nonresponsive"):
-            cohort_result = cohort_summaries.get(cohort)
-            if not isinstance(cohort_result, dict) or not cohort_result:
-                step_message(f"no visual-response state boxplots for {kind}/{cohort}: empty summary")
+    for state_group, state_labels in state_groups:
+        summary_root = state_summary_figure_dir(fig_root, state_group)
+        for kind, source_key, entity_id_key, entity_kind in cohort_specs:
+            response_summary = results.get(source_key, {})
+            if not isinstance(response_summary, dict) or not response_summary:
+                step_message(f"no visual-response state summaries found for {kind} ({state_group})")
                 continue
-
-            cohort_results = _base_results(cache)
-            cohort_results.update(results)
-
-            # Route cohort summaries into the normal state plotter inputs.
-            if target_key == "state_dendrite_summaries":
-                cohort_results["state_dendrite_summaries"] = cohort_result
-                cohort_results["state_summaries"] = {}
-            else:
-                cohort_results["state_summaries"] = cohort_result
-                cohort_results["state_dendrite_summaries"] = {}
-
-            # Keep comparisons empty unless you later compute cohort-specific comparisons.
-            # This prevents reusing global p-values on cohort-filtered plots.
-            cohort_results["state_comparisons"] = []
-            cohort_results["basal_apical_comparisons"] = []
-
-            cohort_figure_root = (
-                fig_root
-                / "visual_response_state"
-                / kind
-                / cohort
-            )
-
-            with step_scope(f"figure generation: state visual_response/{kind}/{cohort}"):
-                render_analysis_family_figures(
-                    output_dir,
-                    cohort_results,
-                    cache,
-                    "state",
-                    figure_root=cohort_figure_root,
+            rows = response_summary.get("rows", []) if isinstance(response_summary, dict) else []
+            if not isinstance(rows, list) or not rows:
+                step_message(f"no visual-response rows found for {kind} ({state_group})")
+                continue
+            for cohort in ("responsive", "nonresponsive"):
+                cohort_rows = [
+                    row
+                    for row in rows
+                    if isinstance(row, dict) and str(row.get("cohort") or "all") == cohort
+                ]
+                entity_ids = sorted(
+                    {
+                        str(row.get(entity_id_key))
+                        for row in cohort_rows
+                        if row.get(entity_id_key) is not None and str(row.get(entity_id_key)).strip()
+                    }
                 )
+                if not entity_ids:
+                    step_message(f"no visual-response state boxplots for {kind}/{cohort} ({state_group}): empty cohort")
+                    continue
+                if kind == "dendrites":
+                    cohort_results = build_state_summary_gallery_results(
+                        cache,
+                        state_labels,
+                        None,
+                        dendrite_ids_filter=entity_ids,
+                    )
+                else:
+                    cohort_results = build_state_summary_gallery_results(
+                        cache,
+                        state_labels,
+                        None,
+                        spine_ids_filter=entity_ids,
+                    )
+                if not isinstance(cohort_results, dict) or not cohort_results:
+                    step_message(f"no visual-response state boxplots for {kind}/{cohort} ({state_group}): empty summary")
+                    continue
+                output_path = plot_state_summary_figure(
+                    cohort_results,
+                    summary_root,
+                    output_name=f"visual_response_state_summary_{entity_kind}_{cohort}.svg",
+                    title=f"Visual response state summary - {kind.capitalize()} ({cohort}, {state_group})",
+                    state_labels=state_labels,
+                    y_limits=state_summary_y_limits(cache, state_labels),
+                    cohort_label=cohort,
+                    state_group=state_group,
+                )
+                if not output_path:
+                    step_message(f"no visual-response state boxplots for {kind}/{cohort} ({state_group}): plotter returned no output")
 
 def run_direct_trial_type_family(
     cache: Dict[str, Any],
@@ -644,6 +662,8 @@ def run_cached_analysis(
     mixed_model_contrast_p_source: str = "classical",
     spine_coactivity_abs_threshold: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
     analysis_families: Optional[Sequence[str]] = None,
+    analysis_results_meta: Optional[Dict[str, Any]] = None,
+    cache_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     selected_families = normalize_analysis_families(analysis_families)
     experiments = cache.get("experiments", {})
@@ -652,6 +672,7 @@ def run_cached_analysis(
     basal_apical_states = list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES)
     results = _base_results(cache)
     analysis_unit = str(cache.get("analysis_unit", "day"))
+    results["analysis_mode"] = ",".join(selected_families) if set(selected_families) != set(ANALYSIS_FAMILIES) else "full"
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
 
@@ -667,6 +688,8 @@ def run_cached_analysis(
                 figure_root=figure_root,
             )
         )
+    if cache_path is not None and analysis_results_meta is not None:
+        save_family_results_cache(cache_path, "visual_response", results, base_meta=analysis_results_meta)
 
     for key in (
         "dendrite_visual_response_state_summaries",
@@ -680,16 +703,28 @@ def run_cached_analysis(
         step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
     if "state" in selected_families:
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
     if "direct_trial_type_comparison" in selected_families:
         run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "direct_trial_type_comparison", results, base_meta=analysis_results_meta)
     if "mixed_model" in selected_families:
         run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "mixed_model", results, base_meta=analysis_results_meta)
     if "spine_coactivity" in selected_families:
         run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "spine_coactivity", results, base_meta=analysis_results_meta)
     if "correlation" in selected_families:
         run_correlation_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "correlation", results, base_meta=analysis_results_meta)
     if "matrix_similarity" in selected_families:
         run_matrix_similarity_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "matrix_similarity", results, base_meta=analysis_results_meta)
     if source_cache is not None:
         demo_truth = cache.get("demo_truth")
         if demo_truth:
@@ -717,5 +752,4 @@ def run_cached_analysis(
                         break
                 if observed is not None:
                     results["demo_validation"].append({"exp_id": exp_id, "global_spine_id": g_spine_id, "expected_alpha": float(expected["alpha"]), "observed_alpha": float(observed), "abs_error": float(abs(observed - expected["alpha"]))})
-    results["analysis_mode"] = ",".join(selected_families) if set(selected_families) != set(ANALYSIS_FAMILIES) else "full"
     return results

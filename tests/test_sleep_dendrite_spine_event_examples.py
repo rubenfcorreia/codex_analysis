@@ -38,7 +38,7 @@ def _make_event_info(time: np.ndarray, runs: list[tuple[int, int]], threshold: f
 def _build_cache() -> dict:
     time = np.arange(24, dtype=float)
     dendrite_runs = [(4, 7), (14, 17)]
-    spine_runs = [(4, 7), (10, 13)]
+    spine_runs = [(4, 7), (15, 18)]
     dendrite_trace = _make_trace(dendrite_runs, n=time.size, peak=1.0)
     spine_trace = _make_trace(spine_runs, n=time.size, peak=1.0)
     dendrite_event_info = _make_event_info(time, dendrite_runs)
@@ -166,7 +166,7 @@ def test_event_detection_example_figure_draws_annotated_contact_sheet() -> None:
 def test_spine_example_figure_includes_dendrite_context_and_coincidence_marker() -> None:
     time = np.arange(24, dtype=float)
     dendrite_runs = [(4, 7), (14, 17)]
-    spine_runs = [(4, 7), (10, 13)]
+    spine_runs = [(4, 7), (15, 18)]
     dendrite_trace = _make_trace(dendrite_runs, n=time.size, peak=1.0)
     spine_trace = _make_trace(spine_runs, n=time.size, peak=1.0)
     dendrite_event_info = _make_event_info(time, dendrite_runs)
@@ -194,11 +194,30 @@ def test_spine_example_figure_includes_dendrite_context_and_coincidence_marker()
     assert any(ax.get_ylabel() == "Dendrite dF/F" for ax in fig.axes)
     assert "#7a5195" in _all_line_colors(fig)
     assert "#4477aa" in _all_line_colors(fig)
+    assert spine_event_info["coincident_event_count"] == 1
+    assert spine_event_info["noncoincident_event_count"] == 1
+    assert spine_event_info["coincident_event_runs"] == [(4, 7)]
+    assert spine_event_info["noncoincident_event_runs"] == [(15, 18)]
     assert any("coincident" in text.lower() for text in _all_axis_text(fig))
     assert any("noncoincident" in text.lower() for text in _all_axis_text(fig))
 
     if pipeline.plt is not None:
         pipeline.plt.close(fig)
+
+def test_derivative_event_detection_flags_rising_edges_and_ignores_flat_trace() -> None:
+    trace = np.concatenate([np.zeros(10, dtype=float), np.full(20, 12.0, dtype=float)])
+
+    event_info = pipeline.detect_events(trace, method="derivative", min_consecutive_frames=1)
+    flat_info = pipeline.detect_events(np.zeros_like(trace), method="derivative", min_consecutive_frames=1)
+
+    assert event_info["method"] == "derivative"
+    assert event_info["source_series"] == "first_derivative"
+    assert event_info["event_count"] == 1
+    assert np.isfinite(event_info["threshold"])
+    assert event_info["threshold"] > 0
+    assert flat_info["event_count"] == 0
+    assert flat_info["threshold"] == 0
+
 
 
 def test_event_detection_gallery_writes_per_roi_outputs_and_skips_invalid(tmp_path: Path) -> None:

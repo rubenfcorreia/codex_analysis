@@ -10,12 +10,13 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 ### Preprocessing
 
 - The pipeline starts from the recorded `dF/F` traces and keeps them in raw form for the main preprocessing path.
-- Event detection is run directly on the trace being analyzed. The detector subtracts the trace median, estimates noise with a robust sigma around that centered trace, and counts threshold crossings that last for at least the minimum consecutive-frame window.
-- The baseline for the event detector is therefore the trace median, not a separate baseline fit or high-pass filtered series.
+- Event detection is run directly on the cached trace being analyzed. The primary detector uses the positive first derivative of `dF/F`, centers that derivative per trace, and counts threshold crossings that stay above `+3 SD` for at least the minimum consecutive-frame window.
+- The legacy amplitude detector is still cached in parallel under `event_info["methods"]["amplitude"]`; that branch uses the trace median as its baseline and a noise estimate from the raw trace itself.
 - Event frequency is computed from the event count and the analyzed duration, so state-masked event rates simply reuse the same detector on the masked trace segment.
 - Dendrite traces are used as raw dF/F for dendrite activity metrics.
 - Spine-specific activity is computed with robust regression by subtracting the fitted dendrite contribution from the spine trace.
 - In code terms, the backbone is `spine_specific = spine_trace - alpha * dendrite_trace`.
+- No high-pass filter is applied to the spine-specific signal before event detection or summary calculations.
 - The spine event and coactivity metrics use that residual when they need a spine-specific signal, while the raw trace is still retained for trace plots and other comparisons.
 - When the same-day SpinesGUI conversion is missing for an experiment, the pipeline falls back to a same-day experiment from the same animal.
 - Movie experiments keep their trial-type masks, and the state-comparison list is derived from `state_mode` plus the explicit `movie_trial_types` selection.
