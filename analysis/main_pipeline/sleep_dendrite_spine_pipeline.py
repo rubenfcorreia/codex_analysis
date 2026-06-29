@@ -90,6 +90,7 @@ DEFAULT_ANALYSIS_TABLES_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_tables
 DEFAULT_ANALYSIS_RESULTS_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_results.npz"
 DEFAULT_SHARED_SHUFFLE_CACHE_NAME = "sleep_dendrite_spine_cache_shuffle_cache.npz"
 CACHE_SCHEMA_VERSION = 3
+ANALYSIS_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 3
 ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 3
 SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 2
@@ -278,6 +279,7 @@ USER_EDITABLE_DEFAULTS = {
     "mixed_model_only": False,
     "mixed_model_contrast_p_source": "classical",
     "plots_only": False,
+    "plots_only_include_supporting_figures": False,
     "source_cache_rebuild": False,
     "analysis_tables_rebuild": False,
     "analysis_results_rebuild": False,
@@ -3231,6 +3233,29 @@ def generate_analysis_figures(
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     present_compartments = sorted_present_compartments(cache)
+    matrix_similarity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_anchor_compartments: Optional[List[Optional[str]]] = None
+
+    def cached_matrix_similarity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in matrix_similarity_results_cache:
+            matrix_similarity_results_cache[key] = build_filtered_matrix_similarity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return matrix_similarity_results_cache[key]
+
+    def cached_spine_coactivity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in spine_coactivity_results_cache:
+            spine_coactivity_results_cache[key] = build_filtered_spine_coactivity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return spine_coactivity_results_cache[key]
     with step_scope("figure prep: state summary y-limits"):
         y_limits = state_summary_y_limits(cache, state_labels)
     with step_scope("figure prep: state summary comparison y-limits"):
@@ -3455,7 +3480,7 @@ def generate_analysis_figures(
             total=len(matrix_review_compartments),
         ):
             try:
-                compartment_results = build_filtered_matrix_similarity_results(results, compartment)
+                compartment_results = cached_matrix_similarity_results(compartment)
                 output_path = plot_matrix_similarity_distribution(
                     compartment_results,
                     figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
@@ -3498,7 +3523,7 @@ def generate_analysis_figures(
             total=len(coactivity_compartments),
         ):
             try:
-                compartment_results = build_filtered_spine_coactivity_results(results, compartment)
+                compartment_results = cached_spine_coactivity_results(compartment)
                 distribution_path = plot_spine_coactivity_distribution_figure(
                     compartment_results,
                     spine_coactivity_figure_dir(coactivity_dir, "distribution"),
@@ -3551,14 +3576,16 @@ def generate_analysis_figures(
                 eprint(f"[ALERT] Failed to create figure with spine coactivity plotter ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
     anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-    for plot_idx, compartment in enumerate(spine_coactivity_anchor_state_compartments(anchor_rows), start=1):
+    if spine_coactivity_anchor_compartments is None:
+        spine_coactivity_anchor_compartments = spine_coactivity_anchor_state_compartments(anchor_rows)
+    for plot_idx, compartment in enumerate(spine_coactivity_anchor_compartments, start=1):
         with step_scope(
             f"figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
             index=plot_idx,
-            total=len(spine_coactivity_anchor_state_compartments(anchor_rows)),
+            total=len(spine_coactivity_anchor_compartments),
         ):
             try:
-                scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
+                scope_results = results if compartment is None else cached_spine_coactivity_results(compartment)
                 distribution_path = plot_spine_coactivity_distribution_figure(
                     scope_results,
                     spine_coactivity_figure_dir(coactivity_dir, "distribution"),
@@ -3601,143 +3628,146 @@ def generate_analysis_figures(
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity figures ({gallery_compartment_suffix(compartment)}): {exc}")
                 continue
-    matrix_rows = results.get("matrix_similarity", [])
-    compartments = matrix_similarity_output_compartments(matrix_rows)
-    for comp_idx, compartment in enumerate(compartments, start=1):
-        with step_scope(
-            f"matrix heatmaps: {gallery_compartment_title(compartment)}",
-            index=comp_idx,
-            total=len(compartments),
-        ):
-            try:
-                output_path = plot_matrix_similarity_heatmap(
-                    results,
-                    figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
-                    output_name=f"matrix_similarity_heatmap_{compartment}.svg",
-                    title=f"Matrix spine-spine similarity\n{gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                )
-            except Exception as exc:
-                eprint(f"[ALERT] Failed to create matrix heatmap for {compartment}: {exc}")
-                continue
-            if output_path:
-                saved.append(output_path)
-            matrix_results = build_filtered_matrix_similarity_results(results, compartment)
-            dendrite_ids = sorted(
-                {
-                    str(row.get("global_dendrite_id"))
-                    for row in matrix_results.get("matrix_similarity", [])
-                    if row.get("global_dendrite_id") is not None
-                }
-            )
-            for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
-                step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
-                dendrite_results = build_filtered_matrix_similarity_results(results, compartment, dendrite_id)
-                dendrite_rows = dendrite_results.get("matrix_similarity", [])
-                if not dendrite_rows:
-                    continue
-                representative = sorted(
-                    dendrite_rows,
-                    key=lambda row: (
-                        str(row.get("animal_id", "")),
-                        str(row.get("day_id", row.get("exp_id", ""))),
-                        str(row.get("state_a", "")),
-                        str(row.get("state_b", "")),
-                    ),
-                )[0]
-                dendrite_output_path = build_matrix_similarity_day_figure_path(
-                    fig_dir,
-                    representative.get("animal_id"),
-                    representative.get("day_id", representative.get("exp_id")),
-                    representative.get("compartment", compartment),
-                    dendrite_id,
-                )
+    with step_scope("figure family: matrix similarity review"):
+        matrix_rows = results.get("matrix_similarity", [])
+        compartments = matrix_similarity_output_compartments(matrix_rows)
+        for comp_idx, compartment in enumerate(compartments, start=1):
+            with step_scope(
+                f"matrix heatmaps: {gallery_compartment_title(compartment)}",
+                index=comp_idx,
+                total=len(compartments),
+            ):
                 try:
-                    dendrite_path = plot_matrix_similarity_heatmap(
-                        dendrite_results,
-                        dendrite_output_path.parent,
-                        output_name=dendrite_output_path.name,
-                        title=(
-                            "Matrix spine-spine similarity\n"
-                            f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
-                        ),
+                    output_path = plot_matrix_similarity_heatmap(
+                        results,
+                        figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
+                        output_name=f"matrix_similarity_heatmap_{compartment}.svg",
+                        title=f"Matrix spine-spine similarity\n{gallery_compartment_title(compartment)}",
                         compartment_filter=compartment,
-                        dendrite_filter=dendrite_id,
                     )
                 except Exception as exc:
-                    eprint(f"[ALERT] Failed to create matrix heatmap for {compartment} / {dendrite_id}: {exc}")
+                    eprint(f"[ALERT] Failed to create matrix heatmap for {compartment}: {exc}")
                     continue
-                if dendrite_path:
-                    saved.append(dendrite_path)
-    coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-    coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
-    for comp_idx, compartment in enumerate(coactivity_compartments, start=1):
-        with step_scope(
-            f"spine coactivity heatmaps: {gallery_compartment_title(compartment)}",
-            index=comp_idx,
-            total=len(coactivity_compartments),
-        ):
-            compartment_rows = filter_rows_by_spine_coactivity(coactivity_rows, compartment_filter=compartment)
-            dendrite_ids = sorted(
-                {
-                    str(row.get("global_dendrite_id"))
-                    for row in compartment_rows
-                    if row.get("global_dendrite_id") is not None and str(row.get("status")) == "ok"
-                }
-            )
-            for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
-                step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
-                dendrite_results = build_filtered_spine_coactivity_results(results, compartment, dendrite_id)
-                dendrite_rows = dendrite_results.get("spine_coactivity", {}).get("table_rows", [])
-                if not dendrite_rows:
-                    continue
-                representative = sorted(
-                    dendrite_rows,
-                    key=lambda row: (
-                        str(row.get("animal_id", "")),
-                        str(row.get("day_id", row.get("exp_id", ""))),
-                        str(row.get("state", "")),
-                        str(row.get("global_pair_id", "")),
-                    ),
-                )[0]
-                dendrite_output_path = build_spine_coactivity_day_figure_path(
-                    fig_dir,
-                    representative.get("animal_id"),
-                    representative.get("day_id", representative.get("exp_id")),
-                    representative.get("compartment", compartment),
-                    dendrite_id,
+                if output_path:
+                    saved.append(output_path)
+                matrix_results = cached_matrix_similarity_results(compartment)
+                dendrite_ids = sorted(
+                    {
+                        str(row.get("global_dendrite_id"))
+                        for row in matrix_results.get("matrix_similarity", [])
+                        if row.get("global_dendrite_id") is not None
+                    }
                 )
-                try:
-                    dendrite_path = plot_spine_coactivity_tendency_figure(
-                        dendrite_results,
-                        dendrite_output_path.parent,
-                        output_name=dendrite_output_path.name,
-                        title=(
-                            "Spine coactivity heatmap across states\n"
-                            f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
+                for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
+                    step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
+                    dendrite_results = cached_matrix_similarity_results(compartment, dendrite_id)
+                    dendrite_rows = dendrite_results.get("matrix_similarity", [])
+                    if not dendrite_rows:
+                        continue
+                    representative = sorted(
+                        dendrite_rows,
+                        key=lambda row: (
+                            str(row.get("animal_id", "")),
+                            str(row.get("day_id", row.get("exp_id", ""))),
+                            str(row.get("state_a", "")),
+                            str(row.get("state_b", "")),
                         ),
+                    )[0]
+                    dendrite_output_path = build_matrix_similarity_day_figure_path(
+                        fig_dir,
+                        representative.get("animal_id"),
+                        representative.get("day_id", representative.get("exp_id")),
+                        representative.get("compartment", compartment),
+                        dendrite_id,
                     )
-                except Exception as exc:
-                    eprint(f"[ALERT] Failed to create spine coactivity heatmap for {compartment} / {dendrite_id}: {exc}")
-                    continue
-                if dendrite_path:
-                    saved.append(dendrite_path)
+                    try:
+                        dendrite_path = plot_matrix_similarity_heatmap(
+                            dendrite_results,
+                            dendrite_output_path.parent,
+                            output_name=dendrite_output_path.name,
+                            title=(
+                                "Matrix spine-spine similarity\n"
+                                f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
+                            ),
+                            compartment_filter=compartment,
+                            dendrite_filter=dendrite_id,
+                        )
+                    except Exception as exc:
+                        eprint(f"[ALERT] Failed to create matrix heatmap for {compartment} / {dendrite_id}: {exc}")
+                        continue
+                    if dendrite_path:
+                        saved.append(dendrite_path)
+    with step_scope("figure family: spine coactivity review"):
+        coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+        coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
+        for comp_idx, compartment in enumerate(coactivity_compartments, start=1):
+            with step_scope(
+                f"spine coactivity heatmaps: {gallery_compartment_title(compartment)}",
+                index=comp_idx,
+                total=len(coactivity_compartments),
+            ):
+                compartment_rows = filter_rows_by_spine_coactivity(coactivity_rows, compartment_filter=compartment)
+                dendrite_ids = sorted(
+                    {
+                        str(row.get("global_dendrite_id"))
+                        for row in compartment_rows
+                        if row.get("global_dendrite_id") is not None and str(row.get("status")) == "ok"
+                    }
+                )
+                for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
+                    step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
+                    dendrite_results = cached_spine_coactivity_results(compartment, dendrite_id)
+                    dendrite_rows = dendrite_results.get("spine_coactivity", {}).get("table_rows", [])
+                    if not dendrite_rows:
+                        continue
+                    representative = sorted(
+                        dendrite_rows,
+                        key=lambda row: (
+                            str(row.get("animal_id", "")),
+                            str(row.get("day_id", row.get("exp_id", ""))),
+                            str(row.get("state", "")),
+                            str(row.get("global_pair_id", "")),
+                        ),
+                    )[0]
+                    dendrite_output_path = build_spine_coactivity_day_figure_path(
+                        fig_dir,
+                        representative.get("animal_id"),
+                        representative.get("day_id", representative.get("exp_id")),
+                        representative.get("compartment", compartment),
+                        dendrite_id,
+                    )
+                    try:
+                        dendrite_path = plot_spine_coactivity_tendency_figure(
+                            dendrite_results,
+                            dendrite_output_path.parent,
+                            output_name=dendrite_output_path.name,
+                            title=(
+                                "Spine coactivity heatmap across states\n"
+                                f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
+                            ),
+                        )
+                    except Exception as exc:
+                        eprint(f"[ALERT] Failed to create spine coactivity heatmap for {compartment} / {dendrite_id}: {exc}")
+                        continue
+                    if dendrite_path:
+                        saved.append(dendrite_path)
     with step_scope("cleanup ROI detail figures"):
         removed_detail_files = cleanup_roi_detail_figures(fig_dir)
         if removed_detail_files:
             step_message(f"removed {len(removed_detail_files)} stale ROI detail PNG/SVG files")
-    basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
-        results,
-        spine_coactivity_figure_dir(coactivity_dir, "basal_apical_distribution"),
-        output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
-        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
-        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-        coactive_only=True,
-    )
-    if basal_vs_apical_path:
-        saved.append(basal_vs_apical_path)
-    else:
-        step_message("plotter returned no output: spine_coactivity_basal_apical_distribution")
+    with step_scope("figure family: spine coactivity basal/apical distribution"):
+        basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+            results,
+            spine_coactivity_figure_dir(coactivity_dir, "basal_apical_distribution"),
+            output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+            title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        if basal_vs_apical_path:
+            saved.append(basal_vs_apical_path)
+        else:
+            step_message("plotter returned no output: spine_coactivity_basal_apical_distribution")
     return saved
 def generate_review_figures(
     output_dir: Path,
@@ -3754,6 +3784,13 @@ def generate_review_figures(
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     present_compartments = sorted_present_compartments(cache)
+    spine_coactivity_results_cache: Dict[Optional[str], Dict[str, Any]] = {}
+    spine_coactivity_anchor_compartments: Optional[List[Optional[str]]] = None
+
+    def cached_spine_coactivity_results(compartment: Optional[str]) -> Dict[str, Any]:
+        if compartment not in spine_coactivity_results_cache:
+            spine_coactivity_results_cache[compartment] = build_filtered_spine_coactivity_results(results, compartment)
+        return spine_coactivity_results_cache[compartment]
     with step_scope("review figure prep: state summary y-limits"):
         y_limits = state_summary_y_limits(cache, state_labels)
     with step_scope("review figure prep: state summary comparison y-limits"):
@@ -3844,176 +3881,181 @@ def generate_review_figures(
             if component_dir.exists():
                 for component_path in sorted(component_dir.glob("*.svg")):
                     saved.append(str(component_path))
-    direct_review_dir = figure_family_dir(review_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
-    direct_review_specs = [
-        {
-            "name": "direct_trial_type_distribution",
-            "output_name": "review_direct_trial_type_distribution.svg",
-            "title": "Review: Direct trial-type comparison - video means by state",
-            "plotter": plot_direct_trial_type_distribution_figure,
-        },
-        {
-            "name": "direct_trial_type_state_comparison",
-            "output_name": "review_direct_trial_type_state_comparison.svg",
-            "title": "Review: Direct trial-type comparison - state pair scatter",
-            "plotter": plot_direct_trial_type_state_comparison_figure,
-        },
-    ]
-    for plot_idx, spec in enumerate(direct_review_specs, start=1):
-        with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(direct_review_specs)):
-            try:
-                output_path = spec["plotter"](
-                    results,
-                    direct_review_dir,
-                    output_name=spec["output_name"],
-                    title=spec["title"],
-                )
-            except Exception as exc:
-                eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
-                continue
-            if not output_path:
-                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
-                continue
-            output_path_obj = Path(output_path)
-            saved.append(str(output_path_obj))
-            svg_path = output_path_obj.with_suffix(".svg")
-            if svg_path.exists():
-                saved.append(str(svg_path))
-    mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
-    mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
-    for plot_idx, spec in enumerate(mixed_model_specs, start=1):
-        with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_specs)):
-            try:
-                kwargs = {
-                    "results": results,
-                    "fig_dir": figure_nested_dir(mixed_model_review_dir, str(spec.get("scope") or "all_state")),
-                    "output_name": spec["output_name"],
-                    "title": spec["title"],
-                    "model_key": str(spec.get("model_key", "mixed_model")),
-                }
-                if spec.get("accepts_scope") and spec.get("scope") is not None:
-                    kwargs["scope"] = str(spec["scope"])
-                output_path = spec["plotter"](**kwargs)
-            except Exception as exc:
-                eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
-                continue
-            if not output_path:
-                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
-                continue
-            output_path_obj = Path(output_path)
-            saved.append(str(output_path_obj))
-            svg_path = output_path_obj.with_suffix(".svg")
-            if svg_path.exists():
-                saved.append(str(svg_path))
-    coactivity_review_dir = review_dir
-    coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-    coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
-    for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
-        with step_scope(
-            f"review figure plotter: spine_coactivity[{gallery_compartment_suffix(compartment)}]",
-            index=plot_idx,
-            total=len(coactivity_compartments),
-        ):
-            try:
-                compartment_results = build_filtered_spine_coactivity_results(results, compartment)
-                distribution_path = plot_spine_coactivity_distribution_figure(
-                    compartment_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
-                    output_name=f"review_spine_coactivity_distribution_{gallery_compartment_suffix(compartment)}.svg",
-                    title=f"Review: Spine coactivity distributions - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                )
-                if distribution_path:
-                    saved.append(distribution_path)
-                heatmap_path = plot_spine_coactivity_tendency_figure(
-                    compartment_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
-                    output_name=f"review_spine_coactivity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
-                    title=f"Review: Derived state-state similarity of coactivity coefficient - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                )
-                if heatmap_path:
-                    saved.append(heatmap_path)
-                pair_heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
-                    compartment_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
-                    output_name=f"review_spine_coactivity_pair_state_heatmap_{gallery_compartment_suffix(compartment)}.svg",
-                    title=f"Review: Spine coactivity coefficient across selected states - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                )
-                if pair_heatmap_path:
-                    saved.append(pair_heatmap_path)
-                else:
-                    step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
-                pair_summary_path = plot_spine_coactivity_pair_state_summary_figure(
-                    compartment_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
-                    output_name=f"review_spine_coactivity_pair_state_summary_{gallery_compartment_suffix(compartment)}.svg",
-                    title=f"Review: Spine coactivity state-change summary - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                )
-                if pair_summary_path:
-                    saved.append(pair_summary_path)
-                else:
-                    step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
-            except Exception as exc:
-                eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
-    anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-    for plot_idx, compartment in enumerate(spine_coactivity_anchor_state_compartments(anchor_rows), start=1):
-        with step_scope(
-            f"review figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
-            index=plot_idx,
-            total=len(spine_coactivity_anchor_state_compartments(anchor_rows)),
-        ):
-            try:
-                scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
-                distribution_path = plot_spine_coactivity_distribution_figure(
-                    scope_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
-                    output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
-                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                    state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-                    coactive_only=True,
-                )
-                if distribution_path:
-                    saved.append(distribution_path)
-                heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
-                    scope_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
-                    output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
-                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-                    coactive_only=True,
-                )
-                if heatmap_path:
-                    saved.append(heatmap_path)
-                summary_path = plot_spine_coactivity_pair_state_summary_figure(
-                    scope_results,
-                    spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
-                    output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
-                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
-                    compartment_filter=compartment,
-                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-                    coactive_only=True,
-                )
-                if summary_path:
-                    saved.append(summary_path)
-                else:
-                    step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
-            except Exception as exc:
-                eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity review figures ({gallery_compartment_suffix(compartment)}): {exc}")
-    basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
-        results,
-        spine_coactivity_figure_dir(coactivity_review_dir, "basal_apical_distribution"),
-        output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
-        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
-        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-        coactive_only=True,
-    )
-    if basal_vs_apical_path:
-        saved.append(basal_vs_apical_path)
+    with step_scope("review family: direct trial-type figures"):
+        direct_review_dir = figure_family_dir(review_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+        direct_review_specs = [
+            {
+                "name": "direct_trial_type_distribution",
+                "output_name": "review_direct_trial_type_distribution.svg",
+                "title": "Review: Direct trial-type comparison - video means by state",
+                "plotter": plot_direct_trial_type_distribution_figure,
+            },
+            {
+                "name": "direct_trial_type_state_comparison",
+                "output_name": "review_direct_trial_type_state_comparison.svg",
+                "title": "Review: Direct trial-type comparison - state pair scatter",
+                "plotter": plot_direct_trial_type_state_comparison_figure,
+            },
+        ]
+        for plot_idx, spec in enumerate(direct_review_specs, start=1):
+            with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(direct_review_specs)):
+                try:
+                    output_path = spec["plotter"](
+                        results,
+                        direct_review_dir,
+                        output_name=spec["output_name"],
+                        title=spec["title"],
+                    )
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
+                    continue
+                if not output_path:
+                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    continue
+                output_path_obj = Path(output_path)
+                saved.append(str(output_path_obj))
+                svg_path = output_path_obj.with_suffix(".svg")
+                if svg_path.exists():
+                    saved.append(str(svg_path))
+    with step_scope("review family: mixed model figures"):
+        mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
+        for plot_idx, spec in enumerate(mixed_model_specs, start=1):
+            with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_specs)):
+                try:
+                    kwargs = {
+                        "results": results,
+                        "fig_dir": figure_nested_dir(mixed_model_review_dir, str(spec.get("scope") or "all_state")),
+                        "output_name": spec["output_name"],
+                        "title": spec["title"],
+                        "model_key": str(spec.get("model_key", "mixed_model")),
+                    }
+                    if spec.get("accepts_scope") and spec.get("scope") is not None:
+                        kwargs["scope"] = str(spec["scope"])
+                    output_path = spec["plotter"](**kwargs)
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
+                    continue
+                if not output_path:
+                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    continue
+                output_path_obj = Path(output_path)
+                saved.append(str(output_path_obj))
+                svg_path = output_path_obj.with_suffix(".svg")
+                if svg_path.exists():
+                    saved.append(str(svg_path))
+    with step_scope("review family: spine coactivity figures"):
+        coactivity_review_dir = review_dir
+        coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+        coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
+        for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
+            with step_scope(
+                f"review figure plotter: spine_coactivity[{gallery_compartment_suffix(compartment)}]",
+                index=plot_idx,
+                total=len(coactivity_compartments),
+            ):
+                try:
+                    compartment_results = cached_spine_coactivity_results(compartment)
+                    distribution_path = plot_spine_coactivity_distribution_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
+                        output_name=f"review_spine_coactivity_distribution_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Spine coactivity distributions - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if distribution_path:
+                        saved.append(distribution_path)
+                    heatmap_path = plot_spine_coactivity_tendency_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
+                        output_name=f"review_spine_coactivity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Derived state-state similarity of coactivity coefficient - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if heatmap_path:
+                        saved.append(heatmap_path)
+                    pair_heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
+                        output_name=f"review_spine_coactivity_pair_state_heatmap_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Spine coactivity coefficient across selected states - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if pair_heatmap_path:
+                        saved.append(pair_heatmap_path)
+                    else:
+                        step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
+                    pair_summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
+                        output_name=f"review_spine_coactivity_pair_state_summary_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Spine coactivity state-change summary - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if pair_summary_path:
+                        saved.append(pair_summary_path)
+                    else:
+                        step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
+        anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+        if spine_coactivity_anchor_compartments is None:
+            spine_coactivity_anchor_compartments = spine_coactivity_anchor_state_compartments(anchor_rows)
+        for plot_idx, compartment in enumerate(spine_coactivity_anchor_compartments, start=1):
+            with step_scope(
+                f"review figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
+                index=plot_idx,
+                total=len(spine_coactivity_anchor_compartments),
+            ):
+                try:
+                    scope_results = results if compartment is None else cached_spine_coactivity_results(compartment)
+                    distribution_path = plot_spine_coactivity_distribution_figure(
+                        scope_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
+                        output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                        coactive_only=True,
+                    )
+                    if distribution_path:
+                        saved.append(distribution_path)
+                    heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                        scope_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
+                        output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                        coactive_only=True,
+                    )
+                    if heatmap_path:
+                        saved.append(heatmap_path)
+                    summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                        scope_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
+                        output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                        coactive_only=True,
+                    )
+                    if summary_path:
+                        saved.append(summary_path)
+                    else:
+                        step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity review figures ({gallery_compartment_suffix(compartment)}): {exc}")
+        basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+            results,
+            spine_coactivity_figure_dir(coactivity_review_dir, "basal_apical_distribution"),
+            output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+            title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        if basal_vs_apical_path:
+            saved.append(basal_vs_apical_path)
     return saved
 def gallery_compartment_suffix(compartment: Optional[str]) -> str:
     return "all" if compartment is None else str(compartment)
@@ -4661,6 +4703,80 @@ def plot_visual_response_entity_figure(
     output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}_blank_vs_movies.svg"
     save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
     return str(output_path)
+
+
+def render_cached_visual_response_figures(
+    output_dir: Path,
+    results: Dict[str, Any],
+    cache: Dict[str, Any],
+    source_cache: Optional[Dict[str, Any]],
+    *,
+    figure_root: Optional[Path] = None,
+) -> List[str]:
+    if plt is None:
+        return []
+    fig_root = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
+    cut_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    saved: List[str] = []
+    visual_response_specs = [
+        ("dendrites", "dendrite_visual_response", "dendrite"),
+        ("spines", "spine_visual_response", "spine"),
+    ]
+    with step_scope("visual response figures"):
+        for kind, source_key, entity_kind in visual_response_specs:
+            response_summary = results.get(source_key, {})
+            if not isinstance(response_summary, dict) or not response_summary:
+                step_message(f"no cached visual-response data for {kind}")
+                continue
+            rows = response_summary.get("rows", []) if isinstance(response_summary, dict) else []
+            if not isinstance(rows, list) or not rows:
+                step_message(f"no cached visual-response rows for {kind}")
+                continue
+            for cohort in DENDRITE_RESPONSE_COHORTS:
+                cohort_rows = rows if cohort == "all" else [row for row in rows if isinstance(row, dict) and str(row.get("cohort") or "all") == cohort]
+                cohort_dir = visual_response_figure_output_dir(fig_root, kind, cohort)
+                entity_dir = cohort_dir / "entities"
+                finite_pairs = 0
+                saved_entities = 0
+                for row in cohort_rows:
+                    blank_value = row.get("mean_blank")
+                    visual_value = row.get("mean_visual")
+                    if blank_value is None or visual_value is None:
+                        continue
+                    try:
+                        blank_value = float(blank_value)
+                        visual_value = float(visual_value)
+                    except Exception:
+                        continue
+                    if np.isfinite(blank_value) and np.isfinite(visual_value):
+                        finite_pairs += 1
+                    output_path = plot_visual_response_entity_figure(
+                        row,
+                        cache,
+                        source_cache,
+                        entity_dir,
+                        kind=entity_kind,
+                        cohort_label=cohort,
+                        cut_cache=cut_cache,
+                    )
+                    if output_path:
+                        saved.append(output_path)
+                        saved_entities += 1
+                output_path = plot_visual_response_boxplot_figure(
+                    response_summary,
+                    cohort_dir,
+                    output_name="visual_response_blank_vs_movies.svg",
+                    title=f"{kind[:-1].capitalize()} visual response - {cohort.capitalize()}",
+                    cohort_label=cohort,
+                    kind=kind,
+                )
+                if output_path:
+                    saved.append(output_path)
+                else:
+                    step_message(
+                        f"no visual response figure for {kind}/{cohort} (rows={len(cohort_rows)}, finite_pairs={finite_pairs}, entities={saved_entities})"
+                    )
+    return saved
 
 
 def build_filtered_correlation_results(results: Dict[str, Any], compartment_filter: Optional[str] = None) -> Dict[str, Any]:
@@ -6919,6 +7035,30 @@ def render_analysis_family_figures(
             pass
         step_message(f"plotter returned no output: {resolved_plot_name}")
     coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    matrix_similarity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_anchor_compartments: Optional[List[Optional[str]]] = None
+
+    def cached_matrix_similarity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in matrix_similarity_results_cache:
+            matrix_similarity_results_cache[key] = build_filtered_matrix_similarity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return matrix_similarity_results_cache[key]
+
+    def cached_spine_coactivity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in spine_coactivity_results_cache:
+            spine_coactivity_results_cache[key] = build_filtered_spine_coactivity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return spine_coactivity_results_cache[key]
+
     if family == "state":
         summary_fig_dir = state_summary_figure_dir(fig_dir)
         state_labels = selected_matrix_state_labels(results)
@@ -7056,7 +7196,7 @@ def render_analysis_family_figures(
                 total=len(compartments),
             ):
                 try:
-                    compartment_results = build_filtered_matrix_similarity_results(results, compartment)
+                    compartment_results = cached_matrix_similarity_results(compartment)
                     record(
                         plot_matrix_similarity_distribution(
                             compartment_results,
@@ -7070,7 +7210,7 @@ def render_analysis_family_figures(
                 except Exception as exc:
                     eprint(f"[ALERT] Failed to create matrix distribution for {compartment}: {exc}")
                     continue
-                matrix_results = build_filtered_matrix_similarity_results(results, compartment)
+                matrix_results = cached_matrix_similarity_results(compartment)
                 dendrite_ids = sorted(
                     {
                         str(row.get("global_dendrite_id"))
@@ -7080,7 +7220,7 @@ def render_analysis_family_figures(
                 )
                 for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
                     step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
-                    dendrite_results = build_filtered_matrix_similarity_results(results, compartment, dendrite_id)
+                    dendrite_results = cached_matrix_similarity_results(compartment, dendrite_id)
                     dendrite_rows = dendrite_results.get("matrix_similarity", [])
                     if not dendrite_rows:
                         continue
@@ -7147,7 +7287,7 @@ def render_analysis_family_figures(
                 total=len(coactivity_compartments),
             ):
                 try:
-                    compartment_results = build_filtered_spine_coactivity_results(results, compartment)
+                    compartment_results = cached_spine_coactivity_results(compartment)
                     record(
                         plot_spine_coactivity_distribution_figure(
                             compartment_results,
@@ -7296,6 +7436,29 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         files.append(rel_path)
     present_compartments = sorted_present_compartments(cache)
     gallery_compartments = [None] + [comp for comp in ["basal", "apical"] if comp in present_compartments]
+    matrix_similarity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_anchor_compartments: Optional[List[Optional[str]]] = None
+
+    def cached_matrix_similarity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in matrix_similarity_results_cache:
+            matrix_similarity_results_cache[key] = build_filtered_matrix_similarity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return matrix_similarity_results_cache[key]
+
+    def cached_spine_coactivity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in spine_coactivity_results_cache:
+            spine_coactivity_results_cache[key] = build_filtered_spine_coactivity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return spine_coactivity_results_cache[key]
     # Loading / QC checkpoint examples.
     for compartment in gallery_compartments:
         path = plot_loading_qc_checkpoint(
@@ -7422,7 +7585,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     # Spine-spine matrix similarity checkpoint examples.
     matrix_rows = results.get("matrix_similarity", [])
     for compartment in matrix_similarity_output_compartments(matrix_rows):
-        matrix_results = build_filtered_matrix_similarity_results(results, compartment)
+        matrix_results = cached_matrix_similarity_results(compartment)
         heatmap_path = plot_matrix_similarity_heatmap(
             matrix_results,
             figure_family_dir(gallery_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
@@ -7453,7 +7616,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         )
     dist_results = results.get("matrix_similarity", [])
     for compartment in matrix_similarity_output_compartments(dist_results):
-        compartment_results = build_filtered_matrix_similarity_results(results, compartment)
+        compartment_results = cached_matrix_similarity_results(compartment)
         dist_path = plot_matrix_similarity_distribution(
             compartment_results,
             figure_family_dir(gallery_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
@@ -7473,8 +7636,10 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         )
     # Quiet-awake-movies spine coactivity checkpoint examples.
     anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-    for compartment in spine_coactivity_anchor_state_compartments(anchor_rows):
-        scope_results = results if compartment is None else build_filtered_spine_coactivity_results(results, compartment)
+    if spine_coactivity_anchor_compartments is None:
+        spine_coactivity_anchor_compartments = spine_coactivity_anchor_state_compartments(anchor_rows)
+    for compartment in spine_coactivity_anchor_compartments:
+        scope_results = results if compartment is None else cached_spine_coactivity_results(compartment)
         distribution_path = plot_spine_coactivity_distribution_figure(
             scope_results,
             spine_coactivity_figure_dir(gallery_dir, "distribution"),
@@ -8481,6 +8646,10 @@ def analysis_results_cache_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}_analysis_results_cache.npz")
 
 
+def analysis_day_cache_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}_analysis_day_cache.npz")
+
+
 FAMILY_RESULT_CACHE_STAGES = (
     "visual_response",
     "state",
@@ -8538,6 +8707,80 @@ def save_family_results_cache(
     path = family_results_cache_path(cache_path, stage)
     save_npz_cache(path, payload)
     return path
+
+
+def source_cache_signature(source_cache: Dict[str, Any]) -> str:
+    return stable_hash(
+        {
+            str(exp_id): str(exp_meta.get("source_signature", ""))
+            for exp_id, exp_meta in sorted(dict(source_cache.get("experiments", {})).items())
+        }
+    )
+
+
+def analysis_day_cache_meta(
+    source_cache: Dict[str, Any],
+    analysis_tables: Optional[Dict[str, Any]] = None,
+    *,
+    analysis_unit: str = "day",
+) -> Dict[str, Any]:
+    source_config = dict(source_cache.get("config", {}))
+    return {
+        "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
+        "analysis_unit": str(analysis_unit),
+        "source_config_hash": str(source_cache.get("config_hash", "")),
+        "source_signature": source_cache_signature(source_cache),
+        "analysis_config_hash": stable_hash({**source_config, "analysis_unit": str(analysis_unit)}),
+        "analysis_tables_signature": analysis_cache_meta_hash(analysis_tables or {}),
+    }
+
+
+def save_analysis_day_cache(path: Path, analysis_cache: Dict[str, Any], *, meta: Dict[str, Any]) -> Path:
+    payload = {
+        "schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
+        "meta": cacheable(meta),
+        "meta_hash": analysis_cache_meta_hash(meta),
+        "analysis_cache": cacheable(analysis_cache),
+    }
+    save_npz_cache(path, payload)
+    return path
+
+
+def load_analysis_day_cache(
+    path: Path,
+    *,
+    expected_meta: Optional[Dict[str, Any]] = None,
+    rebuild: bool = False,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    if rebuild:
+        step_message("rebuilding day-pooled analysis cache")
+        return None, "rebuild_requested"
+    if not path.exists():
+        step_message("rebuilding day-pooled analysis cache")
+        return None, "missing"
+    try:
+        cache = load_npz_cache(path)
+    except Exception:
+        step_message("rebuilding day-pooled analysis cache")
+        return None, "unreadable"
+    if not isinstance(cache, dict):
+        step_message("rebuilding day-pooled analysis cache")
+        return None, "invalid_payload"
+    if cache.get("schema_version") != ANALYSIS_CACHE_SCHEMA_VERSION:
+        step_message("rebuilding day-pooled analysis cache")
+        return None, "schema_mismatch"
+    if expected_meta is not None:
+        saved_meta = cache.get("meta", {})
+        if not isinstance(saved_meta, dict):
+            saved_meta = {}
+        if analysis_cache_meta_hash(saved_meta) != analysis_cache_meta_hash(expected_meta):
+            step_message("day-pooled analysis cache meta mismatch")
+            return None, "meta_mismatch"
+    analysis_cache = cache.get("analysis_cache")
+    if not isinstance(analysis_cache, dict):
+        step_message("rebuilding day-pooled analysis cache")
+        return None, "invalid_analysis_cache"
+    return cache, "ok"
 
 
 def load_analysis_tables_cache(path: Path, *, rebuild: bool = False) -> Optional[Dict[str, Any]]:
@@ -9696,6 +9939,13 @@ def build_day_pooled_cache(cache: Dict[str, Any], analysis_tables: Optional[Dict
                     if raw_spine_record.get("observations", {}).get(exp_id, {}).get("alpha") is not None
                 ]
                 current_spine_record["local_ids"][day_id] = dict(raw_spine_record.get("local_ids", {}).get(representative_exp_id, {}))
+                spine_specific = stitch_day_series(
+                    exp_ids,
+                    cache,
+                    lambda exp_id, exp_meta, raw_spine_record=raw_spine_record: raw_spine_record.get("observations", {}).get(exp_id, {}).get("spine_specific"),
+                    fill_value=np.nan,
+                    dtype=float,
+                ).astype(np.float32, copy=False)
                 current_spine_record["observations"][day_id] = {
                     "exp_id": day_id,
                     "day_id": day_id,
@@ -9717,22 +9967,10 @@ def build_day_pooled_cache(cache: Dict[str, Any], analysis_tables: Optional[Dict
                         dtype=float,
                     ).astype(np.float32, copy=False),
                     "alpha": float(np.nanmean(alpha_values)) if alpha_values else float("nan"),
-                    "spine_specific": stitch_day_series(
-                        exp_ids,
-                        cache,
-                        lambda exp_id, exp_meta, raw_spine_record=raw_spine_record: raw_spine_record.get("observations", {}).get(exp_id, {}).get("spine_specific"),
-                        fill_value=np.nan,
-                        dtype=float,
-                    ).astype(np.float32, copy=False),
+                    "spine_specific": spine_specific,
                     "event_info": annotate_spine_event_info(
                         build_event_info(
-                            stitch_day_series(
-                                exp_ids,
-                                cache,
-                                lambda exp_id, exp_meta, raw_spine_record=raw_spine_record: raw_spine_record.get("observations", {}).get(exp_id, {}).get("spine_specific"),
-                                fill_value=np.nan,
-                                dtype=float,
-                            ).astype(np.float32, copy=False),
+                            spine_specific,
                             day_time,
                         ),
                         dendrite_event_info,
@@ -13762,36 +14000,66 @@ def write_analysis_outputs(
     results: Dict[str, Any],
     cache: Dict[str, Any],
     *,
+    source_cache: Optional[Dict[str, Any]] = None,
     figure_root: Optional[Path] = None,
     plots_only: bool = False,
+    include_supporting_figures: bool = True,
 ) -> List[str]:
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
-    # Save figures first so the JSON report can include their exact file paths.
-    step_message("figure generation starting; this may take a while")
-    with step_scope("figure generation"):
-        figure_files = generate_analysis_figures(output_dir, results, cache, figure_root=figure_root)
-    results["figure_files"] = figure_files
-    for path in figure_files:
-        written_artifacts.append(report_relative_path(path, output_dir))
-    with step_scope("review figure generation"):
-        review_figure_files = generate_review_figures(output_dir, results, cache, review_root=DEFAULT_REVIEW_FIGURES_DIR)
-    results["review_figure_files"] = review_figure_files
-    for path in review_figure_files:
-        written_artifacts.append(report_relative_path(path, ROOT_DIR))
-    with step_scope("checkpoint gallery"):
-        checkpoint_gallery = generate_checkpoint_gallery(output_dir, cache, results)
-    results["checkpoint_gallery"] = checkpoint_gallery
-    if checkpoint_gallery.get("manifest_path"):
-        written_artifacts.append(report_relative_path(checkpoint_gallery["manifest_path"], output_dir))
-    for path in checkpoint_gallery.get("files", []):
-        written_artifacts.append(report_relative_path(path, output_dir))
-    fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
-    with step_scope("event detection example gallery"):
-        event_example_gallery = generate_event_detection_example_gallery(cache, fig_dir)
-    results["event_example_gallery"] = event_example_gallery
-    for path in event_example_gallery:
-        written_artifacts.append(report_relative_path(path, output_dir))
+    if include_supporting_figures:
+        # Save figures first so the JSON report can include their exact file paths.
+        step_message("figure generation starting; this may take a while")
+        with step_scope("figure generation"):
+            figure_files = generate_analysis_figures(output_dir, results, cache, figure_root=figure_root)
+        results["figure_files"] = figure_files
+        for path in figure_files:
+            written_artifacts.append(report_relative_path(path, output_dir))
+        step_message("figure generation complete: %d file(s)" % len(figure_files))
+        step_message("review figure generation starting")
+        with step_scope("review figure generation"):
+            review_figure_files = generate_review_figures(output_dir, results, cache, review_root=DEFAULT_REVIEW_FIGURES_DIR)
+        results["review_figure_files"] = review_figure_files
+        for path in review_figure_files:
+            written_artifacts.append(report_relative_path(path, ROOT_DIR))
+        step_message("review figure generation complete: %d file(s)" % len(review_figure_files))
+        if source_cache is not None:
+            step_message("visual response figure generation starting")
+            with step_scope("visual response figure generation"):
+                visual_response_figure_files = render_cached_visual_response_figures(
+                    output_dir,
+                    results,
+                    cache,
+                    source_cache,
+                    figure_root=figure_root,
+                )
+            results["visual_response_figure_files"] = visual_response_figure_files
+            for path in visual_response_figure_files:
+                written_artifacts.append(report_relative_path(path, output_dir))
+            step_message("visual response figure generation complete: %d file(s)" % len(visual_response_figure_files))
+        step_message("checkpoint gallery generation starting")
+        with step_scope("checkpoint gallery"):
+            checkpoint_gallery = generate_checkpoint_gallery(output_dir, cache, results)
+        results["checkpoint_gallery"] = checkpoint_gallery
+        if checkpoint_gallery.get("manifest_path"):
+            written_artifacts.append(report_relative_path(checkpoint_gallery["manifest_path"], output_dir))
+        for path in checkpoint_gallery.get("files", []):
+            written_artifacts.append(report_relative_path(path, output_dir))
+        step_message("checkpoint gallery complete: %d file(s)" % len(checkpoint_gallery.get("files", [])))
+        fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
+        step_message("event detection example gallery starting")
+        with step_scope("event detection example gallery"):
+            event_example_gallery = generate_event_detection_example_gallery(cache, fig_dir)
+        results["event_example_gallery"] = event_example_gallery
+        for path in event_example_gallery:
+            written_artifacts.append(report_relative_path(path, output_dir))
+        step_message("event detection example gallery complete: %d file(s)" % len(event_example_gallery))
+    else:
+        results["figure_files"] = []
+        results["review_figure_files"] = []
+        results["visual_response_figure_files"] = []
+        results["checkpoint_gallery"] = {}
+        results["event_example_gallery"] = []
     if plots_only:
         return list(dict.fromkeys(written_artifacts))
     json_path = output_dir / "analysis_results.json"
@@ -15106,11 +15374,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         save_npz_cache(cache_path, source_cache)
     with step_scope("analysis-table cache load"):
         analysis_tables_cache = load_analysis_tables_cache(analysis_tables_cache_file, rebuild=analysis_tables_rebuild)
+    analysis_tables = analysis_tables_cache.get("analysis_tables", {}) if isinstance(analysis_tables_cache, dict) else None
+    analysis_cache_file = analysis_day_cache_path(cache_path)
+    analysis_cache_expected_meta = analysis_day_cache_meta(source_cache, analysis_tables, analysis_unit="day")
+    analysis_cache_rebuild = bool(rebuild or source_cache_rebuild or analysis_tables_rebuild)
     with step_scope("day-level cache construction"):
-        analysis_cache = build_day_pooled_cache(
-            source_cache,
-            analysis_tables=analysis_tables_cache.get("analysis_tables", {}) if isinstance(analysis_tables_cache, dict) else None,
+        analysis_cache_payload, analysis_cache_status = load_analysis_day_cache(
+            analysis_cache_file,
+            expected_meta=analysis_cache_expected_meta,
+            rebuild=analysis_cache_rebuild,
         )
+        if analysis_cache_status == "ok" and isinstance(analysis_cache_payload, dict):
+            analysis_cache = dict(analysis_cache_payload.get("analysis_cache", {}))
+        else:
+            analysis_cache = build_day_pooled_cache(
+                source_cache,
+                analysis_tables=analysis_tables,
+            )
+            save_analysis_day_cache(analysis_cache_file, analysis_cache, meta=analysis_cache_expected_meta)
     shuffle_state_labels = list(
         dict.fromkeys(
             [state for state in (state_comparison_states or []) + (basal_apical_states or []) if state]
@@ -15133,15 +15414,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         shared_shuffle_cache = None
     from analysis_families.core import run_cached_analysis
-    source_signature = stable_hash(
-        {
-            str(exp_id): str(exp_meta.get("source_signature", ""))
-            for exp_id, exp_meta in sorted(dict(source_cache.get("experiments", {})).items())
-        }
-    )
+    source_signature = source_cache_signature(source_cache)
     analysis_tables_signature = analysis_cache_meta_hash(analysis_cache.get("analysis_tables", {}))
     analysis_results_meta = {
         "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
+        "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
         "source_config_hash": str(source_cache.get("config_hash", "")),
         "source_signature": source_signature,
         "analysis_config_hash": str(analysis_cache.get("config_hash", "")),
@@ -15373,7 +15650,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     save_analysis_results_cache(analysis_results_cache_file, early_analysis_results_payload)
     with step_scope("analysis outputs"):
-        written_artifacts = write_analysis_outputs(output_dir, results, analysis_cache, figure_root=figure_output_dir, plots_only=plots_only)
+        written_artifacts = write_analysis_outputs(
+            output_dir,
+            results,
+            analysis_cache,
+            source_cache=source_cache,
+            figure_root=figure_output_dir,
+            plots_only=plots_only,
+            include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)),
+        )
     with step_scope("poster figure generation"):
         written_artifacts.extend(
             write_poster_ready_figures(

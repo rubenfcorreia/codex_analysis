@@ -36,7 +36,8 @@
     "mixed_model_contrast_p_source": "Choose the p-value source for mixed-model contrasts. Use classical for the model p-values or shuffle to restore shuffle-refit p-values. This controls both mixed-model branches and the optional spine-coactivity mixed model.",
     "demo": "Set true to run the synthetic demo repository generation before analysis. This matches the --demo CLI flag.",
     "mixed_model_only": "Set true to skip the state/correlation/matrix analyses and run only the main mixed-model branch from the cache. This matches the --mixed-model-only CLI flag.",
-    "plots_only": "Set true to reuse the saved source/results caches and only generate figures, without rewriting CSV, JSON, or the analysis report. This matches a plots-only plotting pass."
+    "plots_only": "Set true to reuse the saved source/results caches and only generate figures, without rewriting CSV, JSON, or the analysis report. This matches a plots-only plotting pass.",
+    "plots_only_include_supporting_figures": "Set true to keep the slower supporting figure galleries during plots-only. Leave false for the fastest poster-focused pass."
   },
   "user_id": "rubencorreia",
   "repo_base": "/home/rubencorreia/data/Repository",
@@ -113,7 +114,7 @@
   "cpu_thread_limit": 1,
   "high_pass_hz": null,
   "locomotion_threshold": 0.05,
-  "rebuild": true,
+  "rebuild": false,
   "source_cache_rebuild": false,
   "analysis_tables_rebuild": false,
   "analysis_results_rebuild": false,
@@ -135,5 +136,6 @@
   "demo": false,
   "mixed_model_contrast_p_source": "classical",
   "mixed_model_only": false,
-  "plots_only": false
+  "plots_only": true,
+  "plots_only_include_supporting_figures": false
 }

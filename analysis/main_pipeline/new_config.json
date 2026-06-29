@@ -80,5 +80,6 @@
   "mixed_model_only": false,
   "demo": false,
   "plots_only": false,
+  "plots_only_include_supporting_figures": false,
   "analysis_families": ["state", "mixed_model"]
 }
