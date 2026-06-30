@@ -11,8 +11,8 @@
     "state_mode": "Primary state-selection mode. Use all, quiet, or active. For sleep experiments this controls the sleep labels to compare; for movie experiments it is combined with movie_trial_types to build the comparison list.",
     "movie_trial_types": "Explicit movie trial types to include in the comparison list. Use any subset of blank, grating, zebra, and movies. Movie experiments should set this field explicitly.",
     "compare_states": "Legacy compatibility shortcut. It can still fill both state_comparison_states and basal_apical_states, but the explicit state_mode and movie_trial_types fields are the primary path now.",
-    "state_comparison_states": "Optional manual override for the pairwise state comparison analysis. If you set this, it wins over the derived state_mode/movie_trial_types selection.",
-    "basal_apical_states": "Optional list of state labels for the basal-vs-apical analysis. The default set is the movie states, but sleep labels such as quiet_awake, nrem, and rem are also allowed when matching sleep expIDs exist in the cache.",
+    "state_comparison_states": "Optional manual override for the pairwise state comparison analysis. If you set this, it wins over the derived state_mode/movie_trial_types selection and is also reused for basal_apical_states when that field is omitted.",
+    "basal_apical_states": "Optional list of state labels for the basal-vs-apical analysis. If you omit it, the pipeline reuses state_comparison_states; sleep labels such as quiet_awake, nrem, and rem are also allowed when matching sleep expIDs exist in the cache.",
     "channel": "Suite2p channel index to load from recordings/s2p_ch<channel>.pickle. Use 0 unless your data were saved on another channel.",
     "shuffle_n": "Number of shuffle iterations used for null distributions in the statistical tests. Increase for more stable p-values.",
     "cpu_thread_limit": "Maximum number of native CPU threads allowed for NumPy, SciPy, and statsmodels work. Set 1 to keep the pipeline single-threaded.",
@@ -41,36 +41,37 @@
     "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name."
   },
   "comparison_presets": {
-    "all_state_comparisons": {
-      "state_mode": "all",
-      "movie_trial_types": [
-        "blank",
-        "movies"
+    "movies_state_comparisons": {
+      "state_comparison_states": [
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies"
       ]
     },
-    "selected_state_comparisons": {
-      "state_mode": "quiet",
-      "movie_trial_types": [
-        "blank",
-        "movies"
+    "blank_state_comparisons": {
+      "state_comparison_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank"
       ]
     },
-    "sleep_movie_blank_focus": {
-      "state_mode": "quiet",
-      "movie_trial_types": [
-        "blank",
-        "movies"
-      ],
+    "quiet_vs_sleep_blank_movies": {
       "state_comparison_states": [
         "quiet_awake_blank",
         "quiet_awake_movies",
         "quiet_awake",
         "nrem",
         "rem"
-      ],
-      "basal_apical_states": [
+      ]
+    },
+    "all_requested_comparisons": {
+      "state_comparison_states": [
         "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
         "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
         "quiet_awake",
         "nrem",
         "rem"
@@ -139,14 +140,7 @@
     "2026-05-19_01_ESRC028",
     "2026-05-21_01_ESRC028"
   ],
-  "state_mode": "quiet",
-  "movie_trial_types": [
-    "blank",
-    "movies"
-  ],
-  "compare_states": null,
   "state_comparison_states": null,
-  "basal_apical_states": null,
   "channel": 0,
   "shuffle_n": 200,
   "cpu_thread_limit": 1,

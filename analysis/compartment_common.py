@@ -144,6 +144,11 @@ except Exception:  # pragma: no cover - local fallback for portability
 
 
     def resolve_analysis_state_selections(config: Mapping[str, Any], mode: str) -> List[str]:
+        explicit_state_comparison = config.get("state_comparison_states")
+        explicit_basal_apical = config.get("basal_apical_states")
+        if explicit_state_comparison is not None or explicit_basal_apical is not None:
+            states = explicit_state_comparison if explicit_state_comparison is not None else explicit_basal_apical
+            return [str(state) for state in states if str(state)]
         if mode == "movie":
             return list(config.get("movie_states", ["running", "still", "all"]))
         return list(config.get("sleep_states", ["nrem", "rem", "wake", "all"]))
@@ -310,19 +315,36 @@ class LoadedBundle:
 
     @property
     def t(self) -> np.ndarray:
+        cached = self.__dict__.get("_cached_t")
+        if cached is not None:
+            return cached
         for key in ("t", "time", "timestamps"):
             if key in self.data:
-                return np.asarray(self.data[key], dtype=float)
-        return np.array([], dtype=float)
+                value = np.asarray(self.data[key], dtype=float)
+                self.__dict__["_cached_t"] = value
+                return value
+        value = np.array([], dtype=float)
+        self.__dict__["_cached_t"] = value
+        return value
 
     def matrix(self, preferred_keys: Sequence[str] = ("dF", "Spikes", "F")) -> np.ndarray:
+        cache = self.__dict__.setdefault("_cached_matrices", {})
+        cache_key = tuple(preferred_keys)
+        if cache_key in cache:
+            return cache[cache_key]
         for key in preferred_keys:
             if key in self.data:
-                return as_2d_matrix(self.data[key])
+                value = as_2d_matrix(self.data[key])
+                cache[cache_key] = value
+                return value
         numeric = [value for value in self.data.values() if isinstance(value, (list, tuple, np.ndarray))]
         if numeric:
-            return as_2d_matrix(numeric[0])
-        return np.zeros((0, self.t.size), dtype=float)
+            value = as_2d_matrix(numeric[0])
+            cache[cache_key] = value
+            return value
+        value = np.zeros((0, self.t.size), dtype=float)
+        cache[cache_key] = value
+        return value
 
     def roi_ids(self) -> List[int]:
         for key in ("OriginalSuite2pCellIDs", "cell_ids", "roi_ids"):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
@@ -28,6 +29,8 @@ from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_act
 from analysis.compartment_common import resolve_analysis_state_selections
 
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CONFIG = {
     "analysis_name": "soma_bouton_pipeline",
     "result_root": "results/soma_bouton_pipeline",
@@ -43,9 +46,28 @@ DEFAULT_CONFIG = {
     "comparison_presets": None,
     "comparison_preset_name": None,
     "comparison_preset_names": None,
-    "state_mode": "both",
-    "movie_states": ["running", "still", "all"],
-    "sleep_states": ["nrem", "rem", "wake", "all"],
+    "state_comparison_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
+        "quiet_awake",
+        "nrem",
+        "rem",
+    ],
+    "basal_apical_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
+        "quiet_awake",
+        "nrem",
+        "rem",
+    ],
 }
 
 
@@ -80,6 +102,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         return []
 
     base_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+    logger.info("Running %d soma/bouton preset(s)", len(presets))
     manifests: List[Dict[str, Any]] = []
     for preset_name, overrides in presets:
         preset_config = copy.deepcopy(dict(config))
@@ -88,7 +111,9 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config.pop("comparison_preset_name", None)
         preset_config.update(overrides)
         preset_config["comparison_preset_name"] = preset_name
-        preset_config["result_root"] = str(base_result_root / safe_filename_component(preset_name))
+        preset_result_root = base_result_root / safe_filename_component(preset_name)
+        preset_config["result_root"] = str(preset_result_root)
+        logger.info("Preset %s -> result_root=%s", preset_name, preset_result_root)
         manifests.append(run_pipeline(preset_config))
     return manifests
 
@@ -109,6 +134,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     result_root = Path(config["result_root"])
     if not result_root.is_absolute():
         result_root = repo_root / result_root
+    preset_name = str(config.get("comparison_preset_name") or "default")
+    logger.info("Running preset %s -> result_root=%s", preset_name, result_root)
     ensure_dir(result_root)
     ensure_dir(result_root / "csv")
     ensure_dir(result_root / "figures")
@@ -180,7 +207,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     manifest = {
         "config": dict(config),
-        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "comparison_preset_name": preset_name,
         "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "state_modes": state_modes,
         "day_groups": day_groups,
@@ -193,10 +220,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "output_root": str(result_root),
     }
     write_json_file(result_root / "summary" / "manifest.json", manifest)
+    logger.info("Completed preset %s with %d experiments", preset_name, len(experiment_rows))
     return manifest
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Compare soma (ch2) and bouton (ch1) activity across movie and sleep states.")
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
