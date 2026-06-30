@@ -37,7 +37,45 @@
     "demo": "Set true to run the synthetic demo repository generation before analysis. This matches the --demo CLI flag.",
     "mixed_model_only": "Set true to skip the state/correlation/matrix analyses and run only the main mixed-model branch from the cache. This matches the --mixed-model-only CLI flag.",
     "plots_only": "Set true to reuse the saved source/results caches and only generate figures, without rewriting CSV, JSON, or the analysis report. This matches a plots-only plotting pass.",
-    "plots_only_include_supporting_figures": "Set true to keep the slower supporting figure galleries during plots-only. Leave false for the fastest poster-focused pass."
+    "plots_only_include_supporting_figures": "Set true to keep the slower supporting figure galleries during plots-only. Leave false for the fastest poster-focused pass.",
+    "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name."
+  },
+  "comparison_presets": {
+    "all_state_comparisons": {
+      "state_mode": "all",
+      "movie_trial_types": [
+        "blank",
+        "movies"
+      ]
+    },
+    "selected_state_comparisons": {
+      "state_mode": "quiet",
+      "movie_trial_types": [
+        "blank",
+        "movies"
+      ]
+    },
+    "sleep_movie_blank_focus": {
+      "state_mode": "quiet",
+      "movie_trial_types": [
+        "blank",
+        "movies"
+      ],
+      "state_comparison_states": [
+        "quiet_awake_blank",
+        "quiet_awake_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ],
+      "basal_apical_states": [
+        "quiet_awake_blank",
+        "quiet_awake_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ]
+    }
   },
   "user_id": "rubencorreia",
   "repo_base": "/home/rubencorreia/data/Repository",
@@ -114,7 +152,7 @@
   "cpu_thread_limit": 1,
   "high_pass_hz": null,
   "locomotion_threshold": 0.05,
-  "rebuild": false,
+  "rebuild": true,
   "source_cache_rebuild": false,
   "analysis_tables_rebuild": false,
   "analysis_results_rebuild": false,
@@ -136,6 +174,6 @@
   "demo": false,
   "mixed_model_contrast_p_source": "classical",
   "mixed_model_only": false,
-  "plots_only": true,
+  "plots_only": false,
   "plots_only_include_supporting_figures": false
 }

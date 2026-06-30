@@ -8,6 +8,7 @@
     "2026-05-13_03_ESRC033"
   ],
   "result_root": "results/soma_bouton_pipeline",
+  "cache_root": "results/soma_bouton_pipeline/cache",
   "soma_channel": 1,
   "bouton_channel": 0,
   "lag_window_s": 2.0,
@@ -25,6 +26,46 @@
     "rem",
     "wake",
     "all"
-  ]
+  ],
+  "comparison_preset_name": null,
+  "comparison_preset_names": null,
+  "comparison_presets": {
+    "all_state_comparisons": {
+      "state_mode": "both",
+      "movie_states": [
+        "running",
+        "still",
+        "all"
+      ],
+      "sleep_states": [
+        "nrem",
+        "rem",
+        "wake",
+        "all"
+      ]
+    },
+    "selected_state_comparisons": {
+      "state_mode": "both",
+      "movie_states": [
+        "running",
+        "still"
+      ],
+      "sleep_states": [
+        "nrem",
+        "rem",
+        "wake"
+      ]
+    },
+    "sleep_focus_comparisons": {
+      "state_mode": "sleep",
+      "movie_states": [
+        "running",
+        "still"
+      ],
+      "sleep_states": [
+        "nrem",
+        "rem"
+      ]
+    }
+  }
 }
-

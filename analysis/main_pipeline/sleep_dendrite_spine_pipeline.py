@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -11,7 +12,9 @@ import pickle
 import random
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import warnings
 import textwrap
@@ -21,7 +24,13 @@ from contextlib import contextmanager
 from itertools import combinations
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import numpy as np
+from analysis.compartment_common import filter_comparison_presets, normalize_comparison_presets
 from scipy import signal, stats
 try:
     from statsmodels.regression.mixed_linear_model import MixedLM
@@ -292,8 +301,10 @@ USER_EDITABLE_DEFAULTS = {
     "rebuild": False,
     "cache_path": None,
     "analysis_tables_cache_path": None,
+    "analysis_run_cache_path": None,
     "analysis_results_cache_path": None,
     "output_dir": str(DEFAULT_RESULTS_DIR),
+    "comparison_presets": None,
     "demo_spec": None,
 }
 def eprint(*args: Any) -> None:
@@ -15134,6 +15145,53 @@ def merge_cli_config(cli: Dict[str, Any], file_config: Dict[str, Any]) -> Dict[s
             continue
         merged[key] = value
     return merged
+def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
+    preset_names = parse_list_argument(config.get("comparison_preset_names"))
+    presets = normalize_comparison_presets(config.get("comparison_presets"))
+    presets = filter_comparison_presets(presets, preset_names)
+    if not presets:
+        return False
+
+    base_output_dir = Path(config.get("output_dir") or DEFAULT_RESULTS_DIR)
+    shared_cache_path = Path(config.get("cache_path") or (base_output_dir / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME))
+    shared_cache_path = shared_cache_path.resolve()
+
+    child_script = Path(__file__).resolve()
+    for preset_name, overrides in presets:
+        safe_name = safe_filename_component(preset_name)
+        preset_output_dir = base_output_dir / safe_name
+        preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
+        preset_config = copy.deepcopy(config)
+        preset_config.pop("comparison_presets", None)
+        preset_config.pop("comparison_preset_names", None)
+        preset_config.pop("comparison_preset_name", None)
+        preset_config.pop("analysis_run_cache_path", None)
+        preset_config.pop("analysis_results_cache_path", None)
+        preset_config.update(overrides)
+        preset_config["comparison_preset_name"] = preset_name
+        preset_config["output_dir"] = str(preset_output_dir)
+        preset_config["cache_path"] = str(shared_cache_path)
+        preset_config["analysis_run_cache_path"] = str(preset_cache_path)
+        preset_config["analysis_results_cache_path"] = None
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            temp_config_path = Path(handle.name)
+            json.dump(preset_config, handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+        try:
+            print(
+                f"[comparison preset] {preset_name} -> {preset_output_dir}",
+                file=sys.stderr,
+            )
+            subprocess.run([sys.executable, str(child_script), "--config", str(temp_config_path)], check=True)
+        finally:
+            try:
+                temp_config_path.unlink()
+            except FileNotFoundError:
+                pass
+    return True
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fresh sleep dendrite/spine analysis pipeline")
     parser.add_argument("--config", type=Path, help="Optional JSON configuration file")
@@ -15195,6 +15253,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="Optional subset of analysis families to select: state, basal_apical, direct_trial_type_comparison, correlation, matrix_similarity, mixed_model, spine_coactivity",
     )
+    parser.add_argument(
+        "--comparison-presets",
+        nargs="*",
+        help="Optional subset of preset names to run from a comparison_presets config block",
+    )
     parser.add_argument("--channel", type=int)
     parser.add_argument("--locomotion-threshold", type=float)
     parser.add_argument("--cache-path", type=Path)
@@ -15235,6 +15298,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_only": True if args.mixed_model_only else None,
         "mixed_model_contrast_p_source": args.mixed_model_contrast_p_source,
         "analysis_families": parse_list_argument(args.analysis_families) or None,
+        "comparison_preset_names": parse_list_argument(args.comparison_presets) or None,
         "plots_only": True if args.plots_only else None,
         "demo": True if args.demo else None,
         "channel": args.channel,
@@ -15251,6 +15315,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rebuild": True if args.rebuild else None,
     }
     config = merge_cli_config(cli_config, file_config)
+    if config.get("comparison_presets"):
+        if run_comparison_preset_subprocesses(config):
+            return 0
     global SPINE_COACTIVITY_ANCHOR_STATE
     configured_anchor_state = canonical_state_label(str(config.get("spine_coactivity_anchor_state") or SPINE_COACTIVITY_ANCHOR_STATE))
     if configured_anchor_state not in ALL_REQUESTED_STATES:
@@ -15327,8 +15394,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shared_shuffle_cache_rebuild = bool(config.get("shared_shuffle_cache_rebuild")) or rebuild
         output_dir = Path(config.get("output_dir")) if config.get("output_dir") else DEFAULT_RESULTS_DIR
         cache_path = Path(config.get("cache_path")) if config.get("cache_path") else (ensure_dir(output_dir / DEFAULT_CACHE_DIRNAME) / DEFAULT_CACHE_NAME)
+        analysis_run_cache_path = Path(config.get("analysis_run_cache_path")) if config.get("analysis_run_cache_path") else cache_path
         analysis_tables_cache_file = Path(config.get("analysis_tables_cache_path")) if config.get("analysis_tables_cache_path") else analysis_table_cache_path(cache_path)
-        analysis_results_cache_file = Path(config.get("analysis_results_cache_path")) if config.get("analysis_results_cache_path") else analysis_results_cache_path(cache_path)
+        analysis_results_cache_file = Path(config.get("analysis_results_cache_path")) if config.get("analysis_results_cache_path") else analysis_results_cache_path(analysis_run_cache_path)
         figure_output_dir = Path(config.get("figure_output_dir")) if config.get("figure_output_dir") else None
         plots_only = bool(config.get("plots_only"))
         step_message(
@@ -15408,7 +15476,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_cache,
                 shuffle_n,
                 state_labels=shuffle_state_labels,
-                cache_path=cache_path,
+                cache_path=analysis_run_cache_path,
                 rebuild=shared_shuffle_cache_rebuild,
             )
     else:
@@ -15433,6 +15501,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "analysis_families": list(config.get("analysis_families") or []),
         "shuffle_n": int(shuffle_n),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
         "spine_visual_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
         "dendrite_visual_response_classifier_type": "dendrite",
@@ -15447,6 +15516,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_only": bool(config.get("mixed_model_only")),
         "shared_shuffle_signature": str(shared_shuffle_cache.get("signature", "")) if isinstance(shared_shuffle_cache, dict) else "",
         "shared_shuffle_shuffle_n": int(shared_shuffle_cache.get("shuffle_n", shuffle_n)) if isinstance(shared_shuffle_cache, dict) else int(shuffle_n),
+        "analysis_run_cache_path": str(analysis_run_cache_path),
     }
     plots_only_ignore_meta_keys = (
         "shared_shuffle_signature",
@@ -15462,7 +15532,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "visual_response_blank_trial_type",
     ) if plots_only else None
     family_result_stage = family_results_cache_stage_for_selection(config.get("analysis_families"))
-    family_results_cache_file = family_results_cache_path(cache_path, family_result_stage)
+    family_results_cache_file = family_results_cache_path(analysis_run_cache_path, family_result_stage)
     analysis_results_cache_file_for_run = analysis_results_cache_file
     analysis_results_cache, analysis_results_cache_status = load_analysis_results_cache(
             analysis_results_cache_file,
@@ -15547,7 +15617,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
                 analysis_families=["spine_coactivity"],
                 analysis_results_meta=analysis_results_meta,
-                cache_path=cache_path,
+                cache_path=analysis_run_cache_path,
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
@@ -15564,7 +15634,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
                 analysis_families=["mixed_model"],
                 analysis_results_meta=analysis_results_meta,
-                cache_path=cache_path,
+                cache_path=analysis_run_cache_path,
             )
         else:
             results = run_cached_analysis(
@@ -15581,7 +15651,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
                 analysis_families=config.get("analysis_families"),
                 analysis_results_meta=analysis_results_meta,
-                cache_path=cache_path,
+                cache_path=analysis_run_cache_path,
             )
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
@@ -15613,6 +15683,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_only": bool(config.get("mixed_model_only")),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "analysis_families": list(config.get("analysis_families") or []),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "analysis_run_cache_path": str(analysis_run_cache_path),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
         "compare_states": selection_meta.get("compare_states"),
@@ -15625,6 +15697,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     results["analysis_state_selection"] = {
         "compare_states": selection_meta.get("compare_states"),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "state_mode": selection_meta.get("state_mode"),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "movie_trial_types": selection_meta.get("movie_trial_types"),
@@ -15639,7 +15712,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_trial_types_source": selection_meta.get("movie_trial_types_source"),
         "alerts": list(selection_meta.get("alerts", [])),
     }
-    results["family_result_cache_index"] = family_results_cache_index(cache_path)
+    results["family_result_cache_index"] = family_results_cache_index(analysis_run_cache_path)
     # Save the analysis-results cache before figure generation so `plots_only` can still reuse it
     # even if a later plot or poster step fails.
     early_analysis_results_payload = {

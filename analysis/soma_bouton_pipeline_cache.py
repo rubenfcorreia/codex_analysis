@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import json
 import pickle
@@ -17,7 +18,9 @@ from analysis.compartment_common import (  # noqa: E402
     derive_date,
     ensure_dir,
     experiment_root_from_expid,
+    filter_comparison_presets,
     grouped_experiments_by_day,
+    normalize_comparison_presets,
     read_csv_rows,
     resolve_analysis_state_selections,
     resolve_repo_root,
@@ -55,6 +58,9 @@ DEFAULT_CONFIG = {
     "lag_step_s": 0.1,
     "rebuild": True,
     "plots_only": False,
+    "comparison_presets": None,
+    "comparison_preset_name": None,
+    "comparison_preset_names": None,
     "state_mode": "both",
     "movie_states": ["running", "still", "all"],
     "sleep_states": ["nrem", "rem", "wake", "all"],
@@ -69,6 +75,42 @@ def load_config(path: Path) -> Dict[str, Any]:
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg)
     return merged
+
+
+def _preset_selection_names(value: Any) -> List[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        names = [part.strip() for part in value.split(",") if part.strip()]
+        return names or None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        names = [str(item).strip() for item in value if str(item).strip()]
+        return names or None
+    text = str(value).strip()
+    return [text] if text else None
+
+
+def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    preset_names = _preset_selection_names(config.get("comparison_preset_names"))
+    presets = normalize_comparison_presets(config.get("comparison_presets"))
+    presets = filter_comparison_presets(presets, preset_names)
+    if not presets:
+        return []
+
+    base_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+    base_cache_root = Path(config.get("cache_root") or (base_result_root / "cache"))
+    manifests: List[Dict[str, Any]] = []
+    for preset_name, overrides in presets:
+        preset_config = copy.deepcopy(dict(config))
+        preset_config.pop("comparison_presets", None)
+        preset_config.pop("comparison_preset_names", None)
+        preset_config.pop("comparison_preset_name", None)
+        preset_config.update(overrides)
+        preset_config["comparison_preset_name"] = preset_name
+        preset_config["result_root"] = str(base_result_root / safe_filename_component(preset_name))
+        preset_config["cache_root"] = str(base_cache_root / safe_filename_component(preset_name))
+        manifests.append(run_pipeline(preset_config))
+    return manifests
 
 
 def dump_gzip_pickle(path: Path | str, payload: Any) -> None:
@@ -153,6 +195,7 @@ def _experiment_cache_key(config: Mapping[str, Any], expid: str, mode: str, sele
     return stable_hash(
         {
             "analysis_name": config.get("analysis_name"),
+            "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
             "expid": expid,
             "mode": mode,
             "soma_channel": int(config.get("soma_channel", 1)),
@@ -167,10 +210,16 @@ def _experiment_cache_key(config: Mapping[str, Any], expid: str, mode: str, sele
     )
 
 
-def _pipeline_cache_key(config: Mapping[str, Any], expids_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str]) -> str:
+def _pipeline_cache_key(
+    config: Mapping[str, Any],
+    expids_by_mode: Mapping[str, Sequence[str]],
+    state_modes: Sequence[str],
+    selected_states_by_mode: Mapping[str, Sequence[str]],
+) -> str:
     return stable_hash(
         {
             "analysis_name": config.get("analysis_name"),
+            "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
             "soma_channel": int(config.get("soma_channel", 1)),
             "bouton_channel": int(config.get("bouton_channel", 0)),
             "lag_window_s": float(config.get("lag_window_s", 2.0)),
@@ -179,6 +228,7 @@ def _pipeline_cache_key(config: Mapping[str, Any], expids_by_mode: Mapping[str, 
             "movie_states": list(config.get("movie_states", [])),
             "sleep_states": list(config.get("sleep_states", [])),
             "state_modes": list(state_modes),
+            "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
             "expids_by_mode": {mode: list(expids) for mode, expids in expids_by_mode.items()},
         }
     )
@@ -344,25 +394,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     expids_by_mode = _mode_expids(config)
     state_modes = _state_modes(config, expids_by_mode)
-    pipeline_key = stable_hash(
-        {
-            "analysis_name": config.get("analysis_name"),
-            "soma_channel": int(config.get("soma_channel", 1)),
-            "bouton_channel": int(config.get("bouton_channel", 0)),
-            "lag_window_s": float(config.get("lag_window_s", 2.0)),
-            "lag_step_s": float(config.get("lag_step_s", 0.1)),
-            "state_mode": config.get("state_mode", "both"),
-            "movie_states": list(config.get("movie_states", [])),
-            "sleep_states": list(config.get("sleep_states", [])),
-            "state_modes": list(state_modes),
-            "expids_by_mode": {mode: list(expids) for mode, expids in expids_by_mode.items()},
-        }
-    )
+    selected_states_by_mode: Dict[str, List[str]] = {}
+    for mode in state_modes:
+        selected_states_by_mode[mode] = list(resolve_analysis_state_selections(config, mode))
+    pipeline_key = _pipeline_cache_key(config, expids_by_mode, state_modes, selected_states_by_mode)
     summary_cache = _summary_cache_path(cache_root, pipeline_key)
 
     current_signatures: List[Dict[str, Any]] = []
     for mode in state_modes:
-        selected_states = resolve_analysis_state_selections(config, mode)
         for expid in expids_by_mode.get(mode, []):
             paths = _source_paths(repo_root, expid, mode, int(config["soma_channel"]), int(config["bouton_channel"]))
             current_signatures.append(_source_signature(paths))
@@ -392,8 +431,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 plot_lag_heatmap(rows["lag"], result_root)
                 manifest = {
                     "config": dict(config),
+                    "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
                     "cache_key": pipeline_key,
                     "state_modes": state_modes,
+                    "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
                     "day_groups": payload.get("day_groups", {}),
                     "counts": payload.get("counts", {}),
                     "output_root": str(result_root),
@@ -415,8 +456,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         day_groups = grouped_experiments_by_day([row["expid"] for row in rows["experiments"]]) if rows["experiments"] else {}
         manifest = {
             "config": dict(config),
+            "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
             "cache_key": pipeline_key,
             "state_modes": state_modes,
+            "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
             "day_groups": day_groups,
             "counts": payload["counts"],
             "output_root": str(result_root),
@@ -433,7 +476,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     lag_rows: List[Dict[str, Any]] = []
 
     for mode in state_modes:
-        selected_states = resolve_analysis_state_selections(config, mode)
+        selected_states = selected_states_by_mode[mode]
         for expid in expids_by_mode.get(mode, []):
             payload = _load_or_build_experiment_payload(
                 repo_root=repo_root,
@@ -477,6 +520,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     summary_payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "cache_key": pipeline_key,
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "counts": {
             "experiments": len(experiment_rows),
             "activity_rows": len(activity_rows),
@@ -501,7 +546,9 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     cache_manifest = {
         "schema_version": CACHE_SCHEMA_VERSION,
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "cache_key": pipeline_key,
+        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "summary_cache": str(summary_cache),
         "cache_root": str(cache_root),
         "experiment_cache_count": len(experiment_payloads),
@@ -510,8 +557,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     manifest = {
         "config": dict(config),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "cache_key": pipeline_key,
         "state_modes": state_modes,
+        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "day_groups": day_groups,
         "counts": summary_payload["counts"],
         "output_root": str(result_root),
@@ -524,9 +573,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Cache-enabled soma/bouton analysis pipeline.")
-    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline") / "soma_bouton_pipeline_cache_config.json")
+    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline") / "soma_bouton_pipeline_config.json")
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding experiment and summary caches.")
     parser.add_argument("--plots-only", action="store_true", help="Load cached summaries or CSVs and only regenerate figures.")
+    parser.add_argument(
+        "--comparison-presets",
+        nargs="*",
+        help="Optional subset of preset names to run from a comparison_presets config block.",
+    )
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
@@ -534,6 +588,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["rebuild"] = True
     if args.plots_only:
         config["plots_only"] = True
+    if args.comparison_presets:
+        config["comparison_preset_names"] = list(args.comparison_presets)
+    if config.get("comparison_presets"):
+        manifests = run_comparison_preset_runs(config)
+        if manifests:
+            print(json.dumps({"comparison_presets": manifests}, indent=2, sort_keys=True))
+            return 0
     manifest = run_pipeline(config)
     print(json.dumps(manifest, indent=2, sort_keys=True))
     return 0

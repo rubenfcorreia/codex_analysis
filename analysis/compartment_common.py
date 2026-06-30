@@ -171,6 +171,61 @@ except Exception:  # pragma: no cover - local fallback for portability
         return masks
 
 
+
+
+def normalize_comparison_presets(raw: Any) -> List[Tuple[str, Dict[str, Any]]]:
+    if raw is None:
+        return []
+
+    if isinstance(raw, Mapping):
+        items = list(raw.items())
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        items = []
+        for entry in raw:
+            if not isinstance(entry, Mapping):
+                raise SystemExit("comparison_presets entries must be mappings with a name field")
+            name = entry.get("name")
+            if name is None or not str(name).strip():
+                raise SystemExit("comparison_presets entries must include a non-empty name")
+            overrides = {key: value for key, value in entry.items() if key != "name"}
+            items.append((str(name), overrides))
+    else:
+        raise SystemExit("comparison_presets must be a mapping or a list of named preset mappings")
+
+    presets: List[Tuple[str, Dict[str, Any]]] = []
+    seen = set()
+    for name, overrides in items:
+        preset_name = str(name).strip()
+        if not preset_name:
+            raise SystemExit("comparison_presets contains an empty preset name")
+        if preset_name in seen:
+            raise SystemExit(f"comparison_presets contains a duplicate preset name: {preset_name}")
+        if not isinstance(overrides, Mapping):
+            raise SystemExit(f"comparison preset '{preset_name}' must map to a JSON object of overrides")
+        presets.append((preset_name, dict(overrides)))
+        seen.add(preset_name)
+    return presets
+
+
+def filter_comparison_presets(
+    presets: Sequence[Tuple[str, Dict[str, Any]]],
+    selected_names: Optional[Sequence[str]] = None,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    if not selected_names:
+        return list(presets)
+
+    selected = [str(name).strip() for name in selected_names if str(name).strip()]
+    if not selected:
+        return list(presets)
+    selected_set = set(selected)
+    available = {name for name, _ in presets}
+    missing = [name for name in selected if name not in available]
+    if missing:
+        raise SystemExit(
+            f"Unknown comparison preset(s): {', '.join(missing)}. Available presets are: {', '.join(name for name, _ in presets)}"
+        )
+    return [(name, overrides) for name, overrides in presets if name in selected_set]
+
 def read_pickle(path: Path | str) -> Any:
     with Path(path).open("rb") as fh:
         return pickle.load(fh)

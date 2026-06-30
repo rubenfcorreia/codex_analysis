@@ -3,7 +3,7 @@
 Use this entrypoint when you want cached raw data and cached results:
 
 ```bash
-python -m analysis.soma_bouton_pipeline_cache --config analysis/soma_bouton_pipeline/soma_bouton_pipeline_cache_config.json
+python -m analysis.soma_bouton_pipeline_cache --config analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json
 ```
 
 It stores:
