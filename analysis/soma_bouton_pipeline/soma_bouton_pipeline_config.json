@@ -18,7 +18,19 @@
     "plots_only": "Set true to reuse the saved CSV outputs and only regenerate plots, without recomputing row-level results.",
     "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name.",
     "comparison_preset_name": "Set automatically when a preset is running. Usually leave this null in the base config.",
-    "comparison_preset_names": "Optional subset of preset names to run from the comparison_presets block."
+    "comparison_preset_names": "Optional subset of preset names to run from the comparison_presets block.",
+    "visual_response_cohort": "Which visual-response cohort to emphasize in downstream reporting. Use all to keep responsive and nonresponsive units together, or responsive/nonresponsive to focus on one split later.",
+    "visual_response_trial_types": "Trial labels treated as visually stimulated when classifying responses from cut_intertrials data.",
+    "visual_response_blank_trial_type": "Trial label treated as the blank/reference condition when classifying visual responses.",
+    "cache_path": "Source cache file used to reload the raw per-experiment rows for soma/bouton reruns.",
+    "analysis_results_cache_path": "Cache file used to reload the final soma/bouton analysis manifest and summary tables.",
+    "analysis_tables_cache_path": "Intermediate cache file for the derived soma/bouton analysis tables.",
+    "analysis_run_cache_path": "Optional shared run cache path used for future layered cache reuse.",
+    "analysis_results_rebuild": "Force rebuilding the final analysis-results cache even if it already exists.",
+    "analysis_tables_rebuild": "Force rebuilding the derived analysis-tables cache even if it already exists.",
+    "source_cache_rebuild": "Force rebuilding the raw source cache even if it already exists.",
+    "shared_shuffle_cache_rebuild": "Force rebuilding the shared shuffle cache used by the statistical tests.",
+    "mixed_model_contrast_p_source": "Choose whether mixed-model contrasts report classical or shuffle-based p-values."
   },
   "analysis_name": "soma_bouton_pipeline",
   "movie_expids": [
@@ -47,7 +59,7 @@
   "lag_window_s": 2.0,
   "lag_step_s": 0.1,
   "shuffle_n": 200,
-  "rebuild": true,
+  "rebuild": false,
   "plots_only": false,
   "comparison_preset_name": null,
   "comparison_preset_names": null,
@@ -117,8 +129,8 @@
       ]
     }
   },
-  "event_detection_method": "derivative",
-  "visual_response_metric": "mean",
+  "event_detection_method": "amplitude",
+  "visual_response_metric": "calcium_events",
   "state_comparison_states": [
     "quiet_awake_blank",
     "nrem_blank",
@@ -140,5 +152,21 @@
     "quiet_awake",
     "nrem",
     "rem"
-  ]
+  ],
+  "visual_response_cohort": "all",
+  "visual_response_trial_types": [
+    "movies",
+    "gratings",
+    "zebras"
+  ],
+  "visual_response_blank_trial_type": "blank",
+  "cache_path": "results/soma_bouton_pipeline/cache/source_cache.npz",
+  "analysis_results_cache_path": "results/soma_bouton_pipeline/cache/analysis_results_cache.npz",
+  "analysis_tables_cache_path": "results/soma_bouton_pipeline/cache/analysis_tables_cache.npz",
+  "analysis_run_cache_path": "results/soma_bouton_pipeline/cache/source_cache.npz",
+  "analysis_results_rebuild": false,
+  "analysis_tables_rebuild": false,
+  "source_cache_rebuild": false,
+  "shared_shuffle_cache_rebuild": false,
+  "mixed_model_contrast_p_source": "classical"
 }

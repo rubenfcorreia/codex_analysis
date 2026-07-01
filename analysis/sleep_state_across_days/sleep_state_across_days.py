@@ -3742,17 +3742,6 @@ def build_day_timeline_profile(day_exp_summaries: Sequence[SessionSummary]) -> T
     return probability_time_s / 60.0, state_probability_profile, (sleep_start_s / 60.0 if sleep_start_s is not None else None)
 
 
-def select_poster_ready_day_summaries(exp_summaries: Sequence[SessionSummary], example_exp_id: str) -> List[SessionSummary]:
-    target: Optional[SessionSummary] = None
-    for summary in exp_summaries:
-        if str(example_exp_id) in {str(exp_id) for exp_id in summary.exp_ids}:
-            target = summary
-            break
-    if target is None:
-        return []
-    return [summary for summary in exp_summaries if str(summary.animal_id) == str(target.animal_id) and str(summary.date) == str(target.date)]
-
-
 def resolve_poster_ready_montage_svg(state_montage_artifacts: Sequence[str], output_dir: Path, example_exp_id: str) -> Optional[Path]:
     candidate_paths: List[Path] = []
     for artifact in state_montage_artifacts:
@@ -3843,7 +3832,6 @@ def inline_svg_panel_into_matplotlib_svg(svg_path: Path, panel_svg_path: Path) -
 def plot_sleep_state_poster_ready_composite(
     state_composition_rows: Sequence[Mapping[str, Any]],
     rem_day_presence_rows: Sequence[Mapping[str, Any]],
-    exp_summaries: Sequence[SessionSummary],
     day_summaries: Sequence[SessionSummary],
     state_montage_artifacts: Sequence[str],
     output_dir: Path,
@@ -3922,11 +3910,9 @@ def plot_sleep_state_poster_ready_composite(
     ax_stack.set_title('Between-days\nstacked comparison', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=8, loc='left')
     ax_stack.set_xlabel('Within-animal day\nindex (movie + sleep)', fontsize=max(12, POSTER_LABEL_SIZE - 5), labelpad=8)
 
-    day_timeline = select_poster_ready_day_summaries(
-        exp_summaries,
-        DEFAULT_POSTER_READY_STATE_MONTAGE_EXAMPLE_EXP_ID,
-    )
-    time_min, profile, sleep_start_min = build_day_timeline_profile(day_timeline)
+    time_s, profile = average_probability_summaries(day_summaries)
+    time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
+    sleep_start_min = None
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
@@ -4005,7 +3991,7 @@ def plot_sleep_state_poster_ready_composite(
     fig.text(
         0.5 * (float(frac_block_x0) + float(frac_block_x1)),
         float(frac_block_y1) + 0.011,
-        'Sleep-state fractions',
+        'Within-day sleep-state fractions',
         ha='center',
         va='bottom',
         fontsize=max(13, POSTER_TITLE_SIZE - 11),
@@ -6289,7 +6275,7 @@ def write_sleep_state_report(
     lines.append("- days without active wake are excluded from the active-wake-aligned probability curve")
     lines.append("- days without REM stay in the recording-start probability curve as no-event days")
     lines.append("- the REM fraction curve shows the mean REM occupancy in 5-minute elapsed-time bins, pooled within day and then across animals")
-    lines.append("- the poster-ready composite uses a top montage example, representative day-timeline views, and summary pies")
+    lines.append("- the poster-ready composite uses a top montage example, within-day sleep-state fraction views, and summary pies")
 
     append_section("Pupil analysis notes")
     lines.append("- pupil diameter is normalized per animal using the mean and standard deviation of that animal's pupil samples across all expIDs; if both eyes are present, the traces are averaged on the shared time base")
@@ -7304,7 +7290,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         saved = plot_state_montage_per_exp(summary, output_dir)
         state_montage_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
-    saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, exp_summaries, day_summaries, state_montage_artifacts, output_dir)
+    saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, day_summaries, state_montage_artifacts, output_dir)
     poster_ready_artifacts.extend(project_relative_path(path) for path in saved)
 
     review_state_montage_artifacts: List[str] = []

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Thin CLI wrapper for the soma/bouton pipeline."""
+
 from pathlib import Path
 import sys
 

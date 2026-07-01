@@ -14,6 +14,8 @@ from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
 
+from analysis.shared.shared_boxplots import plot_boxplot_series
+
 try:  # Keep the state palette aligned with the main dendrite pipeline.
     from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (  # type: ignore
         state_display_color as _main_state_display_color,
@@ -239,67 +241,37 @@ def _plot_boxplot(
     values_by_state: list[np.ndarray] = []
     labels: list[str] = []
     present_states: list[str] = []
+    colors: list[str] = []
 
     for state in states:
         values = pd.to_numeric(
             frame.loc[frame[state_col] == state, value_col],
             errors="coerce",
         ).dropna().to_numpy(dtype=float)
-
         if values.size == 0:
             continue
-
         present_states.append(state)
         labels.append(f"{pretty_state_label(state)}\n(n={values.size})")
         values_by_state.append(values)
+        colors.append(state_display_color(state))
 
     if not values_by_state:
         return []
 
-    fig_width = max(12.0, 1.25 * len(values_by_state))
-    fig, ax = plt.subplots(figsize=(fig_width, 8), constrained_layout=True)
-
-    bp = ax.boxplot(
+    return plot_boxplot_series(
         values_by_state,
-        patch_artist=True,
-        showfliers=False,
-        medianprops={"color": "#111827", "linewidth": 2.2},
-        whiskerprops={"color": accent_color, "linewidth": 1.8},
-        capprops={"color": accent_color, "linewidth": 1.8},
-        boxprops={"linewidth": 2.0},
+        labels,
+        present_states,
+        colors,
+        Path(output_dir),
+        stem=stem,
+        title=title,
+        ylabel=ylabel,
+        xlabel="State",
+        title_color=accent_color,
+        label_color_fn=state_display_color,
+        edge_color=accent_color,
     )
-
-    for patch, state in zip(bp["boxes"], present_states):
-        patch.set_facecolor(mcolors.to_rgba(state_display_color(state), 0.28))
-        patch.set_edgecolor(accent_color)
-
-    rng = np.random.default_rng(0)
-
-    for xpos, (state, values) in enumerate(zip(present_states, values_by_state), start=1):
-        jitter = rng.normal(0.0, 0.06, size=values.size)
-        ax.scatter(
-            np.full(values.shape, xpos, dtype=float) + jitter,
-            values,
-            s=20,
-            alpha=0.55,
-            color=state_display_color(state),
-            edgecolors="none",
-            zorder=3,
-        )
-
-    ax.set_title(title, fontsize=20, fontweight="bold", color=accent_color, pad=12)
-    ax.set_ylabel(ylabel, fontsize=18)
-    ax.set_xlabel("State", fontsize=18)
-    ax.grid(axis="y", alpha=0.18, linewidth=0.8)
-    ax.tick_params(axis="x", labelsize=13)
-    ax.tick_params(axis="y", labelsize=13)
-
-    _style_state_ticks(ax, labels, present_states)
-
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-
-    return _save_figure(fig, output_dir, stem)
 def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
     rows = args[0] if args else kwargs.get("rows")
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
