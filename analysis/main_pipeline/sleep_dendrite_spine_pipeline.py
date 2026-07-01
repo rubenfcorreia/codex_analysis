@@ -65,10 +65,11 @@ warnings.filterwarnings(
     module="statsmodels.regression.mixed_linear_model",
 )
 
-_STATE_SUMMARY_VALUES_CACHE: Dict[Tuple[Any, ...], Dict[str, Dict[str, List[float]]]] = {}
-_STATE_SUMMARY_DENDRITE_VALUES_CACHE: Dict[Tuple[Any, ...], Dict[str, Dict[str, List[float]]]] = {}
-_STATE_SUMMARY_Y_LIMITS_CACHE: Dict[Tuple[Any, ...], Dict[str, Tuple[float, float]]] = {}
-_STATE_SUMMARY_GALLERY_RESULTS_CACHE: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+STATE_SUMMARY_PAYLOAD_CACHE_KEY = "state_summary_payload_cache"
+_STATE_SUMMARY_VALUES_CACHE: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
+_STATE_SUMMARY_DENDRITE_VALUES_CACHE: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
+_STATE_SUMMARY_Y_LIMITS_CACHE: Dict[str, Dict[str, Tuple[float, float]]] = {}
+_STATE_SUMMARY_GALLERY_RESULTS_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _state_summary_filter_key(values: Optional[Sequence[str]]) -> Optional[Tuple[str, ...]]:
@@ -77,28 +78,57 @@ def _state_summary_filter_key(values: Optional[Sequence[str]]) -> Optional[Tuple
     return tuple(sorted({str(value) for value in values if str(value)}))
 
 
+def _state_summary_cache_signature(cache: Dict[str, Any]) -> str:
+    analysis_tables = cache.get("analysis_tables", {})
+    if not isinstance(analysis_tables, dict):
+        analysis_tables = {}
+    return stable_hash(
+        {
+            "config_hash": str(cache.get("config_hash", "")),
+            "analysis_unit": str(cache.get("analysis_unit", "")),
+            "source_signature": str(cache.get("source_signature", "")),
+            "analysis_tables_signature": analysis_cache_meta_hash(analysis_tables),
+        }
+    )
+
+
+def _state_summary_cache_store(cache: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(cache, dict):
+        return {}
+    store = cache.get(STATE_SUMMARY_PAYLOAD_CACHE_KEY)
+    if not isinstance(store, dict):
+        store = {}
+        cache[STATE_SUMMARY_PAYLOAD_CACHE_KEY] = store
+    return store
+
+
 def _state_summary_cache_key(
+    namespace: str,
     cache: Dict[str, Any],
-    metric_kind: str,
-    state_labels: Sequence[str],
+    *,
+    metric_kind: Optional[str] = None,
+    state_labels: Sequence[str] = (),
     compartment_filter: Optional[str] = None,
     subject_key: str = "day_id",
     dendrite_ids_filter: Optional[Sequence[str]] = None,
     spine_ids_filter: Optional[Sequence[str]] = None,
-) -> Tuple[Any, ...]:
-    return (
-        id(cache),
-        metric_kind,
-        tuple(state_labels),
-        compartment_filter,
-        subject_key,
-        _state_summary_filter_key(dendrite_ids_filter),
-        _state_summary_filter_key(spine_ids_filter),
+) -> str:
+    return stable_hash(
+        {
+            "namespace": str(namespace),
+            "cache_signature": _state_summary_cache_signature(cache),
+            "metric_kind": metric_kind,
+            "state_labels": [str(state_label) for state_label in state_labels],
+            "compartment_filter": compartment_filter,
+            "subject_key": subject_key,
+            "dendrite_ids_filter": _state_summary_filter_key(dendrite_ids_filter),
+            "spine_ids_filter": _state_summary_filter_key(spine_ids_filter),
+        }
     )
 
 
-def _state_summary_y_limits_cache_key(cache: Dict[str, Any], state_labels: Sequence[str]) -> Tuple[Any, ...]:
-    return (id(cache), tuple(state_labels))
+def _state_summary_y_limits_cache_key(cache: Dict[str, Any], state_labels: Sequence[str]) -> str:
+    return _state_summary_cache_key("y_limits", cache, state_labels=state_labels)
 
 
 def _state_summary_gallery_cache_key(
@@ -107,13 +137,14 @@ def _state_summary_gallery_cache_key(
     compartment_filter: Optional[str] = None,
     dendrite_ids_filter: Optional[Sequence[str]] = None,
     spine_ids_filter: Optional[Sequence[str]] = None,
-) -> Tuple[Any, ...]:
-    return (
-        id(cache),
-        tuple(state_labels),
-        compartment_filter,
-        _state_summary_filter_key(dendrite_ids_filter),
-        _state_summary_filter_key(spine_ids_filter),
+) -> str:
+    return _state_summary_cache_key(
+        "gallery",
+        cache,
+        state_labels=state_labels,
+        compartment_filter=compartment_filter,
+        dendrite_ids_filter=dendrite_ids_filter,
+        spine_ids_filter=spine_ids_filter,
     )
 
 
@@ -362,6 +393,7 @@ USER_EDITABLE_DEFAULTS = {
     "mixed_model_contrast_p_source": "classical",
     "plots_only": False,
     "plots_only_include_supporting_figures": False,
+    "generate_poster_ready_figures": True,
     "source_cache_rebuild": False,
     "analysis_tables_rebuild": False,
     "analysis_results_rebuild": False,
@@ -437,8 +469,8 @@ def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
-def figure_family_dir(root: Path, family: str) -> Path:
-    return ensure_dir(Path(root) / family)
+def figure_family_dir(root: Path, family: str, *parts: str) -> Path:
+    return ensure_dir(Path(root).joinpath(family, *parts))
 
 
 def figure_nested_dir(root: Path, *parts: str) -> Path:
@@ -1734,7 +1766,12 @@ def padded_value_limits(values: Sequence[float]) -> Tuple[float, float]:
 def state_summary_y_limits(cache: Dict[str, Any], state_labels: Sequence[str]) -> Dict[str, Tuple[float, float]]:
     cache_key = _state_summary_y_limits_cache_key(cache, state_labels)
     cached = _STATE_SUMMARY_Y_LIMITS_CACHE.get(cache_key)
-    if cached is not None:
+    if cached is None:
+        cached = _state_summary_cache_store(cache).get(cache_key)
+        if isinstance(cached, dict):
+            _STATE_SUMMARY_Y_LIMITS_CACHE[cache_key] = cached
+            return cached
+    else:
         return cached
     y_limits: Dict[str, Tuple[float, float]] = {}
     for metric_kind in ["dendrite_mean", "spine_specific_mean", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
@@ -1748,6 +1785,7 @@ def state_summary_y_limits(cache: Dict[str, Any], state_labels: Sequence[str]) -
         if combined_values:
             y_limits[metric_kind] = padded_value_limits(combined_values)
     _STATE_SUMMARY_Y_LIMITS_CACHE[cache_key] = y_limits
+    _state_summary_cache_store(cache)[cache_key] = y_limits
     return y_limits
 def format_requested_state_label(state_label: str) -> str:
     return state_display_label(state_label)
@@ -1755,7 +1793,11 @@ def _square_heatmap_state_labels(state_labels: Sequence[str]) -> List[str]:
     return [format_requested_state_label(label) for label in state_labels]
 
 
-def _pad_boxplot_ylim(ax: Any, value_groups: Sequence[Sequence[float] | np.ndarray]) -> None:
+def _pad_boxplot_ylim(
+    ax: Any,
+    value_groups: Sequence[Sequence[float] | np.ndarray],
+    y_limit: Optional[Tuple[float, float]] = None,
+) -> None:
     finite_values: List[float] = []
     for values in value_groups:
         arr = np.asarray(values, dtype=float).ravel()
@@ -1774,6 +1816,11 @@ def _pad_boxplot_ylim(ax: Any, value_groups: Sequence[Sequence[float] | np.ndarr
         span = high - low
         pad = max(0.06 * span, 0.05 * max(abs(low), abs(high), 1.0))
     ax.set_ylim(low - pad, high + pad)
+    if y_limit is not None and len(y_limit) == 2:
+        try:
+            ax.set_ylim(float(y_limit[0]), float(y_limit[1]))
+        except Exception:
+            pass
 
 
 def color_state_tick_labels(ax: Any, state_labels: Sequence[str], axis: str = "x") -> None:
@@ -1844,24 +1891,27 @@ def summarize_state_values_by_dendrite(
     spine_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     cache_key = _state_summary_cache_key(
+        "dendrite_values",
         cache,
-        metric_kind,
-        state_labels,
-        compartment_filter,
+        metric_kind=metric_kind,
+        state_labels=state_labels,
+        compartment_filter=compartment_filter,
         subject_key="day_id",
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
     )
     cached = _STATE_SUMMARY_DENDRITE_VALUES_CACHE.get(cache_key)
-    if cached is not None:
+    if cached is None:
+        cached = _state_summary_cache_store(cache).get(cache_key)
+        if isinstance(cached, dict):
+            _STATE_SUMMARY_DENDRITE_VALUES_CACHE[cache_key] = cached
+            return cached
+    else:
         return cached
     by_state: Dict[str, Dict[str, List[float]]] = {}
     dendrite_id_filter_set = None
     if dendrite_ids_filter is not None:
         dendrite_id_filter_set = {str(dendrite_id) for dendrite_id in dendrite_ids_filter if str(dendrite_id)}
-    spine_id_filter_set = None
-    if spine_ids_filter is not None:
-        spine_id_filter_set = {str(spine_id) for spine_id in spine_ids_filter if str(spine_id)}
     spine_id_filter_set = None
     if spine_ids_filter is not None:
         spine_id_filter_set = {str(spine_id) for spine_id in spine_ids_filter if str(spine_id)}
@@ -1964,6 +2014,7 @@ def summarize_state_values_by_dendrite(
                     dendrite_values[str(exp_id)].extend(observation_values)
         by_state[state_label] = dendrite_values
     _STATE_SUMMARY_DENDRITE_VALUES_CACHE[cache_key] = by_state
+    _state_summary_cache_store(cache)[cache_key] = by_state
     return by_state
 def build_state_summary_gallery_results(
     cache: Dict[str, Any],
@@ -1980,7 +2031,12 @@ def build_state_summary_gallery_results(
         spine_ids_filter=spine_ids_filter,
     )
     cached = _STATE_SUMMARY_GALLERY_RESULTS_CACHE.get(cache_key)
-    if cached is not None:
+    if cached is None:
+        cached = _state_summary_cache_store(cache).get(cache_key)
+        if isinstance(cached, dict):
+            _STATE_SUMMARY_GALLERY_RESULTS_CACHE[cache_key] = cached
+            return cached
+    else:
         return cached
     result = {
         "state_summaries": {
@@ -2001,6 +2057,7 @@ def build_state_summary_gallery_results(
         },
     }
     _STATE_SUMMARY_GALLERY_RESULTS_CACHE[cache_key] = result
+    _state_summary_cache_store(cache)[cache_key] = result
     return result
 
 
@@ -2469,10 +2526,14 @@ def filter_rows_by_compartment(
 
 def filter_rows_by_matrix_similarity(
     rows: Sequence[Dict[str, Any]],
-    compartment: Any,
+    compartment: Any = None,
+    *,
+    compartment_filter: Any = None,
+    **_compat_kwargs,
 ) -> List[Dict[str, Any]]:
     """Filter matrix-similarity rows to the requested output compartment."""
-    compartment_key = str(compartment or "").strip().lower()
+    selected_compartment = compartment_filter if compartment_filter is not None else compartment
+    compartment_key = str(selected_compartment or "").strip().lower()
     if not compartment_key or compartment_key == "all":
         return list(rows or [])
 
@@ -2497,10 +2558,14 @@ def filter_rows_by_matrix_similarity(
 
 def filter_rows_by_spine_coactivity(
     rows: Sequence[Dict[str, Any]],
-    compartment: Any,
+    compartment: Any = None,
+    *,
+    compartment_filter: Any = None,
+    **_compat_kwargs,
 ) -> List[Dict[str, Any]]:
     """Filter spine-coactivity rows to the requested output compartment."""
-    compartment_key = str(compartment or "").strip().lower()
+    selected_compartment = compartment_filter if compartment_filter is not None else compartment
+    compartment_key = str(selected_compartment or "").strip().lower()
     if not compartment_key or compartment_key == "all":
         return list(rows or [])
 
@@ -10451,16 +10516,22 @@ def summarize_state_values(
     spine_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     cache_key = _state_summary_cache_key(
+        "values",
         cache,
-        metric_kind,
-        state_labels,
-        compartment_filter,
+        metric_kind=metric_kind,
+        state_labels=state_labels,
+        compartment_filter=compartment_filter,
         subject_key=subject_key,
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
     )
     cached = _STATE_SUMMARY_VALUES_CACHE.get(cache_key)
-    if cached is not None:
+    if cached is None:
+        cached = _state_summary_cache_store(cache).get(cache_key)
+        if isinstance(cached, dict):
+            _STATE_SUMMARY_VALUES_CACHE[cache_key] = cached
+            return cached
+    else:
         return cached
     by_state: Dict[str, Dict[str, List[float]]] = {}
     for state in state_labels:
@@ -10474,6 +10545,7 @@ def summarize_state_values(
             spine_ids_filter=spine_ids_filter,
         )
     _STATE_SUMMARY_VALUES_CACHE[cache_key] = by_state
+    _state_summary_cache_store(cache)[cache_key] = by_state
     return by_state
 def pairwise_state_comparisons(
     cache: Dict[str, Any],
@@ -15353,7 +15425,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     shared_cache_path = shared_cache_path.resolve()
 
     child_script = Path(__file__).resolve()
-    for preset_name, overrides in presets:
+    for preset_index, (preset_name, overrides) in enumerate(presets):
         safe_name = safe_filename_component(preset_name)
         preset_output_dir = base_output_dir / safe_name
         preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
@@ -15369,6 +15441,9 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["cache_path"] = str(shared_cache_path)
         preset_config["analysis_run_cache_path"] = str(preset_cache_path)
         preset_config["analysis_results_cache_path"] = None
+        generate_once = preset_index == 0
+        preset_config["plots_only_include_supporting_figures"] = True if generate_once else False
+        preset_config["generate_poster_ready_figures"] = True if generate_once else False
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             temp_config_path = Path(handle.name)
@@ -15932,15 +16007,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             plots_only=plots_only,
             include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)),
         )
-    with step_scope("poster figure generation"):
-        written_artifacts.extend(
-            write_poster_ready_figures(
-                output_dir,
-                analysis_cache,
-                results,
-                analysis_families=config.get("analysis_families"),
+    if bool(config.get("generate_poster_ready_figures", True)):
+        with step_scope("poster figure generation"):
+            written_artifacts.extend(
+                write_poster_ready_figures(
+                    output_dir,
+                    analysis_cache,
+                    results,
+                    analysis_families=config.get("analysis_families"),
+                )
             )
-        )
+    if isinstance(analysis_cache.get(STATE_SUMMARY_PAYLOAD_CACHE_KEY), dict):
+        save_analysis_day_cache(analysis_cache_file, analysis_cache, meta=analysis_cache_expected_meta)
     results["shared_shuffle_cache"] = {
         "path": str(shared_shuffle_cache_file) if shared_shuffle_cache_file is not None else None,
         "reused": not bool(shared_shuffle_cache_rebuilt),
