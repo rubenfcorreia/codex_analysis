@@ -59,7 +59,7 @@
   "lag_window_s": 2.0,
   "lag_step_s": 0.1,
   "shuffle_n": 200,
-  "rebuild": false,
+  "rebuild": true,
   "plots_only": false,
   "comparison_preset_name": null,
   "comparison_preset_names": null,

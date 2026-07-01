@@ -289,8 +289,8 @@ def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
         frame = frame.copy()
         frame["compartment"] = frame["channel"].map({0: "bouton", 1: "soma", "0": "bouton", "1": "soma"})
     if "compartment" in frame.columns:
+        frame = frame.copy()
         frame["compartment"] = frame["compartment"].astype(str).str.strip().str.lower()
-        frame = _collapse_to_day_level(frame, state_col=state_col, value_col=value_col, label_col=label_col, group_cols=("compartment",))
         generated: list[Path] = []
         for compartment in ("soma", "bouton"):
             subset = frame.loc[frame["compartment"] == compartment].copy()
@@ -311,7 +311,6 @@ def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
             )
         return generated
 
-    frame = _collapse_to_day_level(frame, state_col=state_col, value_col=value_col, label_col=label_col)
     return _plot_boxplot(
         frame,
         state_col=state_col,
@@ -338,7 +337,6 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
     value_col = "mean_corr" if "mean_corr" in frame.columns else "corr"
     if value_col not in frame.columns:
         raise ValueError("plot_state_correlation could not find a correlation column")
-    frame = _collapse_to_day_level(frame, state_col=state_col, value_col=value_col, label_col=label_col)
     return _plot_boxplot(
         frame,
         state_col=state_col,
@@ -374,7 +372,6 @@ def plot_lag_heatmap(*args: Any, **kwargs: Any) -> list[Path]:
     frame["lag_s"] = pd.to_numeric(frame["lag_s"], errors="coerce")
     frame[value_col] = pd.to_numeric(frame[value_col], errors="coerce")
     frame = frame.dropna(subset=["lag_s", value_col])
-    frame = _collapse_to_day_level(frame, state_col=state_col, value_col=value_col, label_col=label_col, group_cols=("lag_s",))
     grouped = frame.groupby([state_col, "lag_s"], as_index=False)[value_col].mean()
     if grouped.empty:
         return []

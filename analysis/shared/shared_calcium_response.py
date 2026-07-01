@@ -185,7 +185,13 @@ def load_visual_response_cut_data(
     wheel_speed = find_first_key(wheel_bundle, ["speed", "wheel", "motion", "velocity"]) if isinstance(wheel_bundle, Mapping) else None
     wheel_interp = None
     if wheel_time is not None and wheel_speed is not None:
-        wheel_interp = np.asarray(np.interp(cut_time, np.asarray(wheel_time, dtype=float), np.asarray(wheel_speed, dtype=float)), dtype=float)
+        wheel_time_arr = np.asarray(wheel_time, dtype=float).ravel()
+        wheel_speed_arr = np.asarray(wheel_speed, dtype=float).ravel()
+        common_len = min(wheel_time_arr.size, wheel_speed_arr.size)
+        if common_len >= 2:
+            wheel_time_arr = wheel_time_arr[:common_len]
+            wheel_speed_arr = wheel_speed_arr[:common_len]
+            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr), dtype=float)
     threshold = choose_locomotion_threshold(
         locomotion_threshold,
         [],

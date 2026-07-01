@@ -26,6 +26,7 @@ from analysis.compartment_common import (
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
 from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
+from analysis.shared.analysis_families.visual_response import run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
 from analysis.shared.shared_calcium_response import (
     DEFAULT_VISUAL_RESPONSE_COHORT,
     VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
@@ -41,12 +42,20 @@ from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_s
 from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
 from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation
 from analysis.compartment_common import resolve_analysis_state_selections
+from analysis.shared.plots.mixed_model import (
+    plot_mixed_model_contrasts_checkpoint,
+    plot_mixed_model_forest_figure,
+    plot_mixed_model_predicted_means_figure,
+)
+from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
+    ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
     analysis_cache_meta_hash,
     analysis_results_cache_payload,
     load_analysis_results_cache,
     save_analysis_results_cache,
+    save_analysis_tables_cache,
 )
 
 
@@ -58,6 +67,20 @@ def _stage(label: str, detail: str | None = None) -> None:
         logger.info("[soma] %s: %s", label, detail)
     else:
         logger.info("[soma] %s", label)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return [_json_safe(item) for item in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 DEFAULT_CONFIG = {
@@ -145,17 +168,25 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         return []
 
     base_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+    base_cache_root = Path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"])
+    shared_source_cache_path = Path(config.get("cache_path") or (base_cache_root / "source_cache.npz"))
     _stage("comparison presets", f"running {len(presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
     for preset_name, overrides in presets:
+        safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
         preset_config.pop("comparison_presets", None)
         preset_config.pop("comparison_preset_names", None)
         preset_config.pop("comparison_preset_name", None)
         preset_config.update(overrides)
         preset_config["comparison_preset_name"] = preset_name
-        preset_result_root = base_result_root / safe_filename_component(preset_name)
+        preset_result_root = base_result_root / safe_name
         preset_config["result_root"] = str(preset_result_root)
+        preset_run_cache_path = base_cache_root / f"{safe_name}_analysis_run_cache.npz"
+        preset_config["cache_path"] = str(shared_source_cache_path)
+        preset_config["analysis_run_cache_path"] = str(preset_run_cache_path)
+        preset_config["analysis_tables_cache_path"] = None
+        preset_config["analysis_results_cache_path"] = None
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
     return manifests
@@ -244,41 +275,6 @@ def _visual_response_entity_rows(
     return rows
 
 
-def _visual_response_day_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    if not rows:
-        return []
-    grouped: Dict[tuple, List[Mapping[str, Any]]] = {}
-    for row in rows:
-        key = (
-            str(row.get("day_id") or ""),
-            str(row.get("mode") or ""),
-            str(row.get("compartment") or ""),
-            str(row.get("cohort") or "nonresponsive"),
-        )
-        grouped.setdefault(key, []).append(row)
-    summary_rows: List[Dict[str, Any]] = []
-    for (day_id, mode, compartment, cohort), members in grouped.items():
-        visual = np.asarray([float(row.get("mean_visual", float("nan"))) for row in members], dtype=float)
-        blank = np.asarray([float(row.get("mean_blank", float("nan"))) for row in members], dtype=float)
-        delta = np.asarray([float(row.get("delta", float("nan"))) for row in members], dtype=float)
-        responsive = sum(bool(row.get("responsive", False)) for row in members)
-        summary_rows.append(
-            {
-                "day_id": day_id,
-                "mode": mode,
-                "compartment": compartment,
-                "cohort": cohort,
-                "n_rois": int(len(members)),
-                "n_responsive": int(responsive),
-                "responsive_fraction": float(responsive / len(members)) if members else float("nan"),
-                "mean_visual": float(np.nanmean(visual)) if visual.size else float("nan"),
-                "mean_blank": float(np.nanmean(blank)) if blank.size else float("nan"),
-                "mean_delta": float(np.nanmean(delta)) if delta.size else float("nan"),
-            }
-        )
-    return summary_rows
-
-
 
 
 def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str) -> Dict[str, Any]:
@@ -302,25 +298,33 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
     }
 
 
-def _analysis_results_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
-    if config.get("analysis_results_cache_path"):
-        return Path(config["analysis_results_cache_path"])
-    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
-    return cache_root / "analysis_results_cache.npz"
-
-
-def _analysis_tables_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
-    if config.get("analysis_tables_cache_path"):
-        return Path(config["analysis_tables_cache_path"])
-    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
-    return cache_root / "analysis_tables_cache.npz"
-
-
 def _source_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
     if config.get("cache_path"):
         return Path(config["cache_path"])
     cache_root = Path(config.get("cache_root") or (result_root / "cache"))
     return cache_root / "source_cache.npz"
+
+
+def _analysis_run_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+    if config.get("analysis_run_cache_path"):
+        return Path(config["analysis_run_cache_path"])
+    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
+    preset_name = safe_filename_component(str(config.get("comparison_preset_name") or "default"))
+    return cache_root / f"{preset_name}_analysis_run_cache.npz"
+
+
+def _analysis_tables_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+    if config.get("analysis_tables_cache_path"):
+        return Path(config["analysis_tables_cache_path"])
+    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
+    return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_tables_cache.npz")
+
+
+def _analysis_results_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+    if config.get("analysis_results_cache_path"):
+        return Path(config["analysis_results_cache_path"])
+    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
+    return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
 
 
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
@@ -354,6 +358,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
     shuffle_n = int(config.get("shuffle_n", 200))
+    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
     analysis_results_cache_file = _analysis_results_cache_path(config, result_root)
     analysis_tables_cache_file = _analysis_tables_cache_path(config, result_root)
     source_cache_file = _source_cache_path(config, result_root)
@@ -382,15 +387,18 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             manifest.setdefault("cache_summary", {})
             manifest["cache_summary"].update(
                 {
+                    "analysis_run_cache_path": str(analysis_run_cache_file),
                     "analysis_results_cache_path": str(analysis_results_cache_file),
                     "analysis_results_cache_reused": True,
                     "analysis_tables_cache_path": str(analysis_tables_cache_file),
+                    "analysis_tables_cache_reused": True,
                     "source_cache_path": str(source_cache_file),
                 }
             )
             manifest.setdefault("run_parameters", {})
             manifest["run_parameters"].update(
                 {
+                    "analysis_run_cache_path": str(analysis_run_cache_file),
                     "analysis_results_cache_path": str(analysis_results_cache_file),
                     "analysis_tables_cache_path": str(analysis_tables_cache_file),
                     "cache_path": str(source_cache_file),
@@ -465,7 +473,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         shuffle_n,
     )
     mixed_model_results = run_mixed_model_family(
-        activity_summary_rows,
+        activity_rows,
         state_comparison_states=selected_states_by_mode.get("movie", []),
         basal_apical_states=selected_states_by_mode.get("movie", []),
         shuffle_n=shuffle_n,
@@ -473,7 +481,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
     correlation_summary = correlation_summary_rows(correlation_rows)
     lag_summary = lag_summary_rows(lag_rows)
-    visual_response_day_rows = _visual_response_day_rows(visual_response_rows)
+    visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
+    visual_response_family = run_visual_response_family(
+        visual_response_rows,
+        cohort=visual_response_cohort,
+        response_metric=visual_response_metric,
+    )
     mixed_model_contrast_count = len(mixed_model_results.get("all_state", {}).get("contrast_rows", [])) if isinstance(mixed_model_results, dict) else 0
     _stage(
         "summary counts",
@@ -514,11 +527,54 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         write_csv_rows(result_root / "csv" / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
 
     _stage("plotting", "state activity")
-    plot_state_activity(activity_summary_rows or activity_rows, result_root)
+    plot_state_activity(activity_rows, result_root)
     _stage("plotting", "correlation")
     plot_state_correlation(correlation_summary, result_root)
     _stage("plotting", "lag heatmap")
     plot_lag_heatmap(lag_rows, result_root)
+    if visual_response_rows:
+        visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
+        for cohort in ("all", "responsive", "nonresponsive"):
+            cohort_rows = visual_response_rows if cohort == "all" else [row for row in visual_response_rows if str(row.get("cohort") or "nonresponsive") == cohort]
+            if not cohort_rows:
+                continue
+            plot_visual_response_boxplot_figure(
+                {"rows": cohort_rows},
+                visual_response_fig_dir,
+                output_name=f"visual_response_{cohort}.svg",
+                title=f"Visual response - {cohort.capitalize()}",
+                cohort_label=cohort,
+                kind="soma_bouton",
+            )
+    if mixed_model_results:
+        mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
+        mixed_model_payload = {"mixed_model": mixed_model_results}
+        plot_mixed_model_forest_figure(
+            mixed_model_payload,
+            mixed_model_fig_dir,
+            output_name="mixed_model_forest.svg",
+            title="Mixed-model fixed effects",
+        )
+        plot_mixed_model_predicted_means_figure(
+            mixed_model_payload,
+            mixed_model_fig_dir,
+            output_name="mixed_model_predicted_means.svg",
+            title="Mixed-model predicted means",
+        )
+        plot_mixed_model_contrasts_checkpoint(
+            mixed_model_payload,
+            mixed_model_fig_dir,
+            scope="all_state",
+            output_name="mixed_model_contrasts_all_state.svg",
+            title="Mixed-model contrasts - all state",
+        )
+        plot_mixed_model_contrasts_checkpoint(
+            mixed_model_payload,
+            mixed_model_fig_dir,
+            scope="selected_state",
+            output_name="mixed_model_contrasts_selected_state.svg",
+            title="Mixed-model contrasts - selected state",
+        )
 
     visual_response_counts = {
         "all": int(len(visual_response_rows)),
@@ -547,6 +603,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "visual_response_cohort": visual_response_cohort,
         "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
         "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+        "visual_response_family": visual_response_family,
         "visual_response_cohort_ids": {
             "soma": {
                 "responsive": [str(row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and bool(row.get("responsive", False))],
@@ -559,21 +616,47 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         },
         "mixed_model": mixed_model_results,
         "cache_summary": {
+            "analysis_run_cache_path": str(analysis_run_cache_file),
             "analysis_results_cache_path": str(analysis_results_cache_file),
             "analysis_results_cache_reused": False,
             "analysis_tables_cache_path": str(analysis_tables_cache_file),
+            "analysis_tables_cache_reused": False,
             "source_cache_path": str(source_cache_file),
         },
         "output_root": str(result_root),
     }
-    write_json_file(result_root / "summary" / "manifest.json", manifest)
+    manifest_json = _json_safe(manifest)
+    analysis_tables_payload = {
+        "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
+        "meta": analysis_results_meta,
+        "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
+        "analysis_tables": {
+            "experiment_rows": experiment_rows,
+            "activity_rows": activity_rows,
+            "correlation_rows": correlation_rows,
+            "lag_rows": lag_rows,
+            "visual_response_rows": visual_response_rows,
+            "activity_summary_rows": activity_summary_rows,
+            "state_comparison_summary_rows": state_comparison_summary_rows,
+            "sleep_state_comparison_summary_rows": sleep_state_comparison_summary_rows,
+            "correlation_summary": correlation_summary,
+            "lag_summary": lag_summary,
+            "visual_response_day_rows": visual_response_day_rows,
+            "visual_response_counts": visual_response_counts,
+            "selected_states_by_mode": selected_states_by_mode,
+            "state_modes": state_modes,
+            "day_groups": day_groups,
+        },
+    }
+    save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
+    write_json_file(result_root / "summary" / "manifest.json", manifest_json)
     save_analysis_results_cache(
         analysis_results_cache_file,
         {
             "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
             "meta": analysis_results_meta,
             "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
-            "analysis_results": analysis_results_cache_payload(manifest),
+            "analysis_results": analysis_results_cache_payload(manifest_json),
         },
     )
     _stage("completed", f"{preset_name} with {len(experiment_rows)} experiments")
@@ -602,10 +685,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if config.get("comparison_presets"):
         manifests = run_comparison_preset_runs(config)
         if manifests:
-            print(json.dumps({"comparison_presets": manifests}, indent=2, sort_keys=True))
+            print(json.dumps({"comparison_presets": _json_safe(manifests)}, indent=2, sort_keys=True))
             return 0
     manifest = run_pipeline(config)
-    print(json.dumps(manifest, indent=2, sort_keys=True))
+    print(json.dumps(_json_safe(manifest), indent=2, sort_keys=True))
     return 0
 
 
