@@ -5,11 +5,14 @@ from typing import Any, Dict, List, Mapping, Sequence
 import numpy as np
 
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+    apply_bonferroni_correction,
     build_state_masks_movie,
     build_state_masks_sleep,
     choose_locomotion_threshold,
     extract_series_bundle,
+    independent_comparison,
     interpolate_series,
+    paired_comparison,
 )
 
 from ...compartment_common import canonical_state_label, read_pickle, state_display_color, state_display_label
@@ -98,10 +101,20 @@ def _sleep_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
 
 
 def state_masks_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> Dict[str, np.ndarray]:
-    del selected_states
     if ctx.mode == "movie":
-        return _movie_masks_for_context(ctx)
-    return _sleep_masks_for_context(ctx)
+        masks = _movie_masks_for_context(ctx)
+    else:
+        masks = _sleep_masks_for_context(ctx)
+    if not selected_states:
+        return masks
+    ordered: Dict[str, np.ndarray] = {}
+    selected_lookup = {canonical_state_label(state) for state in selected_states if canonical_state_label(state)}
+    for state, mask in masks.items():
+        if canonical_state_label(state) in selected_lookup:
+            ordered[state] = mask
+    if "all" in masks and ("all" in selected_lookup or not ordered):
+        ordered.setdefault("all", masks["all"])
+    return ordered or masks
 
 
 def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
@@ -185,3 +198,67 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
             )
         summary_rows.append(payload)
     return summary_rows
+
+
+def _state_values_by_day(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], compartment: str | None = None) -> Dict[str, Dict[str, List[float]]]:
+    selected_lookup = {canonical_state_label(state) for state in selected_states if canonical_state_label(state)}
+    values_by_state: Dict[str, Dict[str, List[float]]] = {state: {} for state in selected_lookup}
+    for row in rows:
+        state = canonical_state_label(row.get("state"))
+        if state not in selected_lookup:
+            continue
+        if compartment is not None and str(row.get("compartment") or "") != compartment:
+            continue
+        day_id = str(row.get("day_id") or "")
+        if not day_id:
+            continue
+        values_by_state.setdefault(state, {}).setdefault(day_id, []).append(float(row.get("mean", float("nan"))))
+    return values_by_state
+
+
+def state_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
+    selected = [state for state in selected_states if canonical_state_label(state)]
+    if len(selected) < 2:
+        return []
+    comparisons: List[Dict[str, Any]] = []
+    for compartment in (None, "soma", "bouton"):
+        values_by_state = _state_values_by_day(rows, selected, compartment=compartment)
+        if not any(values_by_state.values()):
+            continue
+        for idx, state_a in enumerate(selected):
+            for state_b in selected[idx + 1:]:
+                subjects_a = values_by_state.get(state_a, {})
+                subjects_b = values_by_state.get(state_b, {})
+                subjects = sorted(set(subjects_a).intersection(subjects_b))
+                if len(subjects) >= 2:
+                    result = paired_comparison(values_by_state, state_a, state_b, "mean", shuffle_n)
+                else:
+                    result = independent_comparison(values_by_state, state_a, state_b, "mean", shuffle_n)
+                result["comparison"] = "state_pair"
+                result["compartment"] = compartment or "all"
+                result["state_a_display"] = state_a
+                result["state_b_display"] = state_b
+                comparisons.append(result)
+    return comparisons
+
+
+def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
+    # Soma/bouton does not have basal/apical compartments, so reuse the same state list
+    # to provide a parallel comparison table for preset parity.
+    selected = [state for state in selected_states if canonical_state_label(state)]
+    if not selected:
+        return []
+    comparisons: List[Dict[str, Any]] = []
+    for state in selected:
+        values_by_state = _state_values_by_day(rows, [state])
+        if state not in values_by_state:
+            continue
+        result = {
+            "comparison": "state_summary",
+            "state": state,
+            "metric": "mean",
+            "n_subjects": len(values_by_state[state]),
+            "mean": float(np.nanmean([float(v) for values in values_by_state[state].values() for v in values])) if values_by_state[state] else float("nan"),
+        }
+        comparisons.append(result)
+    return comparisons

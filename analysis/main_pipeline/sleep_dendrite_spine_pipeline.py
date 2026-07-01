@@ -31,6 +31,20 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 from analysis.compartment_common import filter_comparison_presets, normalize_comparison_presets
+from analysis.main_pipeline.analysis_families.shared_metrics import (
+    DEFAULT_EVENT_DETECTION_METHOD,
+    DEFAULT_VISUAL_RESPONSE_METRIC,
+    EVENT_DETECTION_METHODS,
+    VISUAL_RESPONSE_METRICS,
+    get_active_event_detection_method,
+    get_active_visual_response_metric,
+    normalize_event_detection_method,
+    normalize_visual_response_metric,
+    set_active_event_detection_method,
+    set_active_visual_response_metric,
+    visual_response_metric_field,
+    visual_response_metric_label,
+)
 from scipy import signal, stats
 try:
     from statsmodels.regression.mixed_linear_model import MixedLM
@@ -106,6 +120,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 if __name__ == "__main__":
     sys.modules.setdefault("sleep_dendrite_spine_pipeline", sys.modules[__name__])
+    sys.modules.setdefault("analysis.main_pipeline.sleep_dendrite_spine_pipeline", sys.modules[__name__])
 # The file is intentionally grouped into: shared constants, low-level helpers,
 # cache builders, analysis, demo generation, and the CLI entrypoint.
 try:
@@ -191,8 +206,6 @@ VISUAL_RESPONSE_MOVIE_STATE = "quiet_awake_movies"
 VISUAL_RESPONSE_BLANK_STATE = "quiet_awake_blank"
 DEFAULT_DENDRITE_RESPONSE_COHORT = "all"
 DENDRITE_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
-EVENT_DETECTION_METHODS = ("amplitude", "derivative")
-DEFAULT_EVENT_DETECTION_METHOD = "derivative"
 LEGACY_EVENT_DETECTION_METHOD = "amplitude"
 
 VISUAL_RESPONSE_CLASSIFIER_VERSION = 3
@@ -414,6 +427,18 @@ def step_progress(current: int, total: int, label: Optional[str] = None) -> None
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+def figure_family_dir(root: Path, family: str) -> Path:
+    return ensure_dir(Path(root) / family)
+
+
+def figure_nested_dir(root: Path, *parts: str) -> Path:
+    return ensure_dir(Path(root).joinpath(*parts))
+
+
+def visual_response_figure_dir(root: Path) -> Path:
+    return figure_family_dir(root, DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME)
+
 def cleanup_roi_detail_figures(figure_root: Optional[Path]) -> List[str]:
     if figure_root is None:
         return []
@@ -538,11 +563,84 @@ def report_relative_path(path: Any, output_dir: Path) -> str:
         return str(path_obj.relative_to(output_dir)).replace("\\", "/")
     except Exception:
         return text.replace("\\", "/")
+        
 def safe_filename_component(value: Any) -> str:
     text = str(value)
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("._-")
     return text or "unknown"
+
+def observation_compartment(
+    cache: Dict[str, Any],
+    exp_id: Any,
+    observation: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Return basal/apical compartment for a dendrite or spine observation."""
+    if not isinstance(observation, dict):
+        return None
+
+    # Best case: the observation already stores the compartment.
+    compartment = observation.get("compartment")
+    if compartment is not None and str(compartment).strip():
+        return str(compartment)
+
+    # Fallback: look up experiment-level compartment annotations.
+    exp_meta = cache.get("experiments", {}).get(str(exp_id), {}) if isinstance(cache, dict) else {}
+    if isinstance(exp_meta, dict):
+        for key in ("compartment", "compartment_label", "dendrite_compartment"):
+            compartment = exp_meta.get(key)
+            if compartment is not None and str(compartment).strip():
+                return str(compartment)
+
+    # Fallback for older cache layouts: infer from conversion/source metadata.
+    for key in ("conversion_compartment", "source_compartment"):
+        compartment = observation.get(key)
+        if compartment is not None and str(compartment).strip():
+            return str(compartment)
+
+    return None
+def state_summary_figure_dir(root: Path) -> Path:
+    """Return the state-summary figure directory."""
+    return figure_family_dir(root, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
+
+
+def _output_compartments_from_rows(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """Return basal/apical compartments that are present in analysis rows."""
+    present = sorted(
+        {
+            str(row.get("compartment"))
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("compartment") or "") in {"basal", "apical"}
+        }
+    )
+    return present
+
+
+def matrix_similarity_output_compartments(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """Return compartments to render for matrix-similarity figures."""
+    return _output_compartments_from_rows(rows)
+
+
+def spine_coactivity_output_compartments(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """Return compartments to render for spine-coactivity figures."""
+    return _output_compartments_from_rows(rows)
+
+def format_dendrite_display_name(
+    animal_id: Any,
+    compartment: Any,
+    global_dendrite_id: Any,
+) -> str:
+    """Format a compact dendrite label for figure titles and reports."""
+    animal_text = str(animal_id or "unknown")
+    compartment_text = str(compartment or "unknown")
+    dendrite_text = str(global_dendrite_id or "unknown")
+
+    # Keep the useful terminal part if IDs are pipe-separated.
+    dendrite_short = dendrite_text.split("|")[-1]
+
+    return f"{animal_text} {compartment_text} {dendrite_short}"
+
 def format_report_number(value: Any, precision: int = 4) -> str:
     try:
         number = float(value)
@@ -951,6 +1049,32 @@ def _visual_response_entity_observation(
     return None, None, None, None
 
 
+def _visual_response_trial_metric_values(
+    trial_trace: np.ndarray,
+    cut_time: np.ndarray,
+    duration_s: Optional[float],
+    *,
+    response_metric: Optional[str] = None,
+    event_detection_method: Optional[str] = None,
+) -> Tuple[float, float]:
+    metric = get_active_visual_response_metric(response_metric)
+    if metric == "mean":
+        return trial_activity_means(trial_trace, cut_time, duration_s)
+    event_method = get_active_event_detection_method(event_detection_method)
+    trial_trace = np.asarray(trial_trace, dtype=float)
+    cut_time = np.asarray(cut_time, dtype=float)
+    baseline_mask = np.isfinite(trial_trace) & np.isfinite(cut_time) & (cut_time < 0)
+    stimulus_mask = np.isfinite(trial_trace) & np.isfinite(cut_time) & (cut_time >= 0)
+    if duration_s is not None and np.isfinite(duration_s):
+        stimulus_mask &= cut_time < float(duration_s)
+    baseline_info = build_event_info(trial_trace[baseline_mask], cut_time[baseline_mask], method=event_method, include_all_methods=False)
+    stimulus_info = build_event_info(trial_trace[stimulus_mask], cut_time[stimulus_mask], method=event_method, include_all_methods=False)
+    return (
+        float(as_float(baseline_info.get("event_frequency_per_min")) if as_float(baseline_info.get("event_frequency_per_min")) is not None else float("nan")),
+        float(as_float(stimulus_info.get("event_frequency_per_min")) if as_float(stimulus_info.get("event_frequency_per_min")) is not None else float("nan")),
+    )
+
+
 def _collect_visual_response_trial_rows(
     source_cache: Optional[Dict[str, Any]],
     exp_id: str,
@@ -959,6 +1083,8 @@ def _collect_visual_response_trial_rows(
     kind: str,
     cut_cache: Dict[str, Optional[Dict[str, Any]]],
     parent_dendrite_observation: Optional[Dict[str, Any]] = None,
+    response_metric: Optional[str] = None,
+    event_detection_method: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     cut_data = _load_visual_response_cut_data(source_cache, exp_id, cut_cache, observation)
     if not cut_data:
@@ -983,6 +1109,7 @@ def _collect_visual_response_trial_rows(
         trial_matrix = np.asarray(cut_neural[roi_index] - alpha * cut_neural[dendrite_index], dtype=float)
     else:
         trial_matrix = np.asarray(cut_neural[roi_index], dtype=float)
+    response_metric_name = get_active_visual_response_metric(response_metric)
     rows: List[Dict[str, Any]] = []
     for meta in trial_meta:
         if not isinstance(meta, dict):
@@ -996,7 +1123,13 @@ def _collect_visual_response_trial_rows(
             continue
         trial_trace = np.asarray(trial_matrix[trial_index], dtype=float)
         trial_duration = as_float(meta.get("duration"))
-        baseline, stimulus = trial_activity_means(trial_trace, cut_time, trial_duration)
+        baseline, stimulus = _visual_response_trial_metric_values(
+            trial_trace,
+            cut_time,
+            trial_duration,
+            response_metric=response_metric_name,
+            event_detection_method=event_detection_method,
+        )
         if not np.isfinite(stimulus):
             continue
         if group == "visual" and not np.isfinite(baseline):
@@ -1007,12 +1140,14 @@ def _collect_visual_response_trial_rows(
                 "trial_label": trial_label,
                 "response": float(stimulus),
                 "baseline": float(baseline),
+                "response_metric": response_metric_name,
             }
         )
     return rows
 
 
 def _movie_style_blank_vs_movies_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    response_metric = get_active_visual_response_metric(rows[0].get("response_metric") if rows else None)
     visual_trial_labels: List[str] = []
     blank_trial_labels: List[str] = []
     visual_values: List[float] = []
@@ -1044,6 +1179,7 @@ def _movie_style_blank_vs_movies_summary(rows: Sequence[Dict[str, Any]]) -> Dict
         "comparison": "visual_response_movie_vs_blank",
         "test_name": "movie_style_blank_vs_movies",
         "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "response_metric": response_metric,
         "statistic": float(blank.get("statistic", float("nan"))),
         "raw_pvalue": float(blank.get("raw_pvalue", float("nan"))),
         "adjusted_pvalue": float(blank.get("adjusted_pvalue", float("nan"))),
@@ -1124,6 +1260,7 @@ def _classify_visual_response_rows(
                         "comparison": summary.get("comparison", "visual_response_movie_vs_blank_ancova"),
                         "test_name": summary.get("test_name", "ancova_ols"),
                         "covariate": summary.get("covariate", VISUAL_RESPONSE_COVARIATE_NAME),
+                        "response_metric": summary.get("response_metric", get_active_visual_response_metric()),
                         "visual_trial_labels": list(dict.fromkeys(summary.get("visual_trial_labels", []))) if isinstance(summary.get("visual_trial_labels"), list) else [],
                         "blank_trial_labels": list(dict.fromkeys(summary.get("blank_trial_labels", []))) if isinstance(summary.get("blank_trial_labels"), list) else [],
                         "available": bool(summary.get("available", False)),
@@ -1159,6 +1296,7 @@ def _classify_visual_response_rows(
                 "comparison": summary.get("comparison", "visual_response_movie_vs_blank_ancova"),
                 "test_name": summary.get("test_name", "ancova_ols"),
                 "covariate": summary.get("covariate", VISUAL_RESPONSE_COVARIATE_NAME),
+                "response_metric": summary.get("response_metric", get_active_visual_response_metric()),
                 "visual_trial_labels": list(dict.fromkeys(summary.get("visual_trial_labels", []))) if isinstance(summary.get("visual_trial_labels"), list) else [],
                 "blank_trial_labels": list(dict.fromkeys(summary.get("blank_trial_labels", []))) if isinstance(summary.get("blank_trial_labels"), list) else [],
                 "available": bool(summary.get("available", False)),
@@ -1222,6 +1360,7 @@ def _classify_visual_response_rows(
         "method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
         "version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
         "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "response_metric": get_active_visual_response_metric(),
         "visual_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
         "blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
         "rows": rows,
@@ -1274,6 +1413,7 @@ def classify_visual_responsive_dendrites(
                     "comparison": "visual_response_movie_vs_blank",
                     "test_name": "welch_ttest",
                     "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+                    "response_metric": get_active_visual_response_metric(),
                     "available": bool(test.get("available", False)),
                     "n_visual_values": int(len(movie_values)),
                     "n_blank_values": int(len(blank_values)),
@@ -1330,6 +1470,7 @@ def classify_visual_responsive_dendrites(
         "method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
         "version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
         "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "response_metric": get_active_visual_response_metric(),
         "visual_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
         "blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
         "rows": rows,
@@ -1381,7 +1522,7 @@ def classify_visual_responsive_spines(
                             "baseline": float(blank_value),
                         }
                     )
-                summary = _ancova_visual_response_summary(spine_observation_rows)
+                summary = _movie_style_blank_vs_movies_summary(spine_observation_rows)
                 if compartments_seen:
                     unique_compartments = list(dict.fromkeys(compartments_seen))
                     compartment = unique_compartments[0] if len(unique_compartments) == 1 else "mixed"
@@ -1396,6 +1537,7 @@ def classify_visual_responsive_spines(
                         "comparison": summary.get("comparison", "visual_response_movie_vs_blank"),
                         "test_name": summary.get("test_name", "movie_style_blank_vs_movies"),
                         "covariate": summary.get("covariate", VISUAL_RESPONSE_COVARIATE_NAME),
+                        "response_metric": summary.get("response_metric", get_active_visual_response_metric()),
                         "visual_trial_labels": list(dict.fromkeys(summary.get("visual_trial_labels", []))) if isinstance(summary.get("visual_trial_labels"), list) else [],
                         "blank_trial_labels": list(dict.fromkeys(summary.get("blank_trial_labels", []))) if isinstance(summary.get("blank_trial_labels"), list) else [],
                         "available": bool(summary.get("available", False)),
@@ -1455,6 +1597,7 @@ def classify_visual_responsive_spines(
         "method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
         "version": VISUAL_RESPONSE_CLASSIFIER_VERSION,
         "covariate": VISUAL_RESPONSE_COVARIATE_NAME,
+        "response_metric": get_active_visual_response_metric(),
         "visual_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
         "blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
         "rows": rows,
@@ -1520,6 +1663,27 @@ def format_requested_state_label(state_label: str) -> str:
     return state_display_label(state_label)
 def _square_heatmap_state_labels(state_labels: Sequence[str]) -> List[str]:
     return [format_requested_state_label(label) for label in state_labels]
+
+
+def _pad_boxplot_ylim(ax: Any, value_groups: Sequence[Sequence[float] | np.ndarray]) -> None:
+    finite_values: List[float] = []
+    for values in value_groups:
+        arr = np.asarray(values, dtype=float).ravel()
+        finite = arr[np.isfinite(arr)]
+        if finite.size:
+            finite_values.extend(float(value) for value in finite)
+    if not finite_values:
+        return
+    low = float(np.nanmin(finite_values))
+    high = float(np.nanmax(finite_values))
+    if not np.isfinite(low) or not np.isfinite(high):
+        return
+    if low == high:
+        pad = max(0.15, 0.1 * (abs(low) if low != 0 else 1.0))
+    else:
+        span = high - low
+        pad = max(0.06 * span, 0.05 * max(abs(low), abs(high), 1.0))
+    ax.set_ylim(low - pad, high + pad)
 
 
 def color_state_tick_labels(ax: Any, state_labels: Sequence[str], axis: str = "x") -> None:
@@ -4407,6 +4571,26 @@ def plot_mixed_model_contrasts_checkpoint(
     if not panel_paths:
         return None
     return str(panel_paths[0])
+def plot_state_summary_figure(
+    results,
+    output_dir,
+    *,
+    output_name="state_summary.svg",
+    title="State summary distributions",
+    state_labels=None,
+    y_limits=None,
+):
+    """Backward-compatible public wrapper for the old state-summary API."""
+    return plot_state_summary_compartment_comparison_figure(
+        results,
+        None,
+        output_dir,
+        output_name=output_name,
+        title=title,
+        state_labels=state_labels,
+        y_limits=y_limits,
+    )
+   
 def render_analysis_family_figures(
     output_dir: Path,
     results: Dict[str, Any],
@@ -5292,9 +5476,9 @@ def detect_events(
     min_consecutive_frames: int = 3,
     sigma_factor: float = 3.0,
     threshold: Optional[float] = None,
-    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+    method: Optional[str] = None,
 ) -> Dict[str, Any]:
-    method = _canonical_event_detection_method(method)
+    method = get_active_event_detection_method(method)
     trace = np.asarray(trace, dtype=float)
     source_series, source_series_name = _event_detection_source_series(trace, method)
     trace_median = float(np.nanmedian(trace)) if trace.size else float("nan")
@@ -5384,12 +5568,12 @@ def _build_event_detection_info(
     trace: np.ndarray,
     time: Optional[np.ndarray],
     *,
-    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+    method: Optional[str] = None,
     min_consecutive_frames: int = 3,
     sigma_factor: float = 3.0,
     threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
-    method = _canonical_event_detection_method(method)
+    method = get_active_event_detection_method(method)
     trace = np.asarray(trace, dtype=float)
     event_info = detect_events(
         trace,
@@ -5414,11 +5598,11 @@ def build_event_info(
     trace: np.ndarray,
     time: Optional[np.ndarray] = None,
     *,
-    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+    method: Optional[str] = None,
     include_all_methods: bool = True,
 ) -> Dict[str, Any]:
     trace = np.asarray(trace, dtype=float)
-    method = _canonical_event_detection_method(method)
+    method = get_active_event_detection_method(method)
     event_info = _build_event_detection_info(trace, time, method=method)
     event_info["primary_method"] = method
     event_info["event_detection_methods"] = list(EVENT_DETECTION_METHODS)
@@ -5435,14 +5619,14 @@ def build_masked_event_info(
     time: Optional[np.ndarray],
     mask: np.ndarray,
     *,
-    method: str = DEFAULT_EVENT_DETECTION_METHOD,
+    method: Optional[str] = None,
     threshold: Optional[float] = None,
     min_consecutive_frames: int = 3,
     include_all_methods: bool = True,
 ) -> Dict[str, Any]:
     trace = np.asarray(trace, dtype=float)
     mask = np.asarray(mask, dtype=bool)
-    method = _canonical_event_detection_method(method)
+    method = get_active_event_detection_method(method)
     if trace.size == 0 or mask.size != trace.size or not np.any(mask):
         event_info = detect_events(
             np.asarray([], dtype=float),
@@ -5513,7 +5697,7 @@ def build_state_masked_event_info(
     min_consecutive_frames: int = 3,
 ) -> Dict[str, Any]:
     source_info = full_event_info if isinstance(full_event_info, dict) else {}
-    selected_method = _canonical_event_detection_method(method or source_info.get("method") or source_info.get("primary_method") or DEFAULT_EVENT_DETECTION_METHOD)
+    selected_method = get_active_event_detection_method(method or source_info.get("method") or source_info.get("primary_method"))
     threshold = as_float(source_info.get("threshold"))
     return build_masked_event_info(
         trace,
@@ -11176,6 +11360,8 @@ def write_analysis_report(
     append_kv("compare_states", format_report_list(selection.get("compare_states")))
     append_kv("state_comparison_states", format_report_list(selection.get("state_comparison_states")))
     append_kv("basal_apical_states", format_report_list(selection.get("basal_apical_states")))
+    append_kv("event_detection_method", config.get("event_detection_method", "derivative"))
+    append_kv("visual_response_metric", config.get("visual_response_metric", "mean"))
     if cache_summary:
         append_kv("n_animals", cache_summary.get("n_animals", "n/a"))
         append_kv("n_days", cache_summary.get("n_days", cache_summary.get("n_experiments", "n/a")))
@@ -12791,6 +12977,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         channel = int(config.get("channel") or DEFAULT_CHANNEL)
         shuffle_n = int(config.get("shuffle_n") or DEFAULT_SHUFFLES)
         mixed_model_contrast_p_source = normalize_mixed_model_contrast_p_source(config.get("mixed_model_contrast_p_source"))
+        event_detection_method = set_active_event_detection_method(config.get("event_detection_method"))
+        visual_response_metric = set_active_visual_response_metric(config.get("visual_response_metric"))
         spine_coactivity_abs_threshold = normalize_non_negative_float(
             config.get("spine_coactivity_abs_threshold"),
             DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
@@ -12905,6 +13093,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "basal_apical_states": list(basal_apical_states or []),
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
+        "event_detection_method": event_detection_method,
+        "visual_response_metric": visual_response_metric,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": list(selection_meta.get("movie_trial_types") or []),
         "compare_states": list(selection_meta.get("compare_states") or []) if selection_meta.get("compare_states") is not None else None,

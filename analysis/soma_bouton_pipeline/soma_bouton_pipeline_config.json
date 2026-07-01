@@ -1,4 +1,25 @@
 {
+  "_comment": "Edit the expID lists and run knobs here, then pass this file with --config.",
+  "_field_help": {
+    "movie_expids": "List every movie experiment to analyze. Put one expID per line/item in the YYYY-MM-DD_NN_ANIMAL format.",
+    "sleep_expids": "List every sleep experiment to analyze. These are processed with sleep_state.pickle only, and the anatomical compartment is inherited from the same-day source when available.",
+    "result_root": "Directory where the soma/bouton outputs will be written. Each comparison preset gets its own subfolder under this root.",
+    "cache_root": "Directory where the soma/bouton cache files will be written.",
+    "soma_channel": "Suite2p channel index used for soma traces. Use 1 unless your soma data were saved on another channel.",
+    "bouton_channel": "Suite2p channel index used for bouton traces. Use 0 unless your bouton data were saved on another channel.",
+    "lag_window_s": "Window size in seconds for the lag scan around zero lag.",
+    "lag_step_s": "Step size in seconds for the lag scan.",
+    "shuffle_n": "Number of shuffle iterations used for the comparison statistics and null distributions. Increase for more stable p-values.",
+    "state_comparison_states": "Explicit state labels for the main pairwise comparison stack. If you set this, it is used directly instead of deriving states from broader mode presets.",
+    "basal_apical_states": "Explicit state labels for the parallel comparison stack. For soma/bouton this should usually match state_comparison_states so the preset behavior stays consistent.",
+    "event_detection_method": "How calcium events are detected before event-rate summaries are written. Use derivative for the current default derivative-based detector or amplitude for the legacy amplitude-based detector.",
+    "visual_response_metric": "Which metric the shared response-summary path should use. Use mean for the original mean-trace path or calcium_events to classify from event frequency instead.",
+    "rebuild": "Set true to ignore any existing cache and rebuild everything from the raw files.",
+    "plots_only": "Set true to reuse the saved CSV outputs and only regenerate plots, without recomputing row-level results.",
+    "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name.",
+    "comparison_preset_name": "Set automatically when a preset is running. Usually leave this null in the base config.",
+    "comparison_preset_names": "Optional subset of preset names to run from the comparison_presets block."
+  },
   "analysis_name": "soma_bouton_pipeline",
   "movie_expids": [
     "2026-05-11_01_ESRC033",
@@ -25,6 +46,7 @@
   "bouton_channel": 0,
   "lag_window_s": 2.0,
   "lag_step_s": 0.1,
+  "shuffle_n": 200,
   "rebuild": true,
   "plots_only": false,
   "comparison_preset_name": null,
@@ -95,6 +117,8 @@
       ]
     }
   },
+  "event_detection_method": "derivative",
+  "visual_response_metric": "mean",
   "state_comparison_states": [
     "quiet_awake_blank",
     "nrem_blank",

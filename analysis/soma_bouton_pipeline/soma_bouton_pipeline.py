@@ -24,12 +24,20 @@ from analysis.compartment_common import (
 from analysis.soma_bouton_pipeline.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row
 from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_soma_correlation_rows, correlation_summary_rows
 from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
-from analysis.soma_bouton_pipeline.analysis_families.state import activity_rows_for_context, state_summary_rows
+from analysis.soma_bouton_pipeline.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
 from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation
 from analysis.compartment_common import resolve_analysis_state_selections
 
 
 logger = logging.getLogger(__name__)
+
+
+def _stage(label: str, detail: str | None = None) -> None:
+    if detail:
+        logger.info("[soma] %s: %s", label, detail)
+    else:
+        logger.info("[soma] %s", label)
+
 
 DEFAULT_CONFIG = {
     "analysis_name": "soma_bouton_pipeline",
@@ -46,6 +54,8 @@ DEFAULT_CONFIG = {
     "comparison_presets": None,
     "comparison_preset_name": None,
     "comparison_preset_names": None,
+    "event_detection_method": "derivative",
+    "visual_response_metric": "mean",
     "state_comparison_states": [
         "quiet_awake_blank",
         "nrem_blank",
@@ -68,6 +78,8 @@ DEFAULT_CONFIG = {
         "nrem",
         "rem",
     ],
+    "event_detection_method": "derivative",
+    "visual_response_metric": "mean",
 }
 
 
@@ -102,7 +114,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         return []
 
     base_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
-    logger.info("Running %d soma/bouton preset(s)", len(presets))
+    _stage("comparison presets", f"running {len(presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
     for preset_name, overrides in presets:
         preset_config = copy.deepcopy(dict(config))
@@ -113,7 +125,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["comparison_preset_name"] = preset_name
         preset_result_root = base_result_root / safe_filename_component(preset_name)
         preset_config["result_root"] = str(preset_result_root)
-        logger.info("Preset %s -> result_root=%s", preset_name, preset_result_root)
+        _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
     return manifests
 
@@ -135,7 +147,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if not result_root.is_absolute():
         result_root = repo_root / result_root
     preset_name = str(config.get("comparison_preset_name") or "default")
-    logger.info("Running preset %s -> result_root=%s", preset_name, result_root)
+    _stage("run preset", f"{preset_name} -> {result_root}")
     ensure_dir(result_root)
     ensure_dir(result_root / "csv")
     ensure_dir(result_root / "figures")
@@ -149,7 +161,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     state_modes = [mode for mode in ("movie", "sleep") if expids_by_mode.get(mode)]
     if config.get("state_mode") in {"movie", "sleep"}:
         state_modes = [str(config["state_mode"])]
+    _stage("input selection", f"modes={','.join(state_modes) if state_modes else 'none'}")
+    _stage("config knobs", f"event_detection_method={config.get('event_detection_method', 'derivative')}, visual_response_metric={config.get('visual_response_metric', 'mean')}")
 
+    shuffle_n = int(config.get("shuffle_n", 200))
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
@@ -159,6 +174,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     for mode in state_modes:
         selected_states = list(resolve_analysis_state_selections(config, mode))
         selected_states_by_mode[mode] = selected_states
+        _stage("state selection", f"{mode}: {', '.join(selected_states) if selected_states else 'none'}")
         for expid in expids_by_mode.get(mode, []):
             ctx = build_experiment_context(
                 expid=expid,
@@ -180,29 +196,58 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     lag_step_s=float(config.get("lag_step_s", 0.1)),
                 )
             )
+        _stage("mode complete", f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, lag_rows={len(lag_rows)}")
 
     day_groups = build_day_groups(expids_by_mode)
 
+    _stage("summaries", "building day-level comparison tables")
     activity_summary_rows = state_summary_rows(activity_rows)
+    state_comparison_summary_rows = state_comparison_rows(
+        [row for row in activity_summary_rows if str(row.get("mode") or "") == "movie"],
+        selected_states_by_mode.get("movie", []),
+        shuffle_n,
+    )
+    sleep_state_comparison_summary_rows = state_comparison_rows(
+        [row for row in activity_summary_rows if str(row.get("mode") or "") == "sleep"],
+        selected_states_by_mode.get("sleep", []),
+        shuffle_n,
+    )
     correlation_summary = correlation_summary_rows(correlation_rows)
     lag_summary = lag_summary_rows(lag_rows)
+    _stage("summary counts", f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, correlation={len(correlation_summary)}, lag={len(lag_summary)}")
 
+    _stage("writing csv", "experiments")
     write_csv_rows(result_root / "csv" / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
     if activity_rows:
+        _stage("writing csv", "state_activity_by_experiment")
         write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, list(activity_rows[0].keys()))
     if correlation_rows:
+        _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
     if lag_rows:
+        _stage("writing csv", "bouton_soma_lag_scan_by_roi")
         write_csv_rows(result_root / "csv" / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
     if activity_summary_rows:
+        _stage("writing csv", "state_activity_by_day")
         write_csv_rows(result_root / "csv" / "state_activity_by_day.csv", activity_summary_rows, list(activity_summary_rows[0].keys()))
+    if state_comparison_summary_rows:
+        _stage("writing csv", "state_comparisons_movie")
+        write_csv_rows(result_root / "csv" / "state_comparisons_movie.csv", state_comparison_summary_rows, list(state_comparison_summary_rows[0].keys()))
+    if sleep_state_comparison_summary_rows:
+        _stage("writing csv", "state_comparisons_sleep")
+        write_csv_rows(result_root / "csv" / "state_comparisons_sleep.csv", sleep_state_comparison_summary_rows, list(sleep_state_comparison_summary_rows[0].keys()))
     if correlation_summary:
+        _stage("writing csv", "bouton_soma_correlation_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", correlation_summary, list(correlation_summary[0].keys()))
     if lag_summary:
+        _stage("writing csv", "bouton_soma_lag_summary_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", lag_summary, list(lag_summary[0].keys()))
 
+    _stage("plotting", "state activity")
     plot_state_activity(activity_summary_rows or activity_rows, result_root)
+    _stage("plotting", "correlation")
     plot_state_correlation(correlation_summary, result_root)
+    _stage("plotting", "lag heatmap")
     plot_lag_heatmap(lag_rows, result_root)
 
     manifest = {
@@ -214,13 +259,17 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "counts": {
             "experiments": len(experiment_rows),
             "activity_rows": len(activity_rows),
+            "state_comparison_rows_movie": len(state_comparison_summary_rows),
+            "state_comparison_rows_sleep": len(sleep_state_comparison_summary_rows),
             "correlation_rows": len(correlation_rows),
             "lag_rows": len(lag_rows),
         },
+        "event_detection_method": str(config.get("event_detection_method") or "derivative"),
+        "visual_response_metric": str(config.get("visual_response_metric") or "mean"),
         "output_root": str(result_root),
     }
     write_json_file(result_root / "summary" / "manifest.json", manifest)
-    logger.info("Completed preset %s with %d experiments", preset_name, len(experiment_rows))
+    _stage("completed", f"{preset_name} with {len(experiment_rows)} experiments")
     return manifest
 
 

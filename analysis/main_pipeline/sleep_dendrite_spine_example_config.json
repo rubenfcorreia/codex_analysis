@@ -38,7 +38,9 @@
     "mixed_model_only": "Set true to skip the state/correlation/matrix analyses and run only the main mixed-model branch from the cache. This matches the --mixed-model-only CLI flag.",
     "plots_only": "Set true to reuse the saved source/results caches and only generate figures, without rewriting CSV, JSON, or the analysis report. This matches a plots-only plotting pass.",
     "plots_only_include_supporting_figures": "Set true to keep the slower supporting figure galleries during plots-only. Leave false for the fastest poster-focused pass.",
-    "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name."
+    "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name.",
+    "event_detection_method": "How calcium events are detected before event-rate summaries are written. Use derivative for the current default derivative-based detector or amplitude for the legacy amplitude-based detector.",
+    "visual_response_metric": "Which metric the visual-response classification uses. Use mean for the original mean-trace path or calcium_events to classify from event frequency instead."
   },
   "comparison_presets": {
     "movies_state_comparisons": {
@@ -169,5 +171,7 @@
   "mixed_model_contrast_p_source": "classical",
   "mixed_model_only": false,
   "plots_only": false,
-  "plots_only_include_supporting_figures": false
+  "plots_only_include_supporting_figures": false,
+  "event_detection_method": "derivative",
+  "visual_response_metric": "mean"
 }

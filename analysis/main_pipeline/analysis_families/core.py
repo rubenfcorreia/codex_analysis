@@ -11,7 +11,7 @@ MAIN_PIPELINE_DIR = Path(__file__).resolve().parents[1]
 if str(MAIN_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(MAIN_PIPELINE_DIR))
 
-from sleep_dendrite_spine_pipeline import (
+from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
     ALL_REQUESTED_STATES,
     DEFAULT_BASAL_APICAL_STATES,
     DENDRITE_RESPONSE_COHORTS,
