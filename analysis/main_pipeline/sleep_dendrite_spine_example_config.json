@@ -172,6 +172,6 @@
   "mixed_model_only": false,
   "plots_only": false,
   "plots_only_include_supporting_figures": false,
-  "event_detection_method": "derivative",
-  "visual_response_metric": "mean"
+  "event_detection_method": "amplitude",
+  "visual_response_metric": "calcium_events"
 }

@@ -115,6 +115,15 @@ def _state_summary_gallery_cache_key(
         _state_summary_filter_key(dendrite_ids_filter),
         _state_summary_filter_key(spine_ids_filter),
     )
+
+
+def extract_dendrite_token(global_dendrite_id: Any) -> str:
+    parts = [part for part in str(global_dendrite_id or "").split("|") if part]
+    if len(parts) >= 3:
+        return str(parts[2])
+    if len(parts) >= 1:
+        return str(parts[-1])
+    return "unknown"
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -599,10 +608,24 @@ def observation_compartment(
             return str(compartment)
 
     return None
-def state_summary_figure_dir(root: Path) -> Path:
-    """Return the state-summary figure directory."""
-    return figure_family_dir(root, DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME)
 
+def state_summary_figure_dir(root: Path, state_group: Any = None) -> Path:
+    """Return the output directory for state-summary figures.
+
+    state_group is optional for compatibility with analysis_families/core.py,
+    which renders separate selected-state / basal-apical state groups.
+    """
+    base = Path(root) / "state_summary"
+
+    if state_group is None:
+        return base
+
+    group = str(state_group or "").strip().lower()
+    if not group or group in {"all", "default", "none"}:
+        return base
+
+    safe_group = group.replace(" ", "_").replace("-", "_")
+    return base / safe_group
 
 def _output_compartments_from_rows(rows: Sequence[Dict[str, Any]]) -> List[str]:
     """Return basal/apical compartments that are present in analysis rows."""
@@ -4820,8 +4843,43 @@ def plot_state_summary_figure(
     title="State summary distributions",
     state_labels=None,
     y_limits=None,
+    comparison_rows=None,
+    cohort_label="all",
+    state_group=DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
+    **_compat_kwargs,
 ):
     """Backward-compatible public wrapper for the old state-summary API."""
+    if isinstance(results, dict) and isinstance(results.get("state_summaries"), dict) and not isinstance(results.get("apical_results"), dict):
+        state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
+        output_paths: List[Path] = []
+        for metric_name, metric_title in {
+            "dendrite_mean": "Dendrite mean dF/F",
+            "spine_specific_mean": "Spine-specific mean dF/F",
+            "dendrite_event_frequency_per_min": "Dendrite calcium event frequency (per min)",
+            "spine_event_frequency_per_min": "Spine calcium event frequency (per min)",
+            "coincident_event_frequency_per_min": "Coincident spine event frequency (per min)",
+            "noncoincident_event_frequency_per_min": "Noncoincident spine event frequency (per min)",
+        }.items():
+            summary = results.get("state_summaries", {}).get(metric_name, {})
+            panel_fig = _render_state_summary_single_panel_figure(
+                metric_name,
+                metric_title,
+                summary,
+                state_order,
+                y_limits.get(metric_name) if y_limits else None,
+                comparison_rows=comparison_rows,
+            )
+            if panel_fig is None:
+                continue
+            metric_output_path = state_summary_metric_output_dir(
+                output_dir,
+                metric_name,
+                cohort_label,
+                state_group,
+            ) / f"{Path(output_name).stem}_{metric_name}.svg"
+            save_figure(panel_fig, metric_output_path, extra_formats=())
+            output_paths.append(metric_output_path)
+        return str(output_paths[0]) if output_paths else None
     return plot_state_summary_compartment_comparison_figure(
         results,
         None,
@@ -4830,6 +4888,9 @@ def plot_state_summary_figure(
         title=title,
         state_labels=state_labels,
         y_limits=y_limits,
+        comparison_rows=comparison_rows,
+        cohort_label=cohort_label,
+        state_group=state_group,
     )
    
 
@@ -5675,6 +5736,73 @@ def spine_coactivity_figure_dir(root: Path, figure_kind: str, *parts: Any) -> Pa
         subdir,
         *parts,
     )
+
+
+def _render_state_summary_single_panel_figure(
+    metric_key: str,
+    metric_title: str,
+    summary: Dict[str, Dict[str, List[float]]],
+    state_order: Sequence[str],
+    y_limit: Optional[Tuple[float, float]] = None,
+    comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Optional[Any]:
+    if plt is None:
+        return None
+    fig_width = min(max(6.9, 0.76 * len(state_order) + 2.8), 8.5)
+    fig_height = min(max(4.2, POSTER_DOUBLE_FIGSIZE[1] - 0.7), 4.9)
+    fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
+    ax = ax.ravel()[0]
+    rng = np.random.default_rng(7)
+    all_data: List[np.ndarray] = []
+    positions: List[float] = []
+    data: List[np.ndarray] = []
+    labels: List[str] = []
+    for idx, state in enumerate(state_order, start=1):
+        arr = flatten_state_summary_values(summary.get(state, {}))
+        if arr.size:
+            positions.append(float(idx))
+            data.append(arr)
+            labels.append(state)
+    if not data:
+        plt.close(fig)
+        return None
+    bp = ax.boxplot(data, positions=positions, widths=0.50, patch_artist=True, showfliers=False)
+    _set_boxplot_colors(bp, [state_display_color(state) for state in labels])
+    for pos, state, arr in zip(positions, labels, data):
+        jitter = rng.uniform(-0.08, 0.08, size=arr.size)
+        ax.scatter(np.full(arr.size, pos) + jitter, arr, s=14, alpha=0.48, color=state_display_color(state), edgecolor="none")
+    set_requested_state_ticks(ax, [state for state in state_order if state in labels])
+    ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
+    ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
+    _pad_boxplot_ylim(ax, all_data + data)
+    if y_limit is not None and len(y_limit) == 2:
+        try:
+            ax.set_ylim(float(y_limit[0]), float(y_limit[1]))
+        except Exception:
+            pass
+    ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+    comparison_subset = []
+    state_position_lookup = {state: float(idx) for idx, state in enumerate(state_order, start=1)}
+    for row in (comparison_rows or []):
+        if str(row.get("comparison")) != metric_key:
+            continue
+        if not is_significant_row(row):
+            continue
+        state_a = canonical_state_label(row.get("state_a"))
+        state_b = canonical_state_label(row.get("state_b"))
+        if state_a not in state_position_lookup or state_b not in state_position_lookup:
+            continue
+        comparison_subset.append(
+            {
+                "x1": float(state_position_lookup[state_a]),
+                "x2": float(state_position_lookup[state_b]),
+                "shuffle_p": row.get("shuffle_p"),
+            }
+        )
+    _draw_boxplot_significance_annotations(ax, comparison_subset)
+    fig.tight_layout()
+    return fig
 
 
 def plot_state_summary_compartment_comparison_figure(
