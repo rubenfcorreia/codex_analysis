@@ -664,7 +664,26 @@ def sorted_present_compartments(cache: Dict[str, Any]) -> List[str]:
 
     return [compartment for compartment in compartment_order if compartment in present]
  
- 
+def gallery_compartment_title(compartment: Any) -> str:
+    """Return a readable compartment title for figure-gallery sections."""
+    text = str(compartment or "").strip().lower()
+
+    if text == "basal":
+        return "Basal dendrites"
+    if text == "apical":
+        return "Apical dendrites"
+    if text == "all":
+        return "All compartments"
+    if text == "soma":
+        return "Soma"
+    if text == "bouton":
+        return "Bouton"
+
+    if not text:
+        return "Unknown compartment"
+
+    return text.replace("_", " ").title()
+
 def matrix_similarity_output_compartments(rows: Sequence[Dict[str, Any]]) -> List[str]:
     """Return compartments to render for matrix-similarity figures."""
     return _output_compartments_from_rows(rows)
@@ -2394,6 +2413,180 @@ def render_cached_visual_response_figures(
                     )
     return saved
 
+def gallery_compartment_suffix(compartment: Any) -> str:
+    """Return a safe filename suffix for a compartment-specific gallery figure."""
+    text = str(compartment or "").strip().lower()
+    if not text or text in {"all", "none"}:
+        return "all"
+    return text.replace(" ", "_").replace("-", "_")
+
+
+def filter_rows_by_compartment(
+    rows: Sequence[Dict[str, Any]],
+    compartment: Any,
+) -> List[Dict[str, Any]]:
+    """Filter analysis rows to one compartment.
+
+    For compartment='all' or empty compartment, return rows unchanged.
+    """
+    compartment_key = str(compartment or "").strip().lower()
+    if not compartment_key or compartment_key == "all":
+        return list(rows or [])
+
+    filtered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row_compartment = str(row.get("compartment") or "").strip().lower()
+        if row_compartment == compartment_key:
+            filtered.append(row)
+
+    return filtered
+
+
+def filter_rows_by_matrix_similarity(
+    rows: Sequence[Dict[str, Any]],
+    compartment: Any,
+) -> List[Dict[str, Any]]:
+    """Filter matrix-similarity rows to the requested output compartment."""
+    compartment_key = str(compartment or "").strip().lower()
+    if not compartment_key or compartment_key == "all":
+        return list(rows or [])
+
+    filtered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        candidates = [
+            row.get("output_compartment"),
+            row.get("compartment"),
+            row.get("dendrite_compartment"),
+            row.get("source_compartment"),
+            row.get("target_compartment"),
+        ]
+        candidate_keys = {str(value or "").strip().lower() for value in candidates}
+        if compartment_key in candidate_keys:
+            filtered.append(row)
+
+    return filtered
+
+
+def filter_rows_by_spine_coactivity(
+    rows: Sequence[Dict[str, Any]],
+    compartment: Any,
+) -> List[Dict[str, Any]]:
+    """Filter spine-coactivity rows to the requested output compartment."""
+    compartment_key = str(compartment or "").strip().lower()
+    if not compartment_key or compartment_key == "all":
+        return list(rows or [])
+
+    filtered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        candidates = [
+            row.get("output_compartment"),
+            row.get("compartment"),
+            row.get("dendrite_compartment"),
+            row.get("spine_compartment"),
+            row.get("source_compartment"),
+            row.get("target_compartment"),
+        ]
+        candidate_keys = {str(value or "").strip().lower() for value in candidates}
+        if compartment_key in candidate_keys:
+            filtered.append(row)
+
+    return filtered
+
+
+def summarize_loaded_counts(records: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """Summarize loaded gallery/example records by coarse record type."""
+    counts: Dict[str, int] = {}
+
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+
+        key = (
+            record.get("kind")
+            or record.get("record_type")
+            or record.get("trace_kind")
+            or record.get("figure_kind")
+            or record.get("type")
+            or "records"
+        )
+        key = str(key or "records").strip().lower()
+        counts[key] = counts.get(key, 0) + 1
+
+    counts["total"] = sum(counts.values())
+    return counts
+
+
+def select_representative_trace_record(
+    records: Sequence[Dict[str, Any]],
+    *,
+    compartment: Any = None,
+    trace_kind: Any = None,
+    figure_kind: Any = None,
+    state: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Pick a representative trace/example record from loaded gallery records.
+
+    The function prefers records matching the requested metadata and then picks
+    the first stable sorted match.
+    """
+    if not records:
+        return None
+
+    compartment_key = str(compartment or "").strip().lower()
+    trace_kind_key = str(trace_kind or "").strip().lower()
+    figure_kind_key = str(figure_kind or "").strip().lower()
+    state_key = str(state or "").strip().lower()
+
+    candidates: List[Dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+
+        if compartment_key and compartment_key != "all":
+            record_compartment = str(record.get("compartment") or "").strip().lower()
+            if record_compartment and record_compartment != compartment_key:
+                continue
+
+        if trace_kind_key:
+            record_trace_kind = str(record.get("trace_kind") or record.get("kind") or "").strip().lower()
+            if record_trace_kind and record_trace_kind != trace_kind_key:
+                continue
+
+        if figure_kind_key:
+            record_figure_kind = str(record.get("figure_kind") or "").strip().lower()
+            if record_figure_kind and record_figure_kind != figure_kind_key:
+                continue
+
+        if state_key:
+            record_state = str(record.get("state") or record.get("state_display") or "").strip().lower()
+            if record_state and record_state != state_key:
+                continue
+
+        candidates.append(record)
+
+    if not candidates:
+        candidates = [record for record in records if isinstance(record, dict)]
+
+    if not candidates:
+        return None
+
+    def sort_key(record: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        return (
+            str(record.get("exp_id") or record.get("expid") or ""),
+            str(record.get("cell_id") or record.get("roi_id") or record.get("spine_id") or ""),
+            str(record.get("state") or record.get("state_display") or ""),
+            str(record.get("trace_kind") or record.get("kind") or ""),
+        )
+
+    return sorted(candidates, key=sort_key)[0]
 
 def build_filtered_correlation_results(results: Dict[str, Any], compartment_filter: Optional[str] = None) -> Dict[str, Any]:
     return {"correlations": filter_rows_by_compartment(results.get("correlations", []), compartment_filter)}
