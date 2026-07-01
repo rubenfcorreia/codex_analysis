@@ -36,6 +36,69 @@ COMPARTMENT_ACCENTS = {
     "bouton": "#7c3aed",
 }
 
+STATE_PLOT_ORDER = [
+    "quiet_awake_blank",
+    "nrem_blank",
+    "rem_blank",
+    "quiet_awake_zebra",
+    "nrem_zebra",
+    "rem_zebra",
+    "quiet_awake_gratings",
+    "nrem_gratings",
+    "rem_gratings",
+    "quiet_awake_active",
+    "nrem_active",
+    "rem_active",
+    "quiet_awake",
+    "nrem",
+    "rem",
+]
+
+
+STATE_PRETTY_LABELS = {
+    "quiet_awake_blank": "Quiet Awake Blank",
+    "nrem_blank": "Nrem Blank",
+    "rem_blank": "Rem Blank",
+    "quiet_awake_zebra": "Quiet Awake Zebra",
+    "nrem_zebra": "Nrem Zebra",
+    "rem_zebra": "Rem Zebra",
+    "quiet_awake_gratings": "Quiet Awake Gratings",
+    "nrem_gratings": "Nrem Gratings",
+    "rem_gratings": "Rem Gratings",
+    "quiet_awake_active": "Quiet Awake Active",
+    "nrem_active": "Nrem Active",
+    "rem_active": "Rem Active",
+    "quiet_awake": "Quiet Awake",
+    "nrem": "Nrem",
+    "rem": "Rem",
+    "active_awake": "Active Awake",
+}
+
+
+def canonical_state_label(label):
+    text = str(label or "").strip().lower()
+    text = text.replace(" ", "_").replace("-", "_")
+    while "__" in text:
+        text = text.replace("__", "_")
+    return text
+
+
+def pretty_state_label(label):
+    key = canonical_state_label(label)
+    return STATE_PRETTY_LABELS.get(key, key.replace("_", " ").title())
+
+
+def ordered_state_labels(states, *, include_missing_canonical=False):
+    seen = {canonical_state_label(state) for state in states}
+    seen.discard("")
+
+    if include_missing_canonical:
+        extras = sorted(seen.difference(STATE_PLOT_ORDER))
+        return list(STATE_PLOT_ORDER) + extras
+
+    ordered = [state for state in STATE_PLOT_ORDER if state in seen]
+    extras = sorted(seen.difference(STATE_PLOT_ORDER))
+    return ordered + extras
 
 def _read_frame(rows: Any) -> pd.DataFrame:
     if rows is None:
@@ -159,28 +222,43 @@ def _plot_boxplot(
 ) -> list[Path]:
     if frame.empty:
         return []
+
     frame = frame.copy()
-    frame[state_col] = frame[state_col].astype(str).str.strip().str.lower()
+    frame[state_col] = frame[state_col].map(canonical_state_label)
+
     if label_col not in frame.columns:
         label_col = state_col
+
     frame[label_col] = frame[label_col].astype(str)
-    label_map = _display_label_map(frame, state_col, label_col)
-    states = _ordered_unique(frame[state_col])
+
+    states = ordered_state_labels(
+        frame[state_col].dropna().unique(),
+        include_missing_canonical=False,
+    )
+
     values_by_state: list[np.ndarray] = []
     labels: list[str] = []
     present_states: list[str] = []
+
     for state in states:
-        values = pd.to_numeric(frame.loc[frame[state_col] == state, value_col], errors="coerce").dropna().to_numpy(dtype=float)
+        values = pd.to_numeric(
+            frame.loc[frame[state_col] == state, value_col],
+            errors="coerce",
+        ).dropna().to_numpy(dtype=float)
+
         if values.size == 0:
             continue
+
         present_states.append(state)
-        labels.append(label_map.get(state, state))
+        labels.append(f"{pretty_state_label(state)}\n(n={values.size})")
         values_by_state.append(values)
+
     if not values_by_state:
         return []
 
     fig_width = max(12.0, 1.25 * len(values_by_state))
     fig, ax = plt.subplots(figsize=(fig_width, 8), constrained_layout=True)
+
     bp = ax.boxplot(
         values_by_state,
         patch_artist=True,
@@ -190,11 +268,13 @@ def _plot_boxplot(
         capprops={"color": accent_color, "linewidth": 1.8},
         boxprops={"linewidth": 2.0},
     )
+
     for patch, state in zip(bp["boxes"], present_states):
         patch.set_facecolor(mcolors.to_rgba(state_display_color(state), 0.28))
         patch.set_edgecolor(accent_color)
 
     rng = np.random.default_rng(0)
+
     for xpos, (state, values) in enumerate(zip(present_states, values_by_state), start=1):
         jitter = rng.normal(0.0, 0.06, size=values.size)
         ax.scatter(
@@ -213,12 +293,13 @@ def _plot_boxplot(
     ax.grid(axis="y", alpha=0.18, linewidth=0.8)
     ax.tick_params(axis="x", labelsize=13)
     ax.tick_params(axis="y", labelsize=13)
+
     _style_state_ticks(ax, labels, present_states)
+
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
+
     return _save_figure(fig, output_dir, stem)
-
-
 def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
     rows = args[0] if args else kwargs.get("rows")
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
