@@ -4832,6 +4832,2237 @@ def plot_state_summary_figure(
         y_limits=y_limits,
     )
    
+
+
+
+
+
+
+
+
+
+
+
+# Restored event-run helper dependencies from commit 64f20508a23d
+
+def _event_run_center(run: Tuple[int, int]) -> float:
+    return 0.5 * (float(int(run[0])) + float(int(run[1])))
+
+
+def _event_run_overlaps_window(window_start: int, window_end: int, run: Tuple[int, int]) -> bool:
+    return bool(max(int(window_start), int(run[0])) < min(int(window_end), int(run[1])))
+
+
+# Restored event-window helper dependencies from commit 64f20508a23d
+
+def _window_overlaps_any(window_start: int, window_end: int, runs: Sequence[Tuple[int, int]]) -> bool:
+    return any(_event_run_overlaps_window(window_start, window_end, run) for run in runs)
+
+
+def _select_event_example_windows(
+    trace_size: int,
+    event_runs: Sequence[Tuple[int, int]],
+    *,
+    max_examples: int = 10,
+    pad_frames: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    trace_size = int(trace_size)
+    if trace_size <= 0:
+        return []
+    if pad_frames is None:
+        pad_frames = max(4, min(25, max(6, trace_size // 12)))
+    pad_frames = int(max(1, pad_frames))
+    selected: List[Dict[str, Any]] = []
+    ordered_runs = sorted([(int(start), int(end)) for start, end in event_runs], key=_event_run_center)
+    if ordered_runs:
+        if len(ordered_runs) > max_examples:
+            indices = np.unique(np.round(np.linspace(0, len(ordered_runs) - 1, max_examples)).astype(int))
+            ordered_runs = [ordered_runs[index] for index in indices[:max_examples]]
+        for run in ordered_runs:
+            window_start = max(0, int(run[0]) - pad_frames)
+            window_end = min(trace_size, int(run[1]) + pad_frames)
+            if window_end <= window_start:
+                continue
+            selected.append(
+                {
+                    "kind": "event",
+                    "label": "event",
+                    "run": run,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }
+            )
+    context_centers = np.linspace(0, max(trace_size - 1, 0), max_examples * 4 if trace_size > 1 else 1)
+    for center_value in context_centers:
+        if len(selected) >= max_examples:
+            break
+        center = int(round(float(center_value)))
+        window_start = max(0, center - pad_frames)
+        window_end = min(trace_size, center + pad_frames + 1)
+        if window_end <= window_start:
+            continue
+        if _window_overlaps_any(window_start, window_end, ordered_runs):
+            continue
+        if any(_window_overlaps_any(window_start, window_end, [item["run"]]) for item in selected if item.get("run") is not None):
+            continue
+        selected.append(
+            {
+                "kind": "context",
+                "label": "context",
+                "run": None,
+                "window_start": window_start,
+                "window_end": window_end,
+            }
+        )
+    if not selected:
+        selected.append(
+            {
+                "kind": "context",
+                "label": "context",
+                "run": None,
+                "window_start": 0,
+                "window_end": trace_size,
+            }
+        )
+    selected = sorted(selected, key=lambda item: (int(item["window_start"]), int(item["window_end"])))
+    if len(selected) > max_examples:
+        selected = selected[:max_examples]
+    while len(selected) < max_examples:
+        selected.append(dict(selected[-1]))
+    return selected
+
+
+# Restored second-order figure/helper dependencies from commit 64f20508a23d
+
+def state_summary_metric_family(metric_name: str) -> str:
+    return "dendrites" if metric_name in STATE_SUMMARY_DENDRITE_METRICS else "spines"
+
+
+def _build_event_detection_example_figure(
+    *,
+    time: np.ndarray,
+    trace: np.ndarray,
+    event_info: Dict[str, Any],
+    title: str,
+    trace_label: str,
+    trace_kind: str,
+    dendrite_event_info: Optional[Dict[str, Any]] = None,
+    dendrite_trace: Optional[np.ndarray] = None,
+    dendrite_time: Optional[np.ndarray] = None,
+) -> Optional[Any]:
+    if plt is None:
+        return None
+
+    time = np.asarray(time, dtype=float).ravel()
+    trace = np.asarray(trace, dtype=float).ravel()
+    if time.size != trace.size:
+        time = np.arange(trace.size, dtype=float)
+
+    valid = np.isfinite(time) & np.isfinite(trace)
+    if not np.any(valid):
+        return None
+
+    event_info = event_info or {}
+    dendrite_event_info = dendrite_event_info or {}
+
+    event_method = str(event_info.get("method") or "amplitude").strip().lower()
+    if event_method not in EVENT_DETECTION_METHODS:
+        event_method = "amplitude"
+    display_trace = np.diff(trace, prepend=np.nan) if event_method == "derivative" else trace
+    display_trace_label = f"First derivative of {trace_label}" if event_method == "derivative" else trace_label
+    dendrite_display_trace = None
+    dendrite_display_label = "Dendrite dF/F"
+
+    threshold = as_float(event_info.get("threshold"))
+    event_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
+    dendrite_event_runs = [(int(start), int(end)) for start, end in (dendrite_event_info.get("event_runs") or [])]
+
+    selected_windows = _select_event_example_windows(trace.size, event_runs, max_examples=10)
+    if not selected_windows:
+        return None
+
+    if trace_kind == "spine":
+        if dendrite_trace is None:
+            dendrite_trace = np.asarray(
+                dendrite_event_info.get("trace") if isinstance(dendrite_event_info, dict) else None,
+                dtype=float,
+            )
+        else:
+            dendrite_trace = np.asarray(dendrite_trace, dtype=float).ravel()
+
+        if dendrite_time is None:
+            dendrite_time = time
+        else:
+            dendrite_time = np.asarray(dendrite_time, dtype=float).ravel()
+
+        if dendrite_trace is None or dendrite_trace.size == 0:
+            dendrite_trace = None
+            dendrite_time = None
+        elif dendrite_time.size != dendrite_trace.size:
+            dendrite_time = np.arange(dendrite_trace.size, dtype=float)
+        if dendrite_trace is not None:
+            dendrite_display_trace = np.diff(dendrite_trace, prepend=np.nan) if event_method == "derivative" else dendrite_trace
+            dendrite_display_label = "First derivative of Dendrite dF/F" if event_method == "derivative" else "Dendrite dF/F"
+    else:
+        dendrite_trace = None
+        dendrite_time = None
+
+    trace_color = "#4477aa" if trace_kind == "dendrite" else "#7a5195"
+    spine_color = "#7a5195"
+    dendrite_color = "#4477aa"
+    event_color = "#8b0000"
+    spine_event_color = "#d62728"
+    noncoincident_color = "#f58518"
+
+    compact_rc = {
+        "font.size": 9,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "figure.titlesize": 16,
+    }
+
+    with plt.rc_context(compact_rc):
+        fig, axes = plt.subplots(5, 2, figsize=(11.5, 13.0), squeeze=False)
+        axes_flat = axes.ravel()
+
+        fig.suptitle(title, fontsize=16, fontweight="bold", y=0.995)
+
+        for idx, window in enumerate(selected_windows):
+            ax = axes_flat[idx]
+            row = idx // 2
+            col = idx % 2
+
+            window_start = int(window["window_start"])
+            window_end = int(window["window_end"])
+
+            window_time = time[window_start:window_end]
+            window_trace = display_trace[window_start:window_end]
+            window_valid = np.isfinite(window_time) & np.isfinite(window_trace)
+
+            if not np.any(window_valid):
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No valid signal",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                )
+                ax.set_axis_off()
+                continue
+
+            window_runs = [run for run in event_runs if _window_overlaps_any(window_start, window_end, [run])]
+
+            # Use the first event in the window as t = 0.
+            # If there is no event, center the context window.
+            if window_runs:
+                reference_idx = int(window_runs[0][0])
+                reference_time = float(time[reference_idx]) if 0 <= reference_idx < time.size else float(window_time[0])
+            else:
+                reference_time = float(np.nanmedian(window_time[window_valid]))
+
+            window_time_rel = window_time - reference_time
+
+            if trace_kind == "spine":
+                ax_spine = ax
+                ax_dendrite = ax_spine.twinx()
+
+                ax_spine.plot(
+                    window_time_rel[window_valid],
+                    window_trace[window_valid],
+                    color=spine_color,
+                    linewidth=1.1,
+                    label=display_trace_label,
+                )
+
+                if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
+                    dend_window_trace = dendrite_display_trace[window_start:window_end]
+                    dend_window_time = dendrite_time[window_start:window_end]
+                    dend_valid = np.isfinite(dend_window_time) & np.isfinite(dend_window_trace)
+
+                    if np.any(dend_valid):
+                        ax_dendrite.plot(
+                            dend_window_time[dend_valid] - reference_time,
+                            dend_window_trace[dend_valid],
+                            color=dendrite_color,
+                            linewidth=1.0,
+                            alpha=0.9,
+                            label=dendrite_display_label,
+                        )
+
+                if np.isfinite(threshold):
+                    ax_spine.axhline(
+                        threshold,
+                        color=event_color,
+                        linestyle="--",
+                        linewidth=0.8,
+                        alpha=0.9,
+                    )
+
+                dend_window_runs = [
+                    run for run in dendrite_event_runs
+                    if _window_overlaps_any(window_start, window_end, [run])
+                ]
+
+                for run in dend_window_runs:
+                    start_i, end_i = run
+                    if 0 <= start_i < time.size and 0 <= end_i - 1 < time.size:
+                        ax_spine.axvspan(
+                            time[start_i] - reference_time,
+                            time[end_i - 1] - reference_time,
+                            color=dendrite_color,
+                            alpha=0.08,
+                            zorder=1,
+                            lw=0,
+                        )
+
+                if window_runs:
+                    for run in window_runs:
+                        coincident = any(int(run[0]) == int(dend_run[0]) for dend_run in dendrite_event_runs)
+                        run_color = spine_event_color if coincident else noncoincident_color
+                        run_label = "coincident" if coincident else "noncoincident"
+
+                        start_i, end_i = run
+                        if 0 <= start_i < time.size and 0 <= end_i - 1 < time.size:
+                            x0 = time[start_i] - reference_time
+                            x1 = time[end_i - 1] - reference_time
+                            ax_spine.axvspan(x0, x1, color=run_color, alpha=0.20, zorder=4, lw=0)
+
+                            y0, y1 = ax_spine.get_ylim()
+                            ax_spine.text(
+                                0.5 * (x0 + x1),
+                                y0 + 0.90 * (y1 - y0),
+                                run_label,
+                                ha="center",
+                                va="top",
+                                fontsize=8,
+                                color=run_color,
+                                bbox={
+                                    "boxstyle": "round,pad=0.15",
+                                    "facecolor": "white",
+                                    "edgecolor": "none",
+                                    "alpha": 0.75,
+                                },
+                            )
+                else:
+                    ax_spine.text(
+                        0.04,
+                        0.92,
+                        "no detected spine event",
+                        transform=ax_spine.transAxes,
+                        ha="left",
+                        va="top",
+                        fontsize=8,
+                        color="#555555",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "edgecolor": "none",
+                            "alpha": 0.75,
+                        },
+                    )
+
+                spine_y_values = window_trace[window_valid]
+                if np.isfinite(threshold):
+                    spine_y_values = np.concatenate([spine_y_values, np.asarray([threshold], dtype=float)])
+
+                spine_y_min = float(np.nanmin(spine_y_values))
+                spine_y_max = float(np.nanmax(spine_y_values))
+                spine_pad = max(0.12 * (spine_y_max - spine_y_min), 0.05) if spine_y_min != spine_y_max else 0.1
+                ax_spine.set_ylim(spine_y_min - spine_pad, spine_y_max + spine_pad)
+
+                if dendrite_trace is not None and dendrite_time is not None and dendrite_time.size > 0:
+                    dend_window_trace = dendrite_display_trace[window_start:window_end]
+                    dend_valid = np.isfinite(dend_window_trace)
+                    if np.any(dend_valid):
+                        dend_y_min = float(np.nanmin(dend_window_trace[dend_valid]))
+                        dend_y_max = float(np.nanmax(dend_window_trace[dend_valid]))
+                        dend_pad = max(0.12 * (dend_y_max - dend_y_min), 0.05) if dend_y_min != dend_y_max else 0.1
+                        ax_dendrite.set_ylim(dend_y_min - dend_pad, dend_y_max + dend_pad)
+
+                if col == 0:
+                    ax_spine.set_ylabel(display_trace_label, color=spine_color)
+                else:
+                    ax_spine.set_ylabel("")
+                    ax_spine.tick_params(axis="y", labelleft=False)
+
+                ax_spine.tick_params(axis="y", colors=spine_color)
+                ax_spine.spines["left"].set_color(spine_color)
+                ax_spine.spines["right"].set_visible(False)
+
+                if col == 1:
+                    ax_dendrite.set_ylabel(dendrite_display_label, color=dendrite_color)
+                else:
+                    ax_dendrite.set_ylabel("")
+                    ax_dendrite.tick_params(axis="y", labelright=False)
+
+                ax_dendrite.yaxis.set_label_position("right")
+                ax_dendrite.yaxis.tick_right()
+                ax_dendrite.tick_params(axis="y", colors=dendrite_color)
+                ax_dendrite.spines["right"].set_color(dendrite_color)
+                ax_dendrite.spines["left"].set_visible(False)
+                ax_dendrite.grid(False)
+                ax_dendrite.patch.set_alpha(0.0)
+
+                ax_spine.text(
+                    0.98,
+                    0.04,
+                    "spine + dendrite",
+                    transform=ax_spine.transAxes,
+                    ha="right",
+                    va="bottom",
+                    fontsize=8,
+                    color="#333333",
+                )
+
+                ax = ax_spine
+
+            else:
+                ax.plot(
+                    window_time_rel[window_valid],
+                    window_trace[window_valid],
+                    color=trace_color,
+                    linewidth=1.1,
+                    label=display_trace_label,
+                )
+
+                if np.isfinite(threshold):
+                    ax.axhline(threshold, color=event_color, linestyle="--", linewidth=0.8, alpha=0.9)
+
+                if window_runs:
+                    for run in window_runs:
+                        start_i, end_i = run
+                        if 0 <= start_i < time.size and 0 <= end_i - 1 < time.size:
+                            ax.axvspan(
+                                time[start_i] - reference_time,
+                                time[end_i - 1] - reference_time,
+                                color=trace_color,
+                                alpha=0.20,
+                                zorder=4,
+                                lw=0,
+                            )
+                else:
+                    ax.text(
+                        0.04,
+                        0.92,
+                        "context window",
+                        transform=ax.transAxes,
+                        ha="left",
+                        va="top",
+                        fontsize=8,
+                        color="#555555",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "facecolor": "white",
+                            "edgecolor": "none",
+                            "alpha": 0.75,
+                        },
+                    )
+
+                y_values = window_trace[window_valid]
+                if np.isfinite(threshold):
+                    y_values = np.concatenate([y_values, np.asarray([threshold], dtype=float)])
+
+                y_min = float(np.nanmin(y_values))
+                y_max = float(np.nanmax(y_values))
+                pad = max(0.12 * (y_max - y_min), 0.05) if y_min != y_max else 0.1
+                ax.set_ylim(y_min - pad, y_max + pad)
+
+                if col == 0:
+                    ax.set_ylabel(display_trace_label)
+                else:
+                    ax.set_ylabel("")
+                    ax.tick_params(axis="y", labelleft=False)
+
+                ax.text(
+                    0.98,
+                    0.04,
+                    display_trace_label,
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="bottom",
+                    fontsize=8,
+                    color="#333333",
+                )
+
+            panel_label = f"Example {idx + 1}"
+            if trace_kind == "spine":
+                if window_runs:
+                    any_coincident = any(
+                        any(int(run[0]) == int(dend_run[0]) for dend_run in dendrite_event_runs)
+                        for run in window_runs
+                    )
+                    panel_label += " | coincident" if any_coincident else " | noncoincident"
+                else:
+                    panel_label += " | context"
+            else:
+                panel_label += " | event" if window_runs else " | context"
+
+            ax.set_title(panel_label, fontsize=10, pad=3)
+            ax.axvline(0, color="0.25", linewidth=0.7, alpha=0.45)
+            ax.axhline(0, color="0.4", linewidth=0.6, alpha=0.25)
+            ax.grid(alpha=0.18)
+
+            ax.set_xlim(float(np.nanmin(window_time_rel[window_valid])), float(np.nanmax(window_time_rel[window_valid])))
+            ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+
+            if row == 4:
+                ax.set_xlabel("Time from event/window center (s)")
+            else:
+                ax.set_xlabel("")
+                ax.tick_params(axis="x", labelbottom=False)
+
+        for ax in axes_flat[len(selected_windows):]:
+            ax.set_axis_off()
+
+        fig.subplots_adjust(
+            top=0.955,
+            bottom=0.055,
+            left=0.075,
+            right=0.925,
+            hspace=0.34,
+            wspace=0.16,
+        )
+
+    return fig
+
+
+# Restored figure/helper dependencies from commit 64f20508a23d
+
+def _boxplot_significance_stars(p_value: Any) -> str:
+    p = as_float(p_value)
+    if p is None or not np.isfinite(p) or p >= REPORT_SIGNIFICANCE_ALPHA:
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    return "*"
+
+
+def _render_state_summary_comparison_panel_figure(
+    metric_key: str,
+    metric_title: str,
+    basal_summary: Dict[str, Dict[str, List[float]]],
+    apical_summary: Dict[str, Dict[str, List[float]]],
+    state_order: Sequence[str],
+    y_limit: Optional[Tuple[float, float]] = None,
+    comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Optional[Any]:
+    if plt is None:
+        return None
+    fig_width = min(max(6.9, 0.76 * len(state_order) + 2.8), 8.5)
+    fig_height = min(max(4.2, POSTER_DOUBLE_FIGSIZE[1] - 0.7), 4.9)
+    fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
+    ax = ax.ravel()[0]
+    rng = np.random.default_rng(7)
+    all_data: List[np.ndarray] = []
+    compartment_specs = [
+        ("basal", basal_summary, "#4C72B0", -0.18),
+        ("apical", apical_summary, "#DD8452", 0.18),
+    ]
+    for compartment, summary, color, offset in compartment_specs:
+        positions: List[float] = []
+        data: List[np.ndarray] = []
+        for idx, state in enumerate(state_order, start=1):
+            arr = flatten_state_summary_values(summary.get(state, {}))
+            if arr.size:
+                positions.append(idx + offset)
+                data.append(arr)
+        if not data:
+            continue
+        bp = ax.boxplot(data, positions=positions, widths=0.28, patch_artist=True, showfliers=False)
+        _set_boxplot_colors(bp, [color] * len(data))
+        for pos, arr in zip(positions, data):
+            jitter = rng.uniform(-0.08, 0.08, size=arr.size)
+            ax.scatter(np.full(arr.size, pos) + jitter, arr, s=14, alpha=0.48, color=color, edgecolor="none")
+        all_data.extend(data)
+    set_requested_state_ticks(ax, state_order)
+    ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
+    ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
+    _pad_boxplot_ylim(ax, all_data, y_limit=y_limit)
+    ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+    comparison_subset = [
+        {
+            "x1": float(idx - 0.18),
+            "x2": float(idx + 0.18),
+            "shuffle_p": row.get("shuffle_p"),
+        }
+        for row in (comparison_rows or [])
+        if str(row.get("comparison")) == "basal_vs_apical"
+        and str(row.get("metric")) == metric_key
+        and is_significant_row(row)
+        and str(row.get("state")) in state_order
+        for idx in [state_order.index(str(row.get("state"))) + 1]
+    ]
+    _draw_boxplot_significance_annotations(ax, comparison_subset)
+    legend_handles = [
+        Line2D([0], [0], color="#4C72B0", marker="s", linestyle="", markersize=8, label="Basal"),
+        Line2D([0], [0], color="#DD8452", marker="s", linestyle="", markersize=8, label="Apical"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=POSTER_LEGEND_SIZE)
+    fig.tight_layout()
+    return fig
+
+
+SPINE_COACTIVITY_FIGURE_SUBDIRS = {
+    "distribution": "distribution",
+    "tendency": "pair_state_heatmap",
+    "pair_state_heatmap": "pair_state_heatmap",
+    "pair_state_summary": "pair_state_summary",
+    "basal_apical_distribution": "basal_vs_apical",
+    "basal_vs_apical": "basal_vs_apical",
+}
+
+
+def state_summary_metric_output_dir(
+    root: Path,
+    metric_name: str,
+    cohort_label: str = "all",
+    state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
+) -> Path:
+    return figure_nested_dir(root, state_summary_metric_family(metric_name), state_group, cohort_label)
+
+
+def plot_event_detection_example_figure(
+    *,
+    output_path: Path,
+    time: np.ndarray,
+    trace: np.ndarray,
+    event_info: Dict[str, Any],
+    title: str,
+    trace_label: str,
+    trace_kind: str,
+    figure_kind: Optional[str] = None,
+    dendrite_event_info: Optional[Dict[str, Any]] = None,
+    dendrite_trace: Optional[np.ndarray] = None,
+    dendrite_time: Optional[np.ndarray] = None,
+) -> Optional[str]:
+    if plt is None:
+        return None
+    fig = _build_event_detection_example_figure(
+        time=time,
+        trace=trace,
+        event_info=event_info,
+        title=title,
+        trace_label=trace_label,
+        trace_kind=trace_kind,
+        dendrite_event_info=dendrite_event_info,
+        dendrite_trace=dendrite_trace,
+        dendrite_time=dendrite_time,
+    )
+    if fig is None:
+        return None
+    output_path = Path(output_path)
+    ensure_dir(output_path.parent)
+    try:
+        save_figure(fig, output_path, extra_formats=())
+    finally:
+        plt.close(fig)
+    return str(output_path)
+
+
+def day_figure_compartment_folder(compartment: Any) -> str:
+    text = str(compartment or "").strip().lower()
+    if text in {"basal", "apical"}:
+        return text
+    return "other"
+
+
+def build_event_example_day_figure_path(
+    output_dir: Path,
+    animal_id: Any,
+    day_id: Any,
+    compartment: Any,
+    global_dendrite_id: Any,
+    global_spine_id: Any = None,
+    *,
+    kind: str,
+) -> Path:
+    day_animal_id, day_date, day_compartment = split_day_id(day_id)
+    animal_slug = safe_filename_component(animal_id or day_animal_id or "unknown_animal")
+    compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
+    date_slug = safe_filename_component(day_date or "unknown_date")
+    dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
+    figure_dir = figure_family_dir(output_dir, DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME, animal_slug, compartment_slug, date_slug)
+    if kind == "spine":
+        spine_slug = safe_filename_component(extract_dendrite_token(global_spine_id))
+        figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_{spine_slug}_spine_event_example.svg"
+    else:
+        figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_dendrite_event_example.svg"
+    return figure_dir / figure_name
+
+
+# Restored figure/helper functions from commit 64f20508a23d
+
+def _set_boxplot_colors(bp: Dict[str, Any], colors: Sequence[str]) -> None:
+    for patch, color in zip(bp.get("boxes", []), colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.75)
+    for whisker in bp.get("whiskers", []):
+        whisker.set_color("#555555")
+    for cap in bp.get("caps", []):
+        cap.set_color("#555555")
+    for median in bp.get("medians", []):
+        median.set_color("#222222")
+        median.set_linewidth(1.5)
+
+
+def _draw_boxplot_significance_annotations(
+    ax: Any,
+    comparisons: Sequence[Dict[str, Any]],
+    *,
+    label_key: str = "shuffle_p",
+    base_color: str = "#444444",
+    orientation: str = "vertical",
+) -> None:
+    items: List[Dict[str, Any]] = []
+    for row in comparisons:
+        p_value = as_float(row.get(label_key))
+        label = _boxplot_significance_stars(p_value)
+        if not label:
+            continue
+        x1 = as_float(row.get("x1"))
+        x2 = as_float(row.get("x2"))
+        x = as_float(row.get("x"))
+        if (x1 is None or x2 is None or not np.isfinite(x1) or not np.isfinite(x2)) and (x is None or not np.isfinite(x)):
+            continue
+        point_only = False
+        if x is not None and np.isfinite(x) and (x1 is None or x2 is None):
+            x1 = x2 = float(x)
+            point_only = True
+        items.append(
+            {
+                "x1": float(min(x1, x2)),
+                "x2": float(max(x1, x2)),
+                "label": label,
+                "p_value": float(p_value),
+                "point_only": point_only or np.isclose(float(x1), float(x2)),
+            }
+        )
+    if not items:
+        return
+
+    if orientation == "horizontal":
+        x0, x1 = ax.get_xlim()
+        if not np.isfinite(x0) or not np.isfinite(x1):
+            return
+        x_range = x1 - x0
+        if not np.isfinite(x_range) or x_range <= 0:
+            x_range = 1.0
+        bracket_base = x1 + 0.04 * x_range
+        bracket_step = max(0.08 * x_range, 0.08)
+        text_offset = max(0.015 * x_range, 0.03)
+        bracket_height = max(0.02 * x_range, 0.025)
+        levels: List[List[Tuple[float, float]]] = []
+        placed: List[Tuple[float, float, int, str, bool]] = []
+        for item in sorted(items, key=lambda entry: (entry["x2"] - entry["x1"], entry["p_value"], entry["x1"], entry["x2"])):
+            level = 0
+            while level < len(levels):
+                overlap = any(not (item["x2"] < existing[0] - 0.05 or item["x1"] > existing[1] + 0.05) for existing in levels[level])
+                if not overlap:
+                    break
+                level += 1
+            if level == len(levels):
+                levels.append([])
+            levels[level].append((item["x1"], item["x2"]))
+            placed.append((item["x1"], item["x2"], level, item["label"], bool(item.get("point_only", False))))
+        top_needed = bracket_base + len(levels) * bracket_step + bracket_height + text_offset + 0.02 * x_range
+        if top_needed > x1:
+            ax.set_xlim(x0, top_needed)
+        for y1_pos, y2_pos, level, label, point_only in placed:
+            x = bracket_base + level * bracket_step
+            if point_only or np.isclose(y1_pos, y2_pos):
+                ax.text(
+                    x + bracket_height + text_offset,
+                    y1_pos,
+                    label,
+                    ha="left",
+                    va="center",
+                    fontsize=POSTER_NOTE_SIZE,
+                    color="#222222",
+                    clip_on=False,
+                    zorder=6,
+                )
+            else:
+                ax.plot([x, x + bracket_height, x + bracket_height, x], [y1_pos, y1_pos, y2_pos, y2_pos], color=base_color, linewidth=1.0, clip_on=False, zorder=5)
+                ax.text(
+                    x + bracket_height + text_offset,
+                    (y1_pos + y2_pos) / 2.0,
+                    label,
+                    ha="left",
+                    va="center",
+                    fontsize=POSTER_NOTE_SIZE,
+                    color="#222222",
+                    clip_on=False,
+                    zorder=6,
+                )
+        return
+
+    y0, y1 = ax.get_ylim()
+    if not np.isfinite(y0) or not np.isfinite(y1):
+        return
+    y_range = y1 - y0
+    if not np.isfinite(y_range) or y_range <= 0:
+        y_range = 1.0
+    bracket_base = y1 + 0.04 * y_range
+    bracket_step = max(0.08 * y_range, 0.08)
+    text_offset = max(0.015 * y_range, 0.03)
+    bracket_height = max(0.02 * y_range, 0.025)
+
+    levels: List[List[Tuple[float, float]]] = []
+    placed: List[Tuple[float, float, int, str, bool]] = []
+    for item in sorted(items, key=lambda entry: (entry["x2"] - entry["x1"], entry["p_value"], entry["x1"], entry["x2"])):
+        level = 0
+        while level < len(levels):
+            overlap = any(not (item["x2"] < existing[0] - 0.05 or item["x1"] > existing[1] + 0.05) for existing in levels[level])
+            if not overlap:
+                break
+            level += 1
+        if level == len(levels):
+            levels.append([])
+        levels[level].append((item["x1"], item["x2"]))
+        placed.append((item["x1"], item["x2"], level, item["label"], bool(item.get("point_only", False))))
+
+    top_needed = bracket_base + len(levels) * bracket_step + bracket_height + text_offset + 0.02 * y_range
+    if top_needed > y1:
+        ax.set_ylim(y0, top_needed)
+
+    for x1, x2, level, label, point_only in placed:
+        y = bracket_base + level * bracket_step
+        if point_only or np.isclose(x1, x2):
+            ax.text(
+                x1,
+                y + bracket_height + text_offset,
+                label,
+                ha="center",
+                va="bottom",
+                fontsize=POSTER_NOTE_SIZE,
+                color="#222222",
+                clip_on=False,
+                zorder=6,
+            )
+        else:
+            ax.plot([x1, x1, x2, x2], [y, y + bracket_height, y + bracket_height, y], color=base_color, linewidth=1.0, clip_on=False, zorder=5)
+            ax.text(
+                (x1 + x2) / 2.0,
+                y + bracket_height + text_offset,
+                label,
+                ha="center",
+                va="bottom",
+                fontsize=POSTER_NOTE_SIZE,
+                color="#222222",
+                clip_on=False,
+                zorder=6,
+            )
+
+
+def spine_coactivity_figure_dir(root: Path, figure_kind: str, *parts: Any) -> Path:
+    figure_kind = str(figure_kind)
+
+    if figure_kind not in SPINE_COACTIVITY_FIGURE_SUBDIRS:
+        raise ValueError(f"Unknown spine coactivity figure kind: {figure_kind}")
+
+    subdir = SPINE_COACTIVITY_FIGURE_SUBDIRS[figure_kind]
+
+    return figure_family_dir(
+        root,
+        DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME,
+        subdir,
+        *parts,
+    )
+
+
+def plot_state_summary_compartment_comparison_figure(
+    basal_results: Dict[str, Any],
+    apical_results: Dict[str, Any],
+    fig_dir: Path,
+    output_name: str,
+    title: str,
+    state_labels: Optional[Sequence[str]] = None,
+    y_limits: Optional[Dict[str, Tuple[float, float]]] = None,
+    comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    cohort_label: str = "all",
+    state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
+) -> Optional[str]:
+    if plt is None:
+        return None
+    state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
+    state_position_lookup = {state: position for position, state in enumerate(state_order, start=1)}
+    metric_titles = {
+        "dendrite_mean": "Dendrite mean dF/F",
+        "spine_specific_mean": "Spine-specific mean dF/F",
+        "dendrite_event_frequency_per_min": "Dendrite calcium event frequency (per min)",
+        "spine_event_frequency_per_min": "Spine calcium event frequency (per min)",
+        "coincident_event_frequency_per_min": "Coincident spine event frequency (per min)",
+        "noncoincident_event_frequency_per_min": "Noncoincident spine event frequency (per min)",
+    }
+    metric_specs = [(metric_name, metric_title) for metric_name, metric_title in metric_titles.items()]
+    output_paths: List[Path] = []
+    for metric_name, metric_title in metric_specs:
+        basal_summary = basal_results.get("state_summaries", {}).get(metric_name, {})
+        apical_summary = apical_results.get("state_summaries", {}).get(metric_name, {})
+        panel_comparisons = [
+            row
+            for row in (comparison_rows or [])
+            if str(row.get("comparison")) == "basal_vs_apical"
+            and str(row.get("metric")) == metric_name
+            and is_significant_row(row)
+            and str(row.get("state")) in state_order
+        ]
+        panel_fig = _render_state_summary_comparison_panel_figure(
+            metric_name,
+            metric_title,
+            basal_summary,
+            apical_summary,
+            state_order,
+            y_limits.get(metric_name) if y_limits else None,
+            comparison_rows=panel_comparisons,
+        )
+        if panel_fig is not None:
+            metric_output_path = state_summary_metric_output_dir(
+                fig_dir,
+                metric_name,
+                cohort_label,
+                state_group,
+            ) / f"{Path(output_name).stem}_{metric_name}.svg"
+            save_figure(panel_fig, metric_output_path, extra_formats=())
+            output_paths.append(metric_output_path)
+    return str(output_paths[0]) if output_paths else None
+
+
+def plot_basal_apical_summary(results: Dict[str, Any], fig_dir: Path) -> Optional[str]:
+    if plt is None:
+        return None
+    rows = [row for row in results.get("basal_apical_comparisons", []) if row.get("comparison") == "basal_vs_apical"]
+    if not rows:
+        return None
+    state_order = [state for state in selected_basal_apical_state_labels(results) if any(row.get("state") == state for row in rows)]
+    metric_order = [
+        metric
+        for metric in [
+            "dendrite_mean",
+            "spine_specific_mean",
+            "dendrite_event_frequency_per_min",
+            "spine_event_frequency_per_min",
+            "coincident_event_frequency_per_min",
+            "noncoincident_event_frequency_per_min",
+        ]
+        if any(row.get("metric") == metric for row in rows)
+    ]
+    if not state_order or not metric_order:
+        return None
+    effect_lookup: Dict[Tuple[str, str], float] = {}
+    p_lookup: Dict[Tuple[str, str], float] = {}
+    for row in rows:
+        effect_lookup[(str(row.get("metric")), str(row.get("state")))] = float(row.get("effect_size", float("nan")))
+        p_lookup[(str(row.get("metric")), str(row.get("state")))] = float(row.get("shuffle_p", float("nan")))
+    fig_width = min(max(9.0, 0.70 * len(state_order) + 3.5), 10.8)
+    fig_height = min(max(4.4, POSTER_DOUBLE_FIGSIZE[1] - 0.9), 4.9)
+    fig, axes = plt.subplots(1, 2, figsize=(fig_width, fig_height), squeeze=False, gridspec_kw={"wspace": 0.28})
+    x = np.arange(len(state_order))
+    width = 0.35 if len(metric_order) > 1 else 0.6
+    palette = plt.get_cmap("Dark2")
+    ax = axes[0, 0]
+    for idx, metric in enumerate(metric_order):
+        offsets = x + (idx - (len(metric_order) - 1) / 2.0) * width
+        values = [effect_lookup.get((metric, state), np.nan) for state in state_order]
+        ax.bar(offsets, values, width=width, label=metric.replace("_", " "), color=palette(idx), alpha=0.85)
+    ax.axhline(0.0, color="#333333", linewidth=1)
+    ax.set_title("Basal vs apical effect sizes", fontsize=POSTER_TITLE_SIZE)
+    ax.set_ylabel("Effect size", fontsize=POSTER_LABEL_SIZE)
+    ax.set_xticks(x)
+    ax.set_xticklabels([format_requested_state_label(state) for state in state_order], rotation=0)
+    color_state_tick_labels(ax, state_order, axis="x")
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    ax.legend(frameon=False, fontsize=POSTER_LEGEND_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
+    ax = axes[0, 1]
+    for idx, metric in enumerate(metric_order):
+        offsets = x + (idx - (len(metric_order) - 1) / 2.0) * width
+        p_vals = [p_lookup.get((metric, state), np.nan) for state in state_order]
+        p_vals = np.asarray(p_vals, dtype=float)
+        neglog = np.full_like(p_vals, np.nan, dtype=float)
+        valid = np.isfinite(p_vals) & (p_vals > 0)
+        neglog[valid] = -np.log10(np.clip(p_vals[valid], 1e-300, 1.0))
+        ax.bar(offsets, neglog, width=width, label=metric.replace("_", " "), color=palette(idx), alpha=0.85)
+    ax.axhline(-np.log10(0.05), color="#8b0000", linestyle="--", linewidth=1, label="p=0.05")
+    ax.set_title("Basal vs apical shuffle significance", fontsize=POSTER_TITLE_SIZE)
+    ax.set_ylabel(r"$-\log_{10}(p)$", fontsize=POSTER_LABEL_SIZE)
+    ax.set_xticks(x)
+    ax.set_xticklabels([format_requested_state_label(state) for state in state_order], rotation=0)
+    color_state_tick_labels(ax, state_order, axis="x")
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    ax.legend(frameon=False, fontsize=POSTER_LEGEND_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
+    output_path = fig_dir / "basal_apical_summary.svg"
+    save_figure(fig, output_path, extra_formats=())
+    plt.close(fig)
+    return str(output_path)
+
+
+def generate_event_detection_example_gallery(cache: Dict[str, Any], fig_dir: Path) -> List[str]:
+    if plt is None:
+        return []
+    event_root = ensure_dir(Path(fig_dir))
+    saved: List[str] = []
+    jobs: List[Dict[str, Any]] = []
+    for animal_id in sorted(cache.get("animals", {})):
+        animal_entry = cache.get("animals", {}).get(animal_id, {})
+        for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
+            for day_id, d_obs in sorted(dendrite_record.get("observations", {}).items()):
+                compartment = observation_compartment(cache, day_id, d_obs)
+                jobs.append(
+                    {
+                        "kind": "dendrite",
+                        "animal_id": animal_id,
+                        "day_id": d_obs.get("day_id") or d_obs.get("exp_id") or day_id,
+                        "compartment": compartment,
+                        "global_dendrite_id": global_dendrite_id,
+                        "global_spine_id": None,
+                        "time": d_obs.get("time"),
+                        "trace": d_obs.get("trace"),
+                        "event_info": d_obs.get("event_info") or {},
+                        "dendrite_event_info": None,
+                        "dendrite_trace": None,
+                        "dendrite_time": None,
+                        "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} - event examples",
+                        "trace_label": "Dendrite dF/F",
+                    }
+                )
+                for global_spine_id, spine_record in sorted(dendrite_record.get("spines", {}).items()):
+                    s_obs = spine_record.get("observations", {}).get(day_id)
+                    if s_obs is None:
+                        continue
+                    compartment = observation_compartment(cache, day_id, s_obs)
+                    spine_specific = s_obs.get("spine_specific")
+                    trace = spine_specific if spine_specific is not None else s_obs.get("trace")
+                    jobs.append(
+                        {
+                            "kind": "spine",
+                            "animal_id": animal_id,
+                            "day_id": s_obs.get("day_id") or s_obs.get("exp_id") or day_id,
+                            "compartment": compartment,
+                            "global_dendrite_id": global_dendrite_id,
+                            "global_spine_id": global_spine_id,
+                            "time": s_obs.get("time"),
+                            "trace": trace,
+                            "event_info": s_obs.get("event_info") or {},
+                            "dendrite_event_info": s_obs.get("dendrite_event_info") or d_obs.get("event_info") or {},
+                            "dendrite_trace": d_obs.get("trace"),
+                            "dendrite_time": d_obs.get("time"),
+                            "title": f"{format_dendrite_display_name(animal_id, compartment, global_dendrite_id)} / {safe_filename_component(global_spine_id)} - event examples",
+                            "trace_label": "Spine-specific dF/F",
+                        }
+                    )
+    with step_scope("event detection example gallery", total=len(jobs)):
+        for idx, job in enumerate(jobs, start=1):
+            step_progress(idx, len(jobs), label=f"{job['animal_id']} | {extract_dendrite_token(job['global_dendrite_id'])} | {job['kind']}")
+            path = build_event_example_day_figure_path(
+                event_root,
+                job["animal_id"],
+                job["day_id"],
+                job["compartment"],
+                job["global_dendrite_id"],
+                job["global_spine_id"],
+                kind=str(job["kind"]),
+            )
+            saved_path = plot_event_detection_example_figure(
+                output_path=path,
+                time=np.asarray(job["time"], dtype=float),
+                trace=np.asarray(job["trace"], dtype=float),
+                event_info=dict(job["event_info"] or {}),
+                title=str(job["title"]),
+                trace_label=str(job["trace_label"]),
+                trace_kind=str(job["kind"]),
+                figure_kind="pair_state_heatmap",
+                dendrite_event_info=dict(job["dendrite_event_info"] or {}) if job["dendrite_event_info"] is not None else None,
+                dendrite_trace=np.asarray(job["dendrite_trace"], dtype=float) if job.get("dendrite_trace") is not None else None,
+                dendrite_time=np.asarray(job["dendrite_time"], dtype=float) if job.get("dendrite_time") is not None else None,
+            )
+            if saved_path:
+                saved.append(saved_path)
+    return saved
+
+
+def plot_correlation_summary(
+    results: Dict[str, Any],
+    fig_dir: Path,
+    output_name: str = "correlation_summary.svg",
+    title: str = "Correlation summaries",
+) -> Optional[str]:
+    if plt is None:
+        return None
+    rows = results.get("correlations", [])
+    if not rows:
+        return None
+    analysis_order = [
+        "dendrite_wheel",
+        "dendrite_pupil",
+        "spine_dendrite_raw",
+        "spine_dendrite_specific",
+    ]
+    analysis_order = [analysis for analysis in analysis_order if any(row.get("analysis") == analysis for row in rows)]
+    if not analysis_order:
+        return None
+    label_lookup = {
+        "dendrite_wheel": "dendrite activity vs wheel",
+        "dendrite_pupil": "dendrite activity vs pupil",
+        "spine_dendrite_raw": "spine-specific activity vs dendrite activity (raw)",
+        "spine_dendrite_specific": "spine-specific activity vs dendrite activity (specific)",
+    }
+    r_values: List[np.ndarray] = []
+    p_values: List[np.ndarray] = []
+    labels: List[str] = []
+    for analysis in analysis_order:
+        analysis_rows = [row for row in rows if row.get("analysis") == analysis]
+        r_arr = np.asarray([float(row.get("r", float("nan"))) for row in analysis_rows], dtype=float)
+        p_arr = np.asarray([float(row.get("shuffle_p", float("nan"))) for row in analysis_rows], dtype=float)
+        r_arr = r_arr[np.isfinite(r_arr)]
+        p_arr = p_arr[np.isfinite(p_arr)]
+        if r_arr.size == 0 and p_arr.size == 0:
+            continue
+        labels.append(label_lookup.get(analysis, analysis.replace("_", " ")))
+        r_values.append(r_arr if r_arr.size else np.asarray([np.nan], dtype=float))
+        p_values.append(p_arr if p_arr.size else np.asarray([np.nan], dtype=float))
+    if not labels:
+        return None
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 4.5), squeeze=False, gridspec_kw={"wspace": 0.28})
+    x = np.arange(1, len(labels) + 1)
+    palette = plt.get_cmap("Set1")
+    ax = axes[0, 0]
+    bp = ax.boxplot(r_values, positions=x, widths=0.6, patch_artist=True, showfliers=False)
+    _set_boxplot_colors(bp, [palette(i % palette.N) for i in range(len(labels))])
+    for pos, arr in zip(x, r_values):
+        if arr.size == 0:
+            continue
+        jitter = np.random.default_rng(11).uniform(-0.12, 0.12, size=arr.size)
+        ax.scatter(np.full(arr.size, pos) + jitter, arr, s=12, alpha=0.45, color="#444444", edgecolor="none")
+        ax.text(pos, np.nanmax(arr), f"n={arr.size}", ha="center", va="bottom", fontsize=POSTER_NOTE_SIZE)
+    ax.axhline(0.0, color="#333333", linewidth=1)
+    ax.set_title("Correlation coefficients", fontsize=POSTER_TITLE_SIZE)
+    ax.set_ylabel("Pearson r", fontsize=POSTER_LABEL_SIZE)
+    ax.set_xticks(x)
+    ax.set_xticklabels([label.replace(" vs ", "\nvs ") for label in labels], rotation=0)
+    ax.set_ylim(-1.05, 1.05)
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
+    ax = axes[0, 1]
+    bp = ax.boxplot(p_values, positions=x, widths=0.6, patch_artist=True, showfliers=False)
+    _set_boxplot_colors(bp, [palette(i % palette.N) for i in range(len(labels))])
+    for pos, arr in zip(x, p_values):
+        if arr.size == 0:
+            continue
+        jitter = np.random.default_rng(12).uniform(-0.12, 0.12, size=arr.size)
+        ax.scatter(np.full(arr.size, pos) + jitter, arr, s=12, alpha=0.45, color="#444444", edgecolor="none")
+        ax.text(pos, np.nanmax(arr), f"n={arr.size}", ha="center", va="bottom", fontsize=POSTER_NOTE_SIZE)
+        if np.nanmin(arr) < REPORT_SIGNIFICANCE_ALPHA:
+            ax.scatter(pos, min(1.0, np.nanmax(arr) + 0.04), s=90, marker="*", color="#8b0000", zorder=4)
+    ax.axhline(0.05, color="#8b0000", linestyle="--", linewidth=1)
+    ax.set_title("Shuffle p-values", fontsize=POSTER_TITLE_SIZE)
+    ax.set_ylabel("p", fontsize=POSTER_LABEL_SIZE)
+    ax.set_xticks(x)
+    ax.set_xticklabels([label.replace(" vs ", "\nvs ") for label in labels], rotation=0)
+    ax.set_ylim(-0.02, 1.05)
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
+    output_path = fig_dir / output_name
+    save_figure(fig, output_path, extra_formats=())
+    return str(output_path)
+
+
+def plot_matrix_similarity_heatmap(
+    results: Dict[str, Any],
+    fig_dir: Path,
+    output_name: str = "matrix_similarity_heatmap.svg",
+    title: str = "Matrix spine-spine similarity",
+    compartment_filter: Optional[str] = None,
+    dendrite_filter: Optional[str] = None,
+) -> Optional[str]:
+    if plt is None:
+        return None
+    rows = build_filtered_matrix_similarity_results(
+        results,
+        compartment_filter=compartment_filter,
+        global_dendrite_id_filter=dendrite_filter,
+    ).get("matrix_similarity", [])
+    if not rows:
+        return None
+    state_labels = selected_matrix_plot_state_labels(results, rows)
+    if not state_labels:
+        return None
+    pair_values: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    pair_sig_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+    pair_obs_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+    sig_rows = 0
+    for row in rows:
+        state_a = canonical_state_label(row.get("state_a"))
+        state_b = canonical_state_label(row.get("state_b"))
+        if not state_a or not state_b or state_a == state_b:
+            continue
+        value = float(row.get("matrix_similarity_r", float("nan")))
+        if np.isfinite(value):
+            pair_values[(state_a, state_b)].append(value)
+            pair_values[(state_b, state_a)].append(value)
+        p_value = float(row.get("shuffle_p", float("nan")))
+        if np.isfinite(p_value):
+            pair_obs_counts[(state_a, state_b)] += 1
+            pair_obs_counts[(state_b, state_a)] += 1
+            if p_value < REPORT_SIGNIFICANCE_ALPHA:
+                sig_rows += 1
+                pair_sig_counts[(state_a, state_b)] += 1
+                pair_sig_counts[(state_b, state_a)] += 1
+    matrix = np.full((len(state_labels), len(state_labels)), np.nan, dtype=float)
+    for i, state_a in enumerate(state_labels):
+        for j, state_b in enumerate(state_labels):
+            if state_a == state_b:
+                continue
+            values = pair_values.get((state_a, state_b), [])
+            if values:
+                matrix[i, j] = float(np.nanmean(values))
+    if not np.isfinite(matrix).any():
+        return None
+    side = min(max(6.2, 0.64 * len(state_labels) + 2.6), 9.6)
+    fig = plt.figure(figsize=(side + 0.2, max(5.6, side * 0.88)))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 0.065], wspace=0.28)
+    ax = fig.add_subplot(gs[0, 0])
+    cax = fig.add_subplot(gs[0, 1])
+    cmap = plt.get_cmap("coolwarm")
+    norm = Normalize(vmin=-1.0, vmax=1.0)
+    _configure_square_heatmap_axes(ax, state_labels, "State B", "State A")
+    ax.set_xticklabels([])
+    ax.tick_params(axis="x", labelbottom=False, bottom=False)
+    ax.set_xlabel("State B", fontsize=max(POSTER_LABEL_SIZE - 6, 12))
+    ax.set_title(title, fontsize=POSTER_TITLE_SIZE, pad=12)
+    ax.set_xticks(np.arange(-0.5, len(state_labels), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(state_labels), 1), minor=True)
+    ax.grid(which="minor", color="white", linestyle="-", linewidth=0.8)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    ax.set_xlim(-0.5, len(state_labels) - 0.5)
+    ax.set_ylim(len(state_labels) - 0.5, -0.5)
+    ax.set_aspect("equal")
+    ax.set_facecolor("white")
+    try:
+        from matplotlib.patches import Rectangle
+    except Exception:
+        Rectangle = None
+    if Rectangle is not None:
+        for i, state_a in enumerate(state_labels):
+            for j, state_b in enumerate(state_labels):
+                if state_a == state_b:
+                    continue
+                value = matrix[i, j]
+                if not np.isfinite(value):
+                    continue
+                obs_count = pair_obs_counts.get((state_a, state_b), 0)
+                if obs_count <= 0:
+                    continue
+                sig_count = pair_sig_counts.get((state_a, state_b), 0)
+                sig_fraction = (sig_count / obs_count) if obs_count else 0.0
+                square_size = 0.82 if sig_fraction >= 0.5 and sig_count > 0 else 0.48
+                ax.add_patch(
+                    Rectangle(
+                        (j - square_size / 2.0, i - square_size / 2.0),
+                        square_size,
+                        square_size,
+                        facecolor=cmap(norm(value)),
+                        edgecolor="#1f1f1f",
+                        linewidth=0.8,
+                        zorder=3,
+                    )
+                )
+    ax.text(
+        0.02,
+        0.98,
+        f"n={len(rows)} | sig={sig_rows}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=POSTER_NOTE_SIZE,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+    )
+    mappable = ScalarMappable(norm=norm, cmap=cmap)
+    mappable.set_array([])
+    cbar = fig.colorbar(mappable, cax=cax)
+    cbar.set_label("Pearson r", fontsize=POSTER_LABEL_SIZE)
+    cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
+    set_sparse_colorbar_ticks(cbar, nbins=5)
+    output_path = fig_dir / output_name
+    save_figure(fig, output_path, extra_formats=())
+    return str(output_path)
+
+
+def plot_demo_validation_figure(results: Dict[str, Any], fig_dir: Path) -> Optional[str]:
+    if plt is None:
+        return None
+    rows = results.get("demo_validation", [])
+    if not rows:
+        return None
+    expected = np.asarray([float(row.get("expected_alpha", float("nan"))) for row in rows], dtype=float)
+    observed = np.asarray([float(row.get("observed_alpha", float("nan"))) for row in rows], dtype=float)
+    abs_error = np.asarray([float(row.get("abs_error", float("nan"))) for row in rows], dtype=float)
+    mask = np.isfinite(expected) & np.isfinite(observed)
+    if mask.sum() == 0:
+        return None
+    expected = expected[mask]
+    observed = observed[mask]
+    abs_error = abs_error[mask]
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 4.5), squeeze=False, gridspec_kw={"wspace": 0.28})
+    ax = axes[0, 0]
+    scatter = ax.scatter(expected, observed, c=abs_error, cmap="magma", s=70, edgecolor="#222222", linewidth=0.5)
+    lims = [
+        float(np.nanmin([expected.min(), observed.min()])),
+        float(np.nanmax([expected.max(), observed.max()])),
+    ]
+    if lims[0] == lims[1]:
+        pad = 0.1 if lims[0] == 0 else max(0.05 * abs(lims[0]), 0.05)
+        lims[0] -= pad
+        lims[1] += pad
+    ax.plot(lims, lims, linestyle="--", color="#444444", linewidth=1)
+    ax.set_xlim(lims)
+    ax.set_ylim(lims)
+    ax.set_xlabel("Expected alpha", fontsize=POSTER_LABEL_SIZE)
+    ax.set_ylabel("Observed alpha", fontsize=POSTER_LABEL_SIZE)
+    ax.set_title("Demo alpha recovery", fontsize=POSTER_TITLE_SIZE)
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    set_sparse_numeric_ticks(ax, axis="both", nbins=5)
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Absolute error", fontsize=POSTER_LABEL_SIZE)
+    cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
+    set_sparse_colorbar_ticks(cbar, nbins=5)
+    ax = axes[0, 1]
+    ax.hist(abs_error, bins=min(10, max(3, abs_error.size)), color="#4c72b0", edgecolor="white")
+    ax.set_title("Demo alpha absolute error", fontsize=POSTER_TITLE_SIZE)
+    ax.set_xlabel("Absolute error", fontsize=POSTER_LABEL_SIZE)
+    ax.set_ylabel("Count", fontsize=POSTER_LABEL_SIZE)
+    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+    set_sparse_numeric_ticks(ax, axis="both", nbins=5)
+    ax.grid(axis="y", alpha=0.25)
+    output_path = fig_dir / "demo_validation_scatter.svg"
+    save_figure(fig, output_path, extra_formats=())
+    return str(output_path)
+
+
+def generate_analysis_figures(
+    output_dir: Path,
+    results: Dict[str, Any],
+    cache: Dict[str, Any],
+    figure_root: Optional[Path] = None,
+) -> List[str]:
+    if plt is None:
+        eprint("[ALERT] matplotlib is unavailable; skipping figure generation.")
+        return []
+    fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
+    summary_fig_dir = state_summary_figure_dir(fig_dir)
+    saved: List[str] = []
+    coactivity_dir = fig_dir
+    shuffle_n = int(results.get("run_parameters", {}).get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
+    summary_metrics = [
+        "dendrite_mean",
+        "spine_specific_mean",
+        "dendrite_event_frequency_per_min",
+        "spine_event_frequency_per_min",
+        "coincident_event_frequency_per_min",
+        "noncoincident_event_frequency_per_min",
+    ]
+    state_labels = selected_matrix_state_labels(results)
+    basal_apical_state_labels = selected_basal_apical_state_labels(results)
+    present_compartments = sorted_present_compartments(cache)
+    matrix_similarity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_results_cache: Dict[tuple, Dict[str, Any]] = {}
+    spine_coactivity_anchor_compartments: Optional[List[Optional[str]]] = None
+
+    def cached_matrix_similarity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in matrix_similarity_results_cache:
+            matrix_similarity_results_cache[key] = build_filtered_matrix_similarity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return matrix_similarity_results_cache[key]
+
+    def cached_spine_coactivity_results(compartment: Optional[str], dendrite_id: Optional[str] = None) -> Dict[str, Any]:
+        key = (compartment, dendrite_id)
+        if key not in spine_coactivity_results_cache:
+            spine_coactivity_results_cache[key] = build_filtered_spine_coactivity_results(
+                results,
+                compartment,
+                dendrite_id,
+            )
+        return spine_coactivity_results_cache[key]
+    with step_scope("figure prep: state summary y-limits"):
+        y_limits = state_summary_y_limits(cache, state_labels)
+    with step_scope("figure prep: state summary comparison y-limits"):
+        comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
+    with step_scope("figure prep: state summary overview results"):
+        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+    with step_scope("figure prep: state summary basal results"):
+        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
+    with step_scope("figure prep: state summary apical results"):
+        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+    state_summary_specs = [
+        {
+            "kind": "overview",
+            "compartment": None,
+            "output_name": "state_summary_boxplots.svg",
+            "title": "Selected-state summary distributions - All compartments",
+            "results": overview_results,
+        },
+    ]
+    for compartment in [comp for comp in ["basal", "apical"] if comp in present_compartments]:
+        state_summary_specs.append(
+            {
+                "kind": "overview",
+                "compartment": compartment,
+                "output_name": f"state_summary_boxplots_{compartment}.svg",
+                "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)}",
+                "results": basal_results if compartment == "basal" else apical_results,
+            }
+        )
+    state_summary_specs.extend(
+        [
+            {
+                "kind": "comparison",
+                "output_name": "state_summary_boxplots_basal_vs_apical.svg",
+                "title": "Selected-state summary distributions - Basal vs apical",
+                "results": (basal_results, apical_results),
+            },
+        ]
+    )
+    visual_response_state_summaries = results.get("dendrite_visual_response_state_summaries", {})
+    visual_response_summary = results.get("dendrite_visual_response", {})
+    if isinstance(visual_response_state_summaries, dict):
+        for cohort in [cohort for cohort in DENDRITE_RESPONSE_COHORTS[1:] if cohort in visual_response_state_summaries]:
+            cohort_results = visual_response_state_summaries.get(cohort, {})
+            if not isinstance(cohort_results, dict):
+                continue
+            cohort_basal_results = cohort_results.get("basal")
+            cohort_apical_results = cohort_results.get("apical")
+            if not isinstance(cohort_basal_results, dict) or not isinstance(cohort_apical_results, dict):
+                continue
+            cohort_title = cohort.capitalize()
+            cohort_filters = {
+                "basal": visual_response_dendrite_ids(visual_response_summary, "basal", cohort),
+                "apical": visual_response_dendrite_ids(visual_response_summary, "apical", cohort),
+            }
+            for compartment, compartment_results in [("basal", cohort_basal_results), ("apical", cohort_apical_results)]:
+                if compartment not in present_compartments:
+                    continue
+                compartment_filter = cohort_filters.get(compartment, [])
+                cohort_metric_rows: List[Dict[str, Any]] = []
+                for metric_name in summary_metrics:
+                    cohort_metric_rows.extend(
+                        pairwise_state_comparisons(
+                            cache,
+                            metric_name,
+                            state_labels,
+                            shuffle_n,
+                            compartment_filter=compartment,
+                            dendrite_ids_filter=compartment_filter,
+                        )
+                    )
+                state_summary_specs.append(
+                    {
+                        "kind": "overview",
+                        "name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}",
+                        "compartment": compartment,
+                        "output_name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}.svg",
+                        "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
+                        "results": compartment_results,
+                        "comparison_rows": cohort_metric_rows,
+                        "cohort_label": cohort,
+                    }
+                )
+            cohort_comparison_rows: List[Dict[str, Any]] = []
+            for metric_name in summary_metrics:
+                for state_label in basal_apical_state_labels:
+                    cohort_comparison_rows.append(
+                        basal_apical_comparison(
+                            cache,
+                            metric_name,
+                            state_label,
+                            shuffle_n,
+                            dendrite_ids_filter_by_compartment=cohort_filters,
+                        )
+                    )
+            state_summary_specs.append(
+                {
+                    "kind": "comparison",
+                    "name": f"state_summary_boxplots_basal_vs_apical_{cohort}",
+                    "output_name": f"state_summary_boxplots_basal_vs_apical_{cohort}.svg",
+                    "title": f"Selected-state summary distributions - Basal vs apical ({cohort_title})",
+                    "results": (cohort_basal_results, cohort_apical_results),
+                    "comparison_rows": cohort_comparison_rows,
+                    "cohort_label": cohort,
+                }
+            )
+    for plot_idx, spec in enumerate(state_summary_specs, start=1):
+        compartment = spec.get("compartment")
+        scope_label = gallery_compartment_suffix(compartment) if spec["kind"] == "overview" else "basal_vs_apical"
+        with step_scope(
+            f"figure plotter: state_summary_boxplots[{scope_label}]",
+            index=plot_idx,
+            total=len(state_summary_specs),
+        ):
+            try:
+                if spec["kind"] == "overview":
+                    summary_results = spec["results"]
+                    output_path = plot_state_summary_figure(
+                        summary_results,
+                        summary_fig_dir,
+                        output_name=spec["output_name"],
+                        title=spec["title"],
+                        state_labels=state_labels,
+                        y_limits=y_limits,
+                        comparison_rows=spec.get("comparison_rows"),
+                        cohort_label=str(spec.get("cohort_label") or "all"),
+                    )
+                else:
+                    basal_summary, apical_summary = spec["results"]
+                    output_path = plot_state_summary_compartment_comparison_figure(
+                        basal_summary,
+                        apical_summary,
+                        summary_fig_dir,
+                        output_name=spec["output_name"],
+                        title=spec["title"],
+                        state_labels=basal_apical_state_labels,
+                        y_limits=comparison_y_limits,
+                        comparison_rows=spec.get("comparison_rows") if spec.get("comparison_rows") is not None else [
+                            row
+                            for row in results.get("basal_apical_comparisons", [])
+                            if str(row.get("comparison")) == "basal_vs_apical"
+                            and is_significant_row(row)
+                            and str(row.get("state")) in set(basal_apical_state_labels)
+                        ],
+                        cohort_label=str(spec.get("cohort_label") or "all"),
+                    )
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with state summary plotter ({scope_label}): {exc}")
+                continue
+            if output_path:
+                saved.append(output_path)
+            else:
+                step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or scope_label}")
+    all_state_labels = list(ALL_REQUESTED_STATES)
+    all_summary_fig_dir = state_summary_figure_dir(fig_dir, "all_states")
+    all_y_limits = state_summary_y_limits(cache, all_state_labels)
+    all_overview_results = build_state_summary_gallery_results(cache, all_state_labels, None)
+    all_basal_results = build_state_summary_gallery_results(cache, all_state_labels, "basal")
+    all_apical_results = build_state_summary_gallery_results(cache, all_state_labels, "apical")
+    all_state_output_path = plot_state_summary_figure(
+        all_overview_results,
+        all_summary_fig_dir,
+        output_name="state_summary_boxplots_all_states.svg",
+        title="All-state summary distributions - All compartments",
+        state_labels=all_state_labels,
+        y_limits=all_y_limits,
+        cohort_label="all",
+        state_group="all_states",
+    )
+    if all_state_output_path:
+        saved.append(all_state_output_path)
+    for compartment, compartment_results in [("basal", all_basal_results), ("apical", all_apical_results)]:
+        if compartment not in present_compartments:
+            continue
+        output_path = plot_state_summary_figure(
+            compartment_results,
+            all_summary_fig_dir,
+            output_name=f"state_summary_boxplots_{compartment}_all_states.svg",
+            title=f"All-state summary distributions - {gallery_compartment_title(compartment)}",
+            state_labels=all_state_labels,
+            y_limits=all_y_limits,
+            cohort_label="all",
+            state_group="all_states",
+        )
+        if output_path:
+            saved.append(output_path)
+    comparison_path = plot_state_summary_compartment_comparison_figure(
+        all_basal_results,
+        all_apical_results,
+        all_summary_fig_dir,
+        output_name="state_summary_boxplots_basal_vs_apical_all_states.svg",
+        title="All-state summary distributions - Basal vs apical",
+        state_labels=all_state_labels,
+        y_limits=state_summary_y_limits(cache, all_state_labels),
+        cohort_label="all",
+        state_group="all_states",
+    )
+    if comparison_path:
+        saved.append(comparison_path)
+
+    plotters = [
+        plot_basal_apical_summary,
+        plot_correlation_summary,
+        plot_demo_validation_figure,
+    ]
+    for plot_idx, plotter in enumerate(plotters, start=1):
+        with step_scope(f"figure plotter: {plotter.__name__}", index=plot_idx, total=len(plotters)):
+            try:
+                target_dir = figure_family_dir(fig_dir, DEFAULT_CORRELATION_FIGURES_DIRNAME) if plotter is plot_correlation_summary else fig_dir
+                output_path = plotter(results, target_dir)
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with {plotter.__name__}: {exc}")
+                continue
+            if output_path:
+                saved.append(output_path)
+    matrix_review_rows = results.get("matrix_similarity", [])
+    matrix_review_compartments = matrix_similarity_output_compartments(matrix_review_rows)
+    for comp_idx, compartment in enumerate(matrix_review_compartments, start=1):
+        with step_scope(
+            f"figure plotter: matrix_similarity_distribution[{gallery_compartment_suffix(compartment)}]",
+            index=comp_idx,
+            total=len(matrix_review_compartments),
+        ):
+            try:
+                compartment_results = cached_matrix_similarity_results(compartment)
+                output_path = plot_matrix_similarity_distribution(
+                    compartment_results,
+                    figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
+                    output_name=f"review_matrix_similarity_distribution_{gallery_compartment_suffix(compartment)}.svg",
+                    title=f"Review: Spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                )
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with matrix_similarity_distribution[{compartment}]: {exc}")
+                continue
+            if output_path:
+                saved.append(output_path)
+    mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+    mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
+    for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
+        with step_scope(f"figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_plotters)):
+            try:
+                kwargs = {
+                    "results": results,
+                    "fig_dir": figure_nested_dir(mixed_model_dir, str(spec.get("scope") or "all_state")),
+                    "output_name": spec["output_name"],
+                    "title": spec["title"],
+                    "model_key": str(spec.get("model_key", "mixed_model")),
+                }
+                if spec.get("accepts_scope") and spec.get("scope") is not None:
+                    kwargs["scope"] = str(spec["scope"])
+                output_path = spec["plotter"](**kwargs)
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with {spec['name']}: {exc}")
+                continue
+            if output_path:
+                saved.append(output_path)
+    coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+    coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+    coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
+    for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
+        with step_scope(
+            f"figure plotter: spine_coactivity[{gallery_compartment_suffix(compartment)}]",
+            index=plot_idx,
+            total=len(coactivity_compartments),
+        ):
+            try:
+                compartment_results = cached_spine_coactivity_results(compartment)
+                distribution_path = plot_spine_coactivity_distribution_figure(
+                    compartment_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "distribution"),
+                    output_name=f"spine_coactivity_distribution_coefficient_{gallery_compartment_suffix(compartment)}.svg",
+                    title=f"Review: Spine coactivity coefficients - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    value_kind="coactivity_r",
+                )
+                if distribution_path:
+                    saved.append(distribution_path)
+                else:
+                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                distribution_pvalue_path = plot_spine_coactivity_distribution_figure(
+                    compartment_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "distribution"),
+                    output_name=f"spine_coactivity_distribution_pvalue_{gallery_compartment_suffix(compartment)}.svg",
+                    title=f"Review: Spine coactivity shuffle p-values - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    value_kind="shuffle_p",
+                )
+                if distribution_pvalue_path:
+                    saved.append(distribution_pvalue_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_distribution_pvalue[{gallery_compartment_suffix(compartment)}]")
+                heatmap_path = plot_spine_coactivity_tendency_figure(
+                    compartment_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "pair_state_heatmap"),
+                    output_name=f"spine_coactivity_heatmap_coefficient_{gallery_compartment_suffix(compartment)}.svg",
+                    title=f"Review: Spine coactivity coefficient comparisons - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    value_kind="coactivity_r",
+                )
+                if heatmap_path:
+                    saved.append(heatmap_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_heatmap_coefficient[{gallery_compartment_suffix(compartment)}]")
+                heatmap_pvalue_path = plot_spine_coactivity_tendency_figure(
+                    compartment_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "pair_state_heatmap"),
+                    output_name=f"spine_coactivity_heatmap_pvalue_{gallery_compartment_suffix(compartment)}.svg",
+                    title=f"Review: Spine coactivity shuffle p-values - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    value_kind="shuffle_p",
+                )
+                if heatmap_pvalue_path:
+                    saved.append(heatmap_pvalue_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_heatmap_pvalue[{gallery_compartment_suffix(compartment)}]")
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with spine coactivity plotter ({gallery_compartment_suffix(compartment)}): {exc}")
+                continue
+    anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+    if spine_coactivity_anchor_compartments is None:
+        spine_coactivity_anchor_compartments = spine_coactivity_anchor_state_compartments(anchor_rows)
+    for plot_idx, compartment in enumerate(spine_coactivity_anchor_compartments, start=1):
+        with step_scope(
+            f"figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
+            index=plot_idx,
+            total=len(spine_coactivity_anchor_compartments),
+        ):
+            try:
+                scope_results = results if compartment is None else cached_spine_coactivity_results(compartment)
+                distribution_path = plot_spine_coactivity_distribution_figure(
+                    scope_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "distribution"),
+                    output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if distribution_path:
+                    saved.append(distribution_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_anchor_distribution[{gallery_compartment_suffix(compartment)}]")
+                heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                    scope_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "pair_state_heatmap"),
+                    output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if heatmap_path:
+                    saved.append(heatmap_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
+                summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                    scope_results,
+                    spine_coactivity_figure_dir(coactivity_dir, "pair_state_summary"),
+                    output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                    title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
+                    compartment_filter=compartment,
+                    anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                    coactive_only=True,
+                )
+                if summary_path:
+                    saved.append(summary_path)
+                else:
+                    step_message(f"plotter returned no output: spine_coactivity_anchor_summary[{gallery_compartment_suffix(compartment)}]")
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity figures ({gallery_compartment_suffix(compartment)}): {exc}")
+                continue
+    with step_scope("figure family: matrix similarity review"):
+        matrix_rows = results.get("matrix_similarity", [])
+        compartments = matrix_similarity_output_compartments(matrix_rows)
+        for comp_idx, compartment in enumerate(compartments, start=1):
+            with step_scope(
+                f"matrix heatmaps: {gallery_compartment_title(compartment)}",
+                index=comp_idx,
+                total=len(compartments),
+            ):
+                try:
+                    output_path = plot_matrix_similarity_heatmap(
+                        results,
+                        figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
+                        output_name=f"matrix_similarity_heatmap_{compartment}.svg",
+                        title=f"Matrix spine-spine similarity\n{gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create matrix heatmap for {compartment}: {exc}")
+                    continue
+                if output_path:
+                    saved.append(output_path)
+                matrix_results = cached_matrix_similarity_results(compartment)
+                dendrite_ids = sorted(
+                    {
+                        str(row.get("global_dendrite_id"))
+                        for row in matrix_results.get("matrix_similarity", [])
+                        if row.get("global_dendrite_id") is not None
+                    }
+                )
+                for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
+                    step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
+                    dendrite_results = cached_matrix_similarity_results(compartment, dendrite_id)
+                    dendrite_rows = dendrite_results.get("matrix_similarity", [])
+                    if not dendrite_rows:
+                        continue
+                    representative = sorted(
+                        dendrite_rows,
+                        key=lambda row: (
+                            str(row.get("animal_id", "")),
+                            str(row.get("day_id", row.get("exp_id", ""))),
+                            str(row.get("state_a", "")),
+                            str(row.get("state_b", "")),
+                        ),
+                    )[0]
+                    dendrite_output_path = build_matrix_similarity_day_figure_path(
+                        fig_dir,
+                        representative.get("animal_id"),
+                        representative.get("day_id", representative.get("exp_id")),
+                        representative.get("compartment", compartment),
+                        dendrite_id,
+                    )
+                    try:
+                        dendrite_path = plot_matrix_similarity_heatmap(
+                            dendrite_results,
+                            dendrite_output_path.parent,
+                            output_name=dendrite_output_path.name,
+                            title=(
+                                "Matrix spine-spine similarity\n"
+                                f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
+                            ),
+                            compartment_filter=compartment,
+                            dendrite_filter=dendrite_id,
+                        )
+                    except Exception as exc:
+                        eprint(f"[ALERT] Failed to create matrix heatmap for {compartment} / {dendrite_id}: {exc}")
+                        continue
+                    if dendrite_path:
+                        saved.append(dendrite_path)
+    with step_scope("figure family: spine coactivity review"):
+        coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+        coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
+        for comp_idx, compartment in enumerate(coactivity_compartments, start=1):
+            with step_scope(
+                f"spine coactivity heatmaps: {gallery_compartment_title(compartment)}",
+                index=comp_idx,
+                total=len(coactivity_compartments),
+            ):
+                compartment_rows = filter_rows_by_spine_coactivity(coactivity_rows, compartment_filter=compartment)
+                dendrite_ids = sorted(
+                    {
+                        str(row.get("global_dendrite_id"))
+                        for row in compartment_rows
+                        if row.get("global_dendrite_id") is not None and str(row.get("status")) == "ok"
+                    }
+                )
+                for dend_idx, dendrite_id in enumerate(dendrite_ids, start=1):
+                    step_progress(dend_idx, len(dendrite_ids), label=str(dendrite_id))
+                    dendrite_results = cached_spine_coactivity_results(compartment, dendrite_id)
+                    dendrite_rows = dendrite_results.get("spine_coactivity", {}).get("table_rows", [])
+                    if not dendrite_rows:
+                        continue
+                    representative = sorted(
+                        dendrite_rows,
+                        key=lambda row: (
+                            str(row.get("animal_id", "")),
+                            str(row.get("day_id", row.get("exp_id", ""))),
+                            str(row.get("state", "")),
+                            str(row.get("global_pair_id", "")),
+                        ),
+                    )[0]
+                    dendrite_output_path = build_spine_coactivity_day_figure_path(
+                        fig_dir,
+                        representative.get("animal_id"),
+                        representative.get("day_id", representative.get("exp_id")),
+                        representative.get("compartment", compartment),
+                        dendrite_id,
+                    )
+                    try:
+                        dendrite_path = plot_spine_coactivity_tendency_figure(
+                            dendrite_results,
+                            dendrite_output_path.parent,
+                            output_name=dendrite_output_path.name,
+                            title=(
+                                "Spine coactivity heatmap across states\n"
+                                f"{format_dendrite_display_name(representative['animal_id'], representative.get('compartment', compartment), representative['global_dendrite_id'])}"
+                            ),
+                        )
+                    except Exception as exc:
+                        eprint(f"[ALERT] Failed to create spine coactivity heatmap for {compartment} / {dendrite_id}: {exc}")
+                        continue
+                    if dendrite_path:
+                        saved.append(dendrite_path)
+    with step_scope("cleanup ROI detail figures"):
+        removed_detail_files = cleanup_roi_detail_figures(fig_dir)
+        if removed_detail_files:
+            step_message(f"removed {len(removed_detail_files)} stale ROI detail PNG/SVG files")
+    with step_scope("figure family: spine coactivity basal/apical distribution"):
+        basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+            results,
+            spine_coactivity_figure_dir(coactivity_dir, "basal_apical_distribution"),
+            output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+            title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        if basal_vs_apical_path:
+            saved.append(basal_vs_apical_path)
+        else:
+            step_message("plotter returned no output: spine_coactivity_basal_apical_distribution")
+    return saved
+
+
+def generate_review_figures(
+    output_dir: Path,
+    results: Dict[str, Any],
+    cache: Dict[str, Any],
+    review_root: Optional[Path] = None,
+) -> List[str]:
+    if plt is None:
+        eprint("[ALERT] matplotlib is unavailable; skipping review figure generation.")
+        return []
+    review_dir = ensure_dir(Path(review_root) if review_root is not None else DEFAULT_REVIEW_FIGURES_DIR)
+    summary_review_dir = state_summary_figure_dir(review_dir)
+    saved: List[str] = []
+    state_labels = selected_matrix_state_labels(results)
+    basal_apical_state_labels = selected_basal_apical_state_labels(results)
+    present_compartments = sorted_present_compartments(cache)
+    spine_coactivity_results_cache: Dict[Optional[str], Dict[str, Any]] = {}
+    spine_coactivity_anchor_compartments: Optional[List[Optional[str]]] = None
+
+    def cached_spine_coactivity_results(compartment: Optional[str]) -> Dict[str, Any]:
+        if compartment not in spine_coactivity_results_cache:
+            spine_coactivity_results_cache[compartment] = build_filtered_spine_coactivity_results(results, compartment)
+        return spine_coactivity_results_cache[compartment]
+    with step_scope("review figure prep: state summary y-limits"):
+        y_limits = state_summary_y_limits(cache, state_labels)
+    with step_scope("review figure prep: state summary comparison y-limits"):
+        comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
+    with step_scope("review figure prep: state summary overview results"):
+        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+    with step_scope("review figure prep: state summary basal results"):
+        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
+    with step_scope("review figure prep: state summary apical results"):
+        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+    review_specs = [
+        {
+            "kind": "overview",
+            "compartment": None,
+            "output_name": "review_state_summary_boxplots.svg",
+            "title": "Review: Selected-state summary distributions - All compartments",
+            "results": overview_results,
+        },
+    ]
+    for compartment in [comp for comp in ["basal", "apical"] if comp in present_compartments]:
+        review_specs.append(
+            {
+                "kind": "overview",
+                "compartment": compartment,
+                "output_name": f"review_state_summary_boxplots_{compartment}.svg",
+                "title": f"Review: Selected-state summary distributions - {gallery_compartment_title(compartment)}",
+                "results": basal_results if compartment == "basal" else apical_results,
+            }
+        )
+    review_specs.append(
+        {
+            "kind": "comparison",
+            "output_name": "review_state_summary_boxplots_basal_vs_apical.svg",
+            "title": "Review: Selected-state summary distributions - Basal vs apical",
+            "results": (basal_results, apical_results),
+        }
+    )
+    for plot_idx, spec in enumerate(review_specs, start=1):
+        compartment = spec.get("compartment")
+        scope_label = gallery_compartment_suffix(compartment) if spec["kind"] == "overview" else "basal_vs_apical"
+        with step_scope(
+            f"review figure plotter: state_summary_boxplots[{scope_label}]",
+            index=plot_idx,
+            total=len(review_specs),
+        ):
+            try:
+                if spec["kind"] == "overview":
+                    summary_results = spec["results"]
+                    output_path = plot_state_summary_figure(
+                        summary_results,
+                        summary_review_dir,
+                        output_name=spec["output_name"],
+                        title=spec["title"],
+                        state_labels=state_labels,
+                        y_limits=y_limits,
+                    )
+                else:
+                    basal_summary, apical_summary = spec["results"]
+                    output_path = plot_state_summary_compartment_comparison_figure(
+                        basal_summary,
+                        apical_summary,
+                        summary_review_dir,
+                        output_name=spec["output_name"],
+                        title=spec["title"],
+                        state_labels=basal_apical_state_labels,
+                        y_limits=comparison_y_limits,
+                        comparison_rows=[
+                            row
+                            for row in results.get("basal_apical_comparisons", [])
+                            if str(row.get("comparison")) == "basal_vs_apical"
+                            and is_significant_row(row)
+                            and str(row.get("state")) in set(basal_apical_state_labels)
+                        ],
+                        cohort_label=str(spec.get("cohort_label") or "all"),
+                    )
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create review figure ({scope_label}): {exc}")
+                continue
+            if not output_path:
+                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                continue
+            output_path_obj = Path(output_path)
+            saved.append(str(output_path_obj))
+            svg_path = output_path_obj.with_suffix(".svg")
+            if svg_path.exists():
+                saved.append(str(svg_path))
+            component_dir = summary_review_dir / f"{output_path_obj.stem}_components"
+            if component_dir.exists():
+                for component_path in sorted(component_dir.glob("*.svg")):
+                    saved.append(str(component_path))
+    with step_scope("review family: direct trial-type figures"):
+        direct_review_dir = figure_family_dir(review_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+        direct_review_specs = [
+            {
+                "name": "direct_trial_type_distribution",
+                "output_name": "review_direct_trial_type_distribution.svg",
+                "title": "Review: Direct trial-type comparison - video means by state",
+                "plotter": plot_direct_trial_type_distribution_figure,
+            },
+            {
+                "name": "direct_trial_type_state_comparison",
+                "output_name": "review_direct_trial_type_state_comparison.svg",
+                "title": "Review: Direct trial-type comparison - state pair scatter",
+                "plotter": plot_direct_trial_type_state_comparison_figure,
+            },
+        ]
+        for plot_idx, spec in enumerate(direct_review_specs, start=1):
+            with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(direct_review_specs)):
+                try:
+                    output_path = spec["plotter"](
+                        results,
+                        direct_review_dir,
+                        output_name=spec["output_name"],
+                        title=spec["title"],
+                    )
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
+                    continue
+                if not output_path:
+                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    continue
+                output_path_obj = Path(output_path)
+                saved.append(str(output_path_obj))
+                svg_path = output_path_obj.with_suffix(".svg")
+                if svg_path.exists():
+                    saved.append(str(svg_path))
+    with step_scope("review family: mixed model figures"):
+        mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
+        for plot_idx, spec in enumerate(mixed_model_specs, start=1):
+            with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_specs)):
+                try:
+                    kwargs = {
+                        "results": results,
+                        "fig_dir": figure_nested_dir(mixed_model_review_dir, str(spec.get("scope") or "all_state")),
+                        "output_name": spec["output_name"],
+                        "title": spec["title"],
+                        "model_key": str(spec.get("model_key", "mixed_model")),
+                    }
+                    if spec.get("accepts_scope") and spec.get("scope") is not None:
+                        kwargs["scope"] = str(spec["scope"])
+                    output_path = spec["plotter"](**kwargs)
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
+                    continue
+                if not output_path:
+                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    continue
+                output_path_obj = Path(output_path)
+                saved.append(str(output_path_obj))
+                svg_path = output_path_obj.with_suffix(".svg")
+                if svg_path.exists():
+                    saved.append(str(svg_path))
+    with step_scope("review family: spine coactivity figures"):
+        coactivity_review_dir = review_dir
+        coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+        coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
+        for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
+            with step_scope(
+                f"review figure plotter: spine_coactivity[{gallery_compartment_suffix(compartment)}]",
+                index=plot_idx,
+                total=len(coactivity_compartments),
+            ):
+                try:
+                    compartment_results = cached_spine_coactivity_results(compartment)
+                    distribution_path = plot_spine_coactivity_distribution_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
+                        output_name=f"review_spine_coactivity_distribution_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Spine coactivity distributions - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if distribution_path:
+                        saved.append(distribution_path)
+                    heatmap_path = plot_spine_coactivity_tendency_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
+                        output_name=f"review_spine_coactivity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Derived state-state similarity of coactivity coefficient - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if heatmap_path:
+                        saved.append(heatmap_path)
+                    pair_heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
+                        output_name=f"review_spine_coactivity_pair_state_heatmap_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Spine coactivity coefficient across selected states - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if pair_heatmap_path:
+                        saved.append(pair_heatmap_path)
+                    else:
+                        step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
+                    pair_summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                        compartment_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
+                        output_name=f"review_spine_coactivity_pair_state_summary_{gallery_compartment_suffix(compartment)}.svg",
+                        title=f"Review: Spine coactivity state-change summary - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                    )
+                    if pair_summary_path:
+                        saved.append(pair_summary_path)
+                    else:
+                        step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
+        anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
+        if spine_coactivity_anchor_compartments is None:
+            spine_coactivity_anchor_compartments = spine_coactivity_anchor_state_compartments(anchor_rows)
+        for plot_idx, compartment in enumerate(spine_coactivity_anchor_compartments, start=1):
+            with step_scope(
+                f"review figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
+                index=plot_idx,
+                total=len(spine_coactivity_anchor_compartments),
+            ):
+                try:
+                    scope_results = results if compartment is None else cached_spine_coactivity_results(compartment)
+                    distribution_path = plot_spine_coactivity_distribution_figure(
+                        scope_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
+                        output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                        coactive_only=True,
+                    )
+                    if distribution_path:
+                        saved.append(distribution_path)
+                    heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
+                        scope_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
+                        output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                        coactive_only=True,
+                    )
+                    if heatmap_path:
+                        saved.append(heatmap_path)
+                    summary_path = plot_spine_coactivity_pair_state_summary_figure(
+                        scope_results,
+                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
+                        output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
+                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
+                        compartment_filter=compartment,
+                        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+                        coactive_only=True,
+                    )
+                    if summary_path:
+                        saved.append(summary_path)
+                    else:
+                        step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
+                except Exception as exc:
+                    eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity review figures ({gallery_compartment_suffix(compartment)}): {exc}")
+        basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
+            results,
+            spine_coactivity_figure_dir(coactivity_review_dir, "basal_apical_distribution"),
+            output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
+            title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
+            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            coactive_only=True,
+        )
+        if basal_vs_apical_path:
+            saved.append(basal_vs_apical_path)
+    return saved
+
+
+def ordered_compartment_levels(values: Sequence[Any]) -> List[str]:
+    seen = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value)
+        if text not in seen:
+            seen.append(text)
+    priority = {"basal": 0, "apical": 1, "sleep": 2, "movie": 3, "other": 4}
+    return sorted(seen, key=lambda item: (priority.get(item, 10), item))
+
+
+def split_day_id(day_id: Any) -> Tuple[str, str, str]:
+    parts = [part for part in str(day_id or "").split("|") if part]
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return parts[0], parts[1], "other"
+    if len(parts) == 1:
+        return parts[0], "unknown", "other"
+    return "unknown", "unknown", "other"
+
+
+def build_matrix_similarity_day_figure_path(
+    output_dir: Path,
+    animal_id: Any,
+    day_id: Any,
+    compartment: Any,
+    global_dendrite_id: Any,
+) -> Path:
+    day_animal_id, day_date, day_compartment = split_day_id(day_id)
+    animal_slug = safe_filename_component(animal_id or day_animal_id or "unknown_animal")
+    compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
+    date_slug = safe_filename_component(day_date or "unknown_date")
+    dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
+    figure_dir = figure_family_dir(output_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME, animal_slug, compartment_slug, date_slug)
+    figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_matrix_similarity_heatmap.svg"
+    return figure_dir / figure_name
+
+
+def build_spine_coactivity_day_figure_path(
+    output_dir: Path,
+    animal_id: Any,
+    day_id: Any,
+    compartment: Any,
+    global_dendrite_id: Any,
+    *,
+    figure_kind: str = "pair_state_heatmap",
+) -> Path:
+    day_animal_id, day_date, day_compartment = split_day_id(day_id)
+    animal_slug = safe_filename_component(animal_id or day_animal_id or "unknown_animal")
+    compartment_slug = safe_filename_component(day_figure_compartment_folder(compartment or day_compartment))
+    date_slug = safe_filename_component(day_date or "unknown_date")
+    dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
+    figure_dir = spine_coactivity_figure_dir(output_dir, figure_kind, animal_slug, compartment_slug, date_slug)
+    figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_spine_coactivity_heatmap.svg"
+    return figure_dir / figure_name
+
+
 def render_analysis_family_figures(
     output_dir: Path,
     results: Dict[str, Any],
@@ -8905,7 +11136,7 @@ def process_mixed_model_only(
             state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
-            source_cache=source_cache,
+            source_cache=cache,
         )
     results["mixed_model"] = mixed_model_results.get("all_state", {})
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
