@@ -105,17 +105,32 @@ def state_masks_for_context(ctx: ExperimentContext, selected_states: Sequence[st
         masks = _movie_masks_for_context(ctx)
     else:
         masks = _sleep_masks_for_context(ctx)
+
     if not selected_states:
         return masks
-    ordered: Dict[str, np.ndarray] = {}
-    selected_lookup = {canonical_state_label(state) for state in selected_states if canonical_state_label(state)}
-    for state, mask in masks.items():
-        if canonical_state_label(state) in selected_lookup:
-            ordered[state] = mask
-    if "all" in masks and ("all" in selected_lookup or not ordered):
-        ordered.setdefault("all", masks["all"])
-    return ordered or masks
 
+    ordered: Dict[str, np.ndarray] = {}
+    mask_by_canonical = {
+        canonical_state_label(state): (state, mask)
+        for state, mask in masks.items()
+        if canonical_state_label(state)
+    }
+
+    for requested_state in selected_states:
+        requested_key = canonical_state_label(requested_state)
+        if not requested_key:
+            continue
+        match = mask_by_canonical.get(requested_key)
+        if match is None:
+            continue
+        state, mask = match
+        ordered[state] = mask
+
+    # Only include "all" when it was explicitly requested.
+    if "all" in masks and any(canonical_state_label(state) == "all" for state in selected_states):
+        ordered.setdefault("all", masks["all"])
+
+    return ordered
 
 def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
     masks = state_masks_for_context(ctx, selected_states)

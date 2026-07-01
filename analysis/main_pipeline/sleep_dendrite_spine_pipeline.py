@@ -616,7 +616,55 @@ def _output_compartments_from_rows(rows: Sequence[Dict[str, Any]]) -> List[str]:
     )
     return present
 
+def sorted_present_compartments(cache: Dict[str, Any]) -> List[str]:
+    """Return basal/apical compartments present in the cache, in stable order.
 
+    Figure rendering uses this to decide which compartment-specific outputs to
+    draw.  Keep the order fixed so generated figures/reports are reproducible.
+    """
+    compartment_order = ("basal", "apical")
+    present = set()
+
+    def add_compartment(value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip().lower()
+        if text in compartment_order:
+            present.add(text)
+
+    if not isinstance(cache, dict):
+        return []
+
+    # Experiment-level metadata.
+    experiments = cache.get("experiments", {})
+    if isinstance(experiments, dict):
+        for exp_meta in experiments.values():
+            if not isinstance(exp_meta, dict):
+                continue
+            for key in ("compartment", "compartment_label", "dendrite_compartment"):
+                add_compartment(exp_meta.get(key))
+
+    # Top-level observation/table rows.
+    for value in cache.values():
+        if isinstance(value, dict):
+            rows = value.values()
+        elif isinstance(value, list):
+            rows = value
+        else:
+            continue
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            add_compartment(row.get("compartment"))
+            add_compartment(row.get("compartment_label"))
+            add_compartment(row.get("dendrite_compartment"))
+            add_compartment(row.get("conversion_compartment"))
+            add_compartment(row.get("source_compartment"))
+
+    return [compartment for compartment in compartment_order if compartment in present]
+ 
+ 
 def matrix_similarity_output_compartments(rows: Sequence[Dict[str, Any]]) -> List[str]:
     """Return compartments to render for matrix-similarity figures."""
     return _output_compartments_from_rows(rows)
