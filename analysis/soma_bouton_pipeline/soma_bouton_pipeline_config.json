@@ -130,7 +130,7 @@
     }
   },
   "event_detection_method": "amplitude",
-  "visual_response_metric": "calcium_events",
+  "visual_response_metric": "mean",
   "state_comparison_states": [
     "quiet_awake_blank",
     "nrem_blank",

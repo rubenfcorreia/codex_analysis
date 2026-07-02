@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime as dt
 import json
 import logging
 import sys
@@ -63,10 +64,11 @@ logger = logging.getLogger(__name__)
 
 
 def _stage(label: str, detail: str | None = None) -> None:
+    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if detail:
-        logger.info("[soma] %s: %s", label, detail)
+        logger.info("%s %s: %s", stamp, label, detail)
     else:
-        logger.info("[soma] %s", label)
+        logger.info("%s %s", stamp, label)
 
 
 def _json_safe(value: Any) -> Any:
@@ -228,6 +230,7 @@ def _visual_response_entity_rows(
     trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
     if not isinstance(trial_meta, list) or cut_neural.size == 0 or cut_time.size == 0:
         return []
+    roi_ids = list(ctx.soma.roi_ids()) if compartment == "soma" else list(ctx.bouton.roi_ids())
     rows: List[Dict[str, Any]] = []
     for roi_index in range(cut_neural.shape[0]):
         trace = np.asarray(cut_neural[roi_index], dtype=float)
@@ -239,6 +242,7 @@ def _visual_response_entity_rows(
             event_detection_method=event_detection_method,
         )
         summary = summarize_visual_response_entity_rows(trial_rows)
+        roi_id = roi_ids[roi_index] if roi_index < len(roi_ids) else roi_index
         row = {
             "expid": ctx.expid,
             "mode": ctx.mode,
@@ -247,7 +251,10 @@ def _visual_response_entity_rows(
             "day_id": ctx.day_id,
             "compartment": compartment,
             "roi_index": int(roi_index),
-            "response_metric": summary.get("response_metric", response_metric),
+            "roi_id": roi_id,
+            "soma_id": roi_id if compartment == "soma" else None,
+            "bouton_id": roi_id if compartment == "bouton" else None,
+            "response_metric": summary.get(response_metric, response_metric),
             "event_detection_method": event_detection_method,
             "source_label": cut_data.get("source_label"),
             "source_path": cut_data.get("source_path"),
@@ -273,6 +280,31 @@ def _visual_response_entity_rows(
         }
         rows.append(row)
     return rows
+
+
+def _row_roi_lookup_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    compartment = str(row.get("compartment") or "").strip().lower()
+    roi_id = row.get("roi_id")
+    if roi_id is None or str(roi_id).strip() == "":
+        roi_id = row.get(f"{compartment}_id")
+    if roi_id is None or str(roi_id).strip() == "":
+        roi_id = row.get("roi_index")
+    return compartment, str(roi_id)
+
+
+def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    lookup: Dict[tuple[str, str], str] = {}
+    for row in visual_response_rows:
+        key = _row_roi_lookup_key(row)
+        lookup[key] = str(row.get("cohort") or "nonresponsive")
+    assigned: List[Dict[str, Any]] = []
+    for row in rows:
+        row_copy = dict(row)
+        row_copy["cohort"] = lookup.get(_row_roi_lookup_key(row_copy), "nonresponsive")
+        assigned.append(row_copy)
+    return assigned
+
+
 
 
 
@@ -368,6 +400,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     lag_rows: List[Dict[str, Any]] = []
     visual_response_rows: List[Dict[str, Any]] = []
     selected_states_by_mode: Dict[str, List[str]] = {mode: list(resolve_analysis_state_selections(config, mode)) for mode in state_modes}
+    selected_states_by_mode_payload = {mode: list(states) for mode, states in selected_states_by_mode.items()}
+    day_groups = build_day_groups(expids_by_mode)
     analysis_results_meta = _soma_analysis_results_meta(
         config,
         selected_states_by_mode,
@@ -458,21 +492,23 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
 
-    day_groups = build_day_groups(expids_by_mode)
+    visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
+    visual_response_family = run_visual_response_family(
+        visual_response_rows,
+        cohort=visual_response_cohort,
+        response_metric=visual_response_metric,
+    )
 
-    _stage("summaries", "building day-level comparison tables")
     activity_summary_rows = state_summary_rows(activity_rows)
     state_comparison_summary_rows = state_comparison_rows(
         [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
         selected_states_by_mode.get("movie", []),
         shuffle_n,
-        metric_col="mean",
     )
     sleep_state_comparison_summary_rows = state_comparison_rows(
         [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
-        metric_col="mean",
     )
     state_event_comparison_summary_rows = state_comparison_rows(
         [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
@@ -486,24 +522,68 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         shuffle_n,
         metric_col="event_frequency_per_min",
     )
-    mixed_model_results = run_mixed_model_family(
-        activity_rows,
-        state_comparison_states=selected_states_by_mode.get("movie", []),
-        basal_apical_states=selected_states_by_mode.get("movie", []),
-        shuffle_n=shuffle_n,
-        mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
-    )
     correlation_summary = correlation_summary_rows(correlation_rows)
     lag_summary = lag_summary_rows(lag_rows)
-    visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
-    visual_response_family = run_visual_response_family(
-        visual_response_rows,
-        cohort=visual_response_cohort,
-        response_metric=visual_response_metric,
-    )
+
+    activity_rows_with_cohort = _assign_visual_response_cohorts(activity_rows, visual_response_rows)
+    correlation_rows_with_cohort = _assign_visual_response_cohorts(correlation_rows, visual_response_rows)
+    lag_rows_with_cohort = _assign_visual_response_cohorts(lag_rows, visual_response_rows)
+    analysis_state_order: List[str] = []
+    seen_analysis_states: set[str] = set()
+    for mode in state_modes:
+        for state in selected_states_by_mode.get(mode, []):
+            state_key = str(state)
+            if state_key and state_key not in seen_analysis_states:
+                analysis_state_order.append(state_key)
+                seen_analysis_states.add(state_key)
+
+    cohort_activity_rows = {
+        "all": activity_rows_with_cohort,
+        "responsive": [row for row in activity_rows_with_cohort if str(row.get("cohort") or "nonresponsive") == "responsive"],
+        "nonresponsive": [row for row in activity_rows_with_cohort if str(row.get("cohort") or "nonresponsive") != "responsive"],
+    }
+    cohort_correlation_rows = {
+        "all": correlation_rows_with_cohort,
+        "responsive": [row for row in correlation_rows_with_cohort if str(row.get("cohort") or "nonresponsive") == "responsive"],
+        "nonresponsive": [row for row in correlation_rows_with_cohort if str(row.get("cohort") or "nonresponsive") != "responsive"],
+    }
+    cohort_lag_rows = {
+        "all": lag_rows_with_cohort,
+        "responsive": [row for row in lag_rows_with_cohort if str(row.get("cohort") or "nonresponsive") == "responsive"],
+        "nonresponsive": [row for row in lag_rows_with_cohort if str(row.get("cohort") or "nonresponsive") != "responsive"],
+    }
+    cohort_state_comparison_rows: Dict[str, List[Dict[str, Any]]] = {}
+    cohort_state_event_comparison_rows: Dict[str, List[Dict[str, Any]]] = {}
+    cohort_correlation_summary: Dict[str, List[Dict[str, Any]]] = {}
+    mixed_model_results: Dict[str, Any] = {}
+    for cohort_name in ("all", "responsive", "nonresponsive"):
+        cohort_rows = cohort_activity_rows.get(cohort_name, [])
+        if not cohort_rows:
+            continue
+        cohort_state_comparison_rows[cohort_name] = state_comparison_rows(
+            cohort_rows,
+            analysis_state_order,
+            shuffle_n,
+        )
+        cohort_state_event_comparison_rows[cohort_name] = state_comparison_rows(
+            cohort_rows,
+            analysis_state_order,
+            shuffle_n,
+            metric_col="event_frequency_per_min",
+        )
+        cohort_correlation_summary[cohort_name] = correlation_summary_rows(cohort_correlation_rows.get(cohort_name, []))
+        mixed_model_results[cohort_name] = run_mixed_model_family(
+            cohort_rows,
+            state_comparison_states=analysis_state_order,
+            basal_apical_states=analysis_state_order,
+            shuffle_n=shuffle_n,
+            mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
+        )
     mixed_model_contrast_count = sum(
         len(branch.get("contrast_rows", []))
-        for compartment_results in (mixed_model_results or {}).values()
+        for cohort_results in (mixed_model_results or {}).values()
+        if isinstance(cohort_results, dict)
+        for compartment_results in cohort_results.values()
         if isinstance(compartment_results, dict)
         for branch in compartment_results.values()
         if isinstance(branch, dict)
@@ -542,9 +622,24 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if correlation_summary:
         _stage("writing csv", "bouton_soma_correlation_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", correlation_summary, list(correlation_summary[0].keys()))
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_correlation_summary.get(cohort_name, [])
+            if not cohort_rows:
+                continue
+            cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
+            write_csv_rows(cohort_csv_dir / "bouton_soma_correlation_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
     if lag_summary:
         _stage("writing csv", "bouton_soma_lag_summary_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", lag_summary, list(lag_summary[0].keys()))
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_lag_rows.get(cohort_name, [])
+            if not cohort_rows:
+                continue
+            cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
+            write_csv_rows(cohort_csv_dir / "bouton_soma_lag_scan_by_roi.csv", cohort_rows, list(cohort_rows[0].keys()))
+            cohort_lag_summary_rows = lag_summary_rows(cohort_rows)
+            if cohort_lag_summary_rows:
+                write_csv_rows(cohort_csv_dir / "bouton_soma_lag_summary_by_day.csv", cohort_lag_summary_rows, list(cohort_lag_summary_rows[0].keys()))
     if visual_response_rows:
         _stage("writing csv", "visual_response_by_roi")
         write_csv_rows(result_root / "csv" / "visual_response_by_roi.csv", visual_response_rows, list(visual_response_rows[0].keys()))
@@ -553,13 +648,36 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         write_csv_rows(result_root / "csv" / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
 
     _stage("plotting", "state activity")
-    plot_state_activity(activity_rows, result_root, comparison_rows=state_comparison_summary_rows + sleep_state_comparison_summary_rows)
-    _stage("plotting", "state event frequency")
-    plot_state_event_frequency(activity_rows, result_root, comparison_rows=state_event_comparison_summary_rows + sleep_state_event_comparison_summary_rows)
-    _stage("plotting", "correlation")
-    plot_state_correlation(correlation_summary, result_root, comparison_rows=state_comparison_summary_rows + sleep_state_comparison_summary_rows)
-    _stage("plotting", "lag heatmap")
-    plot_lag_heatmap(lag_rows, result_root)
+    for cohort_name in ("all", "responsive", "nonresponsive"):
+        cohort_rows = cohort_activity_rows.get(cohort_name, [])
+        if not cohort_rows:
+            continue
+        plot_state_activity(
+            cohort_rows,
+            result_root,
+            comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
+            cohort_label=cohort_name,
+        )
+        _stage("plotting", f"state event frequency - {cohort_name}")
+        plot_state_event_frequency(
+            cohort_rows,
+            result_root,
+            comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
+            cohort_label=cohort_name,
+        )
+        _stage("plotting", f"correlation - {cohort_name}")
+        plot_state_correlation(
+            cohort_correlation_summary.get(cohort_name, []),
+            result_root,
+            comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
+            cohort_label=cohort_name,
+        )
+    for cohort_name in ("all", "responsive", "nonresponsive"):
+        cohort_rows = cohort_lag_rows.get(cohort_name, [])
+        if not cohort_rows:
+            continue
+        _stage("plotting", f"lag heatmap - {cohort_name}")
+        plot_lag_heatmap(cohort_rows, result_root, cohort_label=cohort_name)
     if visual_response_rows:
         visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
         for compartment in ("soma", "bouton"):
@@ -588,46 +706,49 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
     if mixed_model_results:
         mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
-        for compartment_key, compartment_results in mixed_model_results.items():
-            if not isinstance(compartment_results, dict) or not compartment_results:
+        for cohort_name, cohort_results in mixed_model_results.items():
+            if not isinstance(cohort_results, dict) or not cohort_results:
                 continue
-            compartment_dir = ensure_dir(mixed_model_fig_dir / compartment_key)
-            for scope_key in ("all_state", "selected_state"):
-                branch = compartment_results.get(scope_key, {})
-                scope_label = scope_key.replace("_", " ")
-                if not isinstance(branch, dict) or not branch:
+            cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
+            for compartment_key, compartment_results in cohort_results.items():
+                if not isinstance(compartment_results, dict) or not compartment_results:
                     continue
-                mixed_model_payload = {
-                    "analysis_state_selection": {
-                        "state_comparison_states": list(selected_states_by_mode.get("movie", [])),
-                        "compartment_states": list(selected_states_by_mode.get("movie", [])),
-                    },
-                    "analysis_compartment": compartment_key,
-                    "mixed_model": branch,
-                }
-                plot_mixed_model_forest_figure(
-                    mixed_model_payload,
-                    compartment_dir,
-                    output_name=f"mixed_model_{compartment_key}_{scope_key}_forest.svg",
-                    title=f"Mixed-model fixed effects - {compartment_key} - {scope_label}",
-                    model_key="mixed_model",
-                )
-                plot_mixed_model_predicted_means_figure(
-                    mixed_model_payload,
-                    compartment_dir,
-                    output_name=f"mixed_model_{compartment_key}_{scope_key}_predicted_means.svg",
-                    title=f"Mixed-model predicted means - {compartment_key} - {scope_label}",
-                    model_key="mixed_model",
-                )
-                plot_mixed_model_contrasts_checkpoint(
-                    mixed_model_payload,
-                    compartment_dir,
-                    scope=scope_key,
-                    output_name=f"mixed_model_{compartment_key}_{scope_key}_contrasts.svg",
-                    title=f"Mixed-model contrasts - {compartment_key} - {scope_label}",
-                    model_key="mixed_model",
-                )
-
+                compartment_dir = ensure_dir(cohort_dir / compartment_key)
+                for scope_key in ("all_state", "selected_state"):
+                    branch = compartment_results.get(scope_key, {})
+                    scope_label = scope_key.replace("_", " ")
+                    if not isinstance(branch, dict) or not branch:
+                        continue
+                    mixed_model_payload = {
+                        "analysis_state_selection": {
+                            "state_comparison_states": list(analysis_state_order),
+                            "compartment_states": list(analysis_state_order),
+                        },
+                        "analysis_compartment": compartment_key,
+                        "mixed_model": branch,
+                    }
+                    plot_mixed_model_forest_figure(
+                        mixed_model_payload,
+                        compartment_dir,
+                        output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_forest.svg",
+                        title=f"Mixed-model fixed effects - {cohort_name} - {compartment_key} - {scope_label}",
+                        model_key="mixed_model",
+                    )
+                    plot_mixed_model_predicted_means_figure(
+                        mixed_model_payload,
+                        compartment_dir,
+                        output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_predicted_means.svg",
+                        title=f"Mixed-model predicted means - {cohort_name} - {compartment_key} - {scope_label}",
+                        model_key="mixed_model",
+                    )
+                    plot_mixed_model_contrasts_checkpoint(
+                        mixed_model_payload,
+                        compartment_dir,
+                        scope=scope_key,
+                        output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_contrasts.svg",
+                        title=f"Mixed-model contrasts - {cohort_name} - {compartment_key} - {scope_label}",
+                        model_key="mixed_model",
+                    )
     visual_response_counts = {
         "all": int(len(visual_response_rows)),
         "responsive": int(sum(bool(row.get("responsive", False)) for row in visual_response_rows)),
@@ -636,7 +757,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     manifest = {
         "config": dict(config),
         "comparison_preset_name": preset_name,
-        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
+        "selected_states_by_mode": selected_states_by_mode_payload,
         "state_modes": state_modes,
         "day_groups": day_groups,
         "counts": {
@@ -649,6 +770,32 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "visual_response_rows": len(visual_response_rows),
             "visual_response_responsive_rows": visual_response_counts["responsive"],
             "visual_response_nonresponsive_rows": visual_response_counts["nonresponsive"],
+            "cohort_activity_rows": {
+                cohort_name: len(rows) for cohort_name, rows in cohort_activity_rows.items()
+            },
+            "cohort_state_comparison_rows": {
+                cohort_name: len(rows) for cohort_name, rows in cohort_state_comparison_rows.items()
+            },
+            "cohort_state_event_comparison_rows": {
+                cohort_name: len(rows) for cohort_name, rows in cohort_state_event_comparison_rows.items()
+            },
+            "cohort_correlation_summary_rows": {
+                cohort_name: len(rows) for cohort_name, rows in cohort_correlation_summary.items()
+            },
+            "cohort_lag_rows": {
+                cohort_name: len(rows) for cohort_name, rows in cohort_lag_rows.items()
+            },
+            "cohort_mixed_model_contrasts": {
+                cohort_name: sum(
+                    len(branch.get("contrast_rows", []))
+                    for compartment_results in cohort_results.values()
+                    if isinstance(compartment_results, dict)
+                    for branch in compartment_results.values()
+                    if isinstance(branch, dict)
+                )
+                for cohort_name, cohort_results in mixed_model_results.items()
+                if isinstance(cohort_results, dict)
+            },
         },
         "event_detection_method": str(config.get("event_detection_method") or "amplitude"),
         "visual_response_metric": str(config.get("visual_response_metric") or "calcium_events"),
@@ -658,12 +805,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "visual_response_family": visual_response_family,
         "visual_response_cohort_ids": {
             "soma": {
-                "responsive": [str(row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and bool(row.get("responsive", False))],
-                "nonresponsive": [str(row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and not bool(row.get("responsive", False))],
+                "responsive": [str(row.get("roi_id") or row.get("soma_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and bool(row.get("responsive", False))],
+                "nonresponsive": [str(row.get("roi_id") or row.get("soma_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and not bool(row.get("responsive", False))],
             },
             "bouton": {
-                "responsive": [str(row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "bouton" and bool(row.get("responsive", False))],
-                "nonresponsive": [str(row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "bouton" and not bool(row.get("responsive", False))],
+                "responsive": [str(row.get("roi_id") or row.get("bouton_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "bouton" and bool(row.get("responsive", False))],
+                "nonresponsive": [str(row.get("roi_id") or row.get("bouton_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "bouton" and not bool(row.get("responsive", False))],
             },
         },
         "mixed_model": mixed_model_results,
