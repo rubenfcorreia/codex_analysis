@@ -2190,7 +2190,7 @@ def plot_visual_response_boxplot_figure(
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
     all_values = np.concatenate(data)
     _pad_boxplot_ylim(ax, [all_values])
-    ax.text(0.02, 0.98, f"n={len(blank_values)} ROI pairs", transform=ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 1, color="#444444")
+    annotate_sample_size(ax, 0.02, 0.98, f"n={len(blank_values)} ROI pairs", ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 1, transform=ax.transAxes)
     ttest = stats.ttest_ind(np.asarray(visual_values, dtype=float), np.asarray(blank_values, dtype=float), equal_var=False, nan_policy="omit")
     p_value = float(ttest.pvalue) if np.isfinite(ttest.pvalue) else float("nan")
     if np.isfinite(p_value) and p_value < REPORT_SIGNIFICANCE_ALPHA:
@@ -2916,6 +2916,17 @@ def plot_loading_qc_checkpoint(
     ax.set_yticks(np.arange(len(row_labels)))
     ax.set_yticklabels([label.replace("_", "\n") for label in row_labels])
     ax.set_title("Loaded day counts", fontsize=POSTER_TITLE_SIZE)
+    annotate_sample_size(
+        ax,
+        0.02,
+        0.98,
+        f"n days={int(np.nansum(matrix[0]))} | n observations={int(np.nansum(matrix[-1]))}",
+        ha="left",
+        va="top",
+        fontsize=POSTER_NOTE_SIZE - 1,
+        transform=ax.transAxes,
+        bbox=True,
+    )
     for row_index in range(matrix.shape[0]):
         for col_index in range(matrix.shape[1]):
             ax.text(col_index, row_index, f"{int(matrix[row_index, col_index])}", ha="center", va="center", fontsize=POSTER_NOTE_SIZE, color="#1f1f1f")
@@ -4641,15 +4652,15 @@ def plot_mixed_model_forest_figure(
         ax.grid(axis="x", alpha=0.25)
         set_sparse_numeric_ticks(ax, axis="x", nbins=5)
 
-        ax.text(
+        annotate_sample_size(
+            ax,
             0.99,
             0.02,
-            f"n terms = {len(fixed_effect_names)}",
-            transform=ax.transAxes,
+            f"n={int(design.get('n_obs', 0) or 0)} ROI-day obs",
             ha="right",
             va="bottom",
             fontsize=POSTER_NOTE_SIZE,
-            color="#444444",
+            transform=ax.transAxes,
         )
 
         if index == 1:
@@ -4812,16 +4823,16 @@ def plot_mixed_model_predicted_means_figure(
         if len(series_data) > 1:
             ax.legend(frameon=False, fontsize=max(16, POSTER_LEGEND_SIZE - 1), loc="upper left")
         ax.set_ylim(y_limits)
-        ax.text(
+        annotate_sample_size(
+            ax,
             0.99,
             0.98,
-            "solid filled = model | open dashed = observed",
-            transform=ax.transAxes,
+            f"n={int(design.get('n_obs', 0) or 0)} ROI-day obs",
             ha="right",
             va="top",
             fontsize=POSTER_NOTE_SIZE,
-            color="#444444",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#dddddd", alpha=0.8),
+            transform=ax.transAxes,
+            bbox=True,
         )
         fig.tight_layout(pad=0.95)
         panel_path = component_dir / f"{Path(output_name).stem}_{index:02d}_{response}.svg"
@@ -4862,6 +4873,7 @@ def plot_mixed_model_contrasts_checkpoint(
             response_order.append(response)
     if not response_order:
         return None
+    designs_lookup = mixed_model.get("designs", {}) if isinstance(mixed_model.get("designs", {}), dict) else {}
     state_order_lookup = {state: idx for idx, state in enumerate(selected_mixed_model_state_labels(results))}
     def contrast_sort_key(row: Dict[str, Any]) -> Tuple[int, int, int, int, str]:
         contrast_type = str(row.get("contrast_type"))
@@ -4972,6 +4984,18 @@ def plot_mixed_model_contrasts_checkpoint(
         ax_sig.tick_params(axis="y", left=False, labelleft=False)
         ax_sig.set_xlabel(r"$-\log_{10}(p)$", fontsize=max(17, POSTER_LABEL_SIZE - 2))
         ax_sig.set_title(f"{p_label}", fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=2)
+        design = designs_lookup.get(response, {}) if isinstance(designs_lookup, dict) else {}
+        annotate_sample_size(
+            ax_est,
+            0.02,
+            0.98,
+            f"n={int(design.get('n_obs', 0) or 0)} ROI-day obs",
+            ha="left",
+            va="top",
+            fontsize=POSTER_NOTE_SIZE,
+            transform=ax_est.transAxes,
+            bbox=True,
+        )
         ax_sig.tick_params(axis="x", labelsize=POSTER_FONT_SIZE)
         ax_sig.grid(axis="x", alpha=0.25)
         ax_sig.set_xlim(0.0, p_limit)
@@ -5604,6 +5628,25 @@ def _render_state_summary_comparison_panel_figure(
     ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
     ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
     _pad_boxplot_ylim(ax, all_data, y_limit=y_limit)
+    y0, y1 = ax.get_ylim()
+    y_range = max(float(y1 - y0), 1e-6)
+    for compartment, summary, color, offset in compartment_specs:
+        positions: List[float] = []
+        data: List[np.ndarray] = []
+        for idx, state in enumerate(state_order, start=1):
+            arr = flatten_state_summary_values(summary.get(state, {}))
+            if arr.size:
+                positions.append(idx + offset)
+                data.append(arr)
+        for pos, arr in zip(positions, data):
+            annotate_sample_size(
+                ax,
+                pos,
+                min(float(np.nanmax(arr)) + 0.03 * y_range, float(y1) - 0.01 * y_range),
+                f"n={arr.size}",
+                fontsize=POSTER_NOTE_SIZE - 1,
+                color=color,
+            )
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
     ax.grid(axis="y", alpha=0.25)
     comparison_subset = [
@@ -5625,6 +5668,7 @@ def _render_state_summary_comparison_panel_figure(
         Line2D([0], [0], color="#DD8452", marker="s", linestyle="", markersize=8, label="Apical"),
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=POSTER_LEGEND_SIZE)
+    annotate_sample_size(ax, 0.02, 0.98, f"n={len(rows)} comparisons", ha="left", va="top", transform=ax.transAxes, bbox=True)
     fig.tight_layout()
     return fig
 
@@ -5730,6 +5774,33 @@ def _set_boxplot_colors(bp: Dict[str, Any], colors: Sequence[str]) -> None:
     for median in bp.get("medians", []):
         median.set_color("#222222")
         median.set_linewidth(1.5)
+
+
+def annotate_sample_size(
+    ax: Any,
+    x: float,
+    y: float,
+    text: str,
+    *,
+    ha: str = "center",
+    va: str = "bottom",
+    fontsize: int = POSTER_NOTE_SIZE,
+    color: str = "#444444",
+    transform: Optional[Any] = None,
+    bbox: bool = False,
+) -> None:
+    text_kwargs = {
+        "ha": ha,
+        "va": va,
+        "fontsize": fontsize,
+        "color": color,
+        "clip_on": False,
+    }
+    if transform is not None:
+        text_kwargs["transform"] = transform
+    if bbox:
+        text_kwargs["bbox"] = dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#dddddd", alpha=0.85)
+    ax.text(x, y, text, **text_kwargs)
 
 
 def _draw_boxplot_significance_annotations(
@@ -5939,6 +6010,17 @@ def _render_state_summary_single_panel_figure(
             ax.set_ylim(float(y_limit[0]), float(y_limit[1]))
         except Exception:
             pass
+    y0, y1 = ax.get_ylim()
+    y_range = max(float(y1 - y0), 1e-6)
+    for pos, state, arr in zip(positions, labels, data):
+        annotate_sample_size(
+            ax,
+            pos,
+            min(float(np.nanmax(arr)) + 0.03 * y_range, float(y1) - 0.01 * y_range),
+            f"n={arr.size}",
+            fontsize=POSTER_NOTE_SIZE - 1,
+            color=state_display_color(state),
+        )
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
     ax.grid(axis="y", alpha=0.25)
     comparison_subset = []
@@ -6433,6 +6515,7 @@ def plot_demo_validation_figure(results: Dict[str, Any], fig_dir: Path) -> Optio
     ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
     set_sparse_numeric_ticks(ax, axis="both", nbins=5)
     ax.grid(axis="y", alpha=0.25)
+    annotate_sample_size(ax, 0.02, 0.98, f"n={int(mask.sum())} validated pairs", ha="left", va="top", transform=ax.transAxes, bbox=True)
     output_path = fig_dir / "demo_validation_scatter.svg"
     save_figure(fig, output_path, extra_formats=())
     return str(output_path)

@@ -3926,11 +3926,11 @@ def plot_sleep_state_poster_ready_4square_composite(
     with tempfile.TemporaryDirectory(prefix='sleep_state_4square_') as tmpdir:
         tmpdir_path = Path(tmpdir)
         top_right_svg = tmpdir_path / 'top_right_pies.svg'
-        pie_fig = plt.figure(figsize=(8.2, 9.8))
+        pie_fig = plt.figure(figsize=(11.6, 5.8))
         pie_fig.patch.set_facecolor('white')
-        top_right_gs = pie_fig.add_gridspec(2, 1, hspace=0.26)
+        top_right_gs = pie_fig.add_gridspec(1, 2, wspace=0.22)
         ax_comp = pie_fig.add_subplot(top_right_gs[0, 0])
-        ax_rem = pie_fig.add_subplot(top_right_gs[1, 0])
+        ax_rem = pie_fig.add_subplot(top_right_gs[0, 1])
 
         composition_rows = [
             dict(row)
@@ -3989,7 +3989,7 @@ def plot_sleep_state_poster_ready_4square_composite(
             ax_rem.text(0.5, 0.5, 'No data', transform=ax_rem.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
             ax_rem.set_title('Experimental days with REM', fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=4)
 
-        pie_fig.subplots_adjust(left=0.08, right=0.98, top=0.98, bottom=0.05, hspace=0.26)
+        pie_fig.subplots_adjust(left=0.05, right=0.99, top=0.94, bottom=0.08, wspace=0.20)
         pie_fig.savefig(top_right_svg, format='svg', dpi=POSTER_DPI)
         plt.close(pie_fig)
 
@@ -4124,7 +4124,15 @@ def plot_sleep_state_poster_ready_composite(
             if sleep_start_min > 0.0:
                 ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
             ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
+        if sleep_start_min is not None and np.isfinite(sleep_start_min):
+            if sleep_start_min > 0.0:
+                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
+            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
         ax.set_xlim(0.0, x_max)
+        if sleep_start_min is not None and np.isfinite(sleep_start_min):
+            if sleep_start_min > 0.0:
+                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
+            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
         ax.set_ylim(0.0, 1.05)
         ax.grid(axis='y', alpha=0.22)
         set_sparse_numeric_ticks(ax, axis='y', nbins=5)
@@ -4966,6 +4974,7 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
     day_summaries = aggregate_day_summaries(exp_summaries)
     time_s, profile = average_probability_summaries(day_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
+    sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
@@ -4995,6 +5004,10 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
         else:
             ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=max(8, POSTER_FONT_SIZE - 7), color='#666666')
         ax.set_xlim(0.0, x_max)
+        if sleep_start_min is not None and np.isfinite(sleep_start_min):
+            if sleep_start_min > 0.0:
+                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
+            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
         ax.set_ylim(0.0, 1.05)
         ax.grid(axis='y', alpha=0.22)
         set_sparse_numeric_ticks(ax, axis='y', nbins=5)
@@ -5026,6 +5039,15 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
         va='top',
         fontsize=max(11, POSTER_LABEL_SIZE - 7),
         linespacing=0.8,
+    )
+    fig.text(
+        float(frac_block_x1),
+        float(frac_block_y0) + 0.005,
+        'sleep session starts',
+        ha='right',
+        va='bottom',
+        fontsize=max(8, POSTER_FONT_SIZE - 7),
+        color='#666666',
     )
     fig.suptitle('Sleep-state fractions through experimental time', fontsize=max(22, POSTER_SUPTITLE_SIZE - 2), y=0.985)
     fig.text(
