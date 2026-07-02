@@ -235,6 +235,7 @@ DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
 DEFAULT_CORRELATION_FIGURES_DIRNAME = "correlation_summary"
 DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME = "direct_trial_type_comparison"
 DEFAULT_EVENT_EXAMPLE_FIGURES_DIRNAME = "event_examples"
+DEFAULT_SHARED_FIGURES_DIRNAME = "shared_figures"
 DEFAULT_REVIEW_FIGURES_DIR = ROOT_DIR / DEFAULT_REVIEW_FIGURES_DIRNAME
 # These labels are reused everywhere so the cache, analysis, and plots stay aligned.
 MOVIE_TRIAL_TYPES = ["blank", "grating", "zebra", "movies"]
@@ -2190,6 +2191,15 @@ def plot_visual_response_boxplot_figure(
     all_values = np.concatenate(data)
     _pad_boxplot_ylim(ax, [all_values])
     ax.text(0.02, 0.98, f"n={len(blank_values)} ROI pairs", transform=ax.transAxes, ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 1, color="#444444")
+    ttest = stats.ttest_ind(np.asarray(visual_values, dtype=float), np.asarray(blank_values, dtype=float), equal_var=False, nan_policy="omit")
+    p_value = float(ttest.pvalue) if np.isfinite(ttest.pvalue) else float("nan")
+    if np.isfinite(p_value) and p_value < REPORT_SIGNIFICANCE_ALPHA:
+        finite = np.concatenate([blank_values, visual_values])
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            y = float(np.nanmax(finite)) + max(0.05 * float(np.ptp(finite)), 0.05)
+            ax.plot([1.0, 1.0, 2.0, 2.0], [y * 0.98, y, y, y * 0.98], color="#8b0000", linewidth=1.2)
+            ax.text(1.5, y, "*", ha="center", va="bottom", fontsize=24, color="#8b0000", fontweight="bold")
     fig.subplots_adjust(left=0.18, right=0.98, bottom=0.14, top=0.88)
     output_path = Path(fig_dir) / output_name
     save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("svg",))
@@ -2589,36 +2599,101 @@ def filter_rows_by_spine_coactivity(
     return filtered
 
 
-def summarize_loaded_counts(records: Sequence[Dict[str, Any]]) -> Dict[str, int]:
-    """Summarize loaded gallery/example records by coarse record type."""
-    counts: Dict[str, int] = {}
+def summarize_loaded_counts(cache: Dict[str, Any], compartment_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Summarize loaded checkpoint-gallery counts by compartment.
 
-    for record in records or []:
-        if not isinstance(record, dict):
-            continue
+    The loading QC checkpoint expects one row per compartment with the basic
+    loaded-object counts. We derive those counts from the cached animals /
+    dendrites / observations so the plot stays consistent with the rest of the
+    analysis cache.
+    """
 
-        key = (
-            record.get("kind")
-            or record.get("record_type")
-            or record.get("trace_kind")
-            or record.get("figure_kind")
-            or record.get("type")
-            or "records"
-        )
-        key = str(key or "records").strip().lower()
-        counts[key] = counts.get(key, 0) + 1
+    def _matches_compartment(value: Any, selected: Optional[str]) -> bool:
+        selected_key = str(selected or "").strip().lower()
+        if not selected_key or selected_key == "all":
+            return True
+        return str(value or "").strip().lower() == selected_key
 
-    counts["total"] = sum(counts.values())
-    return counts
+    def _count_rows_for_compartment(selected: Optional[str]) -> Optional[Dict[str, Any]]:
+        animals = cache.get("animals", {})
+        if not isinstance(animals, dict):
+            return None
 
+        day_ids = set()
+        dendrite_ids = set()
+        spine_ids = set()
+        observation_count = 0
+
+        for animal_entry in animals.values():
+            if not isinstance(animal_entry, dict):
+                continue
+            dendrites = animal_entry.get("dendrites", {})
+            if not isinstance(dendrites, dict):
+                continue
+            for dendrite_id, dendrite_record in dendrites.items():
+                if not isinstance(dendrite_record, dict):
+                    continue
+                observations = dendrite_record.get("observations", {})
+                if not isinstance(observations, dict):
+                    continue
+                for exp_id, d_obs in observations.items():
+                    if not isinstance(d_obs, dict):
+                        continue
+                    if not _matches_compartment(observation_compartment(cache, exp_id, d_obs), selected):
+                        continue
+                    observation_count += 1
+                    if exp_id is not None:
+                        day_ids.add(str(exp_id))
+                    if dendrite_id is not None:
+                        dendrite_ids.add(str(dendrite_id))
+                    spine_iterable = d_obs.get("spine_ids")
+                    if isinstance(spine_iterable, (list, tuple, set)):
+                        for spine_id in spine_iterable:
+                            if spine_id is not None:
+                                spine_ids.add(str(spine_id))
+                    else:
+                        spines = dendrite_record.get("spines", {})
+                        if isinstance(spines, dict):
+                            for spine_id in spines.keys():
+                                if spine_id is not None:
+                                    spine_ids.add(str(spine_id))
+
+        if observation_count == 0:
+            return None
+
+        label = str(selected or "all").strip().lower() or "all"
+        return {
+            "compartment": label,
+            "n_days": int(len(day_ids)),
+            "n_dendrites": int(len(dendrite_ids)),
+            "n_spines": int(len(spine_ids)),
+            "n_observations": int(observation_count),
+        }
+
+    compartments: List[Optional[str]]
+    if compartment_filter is None:
+        compartments = [None]
+        compartments.extend([comp for comp in sorted_present_compartments(cache) if comp not in compartments])
+    else:
+        compartments = [compartment_filter]
+
+    rows: List[Dict[str, Any]] = []
+    for compartment in compartments:
+        row = _count_rows_for_compartment(compartment)
+        if row is not None:
+            rows.append(row)
+    return rows
 
 def select_representative_trace_record(
     records: Sequence[Dict[str, Any]],
     *,
     compartment: Any = None,
+    compartment_filter: Any = None,
     trace_kind: Any = None,
     figure_kind: Any = None,
     state: Any = None,
+    require_spine: bool = False,
+    **_compat_kwargs,
 ) -> Optional[Dict[str, Any]]:
     """Pick a representative trace/example record from loaded gallery records.
 
@@ -2628,7 +2703,8 @@ def select_representative_trace_record(
     if not records:
         return None
 
-    compartment_key = str(compartment or "").strip().lower()
+    selected_compartment = compartment_filter if compartment_filter is not None else compartment
+    compartment_key = str(selected_compartment or "").strip().lower()
     trace_kind_key = str(trace_kind or "").strip().lower()
     figure_kind_key = str(figure_kind or "").strip().lower()
     state_key = str(state or "").strip().lower()
@@ -2658,10 +2734,23 @@ def select_representative_trace_record(
             if record_state and record_state != state_key:
                 continue
 
+        if require_spine:
+            has_spine_marker = any(record.get(key) is not None for key in ("global_spine_id", "spine_id", "spine_ids", "spine_compartment"))
+            if not has_spine_marker:
+                continue
+
         candidates.append(record)
 
     if not candidates:
         candidates = [record for record in records if isinstance(record, dict)]
+        if require_spine:
+            spine_candidates = [
+                record
+                for record in candidates
+                if any(record.get(key) is not None for key in ("global_spine_id", "spine_id", "spine_ids", "spine_compartment"))
+            ]
+            if spine_candidates:
+                candidates = spine_candidates
 
     if not candidates:
         return None
@@ -3230,6 +3319,11 @@ def mixed_model_branch_render_specs(results: Dict[str, Any], review: bool = Fals
             ]
         )
     return specs
+def mixed_model_scope_is_shared(scope: Any) -> bool:
+    text = str(scope or "").strip().lower()
+    return text == "all_state" or text.endswith("_all_state")
+
+
 def _mixed_model_response_payload(results: Dict[str, Any], response: str, model_key: str = "mixed_model") -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     mixed_model = results.get(model_key, {})
     if not isinstance(mixed_model, dict):
@@ -6545,52 +6639,55 @@ def generate_analysis_figures(
                 saved.append(output_path)
             else:
                 step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or scope_label}")
-    all_state_labels = list(ALL_REQUESTED_STATES)
-    all_summary_fig_dir = state_summary_figure_dir(fig_dir, "all_states")
-    all_y_limits = state_summary_y_limits(cache, all_state_labels)
-    all_overview_results = build_state_summary_gallery_results(cache, all_state_labels, None)
-    all_basal_results = build_state_summary_gallery_results(cache, all_state_labels, "basal")
-    all_apical_results = build_state_summary_gallery_results(cache, all_state_labels, "apical")
-    all_state_output_path = plot_state_summary_figure(
-        all_overview_results,
-        all_summary_fig_dir,
-        output_name="state_summary_boxplots_all_states.svg",
-        title="All-state summary distributions - All compartments",
-        state_labels=all_state_labels,
-        y_limits=all_y_limits,
-        cohort_label="all",
-        state_group="all_states",
-    )
-    if all_state_output_path:
-        saved.append(all_state_output_path)
-    for compartment, compartment_results in [("basal", all_basal_results), ("apical", all_apical_results)]:
-        if compartment not in present_compartments:
-            continue
-        output_path = plot_state_summary_figure(
-            compartment_results,
+    comparison_preset_name = str(results.get("analysis_state_selection", {}).get("comparison_preset_name") or "default")
+    include_all_state_summaries = comparison_preset_name == "default"
+    if include_all_state_summaries:
+        all_state_labels = list(ALL_REQUESTED_STATES)
+        all_summary_fig_dir = state_summary_figure_dir(fig_dir, "all_states")
+        all_y_limits = state_summary_y_limits(cache, all_state_labels)
+        all_overview_results = build_state_summary_gallery_results(cache, all_state_labels, None)
+        all_basal_results = build_state_summary_gallery_results(cache, all_state_labels, "basal")
+        all_apical_results = build_state_summary_gallery_results(cache, all_state_labels, "apical")
+        all_state_output_path = plot_state_summary_figure(
+            all_overview_results,
             all_summary_fig_dir,
-            output_name=f"state_summary_boxplots_{compartment}_all_states.svg",
-            title=f"All-state summary distributions - {gallery_compartment_title(compartment)}",
+            output_name="state_summary_boxplots_all_states.svg",
+            title="All-state summary distributions - All compartments",
             state_labels=all_state_labels,
             y_limits=all_y_limits,
             cohort_label="all",
             state_group="all_states",
         )
-        if output_path:
-            saved.append(output_path)
-    comparison_path = plot_state_summary_compartment_comparison_figure(
-        all_basal_results,
-        all_apical_results,
-        all_summary_fig_dir,
-        output_name="state_summary_boxplots_basal_vs_apical_all_states.svg",
-        title="All-state summary distributions - Basal vs apical",
-        state_labels=all_state_labels,
-        y_limits=state_summary_y_limits(cache, all_state_labels),
-        cohort_label="all",
-        state_group="all_states",
-    )
-    if comparison_path:
-        saved.append(comparison_path)
+        if all_state_output_path:
+            saved.append(all_state_output_path)
+        for compartment, compartment_results in [("basal", all_basal_results), ("apical", all_apical_results)]:
+            if compartment not in present_compartments:
+                continue
+            output_path = plot_state_summary_figure(
+                compartment_results,
+                all_summary_fig_dir,
+                output_name=f"state_summary_boxplots_{compartment}_all_states.svg",
+                title=f"All-state summary distributions - {gallery_compartment_title(compartment)}",
+                state_labels=all_state_labels,
+                y_limits=all_y_limits,
+                cohort_label="all",
+                state_group="all_states",
+            )
+            if output_path:
+                saved.append(output_path)
+        comparison_path = plot_state_summary_compartment_comparison_figure(
+            all_basal_results,
+            all_apical_results,
+            all_summary_fig_dir,
+            output_name="state_summary_boxplots_basal_vs_apical_all_states.svg",
+            title="All-state summary distributions - Basal vs apical",
+            state_labels=all_state_labels,
+            y_limits=state_summary_y_limits(cache, all_state_labels),
+            cohort_label="all",
+            state_group="all_states",
+        )
+        if comparison_path:
+            saved.append(comparison_path)
 
     plotters = [
         plot_basal_apical_summary,
@@ -6629,20 +6726,32 @@ def generate_analysis_figures(
                 continue
             if output_path:
                 saved.append(output_path)
+    run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    comparison_preset_name = str(run_params.get("comparison_preset_name") or "default")
+    generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+    shared_mixed_model_dir = None
+    if generate_shared_general_figures:
+        base_root = output_dir.parent if comparison_preset_name != "default" else output_dir
+        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
     for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
+        scope = str(spec.get("scope") or "all_state")
+        is_shared_scope = mixed_model_scope_is_shared(scope)
+        if is_shared_scope and shared_mixed_model_dir is None:
+            continue
+        target_dir = shared_mixed_model_dir if is_shared_scope else mixed_model_dir
         with step_scope(f"figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_plotters)):
             try:
                 kwargs = {
                     "results": results,
-                    "fig_dir": figure_nested_dir(mixed_model_dir, str(spec.get("scope") or "all_state")),
+                    "fig_dir": figure_nested_dir(target_dir, scope),
                     "output_name": spec["output_name"],
                     "title": spec["title"],
                     "model_key": str(spec.get("model_key", "mixed_model")),
                 }
                 if spec.get("accepts_scope") and spec.get("scope") is not None:
-                    kwargs["scope"] = str(spec["scope"])
+                    kwargs["scope"] = scope
                 output_path = spec["plotter"](**kwargs)
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with {spec['name']}: {exc}")
@@ -7059,17 +7168,22 @@ def generate_review_figures(
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
         for plot_idx, spec in enumerate(mixed_model_specs, start=1):
+            scope = str(spec.get("scope") or "all_state")
+            is_shared_scope = mixed_model_scope_is_shared(scope)
+            if is_shared_scope and shared_mixed_model_dir is None:
+                continue
+            target_dir = shared_mixed_model_dir if is_shared_scope else mixed_model_review_dir
             with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_specs)):
                 try:
                     kwargs = {
                         "results": results,
-                        "fig_dir": figure_nested_dir(mixed_model_review_dir, str(spec.get("scope") or "all_state")),
+                        "fig_dir": figure_nested_dir(target_dir, scope),
                         "output_name": spec["output_name"],
                         "title": spec["title"],
                         "model_key": str(spec.get("model_key", "mixed_model")),
                     }
                     if spec.get("accepts_scope") and spec.get("scope") is not None:
-                        kwargs["scope"] = str(spec["scope"])
+                        kwargs["scope"] = scope
                     output_path = spec["plotter"](**kwargs)
                 except Exception as exc:
                     eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
@@ -7959,16 +8073,22 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
             global_dendrite_id=None if rep is None else rep.get("global_dendrite_id"),
         )
     # Mixed-model checkpoint examples.
+    mixed_model_gallery_dir = figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
+        scope = str(spec["scope"])
+        is_shared_scope = mixed_model_scope_is_shared(scope)
+        if is_shared_scope and shared_mixed_model_dir is None:
+            continue
+        target_dir = shared_mixed_model_dir if is_shared_scope else mixed_model_gallery_dir
         path = spec["plotter"](
             results,
-            figure_nested_dir(figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME), str(spec["scope"])),
-            scope=str(spec["scope"]),
+            figure_nested_dir(target_dir, scope),
+            scope=scope,
             output_name=spec["output_name"],
             title=spec["title"],
             model_key=str(spec.get("model_key", "mixed_model")),
         )
-        append_entry("mixed_model_contrasts", spec["scope"], path, scope=str(spec["scope"]))
+        append_entry("mixed_model_contrasts", scope, path, scope=scope)
     # Direct trial-type comparison checkpoint examples.
     path = plot_direct_trial_type_distribution_figure(
         results,
@@ -14298,7 +14418,14 @@ def write_analysis_outputs(
         for path in review_figure_files:
             written_artifacts.append(report_relative_path(path, ROOT_DIR))
         step_message("review figure generation complete: %d file(s)" % len(review_figure_files))
-        if source_cache is not None:
+        run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+        comparison_preset_name = str(run_params.get("comparison_preset_name") or "default")
+        generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
+        shared_general_root = None
+        if generate_shared_general_figures:
+            base_root = output_dir.parent if comparison_preset_name != "default" else output_dir
+            shared_general_root = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME)
+        if source_cache is not None and shared_general_root is not None:
             step_message("visual response figure generation starting")
             with step_scope("visual response figure generation"):
                 visual_response_figure_files = render_cached_visual_response_figures(
@@ -14306,12 +14433,22 @@ def write_analysis_outputs(
                     results,
                     cache,
                     source_cache,
-                    figure_root=figure_root,
+                    figure_root=shared_general_root,
                 )
             results["visual_response_figure_files"] = visual_response_figure_files
             for path in visual_response_figure_files:
                 written_artifacts.append(report_relative_path(path, output_dir))
             step_message("visual response figure generation complete: %d file(s)" % len(visual_response_figure_files))
+            step_message("event detection example gallery starting")
+            with step_scope("event detection example gallery"):
+                event_example_gallery = generate_event_detection_example_gallery(cache, shared_general_root)
+            results["event_example_gallery"] = event_example_gallery
+            for path in event_example_gallery:
+                written_artifacts.append(report_relative_path(path, output_dir))
+            step_message("event detection example gallery complete: %d file(s)" % len(event_example_gallery))
+        else:
+            results["visual_response_figure_files"] = []
+            results["event_example_gallery"] = []
         step_message("checkpoint gallery generation starting")
         with step_scope("checkpoint gallery"):
             checkpoint_gallery = generate_checkpoint_gallery(output_dir, cache, results)
@@ -14321,14 +14458,6 @@ def write_analysis_outputs(
         for path in checkpoint_gallery.get("files", []):
             written_artifacts.append(report_relative_path(path, output_dir))
         step_message("checkpoint gallery complete: %d file(s)" % len(checkpoint_gallery.get("files", [])))
-        fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
-        step_message("event detection example gallery starting")
-        with step_scope("event detection example gallery"):
-            event_example_gallery = generate_event_detection_example_gallery(cache, fig_dir)
-        results["event_example_gallery"] = event_example_gallery
-        for path in event_example_gallery:
-            written_artifacts.append(report_relative_path(path, output_dir))
-        step_message("event detection example gallery complete: %d file(s)" % len(event_example_gallery))
     else:
         results["figure_files"] = []
         results["review_figure_files"] = []
@@ -15444,6 +15573,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         generate_once = preset_index == 0
         preset_config["plots_only_include_supporting_figures"] = True if generate_once else False
         preset_config["generate_poster_ready_figures"] = True if generate_once else False
+        preset_config["generate_shared_general_figures"] = True if generate_once else False
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             temp_config_path = Path(handle.name)
@@ -15959,6 +16089,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "analysis_families": list(config.get("analysis_families") or []),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "generate_shared_general_figures": bool(config.get("generate_shared_general_figures", True)),
         "analysis_run_cache_path": str(analysis_run_cache_path),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
