@@ -67,6 +67,7 @@ from poster_plotting import (
     POSTER_TITLE_SIZE,
     POSTER_WIDE_FIGSIZE,
     compose_svg_figure,
+    compose_svg_figure_fit_to_boxes,
     configure_poster_matplotlib,
     rasterize_svg_to_png,
     save_figure,
@@ -3912,9 +3913,21 @@ def plot_sleep_state_poster_ready_4square_composite(
         raise RuntimeError('matplotlib is required to generate figures')
 
     figure_dir = ensure_dir(DEFAULT_POSTER_READY_DIR)
-    sleep_pupil_svg = _resolve_svg_artifact_path(sleep_pupil_z_artifacts, output_dir, ('sleep_pupil_z_by_state', 'sleep_pupil_z'))
-    stacked_area_svg = _resolve_svg_artifact_path(stacked_area_artifacts, output_dir, ('combined_stacked_area',))
-    within_day_svg = _resolve_svg_artifact_path(within_day_fraction_artifacts, output_dir, ('within_day_sleep_state_fractions',))
+    sleep_pupil_svg = _resolve_svg_artifact_path(
+        sleep_pupil_z_artifacts,
+        output_dir,
+        ('sleep_pupil_z_by_state', 'sleep_pupil_z'),
+    )
+    stacked_area_svg = _resolve_svg_artifact_path(
+        stacked_area_artifacts,
+        output_dir,
+        ('combined_stacked_area',),
+    )
+    within_day_svg = _resolve_svg_artifact_path(
+        within_day_fraction_artifacts,
+        output_dir,
+        ('within_day_sleep_state_fractions',),
+    )
 
     if sleep_pupil_svg is None:
         raise RuntimeError('Could not resolve the sleep pupil z-score figure for the poster composite')
@@ -3926,21 +3939,39 @@ def plot_sleep_state_poster_ready_4square_composite(
     with tempfile.TemporaryDirectory(prefix='sleep_state_4square_') as tmpdir:
         tmpdir_path = Path(tmpdir)
         top_right_svg = tmpdir_path / 'top_right_pies.svg'
-        pie_fig = plt.figure(figsize=(11.6, 5.8))
+
+        # Make the generated pie-panel SVG match the quadrant aspect better
+        # and waste less space around the actual pies.
+        pie_fig = plt.figure(figsize=(10.8, 7.4))
         pie_fig.patch.set_facecolor('white')
-        top_right_gs = pie_fig.add_gridspec(1, 2, wspace=0.22)
+        top_right_gs = pie_fig.add_gridspec(
+            1,
+            2,
+            left=0.015,
+            right=0.985,
+            top=0.88,
+            bottom=0.03,
+            wspace=0.02,
+        )
         ax_comp = pie_fig.add_subplot(top_right_gs[0, 0])
         ax_rem = pie_fig.add_subplot(top_right_gs[0, 1])
 
         composition_rows = [
             dict(row)
             for row in state_composition_rows
-            if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))
+            if as_float(row.get('fraction')) is not None
+            and np.isfinite(as_float(row.get('fraction')))
         ]
         if composition_rows:
             values = [float(as_float(row.get('fraction'))) for row in composition_rows]
-            labels = [str(row.get('state_display', row.get('state', 'unknown'))) for row in composition_rows]
-            colors = [DEFAULT_STACKED_STATE_COLORS.get(str(row.get('state')), '#777777') for row in composition_rows]
+            labels = [
+                str(row.get('state_display', row.get('state', 'unknown')))
+                for row in composition_rows
+            ]
+            colors = [
+                DEFAULT_STACKED_STATE_COLORS.get(str(row.get('state')), '#777777')
+                for row in composition_rows
+            ]
             ax_comp.set_anchor('C')
             draw_compact_pie_panel(
                 ax_comp,
@@ -3950,23 +3981,46 @@ def plot_sleep_state_poster_ready_4square_composite(
                 title='Sleep-state %',
                 force_pct_labels=['REM'],
                 legend_ncol=4,
-                radius=0.84,
+                radius=1.18,
                 legend_inside=False,
                 show_legend=False,
             )
-            ax_comp.set_title('Sleep-state %', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=4)
+            ax_comp.set_title(
+                'Sleep-state %',
+                fontsize=max(16, POSTER_TITLE_SIZE - 7),
+                fontweight='bold',
+                pad=4,
+            )
         else:
-            ax_comp.text(0.5, 0.5, 'No data', transform=ax_comp.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
-            ax_comp.set_title('Sleep-state %', fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=4)
+            ax_comp.text(
+                0.5,
+                0.5,
+                'No data',
+                transform=ax_comp.transAxes,
+                ha='center',
+                va='center',
+                fontsize=max(12, POSTER_NOTE_SIZE),
+                color='#666666',
+            )
+            ax_comp.set_title(
+                'Sleep-state %',
+                fontsize=max(16, POSTER_TITLE_SIZE - 7),
+                fontweight='bold',
+                pad=4,
+            )
 
         rem_rows = [
             dict(row)
             for row in rem_day_presence_rows
-            if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))
+            if as_float(row.get('fraction')) is not None
+            and np.isfinite(as_float(row.get('fraction')))
         ]
         if rem_rows:
             values = [float(as_float(row.get('fraction'))) for row in rem_rows]
-            labels = [str(row.get('state_display', row.get('state', 'unknown'))) for row in rem_rows]
+            labels = [
+                str(row.get('state_display', row.get('state', 'unknown')))
+                for row in rem_rows
+            ]
             colors = ['#6A3D9A', '#A6761D'][: len(values)]
             pct_suffixes = [f"\n[{int(row.get('day_count', 0))}]" for row in rem_rows]
             ax_rem.set_anchor('C')
@@ -3978,35 +4032,84 @@ def plot_sleep_state_poster_ready_4square_composite(
                 title='Experimental days with REM',
                 pct_suffixes=pct_suffixes,
                 legend_ncol=1,
-                radius=0.82,
-                legend_inside=True,
+                radius=1.18,
+                legend_inside=False,
+                show_legend=False,
             )
-            ax_rem.set_title('Experimental days with REM', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=4)
+            ax_rem.set_title(
+                'Experimental days with REM',
+                fontsize=max(16, POSTER_TITLE_SIZE - 7),
+                fontweight='bold',
+                pad=4,
+            )
             legend = ax_rem.get_legend()
             if legend is not None:
                 legend.remove()
         else:
-            ax_rem.text(0.5, 0.5, 'No data', transform=ax_rem.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
-            ax_rem.set_title('Experimental days with REM', fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=4)
+            ax_rem.text(
+                0.5,
+                0.5,
+                'No data',
+                transform=ax_rem.transAxes,
+                ha='center',
+                va='center',
+                fontsize=max(12, POSTER_NOTE_SIZE),
+                color='#666666',
+            )
+            ax_rem.set_title(
+                'Experimental days with REM',
+                fontsize=max(16, POSTER_TITLE_SIZE - 7),
+                fontweight='bold',
+                pad=4,
+            )
 
-        pie_fig.subplots_adjust(left=0.05, right=0.99, top=0.94, bottom=0.08, wspace=0.20)
+        # Enlarge pie labels / percent labels after draw_compact_pie_panel().
+        for ax in (ax_comp, ax_rem):
+            for text in ax.texts:
+                text.set_fontsize(max(13, POSTER_FONT_SIZE - 2))
+                text.set_fontweight('bold')
+
         pie_fig.savefig(top_right_svg, format='svg', dpi=POSTER_DPI)
         plt.close(pie_fig)
 
         output_svg = figure_dir / f'{DEFAULT_POSTER_READY_4SQUARE_FIGURE_STEM}.svg'
-        compose_svg_figure(
+
+        canvas_w = 155.0
+        canvas_h = 110.0
+
+        # Very small outer/gutter spacing so each panel occupies almost the
+        # maximum possible area inside its quadrant.
+        outer_margin = 0.35
+        gap = 0.6
+        cell_w = (canvas_w - 2.0 * outer_margin - gap) / 2.0
+        cell_h = (canvas_h - 2.0 * outer_margin - gap) / 2.0
+
+        boxes = [
+            # top-left: sleep pupil z-score by state
+            (outer_margin, outer_margin, cell_w, cell_h),
+
+            # top-right: pie panels
+            (outer_margin + cell_w + gap, outer_margin, cell_w, cell_h),
+
+            # bottom-left: stacked sleep-state area across days
+            (outer_margin, outer_margin + cell_h + gap, cell_w, cell_h),
+
+            # bottom-right: within-day sleep-state fractions
+            (outer_margin + cell_w + gap, outer_margin + cell_h + gap, cell_w, cell_h),
+        ]
+
+        compose_svg_figure_fit_to_boxes(
             output_svg,
             [sleep_pupil_svg, top_right_svg, stacked_area_svg, within_day_svg],
-            layout='grid',
-            grid_shape=(2, 2),
-            gap=16.0,
-            margin=16.0,
+            boxes,
+            canvas_width=canvas_w,
+            canvas_height=canvas_h,
+            physical_width='155mm',
+            physical_height='110mm',
+            preserve_aspect_ratio='xMidYMid meet',
         )
-        _set_svg_physical_size(output_svg, 155.0, 110.0)
 
     return [output_svg]
-
-
 def plot_sleep_state_poster_ready_composite(
     state_composition_rows: Sequence[Mapping[str, Any]],
     rem_day_presence_rows: Sequence[Mapping[str, Any]],
@@ -4970,7 +5073,7 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
 
-    fig, ax_frac = plt.subplots(2, 2, figsize=(10.8, 8.4), squeeze=False)
+    fig, ax_frac = plt.subplots(2, 2, figsize=(9.6, 7.2), squeeze=False)
     day_summaries = aggregate_day_summaries(exp_summaries)
     time_s, profile = average_probability_summaries(day_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
@@ -4978,9 +5081,11 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
+
     for idx, state in enumerate(state_order):
         ax = fraction_axes[idx]
         values = np.asarray(profile.get(state, []), dtype=float)
+
         if time_min.size and values.size and np.isfinite(values).any():
             band = 0.06
             band_color = lighten_color(DEFAULT_STACKED_STATE_COLORS[state], amount=0.68)
@@ -5002,69 +5107,131 @@ def plot_within_day_sleep_state_fractions(exp_summaries: Sequence[SessionSummary
                 zorder=2,
             )
         else:
-            ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center', fontsize=max(8, POSTER_FONT_SIZE - 7), color='#666666')
+            ax.text(
+                0.5,
+                0.5,
+                'No data',
+                transform=ax.transAxes,
+                ha='center',
+                va='center',
+                fontsize=max(8, POSTER_FONT_SIZE - 7),
+                color='#666666',
+            )
+
         ax.set_xlim(0.0, x_max)
+
         if sleep_start_min is not None and np.isfinite(sleep_start_min):
             if sleep_start_min > 0.0:
-                ax.axvspan(0.0, sleep_start_min, color='0.90', alpha=0.65, zorder=0)
-            ax.axvline(sleep_start_min, color='#111111', linestyle='--', linewidth=1.6, alpha=1.0, zorder=7)
+                ax.axvspan(
+                    0.0,
+                    sleep_start_min,
+                    color='0.90',
+                    alpha=0.65,
+                    zorder=0,
+                )
+            sleep_session_start_line = ax.axvline(
+                sleep_start_min,
+                color='#111111',
+                linestyle='--',
+                linewidth=1.8,
+                alpha=1.0,
+                zorder=50,
+                clip_on=False,
+            )
+
         ax.set_ylim(0.0, 1.05)
         ax.grid(axis='y', alpha=0.22)
         set_sparse_numeric_ticks(ax, axis='y', nbins=5)
+
         if idx < 2:
             ax.set_xticks([])
             ax.tick_params(axis='x', bottom=False, labelbottom=False)
         else:
             set_sparse_numeric_ticks(ax, axis='x', nbins=3)
             ax.tick_params(axis='x', labelsize=max(8, POSTER_FONT_SIZE - 7), pad=0)
+
         ax.tick_params(axis='y', labelsize=max(8, POSTER_FONT_SIZE - 7))
+
         if idx in (0, 2):
             ax.tick_params(axis='y', labelleft=True)
         else:
             ax.tick_params(axis='y', labelleft=False)
             ax.spines['left'].set_visible(False)
+
         ax.set_xlabel('')
+
     for ax in fraction_axes:
         ax.set_xlim(0.0, x_max)
         ax.set_ylim(0.0, 1.05)
-    fraction_axes[0].set_ylabel('Fraction', fontsize=max(12, POSTER_LABEL_SIZE - 5), labelpad=4)
+
+    fraction_axes[0].set_ylabel(
+        'Fraction',
+        fontsize=max(10, POSTER_LABEL_SIZE - 7),
+        labelpad=2,
+    )
+
     frac_block_x0 = min(ax.get_position().x0 for ax in fraction_axes)
     frac_block_x1 = max(ax.get_position().x1 for ax in fraction_axes)
     frac_block_y0 = min(ax.get_position().y0 for ax in fraction_axes)
+
     fig.text(
         0.5 * (float(frac_block_x0) + float(frac_block_x1)),
-        float(frac_block_y0) - 0.070,
+        float(frac_block_y0) - 0.045,
         'Time\n(min)',
         ha='center',
         va='top',
-        fontsize=max(11, POSTER_LABEL_SIZE - 7),
+        fontsize=max(9, POSTER_LABEL_SIZE - 9),
         linespacing=0.8,
     )
     fig.text(
         float(frac_block_x1),
-        float(frac_block_y0) + 0.005,
+        float(frac_block_y0) + 0.002,
         'sleep session starts',
         ha='right',
         va='bottom',
-        fontsize=max(8, POSTER_FONT_SIZE - 7),
+        fontsize=max(7, POSTER_FONT_SIZE - 8),
         color='#666666',
     )
-    fig.suptitle('Sleep-state fractions through experimental time', fontsize=max(22, POSTER_SUPTITLE_SIZE - 2), y=0.985)
+
+    fig.suptitle(
+        'Sleep-state fractions through experimental time',
+        fontsize=max(16, POSTER_SUPTITLE_SIZE - 8),
+        y=0.975,
+    )
     fig.text(
         0.5,
-        0.93,
-        'Averaged across all sessions; each panel shows the mean fraction in that state over elapsed time.',
+        0.925,
+        'Mean fraction across sessions over elapsed time.',
         ha='center',
         va='top',
-        fontsize=max(15, POSTER_NOTE_SIZE + 2),
+        fontsize=max(10, POSTER_NOTE_SIZE - 3),
         color='#444444',
     )
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', message='This figure includes Axes that are not compatible with tight_layout*')
-        fig.tight_layout(rect=[0.02, 0.02, 0.995, 0.91])
-    figure_dir = ensure_dir(output_dir / DEFAULT_FIGURE_DIRNAME / DEFAULT_OVERALL_FIGURE_DIRNAME / DEFAULT_WITHIN_DAY_FIGURE_DIRNAME / 'overall')
-    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_WITHIN_DAY_FIGURE_STEM}.svg', dpi=POSTER_DPI)
 
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message='This figure includes Axes that are not compatible with tight_layout*',
+        )
+        fig.tight_layout(
+            rect=[0.015, 0.035, 0.995, 0.895],
+            pad=0.35,
+            w_pad=0.35,
+            h_pad=0.35,
+        )
+
+    figure_dir = ensure_dir(
+        output_dir
+        / DEFAULT_FIGURE_DIRNAME
+        / DEFAULT_OVERALL_FIGURE_DIRNAME
+        / DEFAULT_WITHIN_DAY_FIGURE_DIRNAME
+        / 'overall'
+    )
+    return _save_svg_and_png(
+        fig,
+        figure_dir / f'{DEFAULT_WITHIN_DAY_FIGURE_STEM}.svg',
+        dpi=POSTER_DPI,
+    )
 
 def plot_per_animal_stacked_area(animal_id: str, day_summaries: Sequence[SessionSummary], output_dir: Path) -> List[Path]:
     animal_summaries = [summary for summary in day_summaries if str(summary.animal_id) == animal_id]
