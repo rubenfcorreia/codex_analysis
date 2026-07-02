@@ -17,6 +17,11 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment:
             continue
         if compartment_filter is not None and row_compartment != compartment_filter:
             continue
+        roi_id = row.get("roi_id")
+        if roi_id is None or str(roi_id).strip() == "":
+            roi_id = row.get(f"{row_compartment}_id")
+        if roi_id is None or str(roi_id).strip() == "":
+            roi_id = row.get("roi_index")
         table_rows.append({
             "animal_id": row.get("animal_id"),
             "day_id": row.get("day_id"),
@@ -24,7 +29,10 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment:
             "mode": row.get("mode"),
             "state": row.get("state"),
             "compartment": row_compartment,
-            "roi_key": row.get("roi_key") or "{}:{}:{}".format(row.get("expid"), row_compartment, row.get("roi_index")),
+            "roi_id": roi_id,
+            "soma_id": row.get("soma_id"),
+            "bouton_id": row.get("bouton_id"),
+            "roi_key": row.get("roi_key") or str(roi_id),
             "roi_index": row.get("roi_index"),
             "visual_response_cohort": str(row.get("cohort") or "nonresponsive"),
             "mean_activity": float(row.get("mean", float("nan"))),

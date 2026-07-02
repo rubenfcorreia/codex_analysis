@@ -211,6 +211,16 @@ def _style_state_ticks(ax: plt.Axes, labels: list[str], states: list[str]) -> No
         tick.set_fontweight("bold")
 
 
+def _unique_roi_count(frame: pd.DataFrame) -> int:
+    for column in ("roi_id", "soma_id", "bouton_id", "subject_id", "roi_key", "roi_index"):
+        if column in frame.columns:
+            values = frame[column].dropna().astype(str)
+            values = values[values.str.strip() != ""]
+            if not values.empty:
+                return int(values.nunique())
+    return int(len(frame))
+
+
 def _plot_boxplot(
     frame: pd.DataFrame,
     *,
@@ -253,7 +263,7 @@ def _plot_boxplot(
         ).dropna().to_numpy(dtype=float)
         if values.size == 0:
             continue
-        sample_size = int(values.size)
+        sample_size = _unique_roi_count(state_frame)
         present_states.append(state)
         labels.append(f"{pretty_state_label(state)}\n(n={sample_size})")
         values_by_state.append(values)
@@ -340,7 +350,7 @@ def _plot_state_metric(
                     accent_color=COMPARTMENT_ACCENTS[compartment],
                     significance_flags=_state_significance_flags(
                         [state for state in ordered_state_labels(subset[state_col].dropna().unique(), include_missing_canonical=False)],
-                        comparison_rows=[row for row in comparison_rows or [] if str(row.get("compartment") or "all") in {"all", compartment}],
+                        comparison_rows=[row for row in (comparison_rows or []) if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}],
                     ),
                 )
             )
