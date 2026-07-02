@@ -200,6 +200,50 @@ def rasterize_svg_to_png(svg_path: Path, png_path: Path, dpi: int = POSTER_DPI) 
     cairosvg.svg2png(url=str(svg_path), write_to=str(png_path), dpi=dpi)
     return png_path
 
+
+def _apply_svg_viewbox_trim(
+    panel: ET.Element,
+    *,
+    panel_width: float,
+    panel_height: float,
+    trim: tuple[float, float, float, float] | None,
+) -> None:
+    """Trim an SVG viewBox before nesting it, making the content larger.
+
+    trim is (left, top, right, bottom), each as a fraction of the current viewBox.
+    Example: (0.03, 0.08, 0.03, 0.05) trims 3% left/right, 8% top, 5% bottom.
+    """
+    view_box = str(panel.attrib.get("viewBox") or "").strip().replace(",", " ")
+    parts = [part for part in view_box.split() if part]
+
+    if len(parts) == 4:
+        try:
+            x0, y0, width, height = [float(part) for part in parts]
+        except ValueError:
+            x0, y0, width, height = 0.0, 0.0, float(panel_width), float(panel_height)
+    else:
+        x0, y0, width, height = 0.0, 0.0, float(panel_width), float(panel_height)
+
+    if width <= 0.0 or height <= 0.0:
+        x0, y0, width, height = 0.0, 0.0, float(panel_width), float(panel_height)
+
+    if trim is not None:
+        left, top, right, bottom = [max(0.0, float(value)) for value in trim]
+        left = min(left, 0.45)
+        top = min(top, 0.45)
+        right = min(right, 0.45)
+        bottom = min(bottom, 0.45)
+
+        new_x0 = x0 + left * width
+        new_y0 = y0 + top * height
+        new_width = width * max(0.05, 1.0 - left - right)
+        new_height = height * max(0.05, 1.0 - top - bottom)
+
+        x0, y0, width, height = new_x0, new_y0, new_width, new_height
+
+    panel.attrib["viewBox"] = f"{x0:g} {y0:g} {width:g} {height:g}"
+
+
 def compose_svg_figure_fit_to_boxes(
     output_path: Path,
     component_paths: Sequence[Path],
@@ -210,13 +254,13 @@ def compose_svg_figure_fit_to_boxes(
     physical_width: str | None = None,
     physical_height: str | None = None,
     preserve_aspect_ratio: str = "xMidYMid meet",
+    viewbox_trims: Sequence[tuple[float, float, float, float] | None] | None = None,
 ) -> Path | None:
     """Compose SVG panels by scaling each panel into an explicit output box.
 
-    Unlike compose_svg_figure(), this does not place each SVG at its native
-    physical size. Each input SVG is nested inside a fixed rectangle on the
-    output canvas, so poster panels cannot overlap when the final SVG is
-    physically resized.
+    Each input SVG is nested inside a fixed rectangle on the output canvas.
+    Optional viewBox trims remove internal whitespace from source SVGs before
+    fitting, so plots occupy more of their allotted poster quadrant.
     """
     component_paths = [Path(path) for path in component_paths]
     if not component_paths:
@@ -224,6 +268,14 @@ def compose_svg_figure_fit_to_boxes(
     if len(component_paths) != len(boxes):
         raise ValueError(
             f"Expected one box per SVG panel, got {len(boxes)} boxes for "
+            f"{len(component_paths)} panels."
+        )
+
+    if viewbox_trims is None:
+        viewbox_trims = [None] * len(component_paths)
+    elif len(viewbox_trims) != len(component_paths):
+        raise ValueError(
+            f"Expected one viewBox trim per SVG panel, got {len(viewbox_trims)} trims for "
             f"{len(component_paths)} panels."
         )
 
@@ -237,16 +289,18 @@ def compose_svg_figure_fit_to_boxes(
         },
     )
 
-    for index, (path, box) in enumerate(zip(component_paths, boxes), start=1):
+    for index, (path, box, trim) in enumerate(zip(component_paths, boxes, viewbox_trims), start=1):
         panel, panel_width, panel_height = _load_svg_panel(path)
         x, y, width, height = [float(value) for value in box]
         if width <= 0.0 or height <= 0.0:
             continue
 
-        view_box = str(panel.attrib.get("viewBox") or "").strip().replace(",", " ")
-        view_box_parts = [part for part in view_box.split() if part]
-        if len(view_box_parts) != 4:
-            panel.attrib["viewBox"] = f"0 0 {panel_width:g} {panel_height:g}"
+        _apply_svg_viewbox_trim(
+            panel,
+            panel_width=panel_width,
+            panel_height=panel_height,
+            trim=trim,
+        )
 
         panel.attrib["x"] = f"{x:g}"
         panel.attrib["y"] = f"{y:g}"
