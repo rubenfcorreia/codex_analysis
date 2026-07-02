@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import argparse
 import csv
 import datetime as dt
@@ -65,6 +66,7 @@ from poster_plotting import (
     POSTER_SUPTITLE_SIZE,
     POSTER_TITLE_SIZE,
     POSTER_WIDE_FIGSIZE,
+    compose_svg_figure,
     configure_poster_matplotlib,
     rasterize_svg_to_png,
     save_figure,
@@ -92,6 +94,7 @@ DEFAULT_REM_FIGURE_DIRNAME = "rem_summary"
 DEFAULT_REM_FRACTION_FIGURE_DIRNAME = "fraction_time"
 DEFAULT_COMPOSITION_FIGURE_DIRNAME = "composition_summary"
 DEFAULT_POSTER_READY_FIGURE_STEM = "sleep_state_poster_composite"
+DEFAULT_POSTER_READY_4SQUARE_FIGURE_STEM = "sleep_state_poster_4square"
 DEFAULT_WITHIN_DAY_FIGURE_DIRNAME = "within_day_timecourse"
 DEFAULT_WITHIN_DAY_FIGURE_STEM = "within_day_sleep_state_fractions"
 DEFAULT_STATE_ORDER = ["active_wake", "quiet_wake", "nrem", "rem"]
@@ -3850,6 +3853,160 @@ def inline_svg_panel_into_matplotlib_svg(svg_path: Path, panel_svg_path: Path) -
     svg_tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
     return True
 
+def _resolve_svg_artifact_path(artifacts: Sequence[str], output_dir: Path, preferred_stems: Sequence[str] = ()) -> Optional[Path]:
+    candidates: List[Path] = []
+    for artifact in artifacts:
+        artifact_path = Path(str(artifact))
+        if not artifact_path.is_absolute():
+            artifact_path = output_dir / artifact_path
+        candidates.append(artifact_path)
+
+    for preferred_stem in preferred_stems:
+        for candidate in candidates:
+            if candidate.suffix.lower() == '.svg' and candidate.exists() and preferred_stem in candidate.name:
+                return candidate
+
+    for candidate in candidates:
+        if candidate.suffix.lower() == '.svg' and candidate.exists():
+            return candidate
+
+    for preferred_stem in preferred_stems:
+        for candidate in candidates:
+            if preferred_stem in candidate.name:
+                svg_candidate = candidate.with_suffix('.svg')
+                if svg_candidate.exists():
+                    return svg_candidate
+
+    for candidate in candidates:
+        if candidate.suffix.lower() == '.png' and candidate.exists():
+            svg_candidate = candidate.with_suffix('.svg')
+            if svg_candidate.exists():
+                return svg_candidate
+    return None
+
+
+def _render_svg_panel_image(svg_path: Path) -> np.ndarray:
+    image = render_svg_to_image(svg_path)
+    if image is None:
+        raise RuntimeError(f'Could not rasterize SVG panel {svg_path}')
+    return image
+
+
+def _set_svg_physical_size(svg_path: Path, width_mm: float, height_mm: float) -> None:
+    svg_tree = ET.parse(str(svg_path))
+    svg_root = svg_tree.getroot()
+    svg_root.attrib['width'] = f'{float(width_mm)}mm'
+    svg_root.attrib['height'] = f'{float(height_mm)}mm'
+    svg_tree.write(str(svg_path), encoding='utf-8', xml_declaration=True)
+
+
+def plot_sleep_state_poster_ready_4square_composite(
+    state_composition_rows: Sequence[Mapping[str, Any]],
+    rem_day_presence_rows: Sequence[Mapping[str, Any]],
+    sleep_pupil_z_artifacts: Sequence[str],
+    stacked_area_artifacts: Sequence[str],
+    within_day_fraction_artifacts: Sequence[str],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+
+    figure_dir = ensure_dir(DEFAULT_POSTER_READY_DIR)
+    sleep_pupil_svg = _resolve_svg_artifact_path(sleep_pupil_z_artifacts, output_dir, ('sleep_pupil_z_by_state', 'sleep_pupil_z'))
+    stacked_area_svg = _resolve_svg_artifact_path(stacked_area_artifacts, output_dir, ('combined_stacked_area',))
+    within_day_svg = _resolve_svg_artifact_path(within_day_fraction_artifacts, output_dir, ('within_day_sleep_state_fractions',))
+
+    if sleep_pupil_svg is None:
+        raise RuntimeError('Could not resolve the sleep pupil z-score figure for the poster composite')
+    if stacked_area_svg is None:
+        raise RuntimeError('Could not resolve the combined stacked-area figure for the poster composite')
+    if within_day_svg is None:
+        raise RuntimeError('Could not resolve the within-day fraction figure for the poster composite')
+
+    with tempfile.TemporaryDirectory(prefix='sleep_state_4square_') as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        top_right_svg = tmpdir_path / 'top_right_pies.svg'
+        pie_fig = plt.figure(figsize=(8.2, 9.8))
+        pie_fig.patch.set_facecolor('white')
+        top_right_gs = pie_fig.add_gridspec(2, 1, hspace=0.26)
+        ax_comp = pie_fig.add_subplot(top_right_gs[0, 0])
+        ax_rem = pie_fig.add_subplot(top_right_gs[1, 0])
+
+        composition_rows = [
+            dict(row)
+            for row in state_composition_rows
+            if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))
+        ]
+        if composition_rows:
+            values = [float(as_float(row.get('fraction'))) for row in composition_rows]
+            labels = [str(row.get('state_display', row.get('state', 'unknown'))) for row in composition_rows]
+            colors = [DEFAULT_STACKED_STATE_COLORS.get(str(row.get('state')), '#777777') for row in composition_rows]
+            ax_comp.set_anchor('C')
+            draw_compact_pie_panel(
+                ax_comp,
+                values,
+                labels,
+                colors,
+                title='Sleep-state %',
+                force_pct_labels=['REM'],
+                legend_ncol=4,
+                radius=0.84,
+                legend_inside=False,
+                show_legend=False,
+            )
+            ax_comp.set_title('Sleep-state %', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=4)
+        else:
+            ax_comp.text(0.5, 0.5, 'No data', transform=ax_comp.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+            ax_comp.set_title('Sleep-state %', fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=4)
+
+        rem_rows = [
+            dict(row)
+            for row in rem_day_presence_rows
+            if as_float(row.get('fraction')) is not None and np.isfinite(as_float(row.get('fraction')))
+        ]
+        if rem_rows:
+            values = [float(as_float(row.get('fraction'))) for row in rem_rows]
+            labels = [str(row.get('state_display', row.get('state', 'unknown'))) for row in rem_rows]
+            colors = ['#6A3D9A', '#A6761D'][: len(values)]
+            pct_suffixes = [f"\n[{int(row.get('day_count', 0))}]" for row in rem_rows]
+            ax_rem.set_anchor('C')
+            draw_compact_pie_panel(
+                ax_rem,
+                values,
+                labels,
+                colors,
+                title='Experimental days with REM',
+                pct_suffixes=pct_suffixes,
+                legend_ncol=1,
+                radius=0.82,
+                legend_inside=True,
+            )
+            ax_rem.set_title('Experimental days with REM', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=4)
+            legend = ax_rem.get_legend()
+            if legend is not None:
+                legend.remove()
+        else:
+            ax_rem.text(0.5, 0.5, 'No data', transform=ax_rem.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+            ax_rem.set_title('Experimental days with REM', fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=4)
+
+        pie_fig.subplots_adjust(left=0.08, right=0.98, top=0.98, bottom=0.05, hspace=0.26)
+        pie_fig.savefig(top_right_svg, format='svg', dpi=POSTER_DPI)
+        plt.close(pie_fig)
+
+        output_svg = figure_dir / f'{DEFAULT_POSTER_READY_4SQUARE_FIGURE_STEM}.svg'
+        compose_svg_figure(
+            output_svg,
+            [sleep_pupil_svg, top_right_svg, stacked_area_svg, within_day_svg],
+            layout='grid',
+            grid_shape=(2, 2),
+            gap=16.0,
+            margin=16.0,
+        )
+        _set_svg_physical_size(output_svg, 155.0, 110.0)
+
+    return [output_svg]
+
+
 def plot_sleep_state_poster_ready_composite(
     state_composition_rows: Sequence[Mapping[str, Any]],
     rem_day_presence_rows: Sequence[Mapping[str, Any]],
@@ -6298,6 +6455,7 @@ def write_sleep_state_report(
     lines.append("- days without REM stay in the recording-start probability curve as no-event days")
     lines.append("- the REM fraction curve shows the mean REM occupancy in 5-minute elapsed-time bins, pooled within day and then across animals")
     lines.append("- the poster-ready composite uses a top montage example, within-day sleep-state fraction views, and summary pies")
+    lines.append("- the 4-square poster-ready figure uses sleep pupil z-score, pies, between-days, and within-day panels")
 
     append_section("Pupil analysis notes")
     lines.append("- pupil diameter is normalized per animal using the mean and standard deviation of that animal's pupil samples across all expIDs; if both eyes are present, the traces are averaged on the shared time base")
@@ -6332,6 +6490,7 @@ def write_sleep_state_report(
     sleep_pupil_percentile_artifacts = list(manifest.get("sleep_pupil_percentile_artifacts", []))
     sleep_pupil_z_artifacts = list(manifest.get("sleep_pupil_z_artifacts", []))
     poster_ready_artifacts = list(manifest.get("poster_ready_artifacts", []))
+    poster_4square_artifacts = list(manifest.get("poster_4square_artifacts", []))
     render_table(
         "Overall sleep-state composition",
         manifest.get("state_composition_rows", []),
@@ -6438,7 +6597,11 @@ def write_sleep_state_report(
         lines.append("- poster-ready composite")
         for artifact in poster_ready_artifacts:
             lines.append(f"  - {artifact}")
-    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or movie_pupil_transition_example_per_exp_artifacts or movie_pupil_percentile_artifacts or movie_pupil_z_artifacts or sleep_pupil_percentile_artifacts or sleep_pupil_z_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts):
+    if poster_4square_artifacts:
+        lines.append("- 4-square poster-ready composite")
+        for artifact in poster_4square_artifacts:
+            lines.append(f"  - {artifact}")
+    if not (figure_artifacts or stacked_area_artifacts or probability_artifacts or rem_latency_artifacts or rem_probability_artifacts or rem_fraction_artifacts or rem_day_presence_artifacts or within_day_fraction_artifacts or composition_artifacts or movie_video_artifacts or movie_prev_group_artifacts or movie_wake_video_artifacts or movie_onset_video_artifacts or movie_wake_prev_group_artifacts or movie_pupil_state_artifacts or movie_pupil_transition_artifacts or movie_pupil_transition_example_artifacts or movie_pupil_transition_example_per_exp_artifacts or movie_pupil_percentile_artifacts or movie_pupil_z_artifacts or sleep_pupil_percentile_artifacts or sleep_pupil_z_artifacts or state_montage_artifacts or review_state_montage_artifacts or poster_ready_artifacts or poster_4square_artifacts):
         lines.append("- none")
 
     render_table(
@@ -7315,6 +7478,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, exp_summaries, day_summaries, state_montage_artifacts, output_dir)
     poster_ready_artifacts.extend(project_relative_path(path) for path in saved)
 
+    poster_4square_artifacts: List[str] = []
+    saved = plot_sleep_state_poster_ready_4square_composite(
+        state_composition_rows,
+        rem_day_presence_rows,
+        sleep_pupil_z_artifacts,
+        stacked_area_artifacts,
+        within_day_fraction_artifacts,
+        output_dir,
+    )
+    poster_4square_artifacts.extend(project_relative_path(path) for path in saved)
+
     review_state_montage_artifacts: List[str] = []
     if state_montage_artifacts:
         review_dir = ensure_dir(DEFAULT_REVIEW_FIGURES_DIR / DEFAULT_REVIEW_STATE_MONTAGE_FIGURE_DIRNAME)
@@ -7383,7 +7557,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "sleep_pupil_z_artifacts": sleep_pupil_z_artifacts,
         "sleep_pupil_transition_example_artifacts": sleep_pupil_transition_example_artifacts,
         "sleep_pupil_transition_example_per_exp_artifacts": sleep_pupil_transition_example_per_exp_artifacts,
-        "all_figure_artifacts": all_figure_artifacts,
+        "all_figure_artifacts": sorted(set(all_figure_artifacts + poster_4square_artifacts)),
         "stacked_area_artifacts": sorted(set(stacked_area_artifacts)),
         "probability_artifacts": sorted(set(probability_artifacts)),
         "probability_percent_artifacts": sorted(set(probability_percent_artifacts)),
@@ -7397,6 +7571,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_montage_artifacts": sorted(set(state_montage_artifacts)),
         "review_state_montage_artifacts": sorted(set(review_state_montage_artifacts)),
         "poster_ready_artifacts": sorted(set(poster_ready_artifacts)),
+        "poster_4square_artifacts": sorted(set(poster_4square_artifacts)),
         "state_composition_rows": state_composition_rows,
         "rem_day_presence_rows": rem_day_presence_rows,
         "movie_trial_row_count": len(movie_trial_rows),
@@ -7528,6 +7703,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     manifest["report_path"] = report_relative_path(report_path, output_dir)
     manifest["report_artifacts"] = [report_relative_path(report_path, output_dir)]
     manifest["poster_ready_composite_path"] = poster_ready_artifacts[0] if poster_ready_artifacts else None
+    manifest["poster_4square_composite_path"] = poster_4square_artifacts[0] if poster_4square_artifacts else None
     write_sleep_state_report(report_path, output_dir, manifest, rem_analysis)
     write_json(manifest_path, manifest)
 
