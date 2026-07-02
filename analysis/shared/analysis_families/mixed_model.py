@@ -8,12 +8,14 @@ import numpy as np
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import run_mixed_model_family
 
 
-
-def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment: Optional[str] = None) -> List[Dict[str, Any]]:
     table_rows: List[Dict[str, Any]] = []
+    compartment_filter = str(compartment or "").strip().lower() or None
     for row in rows:
-        compartment = str(row.get("compartment") or "")
-        if compartment not in {"soma", "bouton"}:
+        row_compartment = str(row.get("compartment") or "").strip().lower()
+        if row_compartment not in {"soma", "bouton"}:
+            continue
+        if compartment_filter is not None and row_compartment != compartment_filter:
             continue
         table_rows.append({
             "animal_id": row.get("animal_id"),
@@ -21,7 +23,9 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict
             "expid": row.get("expid"),
             "mode": row.get("mode"),
             "state": row.get("state"),
-            "compartment": "basal" if compartment == "soma" else "apical",
+            "compartment": row_compartment,
+            "roi_key": row.get("roi_key") or "{}:{}:{}".format(row.get("expid"), row_compartment, row.get("roi_index")),
+            "roi_index": row.get("roi_index"),
             "visual_response_cohort": str(row.get("cohort") or "nonresponsive"),
             "mean_activity": float(row.get("mean", float("nan"))),
             "event_frequency_per_min": float(row.get("event_frequency_per_min", float("nan"))),
@@ -29,29 +33,32 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict
     return table_rows
 
 
-def _contrast_specs(state_comparison_states: Sequence[str], basal_apical_states: Sequence[str]) -> List[Dict[str, Any]]:
+def _contrast_specs(state_comparison_states: Sequence[str], include_visual_response: bool) -> List[Dict[str, Any]]:
     state_pairs = [
         {"kind": "state_pair", "state_a": state_a, "state_b": state_b}
         for state_a, state_b in combinations([state for state in state_comparison_states if state], 2)
     ]
-    basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in basal_apical_states if state]
-    return state_pairs + basal_apical_pairs
+    visual_response_pairs = [{"kind": "visual_response_cohort"}] if include_visual_response else []
+    return state_pairs + visual_response_pairs
 
 
 def _run_branch(
     table_rows: Sequence[Mapping[str, Any]],
     *,
+    compartment: str,
     scope: str,
     state_order: Sequence[str],
     state_comparison_states: Sequence[str],
-    basal_apical_states: Sequence[str],
     shuffle_n: int,
     p_value_source: str,
+    state_filter: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     responses = ["mean_activity", "event_frequency_per_min"]
-    contrast_specs = _contrast_specs(state_comparison_states, basal_apical_states)
+    include_visual_response = any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in table_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in table_rows)
+    contrast_specs = _contrast_specs(state_comparison_states, include_visual_response)
     branch: Dict[str, Any] = {
         "available": bool(table_rows),
+        "compartment": compartment,
         "p_value_source": p_value_source,
         "p_value_source_requested": p_value_source,
         "summary_rows": {},
@@ -61,23 +68,33 @@ def _run_branch(
         "tested_terms": {},
         "tested_contrasts": {},
         "selection": {
+            "compartment": compartment,
             "state_comparison_states": list(state_comparison_states),
-            "basal_apical_states": list(basal_apical_states),
             "visual_response_cohort": None,
         },
         "validation_rows": [],
         "alerts": [],
     }
     alerts: List[str] = branch["alerts"]
+    working_rows = list(table_rows)
+    if state_filter is not None:
+        state_filter_set = {str(state).strip() for state in state_filter if state is not None and str(state).strip()}
+        working_rows = [row for row in working_rows if str(row.get("state")) in state_filter_set]
+    if not working_rows:
+        return branch
+    if not state_order:
+        state_order = sorted({str(row.get("state") or "") for row in working_rows if row.get("state")})
+    valid_state_order = [state for state in state_order if any(str(row.get("state")) == state for row in working_rows)]
+    branch_state_order = valid_state_order or list(state_order)
     for response in responses:
         result = run_mixed_model_family(
-            list(table_rows),
+            list(working_rows),
             response,
             scope,
             contrast_specs,
             shuffle_n,
             alerts=alerts,
-            state_order=state_order,
+            state_order=branch_state_order,
             p_value_source=p_value_source,
         )
         branch["summary_rows"][response] = list(result.get("summary_rows", []))
@@ -97,34 +114,44 @@ def run_family(
     activity_rows: Sequence[Mapping[str, Any]],
     *,
     state_comparison_states: Sequence[str],
-    basal_apical_states: Sequence[str],
+    basal_apical_states: Sequence[str] | None = None,
     shuffle_n: int,
     mixed_model_contrast_p_source: str = "classical",
 ) -> Dict[str, Any]:
-    table_rows = _mixed_model_table_from_rows(activity_rows)
+    del basal_apical_states
+    compartments = [compartment for compartment in ("soma", "bouton") if any(str(row.get("compartment") or "").strip().lower() == compartment for row in activity_rows)]
+    if not compartments:
+        compartments = ["all"]
     state_order = [state for state in state_comparison_states if state]
     if not state_order:
-        state_order = sorted({str(row.get("state") or "") for row in table_rows if row.get("state")})
-    selected_state_rows = [row for row in table_rows if str(row.get("state") or "") in set(state_order)]
-    return {
-        "all_state": _run_branch(
-            table_rows,
-            scope="all_state",
-            state_order=state_order,
-            state_comparison_states=state_comparison_states,
-            basal_apical_states=basal_apical_states,
-            shuffle_n=shuffle_n,
-            p_value_source=mixed_model_contrast_p_source,
-        ),
-        "selected_state": _run_branch(
-            selected_state_rows,
-            scope="selected_state",
-            state_order=state_order,
-            state_comparison_states=state_comparison_states,
-            basal_apical_states=basal_apical_states,
-            shuffle_n=shuffle_n,
-            p_value_source=mixed_model_contrast_p_source,
-        ),
-    }
+        state_order = sorted({str(row.get("state") or "") for row in activity_rows if row.get("state")})
+    results: Dict[str, Any] = {}
+    for compartment in compartments:
+        compartment_rows = _mixed_model_table_from_rows(activity_rows, None if compartment == "all" else compartment)
+        if not compartment_rows:
+            continue
+        results[compartment] = {
+            "all_state": _run_branch(
+                compartment_rows,
+                compartment=compartment,
+                scope="all_state",
+                state_order=state_order,
+                state_comparison_states=state_comparison_states,
+                shuffle_n=shuffle_n,
+                p_value_source=mixed_model_contrast_p_source,
+            ),
+            "selected_state": _run_branch(
+                compartment_rows,
+                compartment=compartment,
+                scope="selected_state",
+                state_order=state_order,
+                state_comparison_states=state_comparison_states,
+                shuffle_n=shuffle_n,
+                p_value_source=mixed_model_contrast_p_source,
+                state_filter=state_comparison_states,
+            ),
+        }
+    return results
+
 
 __all__ = ["run_family"]

@@ -40,14 +40,14 @@ from analysis.shared.shared_calcium_response import (
 )
 from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_soma_correlation_rows, correlation_summary_rows
 from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
-from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation
+from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.compartment_common import resolve_analysis_state_selections
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
     plot_mixed_model_predicted_means_figure,
 )
-from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure
+from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
@@ -123,7 +123,7 @@ DEFAULT_CONFIG = {
         "nrem",
         "rem",
     ],
-    "basal_apical_states": [
+    "compartment_states": [
         "quiet_awake_blank",
         "nrem_blank",
         "rem_blank",
@@ -290,7 +290,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
         "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
         "state_comparison_states": list(config.get("state_comparison_states") or []),
-        "basal_apical_states": list(config.get("basal_apical_states") or []),
+        "compartment_states": list(config.get("compartment_states") or config.get("basal_apical_states") or []),
         "movie_expids": list(config.get("movie_expids") or []),
         "sleep_expids": list(config.get("sleep_expids") or []),
         "soma_channel": int(config.get("soma_channel", 1)),
@@ -463,14 +463,28 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     _stage("summaries", "building day-level comparison tables")
     activity_summary_rows = state_summary_rows(activity_rows)
     state_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_summary_rows if str(row.get("mode") or "") == "movie"],
+        [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
         selected_states_by_mode.get("movie", []),
         shuffle_n,
+        metric_col="mean",
     )
     sleep_state_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_summary_rows if str(row.get("mode") or "") == "sleep"],
+        [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
+        metric_col="mean",
+    )
+    state_event_comparison_summary_rows = state_comparison_rows(
+        [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
+        selected_states_by_mode.get("movie", []),
+        shuffle_n,
+        metric_col="event_frequency_per_min",
+    )
+    sleep_state_event_comparison_summary_rows = state_comparison_rows(
+        [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
+        selected_states_by_mode.get("sleep", []),
+        shuffle_n,
+        metric_col="event_frequency_per_min",
     )
     mixed_model_results = run_mixed_model_family(
         activity_rows,
@@ -487,10 +501,16 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         cohort=visual_response_cohort,
         response_metric=visual_response_metric,
     )
-    mixed_model_contrast_count = len(mixed_model_results.get("all_state", {}).get("contrast_rows", [])) if isinstance(mixed_model_results, dict) else 0
+    mixed_model_contrast_count = sum(
+        len(branch.get("contrast_rows", []))
+        for compartment_results in (mixed_model_results or {}).values()
+        if isinstance(compartment_results, dict)
+        for branch in compartment_results.values()
+        if isinstance(branch, dict)
+    ) if isinstance(mixed_model_results, dict) else 0
     _stage(
         "summary counts",
-        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, correlation={len(correlation_summary)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
+        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, correlation={len(correlation_summary)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
     )
 
     _stage("writing csv", "experiments")
@@ -513,6 +533,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if sleep_state_comparison_summary_rows:
         _stage("writing csv", "state_comparisons_sleep")
         write_csv_rows(result_root / "csv" / "state_comparisons_sleep.csv", sleep_state_comparison_summary_rows, list(sleep_state_comparison_summary_rows[0].keys()))
+    if state_event_comparison_summary_rows:
+        _stage("writing csv", "state_event_comparisons_movie")
+        write_csv_rows(result_root / "csv" / "state_event_comparisons_movie.csv", state_event_comparison_summary_rows, list(state_event_comparison_summary_rows[0].keys()))
+    if sleep_state_event_comparison_summary_rows:
+        _stage("writing csv", "state_event_comparisons_sleep")
+        write_csv_rows(result_root / "csv" / "state_event_comparisons_sleep.csv", sleep_state_event_comparison_summary_rows, list(sleep_state_event_comparison_summary_rows[0].keys()))
     if correlation_summary:
         _stage("writing csv", "bouton_soma_correlation_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", correlation_summary, list(correlation_summary[0].keys()))
@@ -527,54 +553,80 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         write_csv_rows(result_root / "csv" / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
 
     _stage("plotting", "state activity")
-    plot_state_activity(activity_rows, result_root)
+    plot_state_activity(activity_rows, result_root, comparison_rows=state_comparison_summary_rows + sleep_state_comparison_summary_rows)
+    _stage("plotting", "state event frequency")
+    plot_state_event_frequency(activity_rows, result_root, comparison_rows=state_event_comparison_summary_rows + sleep_state_event_comparison_summary_rows)
     _stage("plotting", "correlation")
-    plot_state_correlation(correlation_summary, result_root)
+    plot_state_correlation(correlation_summary, result_root, comparison_rows=state_comparison_summary_rows + sleep_state_comparison_summary_rows)
     _stage("plotting", "lag heatmap")
     plot_lag_heatmap(lag_rows, result_root)
     if visual_response_rows:
         visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
-        for cohort in ("all", "responsive", "nonresponsive"):
-            cohort_rows = visual_response_rows if cohort == "all" else [row for row in visual_response_rows if str(row.get("cohort") or "nonresponsive") == cohort]
-            if not cohort_rows:
+        for compartment in ("soma", "bouton"):
+            compartment_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
+            if not compartment_rows:
                 continue
-            plot_visual_response_boxplot_figure(
-                {"rows": cohort_rows},
-                visual_response_fig_dir,
-                output_name=f"visual_response_{cohort}.svg",
-                title=f"Visual response - {cohort.capitalize()}",
-                cohort_label=cohort,
-                kind="soma_bouton",
-            )
+            compartment_dir = ensure_dir(visual_response_fig_dir / compartment)
+            for cohort in ("all", "responsive", "nonresponsive"):
+                cohort_rows = compartment_rows if cohort == "all" else [row for row in compartment_rows if str(row.get("cohort") or "nonresponsive") == cohort]
+                if not cohort_rows:
+                    continue
+                cohort_dir = ensure_dir(compartment_dir / cohort)
+                plot_visual_response_boxplot_figure(
+                    {"rows": cohort_rows},
+                    cohort_dir,
+                    output_name="visual_response_blank_vs_movies.svg",
+                    title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
+                    cohort_label=cohort,
+                    kind=compartment,
+                )
+                render_visual_response_entity_figures(
+                    cohort_rows,
+                    cohort_dir / "entities",
+                    cohort_label=cohort,
+                    kind=compartment,
+                )
     if mixed_model_results:
         mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
-        mixed_model_payload = {"mixed_model": mixed_model_results}
-        plot_mixed_model_forest_figure(
-            mixed_model_payload,
-            mixed_model_fig_dir,
-            output_name="mixed_model_forest.svg",
-            title="Mixed-model fixed effects",
-        )
-        plot_mixed_model_predicted_means_figure(
-            mixed_model_payload,
-            mixed_model_fig_dir,
-            output_name="mixed_model_predicted_means.svg",
-            title="Mixed-model predicted means",
-        )
-        plot_mixed_model_contrasts_checkpoint(
-            mixed_model_payload,
-            mixed_model_fig_dir,
-            scope="all_state",
-            output_name="mixed_model_contrasts_all_state.svg",
-            title="Mixed-model contrasts - all state",
-        )
-        plot_mixed_model_contrasts_checkpoint(
-            mixed_model_payload,
-            mixed_model_fig_dir,
-            scope="selected_state",
-            output_name="mixed_model_contrasts_selected_state.svg",
-            title="Mixed-model contrasts - selected state",
-        )
+        for compartment_key, compartment_results in mixed_model_results.items():
+            if not isinstance(compartment_results, dict) or not compartment_results:
+                continue
+            compartment_dir = ensure_dir(mixed_model_fig_dir / compartment_key)
+            for scope_key in ("all_state", "selected_state"):
+                branch = compartment_results.get(scope_key, {})
+                scope_label = scope_key.replace("_", " ")
+                if not isinstance(branch, dict) or not branch:
+                    continue
+                mixed_model_payload = {
+                    "analysis_state_selection": {
+                        "state_comparison_states": list(selected_states_by_mode.get("movie", [])),
+                        "compartment_states": list(selected_states_by_mode.get("movie", [])),
+                    },
+                    "analysis_compartment": compartment_key,
+                    "mixed_model": branch,
+                }
+                plot_mixed_model_forest_figure(
+                    mixed_model_payload,
+                    compartment_dir,
+                    output_name=f"mixed_model_{compartment_key}_{scope_key}_forest.svg",
+                    title=f"Mixed-model fixed effects - {compartment_key} - {scope_label}",
+                    model_key="mixed_model",
+                )
+                plot_mixed_model_predicted_means_figure(
+                    mixed_model_payload,
+                    compartment_dir,
+                    output_name=f"mixed_model_{compartment_key}_{scope_key}_predicted_means.svg",
+                    title=f"Mixed-model predicted means - {compartment_key} - {scope_label}",
+                    model_key="mixed_model",
+                )
+                plot_mixed_model_contrasts_checkpoint(
+                    mixed_model_payload,
+                    compartment_dir,
+                    scope=scope_key,
+                    output_name=f"mixed_model_{compartment_key}_{scope_key}_contrasts.svg",
+                    title=f"Mixed-model contrasts - {compartment_key} - {scope_label}",
+                    model_key="mixed_model",
+                )
 
     visual_response_counts = {
         "all": int(len(visual_response_rows)),

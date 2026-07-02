@@ -26,12 +26,15 @@ def plot_boxplot_series(
     title_color: str = "#334155",
     label_color_fn: Callable[[str], str] | None = None,
     edge_color: str = "#334155",
+    significance_flags: Sequence[bool] | None = None,
 ) -> list[Path]:
     cleaned_values: list[np.ndarray] = []
     cleaned_labels: list[str] = []
     cleaned_series: list[str] = []
     cleaned_colors: list[str] = []
-    for values, label, series_name, color in zip(values_by_series, labels, series_names, series_colors):
+    cleaned_flags: list[bool] = []
+    flags = list(significance_flags) if significance_flags is not None else None
+    for index, (values, label, series_name, color) in enumerate(zip(values_by_series, labels, series_names, series_colors)):
         arr = np.asarray(values, dtype=float)
         arr = arr[np.isfinite(arr)]
         if arr.size == 0:
@@ -40,6 +43,8 @@ def plot_boxplot_series(
         cleaned_labels.append(label)
         cleaned_series.append(series_name)
         cleaned_colors.append(color)
+        if flags is not None:
+            cleaned_flags.append(bool(flags[index]) if index < len(flags) else False)
     if not cleaned_values:
         return []
 
@@ -58,6 +63,8 @@ def plot_boxplot_series(
         patch.set_facecolor(mcolors.to_rgba(color, 0.28))
         patch.set_edgecolor(edge_color)
     rng = np.random.default_rng(0)
+    max_value = float(np.nanmax(np.concatenate(cleaned_values))) if cleaned_values else float("nan")
+    min_value = float(np.nanmin(np.concatenate(cleaned_values))) if cleaned_values else float("nan")
     for xpos, (series_name, values, color) in enumerate(zip(cleaned_series, cleaned_values, cleaned_colors), start=1):
         jitter = rng.normal(0.0, 0.06, size=values.size)
         ax.scatter(
@@ -69,6 +76,18 @@ def plot_boxplot_series(
             edgecolors="none",
             zorder=3,
         )
+    if flags is not None:
+        if any(cleaned_flags):
+            finite = np.concatenate(cleaned_values)
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                y = float(np.nanmax(finite)) + max(0.05 * float(np.ptp(finite)), 0.05)
+            else:
+                y = 1.0
+            for xpos, is_sig in enumerate(cleaned_flags, start=1):
+                if not is_sig:
+                    continue
+                ax.text(xpos, y, "*", ha="center", va="bottom", fontsize=22, color="#8b0000", fontweight="bold")
     ax.set_title(title, fontsize=20, fontweight="bold", color=title_color, pad=12)
     ax.set_ylabel(ylabel, fontsize=18)
     ax.set_xlabel(xlabel, fontsize=18)

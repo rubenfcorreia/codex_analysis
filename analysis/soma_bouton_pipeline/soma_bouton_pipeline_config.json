@@ -11,7 +11,7 @@
     "lag_step_s": "Step size in seconds for the lag scan.",
     "shuffle_n": "Number of shuffle iterations used for the comparison statistics and null distributions. Increase for more stable p-values.",
     "state_comparison_states": "Explicit state labels for the main pairwise comparison stack. If you set this, it is used directly instead of deriving states from broader mode presets.",
-    "basal_apical_states": "Explicit state labels for the parallel comparison stack. For soma/bouton this should usually match state_comparison_states so the preset behavior stays consistent.",
+    "compartment_states": "Explicit state labels for the parallel compartment comparison stack. For soma/bouton this should usually match state_comparison_states so the preset behavior stays consistent.",
     "event_detection_method": "How calcium events are detected before event-rate summaries are written. Use derivative for the current default derivative-based detector or amplitude for the legacy amplitude-based detector.",
     "visual_response_metric": "Which metric the shared response-summary path should use. Use mean for the original mean-trace path or calcium_events to classify from event frequency instead.",
     "rebuild": "Set true to ignore any existing cache and rebuild everything from the raw files.",
@@ -70,7 +70,7 @@
         "nrem_movies",
         "rem_movies"
       ],
-      "basal_apical_states": [
+      "compartment_states": [
         "quiet_awake_movies",
         "nrem_movies",
         "rem_movies"
@@ -82,7 +82,7 @@
         "nrem_blank",
         "rem_blank"
       ],
-      "basal_apical_states": [
+      "compartment_states": [
         "quiet_awake_blank",
         "nrem_blank",
         "rem_blank"
@@ -96,7 +96,7 @@
         "nrem",
         "rem"
       ],
-      "basal_apical_states": [
+      "compartment_states": [
         "quiet_awake_blank",
         "quiet_awake_movies",
         "quiet_awake",
@@ -116,7 +116,7 @@
         "nrem",
         "rem"
       ],
-      "basal_apical_states": [
+      "compartment_states": [
         "quiet_awake_blank",
         "nrem_blank",
         "rem_blank",
@@ -142,7 +142,7 @@
     "nrem",
     "rem"
   ],
-  "basal_apical_states": [
+  "compartment_states": [
     "quiet_awake_blank",
     "nrem_blank",
     "rem_blank",

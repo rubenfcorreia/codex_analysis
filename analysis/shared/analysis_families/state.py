@@ -125,53 +125,85 @@ def state_masks_for_context(ctx: ExperimentContext, selected_states: Sequence[st
     return ordered
 
 
-def _event_summary_for_matrix(matrix: np.ndarray, time: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
-    if matrix.size == 0:
+def _event_summary_for_trace(trace: np.ndarray, time: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
+    trace = np.asarray(trace, dtype=float).reshape(-1)
+    time = np.asarray(time, dtype=float).reshape(-1)
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    usable = min(trace.size, time.size, mask.size)
+    if usable <= 0:
         return {"event_count": 0, "event_frequency_per_min": float("nan")}
-    if matrix.ndim == 2 and matrix.shape[0] > 0:
-        trace = np.nanmean(np.asarray(matrix, dtype=float), axis=0)
-    else:
-        trace = np.asarray(matrix, dtype=float).reshape(-1)
-    summary = build_masked_event_summary(np.asarray(trace, dtype=float), np.asarray(time, dtype=float), np.asarray(mask, dtype=bool))
+    summary = build_masked_event_summary(trace[:usable], time[:usable], mask[:usable])
     return {
         "event_count": int(summary.get("event_count", 0) or 0),
         "event_frequency_per_min": float(summary.get("event_frequency_per_min", float("nan"))),
     }
 
 
+def _summarize_roi_trace(trace: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
+    trace = np.asarray(trace, dtype=float).reshape(-1)
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    usable = min(trace.size, mask.size) if mask.size else trace.size
+    if usable <= 0:
+        return {"n": 0, "mean": float("nan"), "median": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan")}
+    if mask.size:
+        masked = trace[:usable][mask[:usable]]
+    else:
+        masked = trace[:usable]
+    finite = masked[np.isfinite(masked)]
+    if finite.size == 0:
+        return {"n": 0, "mean": float("nan"), "median": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan")}
+    return {
+        "n": int(finite.size),
+        "mean": float(np.nanmean(finite)),
+        "median": float(np.nanmedian(finite)),
+        "std": float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
+        "min": float(np.nanmin(finite)),
+        "max": float(np.nanmax(finite)),
+    }
+
+
+def _roi_subject_id(row: Mapping[str, Any]) -> str:
+    expid = str(row.get("expid") or "")
+    roi_index = row.get("roi_index")
+    if roi_index is None:
+        roi_index = row.get("bouton_roi_index")
+    compartment = str(row.get("compartment") or "")
+    if not expid and roi_index is None:
+        return ""
+    return f"{expid}:{compartment}:{roi_index}"
+
+
 def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
     masks = state_masks_for_context(ctx, selected_states)
-    soma_matrix = ctx.soma.matrix()
-    bouton_matrix = ctx.bouton.matrix()
+    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
+    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
     time = shared_time_axis(ctx)
     rows: List[Dict[str, Any]] = []
     for state, mask in masks.items():
         mask = np.asarray(mask, dtype=bool)
-        soma_summary = summarize_activity(soma_matrix, mask)
-        bouton_summary = summarize_activity(bouton_matrix, mask)
-        soma_events = _event_summary_for_matrix(soma_matrix, time, mask)
-        bouton_events = _event_summary_for_matrix(bouton_matrix, time, mask)
-        for compartment, summary, events in (("soma", soma_summary, soma_events), ("bouton", bouton_summary, bouton_events)):
-            row = {
-                "expid": ctx.expid,
-                "mode": ctx.mode,
-                "animal_id": ctx.animal_id,
-                "date": ctx.date,
-                "day_id": ctx.day_id,
-                "state": canonical_state_label(state),
-                "state_display": state_display_label(state),
-                "state_color": state_display_color(state),
-                "compartment": compartment,
-                "n": summary["n"],
-                "mean": summary["mean"],
-                "median": summary["median"],
-                "std": summary["std"],
-                "min": summary["min"],
-                "max": summary["max"],
-                "event_count": events["event_count"],
-                "event_frequency_per_min": events["event_frequency_per_min"],
-            }
-            rows.append(row)
+        for compartment, matrix in (("soma", soma_matrix), ("bouton", bouton_matrix)):
+            if matrix.size == 0:
+                continue
+            for roi_index in range(matrix.shape[0]):
+                trace = np.asarray(matrix[roi_index], dtype=float)
+                summary = _summarize_roi_trace(trace, mask)
+                events = _event_summary_for_trace(trace, time, mask)
+                rows.append({
+                    "expid": ctx.expid,
+                    "mode": ctx.mode,
+                    "animal_id": ctx.animal_id,
+                    "date": ctx.date,
+                    "day_id": ctx.day_id,
+                    "state": canonical_state_label(state),
+                    "state_display": state_display_label(state),
+                    "state_color": state_display_color(state),
+                    "compartment": compartment,
+                    "roi_index": int(roi_index),
+                    "roi_key": _roi_subject_id({"expid": ctx.expid, "roi_index": int(roi_index), "compartment": compartment}),
+                    **summary,
+                    "event_count": events["event_count"],
+                    "event_frequency_per_min": events["event_frequency_per_min"],
+                })
     return rows
 
 
@@ -201,9 +233,11 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
         payload = meta[key].copy()
         arr = np.asarray(values, dtype=float)
         finite = arr[np.isfinite(arr)]
+        total_rois = int(arr.size)
         if finite.size == 0:
             payload.update({
                 "n_experiments": int(arr.size),
+                "n_rois": total_rois,
                 "mean": float("nan"),
                 "median": float("nan"),
                 "std": float("nan"),
@@ -213,6 +247,7 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
         else:
             payload.update({
                 "n_experiments": int(arr.size),
+                "n_rois": total_rois,
                 "mean": float(np.nanmean(finite)),
                 "median": float(np.nanmedian(finite)),
                 "std": float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
@@ -223,7 +258,12 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
     return summary_rows
 
 
-def _state_values_by_day(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], compartment: str | None = None) -> Dict[str, Dict[str, List[float]]]:
+def _state_values_by_subject(
+    rows: Sequence[Mapping[str, Any]],
+    selected_states: Sequence[str],
+    compartment: str | None = None,
+    metric_col: str = "mean",
+) -> Dict[str, Dict[str, List[float]]]:
     selected_lookup = {canonical_state_label(state) for state in selected_states if canonical_state_label(state)}
     values_by_state: Dict[str, Dict[str, List[float]]] = {state: {} for state in selected_lookup}
     for row in rows:
@@ -232,20 +272,26 @@ def _state_values_by_day(rows: Sequence[Mapping[str, Any]], selected_states: Seq
             continue
         if compartment is not None and str(row.get("compartment") or "") != compartment:
             continue
-        day_id = str(row.get("day_id") or "")
-        if not day_id:
+        subject_id = str(row.get("roi_key") or _roi_subject_id(row) or "")
+        if not subject_id:
             continue
-        values_by_state.setdefault(state, {}).setdefault(day_id, []).append(float(row.get("mean", float("nan"))))
+        values_by_state.setdefault(state, {}).setdefault(subject_id, []).append(float(row.get(metric_col, float("nan"))))
     return values_by_state
 
 
-def state_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
+def state_comparison_rows(
+    rows: Sequence[Mapping[str, Any]],
+    selected_states: Sequence[str],
+    shuffle_n: int,
+    *,
+    metric_col: str = "mean",
+) -> List[Dict[str, Any]]:
     selected = [state for state in selected_states if canonical_state_label(state)]
     if len(selected) < 2:
         return []
     comparisons: List[Dict[str, Any]] = []
     for compartment in (None, "soma", "bouton"):
-        values_by_state = _state_values_by_day(rows, selected, compartment=compartment)
+        values_by_state = _state_values_by_subject(rows, selected, compartment=compartment, metric_col=metric_col)
         if not any(values_by_state.values()):
             continue
         for idx, state_a in enumerate(selected):
@@ -254,24 +300,23 @@ def state_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Se
                 subjects_b = values_by_state.get(state_b, {})
                 subjects = sorted(set(subjects_a).intersection(subjects_b))
                 if len(subjects) >= 2:
-                    result = paired_comparison(values_by_state, state_a, state_b, "mean", shuffle_n)
+                    result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
                 else:
-                    result = independent_comparison(values_by_state, state_a, state_b, "mean", shuffle_n)
+                    result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
                 result["comparison"] = "state_pair"
                 result["compartment"] = compartment or "all"
                 result["state_a_display"] = state_a
                 result["state_b_display"] = state_b
+                result["metric"] = metric_col
                 comparisons.append(result)
     return comparisons
-
-
 def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
     selected = [state for state in selected_states if canonical_state_label(state)]
     if not selected:
         return []
     comparisons: List[Dict[str, Any]] = []
     for state in selected:
-        values_by_state = _state_values_by_day(rows, [state])
+        values_by_state = _state_values_by_subject(rows, [state])
         if state not in values_by_state:
             continue
         result = {
@@ -287,8 +332,8 @@ def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_sta
 
 def build_state_family_results(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> Dict[str, Any]:
     summary_rows = state_summary_rows(rows)
-    comparisons = state_comparison_rows(summary_rows, selected_states, shuffle_n)
-    basal_apical = basal_apical_comparison_rows(summary_rows, selected_states, shuffle_n)
+    comparisons = state_comparison_rows(rows, selected_states, shuffle_n)
+    basal_apical = basal_apical_comparison_rows(rows, selected_states, shuffle_n)
     return {
         "activity_rows": list(rows),
         "summary_rows": summary_rows,

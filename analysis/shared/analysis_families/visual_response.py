@@ -61,16 +61,27 @@ def build_visual_response_family_results(
 
     cohort_counts = {label: 0 for label in VISUAL_RESPONSE_COHORTS}
     cohort_rows: Dict[str, List[Dict[str, Any]]] = {label: [] for label in VISUAL_RESPONSE_COHORTS}
+    by_compartment: Dict[str, List[Dict[str, Any]]] = {}
     for row in row_list:
         label = str(row.get("cohort") or DEFAULT_VISUAL_RESPONSE_COHORT)
         if label not in cohort_rows:
             continue
-        cohort_rows[label].append(dict(row))
+        row_copy = dict(row)
+        cohort_rows[label].append(row_copy)
         cohort_counts[label] += 1
+        compartment = str(row_copy.get("compartment") or "all")
+        by_compartment.setdefault(compartment, []).append(row_copy)
 
     selected_rows = cohort_rows.get(cohort, row_list) if cohort in cohort_rows else row_list
     selected_responsive_rows = [dict(row) for row in selected_rows if bool(row.get("responsive", False))]
     selected_nonresponsive_rows = [dict(row) for row in selected_rows if not bool(row.get("responsive", False))]
+    selected_by_compartment = {
+        compartment: [
+            dict(row) for row in rows_for_compartment
+            if cohort == "all" or str(row.get("cohort") or DEFAULT_VISUAL_RESPONSE_COHORT) == cohort
+        ]
+        for compartment, rows_for_compartment in by_compartment.items()
+    }
 
     return {
         "available": bool(row_list),
@@ -80,6 +91,8 @@ def build_visual_response_family_results(
         "rows": row_list,
         "day_rows": visual_response_day_rows(row_list),
         "cohort_rows": cohort_rows,
+        "by_compartment": by_compartment,
+        "selected_by_compartment": selected_by_compartment,
         "cohort_counts": cohort_counts,
         "selected_rows": selected_rows,
         "responsive_rows": selected_responsive_rows,
@@ -88,6 +101,14 @@ def build_visual_response_family_results(
             "all": int(len(row_list)),
             "responsive": int(sum(bool(row.get("responsive", False)) for row in row_list)),
             "nonresponsive": int(sum(not bool(row.get("responsive", False)) for row in row_list)),
+        },
+        "counts_by_compartment": {
+            compartment: {
+                "all": int(len(rows_for_compartment)),
+                "responsive": int(sum(bool(row.get("responsive", False)) for row in rows_for_compartment)),
+                "nonresponsive": int(sum(not bool(row.get("responsive", False)) for row in rows_for_compartment)),
+            }
+            for compartment, rows_for_compartment in by_compartment.items()
         },
     }
 
