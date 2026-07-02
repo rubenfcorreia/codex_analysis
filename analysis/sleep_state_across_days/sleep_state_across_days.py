@@ -3742,6 +3742,27 @@ def build_day_timeline_profile(day_exp_summaries: Sequence[SessionSummary]) -> T
     return probability_time_s / 60.0, state_probability_profile, (sleep_start_s / 60.0 if sleep_start_s is not None else None)
 
 
+def estimate_average_sleep_start_min(exp_summaries: Sequence[SessionSummary]) -> Optional[float]:
+    grouped: Dict[Tuple[str, str], List[SessionSummary]] = defaultdict(list)
+    for summary in exp_summaries:
+        grouped[(str(summary.animal_id), str(summary.date))].append(summary)
+    sleep_start_values: List[float] = []
+    for summaries in grouped.values():
+        ordered = sorted(
+            summaries,
+            key=lambda summary: (
+                str(summary.exp_ids[0]) if summary.exp_ids else '',
+                str(summary.sleep_state_paths[0]) if summary.sleep_state_paths else '',
+            ),
+        )
+        _, _, sleep_start_min = build_day_timeline_profile(ordered)
+        if sleep_start_min is not None and np.isfinite(sleep_start_min):
+            sleep_start_values.append(float(sleep_start_min))
+    if not sleep_start_values:
+        return None
+    return float(np.nanmean(sleep_start_values))
+
+
 def resolve_poster_ready_montage_svg(state_montage_artifacts: Sequence[str], output_dir: Path, example_exp_id: str) -> Optional[Path]:
     candidate_paths: List[Path] = []
     for artifact in state_montage_artifacts:
@@ -3832,6 +3853,7 @@ def inline_svg_panel_into_matplotlib_svg(svg_path: Path, panel_svg_path: Path) -
 def plot_sleep_state_poster_ready_composite(
     state_composition_rows: Sequence[Mapping[str, Any]],
     rem_day_presence_rows: Sequence[Mapping[str, Any]],
+    exp_summaries: Sequence[SessionSummary],
     day_summaries: Sequence[SessionSummary],
     state_montage_artifacts: Sequence[str],
     output_dir: Path,
@@ -3912,7 +3934,7 @@ def plot_sleep_state_poster_ready_composite(
 
     time_s, profile = average_probability_summaries(day_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
-    sleep_start_min = None
+    sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
@@ -7290,7 +7312,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         saved = plot_state_montage_per_exp(summary, output_dir)
         state_montage_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
-    saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, day_summaries, state_montage_artifacts, output_dir)
+    saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, exp_summaries, day_summaries, state_montage_artifacts, output_dir)
     poster_ready_artifacts.extend(project_relative_path(path) for path in saved)
 
     review_state_montage_artifacts: List[str] = []
