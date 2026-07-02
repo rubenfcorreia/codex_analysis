@@ -173,5 +173,10 @@
   "plots_only": false,
   "plots_only_include_supporting_figures": false,
   "event_detection_method": "amplitude",
-  "visual_response_metric": "calcium_events"
+  "visual_response_metric": "mean",
+  "comparison_preset_names": [
+    "movies_state_comparisons",
+    "blank_state_comparisons",
+    "quiet_vs_sleep_blank_movies"
+  ]
 }

@@ -5668,7 +5668,16 @@ def _render_state_summary_comparison_panel_figure(
         Line2D([0], [0], color="#DD8452", marker="s", linestyle="", markersize=8, label="Apical"),
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=POSTER_LEGEND_SIZE)
-    annotate_sample_size(ax, 0.02, 0.98, f"n={len(rows)} comparisons", ha="left", va="top", transform=ax.transAxes, bbox=True)
+    annotate_sample_size(
+        ax,
+        0.02,
+        0.98,
+        f"n={len(comparison_subset)} comparisons",
+        ha="left",
+        va="top",
+        transform=ax.transAxes,
+        bbox=True,
+    )
     fig.tight_layout()
     return fig
 
@@ -15668,6 +15677,17 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["analysis_run_cache_path"] = str(preset_cache_path)
         preset_config["analysis_results_cache_path"] = None
         generate_once = preset_index == 0
+        if bool(preset_config.get("plots_only")):
+            preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
+            preset_family_stage = family_results_cache_stage_for_selection(preset_config.get("analysis_families"))
+            preset_family_cache_path = family_results_cache_path(preset_cache_path, preset_family_stage)
+            if not preset_results_cache_path.exists() and not preset_family_cache_path.exists():
+                print(
+                    "[comparison preset] "
+                    f"{preset_name}: plots_only cache missing; rebuilding analysis results for this preset",
+                    file=sys.stderr,
+                )
+                preset_config["plots_only"] = False
         preset_config["plots_only_include_supporting_figures"] = True if generate_once else False
         preset_config["generate_poster_ready_figures"] = True if generate_once else False
         preset_config["generate_shared_general_figures"] = True if generate_once else False
