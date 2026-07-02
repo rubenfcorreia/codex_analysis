@@ -200,6 +200,72 @@ def rasterize_svg_to_png(svg_path: Path, png_path: Path, dpi: int = POSTER_DPI) 
     cairosvg.svg2png(url=str(svg_path), write_to=str(png_path), dpi=dpi)
     return png_path
 
+def compose_svg_figure_fit_to_boxes(
+    output_path: Path,
+    component_paths: Sequence[Path],
+    boxes: Sequence[tuple[float, float, float, float]],
+    canvas_width: float,
+    canvas_height: float,
+    *,
+    physical_width: str | None = None,
+    physical_height: str | None = None,
+    preserve_aspect_ratio: str = "xMidYMid meet",
+) -> Path | None:
+    """Compose SVG panels by scaling each panel into an explicit output box.
+
+    Unlike compose_svg_figure(), this does not place each SVG at its native
+    physical size. Each input SVG is nested inside a fixed rectangle on the
+    output canvas, so poster panels cannot overlap when the final SVG is
+    physically resized.
+    """
+    component_paths = [Path(path) for path in component_paths]
+    if not component_paths:
+        return None
+    if len(component_paths) != len(boxes):
+        raise ValueError(
+            f"Expected one box per SVG panel, got {len(boxes)} boxes for "
+            f"{len(component_paths)} panels."
+        )
+
+    svg_root = ET.Element(
+        f"{{{SVG_NS}}}svg",
+        {
+            "version": "1.1",
+            "width": str(physical_width or canvas_width),
+            "height": str(physical_height or canvas_height),
+            "viewBox": f"0 0 {canvas_width:g} {canvas_height:g}",
+        },
+    )
+
+    for index, (path, box) in enumerate(zip(component_paths, boxes), start=1):
+        panel, panel_width, panel_height = _load_svg_panel(path)
+        x, y, width, height = [float(value) for value in box]
+        if width <= 0.0 or height <= 0.0:
+            continue
+
+        view_box = str(panel.attrib.get("viewBox") or "").strip().replace(",", " ")
+        view_box_parts = [part for part in view_box.split() if part]
+        if len(view_box_parts) != 4:
+            panel.attrib["viewBox"] = f"0 0 {panel_width:g} {panel_height:g}"
+
+        panel.attrib["x"] = f"{x:g}"
+        panel.attrib["y"] = f"{y:g}"
+        panel.attrib["width"] = f"{width:g}"
+        panel.attrib["height"] = f"{height:g}"
+        panel.attrib["preserveAspectRatio"] = preserve_aspect_ratio
+        panel.attrib.pop("transform", None)
+
+        panel_group = ET.SubElement(
+            svg_root,
+            f"{{{SVG_NS}}}g",
+            {"id": f"panel_{index:02d}_{path.stem}"},
+        )
+        panel_group.append(panel)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(svg_root).write(str(output_path), encoding="utf-8", xml_declaration=True)
+    return output_path
 
 def compose_svg_figure(
     output_path: Path,

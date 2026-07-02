@@ -7247,6 +7247,13 @@ def generate_review_figures(
                 svg_path = output_path_obj.with_suffix(".svg")
                 if svg_path.exists():
                     saved.append(str(svg_path))
+    run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    comparison_preset_name = str(run_params.get("comparison_preset_name") or "default")
+    generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
+    shared_mixed_model_dir = None
+    if generate_shared_general_figures:
+        base_root = review_dir.parent if comparison_preset_name != "default" else review_dir
+        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     with step_scope("review family: mixed model figures"):
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
@@ -8156,6 +8163,13 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
             global_dendrite_id=None if rep is None else rep.get("global_dendrite_id"),
         )
     # Mixed-model checkpoint examples.
+    run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    comparison_preset_name = str(run_params.get("comparison_preset_name") or "default")
+    generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
+    shared_mixed_model_dir = None
+    if generate_shared_general_figures:
+        base_root = gallery_dir.parent if comparison_preset_name != "default" else gallery_dir
+        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_gallery_dir = figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
         scope = str(spec["scope"])
