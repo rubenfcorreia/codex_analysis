@@ -393,6 +393,7 @@ USER_EDITABLE_DEFAULTS = {
     "mixed_model_only": False,
     "mixed_model_contrast_p_source": "classical",
     "plots_only": False,
+    "poster_ready_only": False,
     "plots_only_include_supporting_figures": False,
     "generate_poster_ready_figures": True,
     "source_cache_rebuild": False,
@@ -14949,7 +14950,7 @@ def write_poster_ready_figures(
                             "responsive": responsive_mixed,
                             "nonresponsive": nonresponsive_mixed,
                         },
-                        state_order=blank_state_order,
+                        state_order=poster_state_order,
                         output_stem=f"{entity_key}_state_mixed_model_poster_ready",
                         title="Quiet blank vs sleep states",
                         preferred_response_keys=(("mean_dendrite_activity", "mean") if entity_key == "dendrite" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
@@ -15990,6 +15991,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mixed-model-only", action="store_true", help="Skip the state/correlation/matrix analyses and run only the main mixed-model branch")
     parser.add_argument("--plots-only", action="store_true", help="Reuse saved caches and only generate plots, without rewriting CSV/JSON/report artifacts")
     parser.add_argument(
+        "--poster-ready-only",
+        action="store_true",
+        help="Run only the reduced analysis set needed for poster-ready figures and skip the standard figure pass",
+    )
+    parser.add_argument(
         "--mixed-model-contrast-p-source",
         choices=["classical", "shuffle"],
         help="Choose the p-value source for mixed-model contrasts: classical or shuffle",
@@ -16046,6 +16052,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_families": parse_list_argument(args.analysis_families) or None,
         "comparison_preset_names": parse_list_argument(args.comparison_presets) or None,
         "plots_only": True if args.plots_only else None,
+        "poster_ready_only": True if args.poster_ready_only else None,
         "demo": True if args.demo else None,
         "channel": args.channel,
         "shuffle_n": args.shuffle_n,
@@ -16075,6 +16082,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for key, value in USER_EDITABLE_DEFAULTS.items():
         if key not in config or config[key] is None:
             config[key] = value
+    if bool(config.get("poster_ready_only")):
+        config["analysis_families"] = ["mixed_model", "spine_coactivity"]
     cpu_thread_limit = apply_cpu_thread_limit(config.get("cpu_thread_limit"))
     from analysis_families.core import normalize_analysis_families
     config["analysis_families"] = normalize_analysis_families(config.get("analysis_families"))
@@ -16415,6 +16424,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             results["analysis_mode"] = "spine_coactivity_only"
         elif bool(config.get("mixed_model_only")):
             results["analysis_mode"] = "mixed_model_only"
+        elif bool(config.get("poster_ready_only")):
+            results["analysis_mode"] = "poster_ready_only"
         else:
             results["analysis_mode"] = "full"
     results["config"] = source_cache.get("config", {})
@@ -16435,6 +16446,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_families": list(config.get("analysis_families") or []),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "generate_shared_general_figures": bool(config.get("generate_shared_general_figures", True)),
+        "poster_ready_only": bool(config.get("poster_ready_only")),
         "analysis_run_cache_path": str(analysis_run_cache_path),
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
@@ -16481,7 +16493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             source_cache=source_cache,
             figure_root=figure_output_dir,
             plots_only=plots_only,
-            include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)),
+            include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)) and not bool(config.get("poster_ready_only")),
         )
     if bool(config.get("generate_poster_ready_figures", True)):
         with step_scope("poster figure generation"):
@@ -16490,7 +16502,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     output_dir,
                     analysis_cache,
                     results,
-                    analysis_families=config.get("analysis_families"),
+                    analysis_families=None if bool(config.get("poster_ready_only")) else config.get("analysis_families"),
                 )
             )
     if isinstance(analysis_cache.get(STATE_SUMMARY_PAYLOAD_CACHE_KEY), dict):

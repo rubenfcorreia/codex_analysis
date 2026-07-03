@@ -1,0 +1,68 @@
+{
+  "_comment": "Poster-ready mode for the soma/bouton pipeline. Set poster_ready_only true to skip the regular plot pass and keep only the poster-ready figures.",
+  "analysis_name": "soma_bouton_pipeline",
+  "movie_expids": [
+    "2026-05-11_01_ESRC033",
+    "2026-05-13_01_ESRC033",
+    "2026-06-10_01_ESRC033",
+    "2026-06-22_01_ESRC033",
+    "2026-06-23_01_ESRC033"
+  ],
+  "sleep_expids": [
+    "2026-05-11_02_ESRC033",
+    "2026-05-11_03_ESRC033",
+    "2026-05-13_02_ESRC033",
+    "2026-05-13_03_ESRC033",
+    "2026-06-10_02_ESRC033",
+    "2026-06-22_02_ESRC033",
+    "2026-06-22_03_ESRC033",
+    "2026-06-22_04_ESRC033",
+    "2026-06-23_02_ESRC033",
+    "2026-06-23_03_ESRC033"
+  ],
+  "result_root": "results/soma_bouton_pipeline",
+  "cache_root": "results/soma_bouton_pipeline/cache",
+  "soma_channel": 1,
+  "bouton_channel": 0,
+  "lag_window_s": 2.0,
+  "lag_step_s": 0.1,
+  "shuffle_n": 200,
+  "rebuild": true,
+  "plots_only": false,
+  "poster_ready_only": true,
+  "comparison_preset_names": null,
+  "comparison_presets": null,
+  "event_detection_method": "amplitude",
+  "visual_response_metric": "mean",
+  "visual_response_cohort": "all",
+  "visual_response_trial_types": [
+    "movies",
+    "gratings",
+    "zebras"
+  ],
+  "visual_response_blank_trial_type": "blank",
+  "mixed_model_contrast_p_source": "classical",
+  "state_comparison_states": [
+    "quiet_awake_blank",
+    "nrem_blank",
+    "rem_blank",
+    "quiet_awake_movies",
+    "nrem_movies",
+    "rem_movies",
+    "quiet_awake",
+    "nrem",
+    "rem"
+  ],
+  "compartment_states": [
+    "quiet_awake_blank",
+    "nrem_blank",
+    "rem_blank",
+    "quiet_awake_movies",
+    "nrem_movies",
+    "rem_movies",
+    "quiet_awake",
+    "nrem",
+    "rem"
+  ],
+  "comparison_preset_name": "poster_ready"
+}

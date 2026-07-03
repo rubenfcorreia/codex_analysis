@@ -29,6 +29,8 @@ if plt is not None:
 
 FIGURE_WIDTH_CM = 35.0
 FIGURE_HEIGHT_CM = 29.0
+VISUAL_RESPONSE_WIDTH_CM = 19.0
+VISUAL_RESPONSE_HEIGHT_CM = 6.5
 
 FIGURE_TITLE_FS = POSTER_TITLE_SIZE
 FIGURE_LABEL_FS = POSTER_LABEL_SIZE
@@ -486,10 +488,10 @@ def write_visual_response_poster_figure(
         return None
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_visual_response_poster_ready"
-    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(FIGURE_HEIGHT_CM)), constrained_layout=False)
-    outer = fig.add_gridspec(2, 2, width_ratios=[1.85, 0.85], height_ratios=[1, 1], left=0.06, right=0.985, top=0.95, bottom=0.08, wspace=0.20, hspace=0.24)
-    resp_grid = outer[0, 0].subgridspec(1, 3, width_ratios=[1.05, 1.05, 0.95], wspace=0.22)
-    nonresp_grid = outer[1, 0].subgridspec(1, 3, width_ratios=[1.05, 1.05, 0.95], wspace=0.22)
+    fig = plt.figure(figsize=(cm_to_inch(VISUAL_RESPONSE_WIDTH_CM), cm_to_inch(VISUAL_RESPONSE_HEIGHT_CM)), constrained_layout=False)
+    outer = fig.add_gridspec(2, 2, width_ratios=[1.9, 0.9], height_ratios=[1, 1], left=0.055, right=0.985, top=0.92, bottom=0.20, wspace=0.18, hspace=0.42)
+    resp_grid = outer[0, 0].subgridspec(1, 3, width_ratios=[1.08, 1.08, 0.92], wspace=0.18)
+    nonresp_grid = outer[1, 0].subgridspec(1, 3, width_ratios=[1.08, 1.08, 0.92], wspace=0.18)
     ax_resp_blank = fig.add_subplot(resp_grid[0, 0])
     ax_resp_movie = fig.add_subplot(resp_grid[0, 1], sharey=ax_resp_blank)
     ax_resp_box = fig.add_subplot(resp_grid[0, 2], sharey=ax_resp_blank)
@@ -519,7 +521,7 @@ def write_visual_response_poster_figure(
         text.set_fontsize(FIGURE_NOTE_FS)
     ax_pie.set_title(f"{entity_label.capitalize()} visual responsiveness", fontsize=FIGURE_TITLE_FS, pad=8)
     ax_pie.text(0.5, -0.08, f"n={int(total)}", transform=ax_pie.transAxes, ha="center", va="top", fontsize=FIGURE_NOTE_FS)
-    fig.suptitle(f"{entity_label.capitalize()} visual response", fontsize=POSTER_TITLE_SIZE + 1, y=0.988)
+    fig.suptitle(f"{entity_label.capitalize()} visual response", fontsize=POSTER_TITLE_SIZE + 1, y=0.965)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 def write_state_mixed_model_poster_figure(
@@ -541,6 +543,7 @@ def write_state_mixed_model_poster_figure(
     nonresp = {str(k): list(v) for k, v in nonresponsive_state_values.items()}
     if not resp and not nonresp:
         return None
+    state_order = list(dict.fromkeys([str(state) for state in state_order if str(state)] + list(resp.keys()) + list(nonresp.keys())))
     if isinstance(mixed_model_rows, Mapping) and ("responsive" in mixed_model_rows or "nonresponsive" in mixed_model_rows):
         rows_by_cohort = {
             str(cohort): _select_mixed_model_rows(branch, preferred_response_keys=preferred_response_keys)

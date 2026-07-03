@@ -112,6 +112,7 @@ DEFAULT_CONFIG = {
     "source_cache_rebuild": False,
     "shared_shuffle_cache_rebuild": False,
     "plots_only": False,
+    "poster_ready_only": False,
     "comparison_presets": None,
     "comparison_preset_name": None,
     "comparison_preset_names": None,
@@ -204,7 +205,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
 
 
 def build_day_groups(expids_by_mode: Mapping[str, Sequence[str]]) -> Dict[str, Dict[str, List[str]]]:
-    from ..compartment_common import grouped_experiments_by_day
+    from analysis.compartment_common import grouped_experiments_by_day
 
     grouped: Dict[str, Dict[str, List[str]]] = {}
     for mode, expids in expids_by_mode.items():
@@ -636,6 +637,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, correlation={len(correlation_summary)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
     )
 
+    poster_ready_only = bool(config.get("poster_ready_only"))
+
     _stage("writing csv", "experiments")
     write_csv_rows(result_root / "csv" / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
     if activity_rows:
@@ -690,108 +693,109 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         _stage("writing csv", "visual_response_by_day")
         write_csv_rows(result_root / "csv" / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
 
-    _stage("plotting", "state activity")
-    for cohort_name in ("all", "responsive", "nonresponsive"):
-        cohort_rows = cohort_activity_rows.get(cohort_name, [])
-        if not cohort_rows:
-            continue
-        plot_state_activity(
-            cohort_rows,
-            result_root,
-            comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
-            cohort_label=cohort_name,
-        )
-        _stage("plotting", f"state event frequency - {cohort_name}")
-        plot_state_event_frequency(
-            cohort_rows,
-            result_root,
-            comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
-            cohort_label=cohort_name,
-        )
-        _stage("plotting", f"correlation - {cohort_name}")
-        plot_state_correlation(
-            cohort_correlation_summary.get(cohort_name, []),
-            result_root,
-            comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
-            cohort_label=cohort_name,
-        )
-    for cohort_name in ("all", "responsive", "nonresponsive"):
-        cohort_rows = cohort_lag_rows.get(cohort_name, [])
-        if not cohort_rows:
-            continue
-        _stage("plotting", f"lag heatmap - {cohort_name}")
-        plot_lag_heatmap(cohort_rows, result_root, cohort_label=cohort_name)
-    if visual_response_rows:
-        visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
-        for compartment in ("soma", "bouton"):
-            compartment_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
-            if not compartment_rows:
+    if not poster_ready_only:
+        _stage("plotting", "state activity")
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_activity_rows.get(cohort_name, [])
+            if not cohort_rows:
                 continue
-            compartment_dir = ensure_dir(visual_response_fig_dir / compartment)
-            for cohort in ("all", "responsive", "nonresponsive"):
-                cohort_rows = compartment_rows if cohort == "all" else [row for row in compartment_rows if str(row.get("cohort") or "nonresponsive") == cohort]
-                if not cohort_rows:
-                    continue
-                cohort_dir = ensure_dir(compartment_dir / cohort)
-                plot_visual_response_boxplot_figure(
-                    {"rows": cohort_rows},
-                    cohort_dir,
-                    output_name="visual_response_movie_vs_blank.svg",
-                    title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
-                    cohort_label=cohort,
-                    kind=compartment,
-                )
-                render_visual_response_entity_figures(
-                    cohort_rows,
-                    cohort_dir / "entities",
-                    cohort_label=cohort,
-                    kind=compartment,
-                )
-    if mixed_model_results:
-        mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
-        for cohort_name, cohort_results in mixed_model_results.items():
-            if not isinstance(cohort_results, dict) or not cohort_results:
+            plot_state_activity(
+                cohort_rows,
+                result_root,
+                comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
+                cohort_label=cohort_name,
+            )
+            _stage("plotting", f"state event frequency - {cohort_name}")
+            plot_state_event_frequency(
+                cohort_rows,
+                result_root,
+                comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
+                cohort_label=cohort_name,
+            )
+            _stage("plotting", f"correlation - {cohort_name}")
+            plot_state_correlation(
+                cohort_correlation_summary.get(cohort_name, []),
+                result_root,
+                comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
+                cohort_label=cohort_name,
+            )
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_lag_rows.get(cohort_name, [])
+            if not cohort_rows:
                 continue
-            cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
-            for compartment_key, compartment_results in cohort_results.items():
-                if not isinstance(compartment_results, dict) or not compartment_results:
+            _stage("plotting", f"lag heatmap - {cohort_name}")
+            plot_lag_heatmap(cohort_rows, result_root, cohort_label=cohort_name)
+        if visual_response_rows:
+            visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
+            for compartment in ("soma", "bouton"):
+                compartment_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
+                if not compartment_rows:
                     continue
-                compartment_dir = ensure_dir(cohort_dir / compartment_key)
-                for scope_key in ("all_state", "selected_state"):
-                    branch = compartment_results.get(scope_key, {})
-                    scope_label = scope_key.replace("_", " ")
-                    if not isinstance(branch, dict) or not branch:
+                compartment_dir = ensure_dir(visual_response_fig_dir / compartment)
+                for cohort in ("all", "responsive", "nonresponsive"):
+                    cohort_rows = compartment_rows if cohort == "all" else [row for row in compartment_rows if str(row.get("cohort") or "nonresponsive") == cohort]
+                    if not cohort_rows:
                         continue
-                    mixed_model_payload = {
-                        "analysis_state_selection": {
-                            "state_comparison_states": list(analysis_state_order),
-                            "compartment_states": list(analysis_state_order),
-                        },
-                        "analysis_compartment": compartment_key,
-                        "mixed_model": branch,
-                    }
-                    plot_mixed_model_forest_figure(
-                        mixed_model_payload,
-                        compartment_dir,
-                        output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_forest.svg",
-                        title=f"Mixed-model fixed effects - {cohort_name} - {compartment_key} - {scope_label}",
-                        model_key="mixed_model",
+                    cohort_dir = ensure_dir(compartment_dir / cohort)
+                    plot_visual_response_boxplot_figure(
+                        {"rows": cohort_rows},
+                        cohort_dir,
+                        output_name="visual_response_movie_vs_blank.svg",
+                        title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
+                        cohort_label=cohort,
+                        kind=compartment,
                     )
-                    plot_mixed_model_predicted_means_figure(
-                        mixed_model_payload,
-                        compartment_dir,
-                        output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_predicted_means.svg",
-                        title=f"Mixed-model predicted means - {cohort_name} - {compartment_key} - {scope_label}",
-                        model_key="mixed_model",
+                    render_visual_response_entity_figures(
+                        cohort_rows,
+                        cohort_dir / "entities",
+                        cohort_label=cohort,
+                        kind=compartment,
                     )
-                    plot_mixed_model_contrasts_checkpoint(
-                        mixed_model_payload,
-                        compartment_dir,
-                        scope=scope_key,
-                        output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_contrasts.svg",
-                        title=f"Mixed-model contrasts - {cohort_name} - {compartment_key} - {scope_label}",
-                        model_key="mixed_model",
-                    )
+        if not poster_ready_only and mixed_model_results:
+            mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
+            for cohort_name, cohort_results in mixed_model_results.items():
+                if not isinstance(cohort_results, dict) or not cohort_results:
+                    continue
+                cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
+                for compartment_key, compartment_results in cohort_results.items():
+                    if not isinstance(compartment_results, dict) or not compartment_results:
+                        continue
+                    compartment_dir = ensure_dir(cohort_dir / compartment_key)
+                    for scope_key in ("all_state", "selected_state"):
+                        branch = compartment_results.get(scope_key, {})
+                        scope_label = scope_key.replace("_", " ")
+                        if not isinstance(branch, dict) or not branch:
+                            continue
+                        mixed_model_payload = {
+                            "analysis_state_selection": {
+                                "state_comparison_states": list(analysis_state_order),
+                                "compartment_states": list(analysis_state_order),
+                            },
+                            "analysis_compartment": compartment_key,
+                            "mixed_model": branch,
+                        }
+                        plot_mixed_model_forest_figure(
+                            mixed_model_payload,
+                            compartment_dir,
+                            output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_forest.svg",
+                            title=f"Mixed-model fixed effects - {cohort_name} - {compartment_key} - {scope_label}",
+                            model_key="mixed_model",
+                        )
+                        plot_mixed_model_predicted_means_figure(
+                            mixed_model_payload,
+                            compartment_dir,
+                            output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_predicted_means.svg",
+                            title=f"Mixed-model predicted means - {cohort_name} - {compartment_key} - {scope_label}",
+                            model_key="mixed_model",
+                        )
+                        plot_mixed_model_contrasts_checkpoint(
+                            mixed_model_payload,
+                            compartment_dir,
+                            scope=scope_key,
+                            output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_contrasts.svg",
+                            title=f"Mixed-model contrasts - {cohort_name} - {compartment_key} - {scope_label}",
+                            model_key="mixed_model",
+                        )
 
     poster_ready_figures: List[str] = []
     poster_output_dir = ensure_dir(REPO_ROOT / "results" / "poster_ready")
@@ -841,13 +845,13 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             mixed_path = write_state_mixed_model_poster_figure(
                 output_dir=mixed_dir,
                 entity_label=compartment,
-                responsive_state_values={state: values for state, values in responsive_values.items() if state in blank_state_order},
-                nonresponsive_state_values={state: values for state, values in nonresponsive_values.items() if state in blank_state_order},
+                responsive_state_values=responsive_values,
+                nonresponsive_state_values=nonresponsive_values,
                 mixed_model_rows={
                     "responsive": mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}),
                     "nonresponsive": mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}),
                 },
-                state_order=blank_state_order,
+                state_order=poster_state_order,
                 output_stem=f"{compartment}_state_mixed_model_poster_ready",
                 title="Quiet blank vs sleep states",
                 preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
@@ -991,6 +995,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
     parser.add_argument("--plots-only", action="store_true", help="Skip metric recomputation and regenerate plots from written CSVs only.")
     parser.add_argument(
+        "--poster-ready-only",
+        action="store_true",
+        help="Compute only the stats needed for poster-ready figures and skip the regular plot pass.",
+    )
+    parser.add_argument(
         "--comparison-presets",
         nargs="*",
         help="Optional subset of preset names to run from a comparison_presets config block.",
@@ -1001,6 +1010,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["rebuild"] = True
     if args.plots_only:
         config["plots_only"] = True
+    if args.poster_ready_only:
+        config["poster_ready_only"] = True
     if args.comparison_presets:
         config["comparison_preset_names"] = list(args.comparison_presets)
     if config.get("comparison_presets"):
