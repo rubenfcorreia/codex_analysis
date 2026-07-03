@@ -30,13 +30,16 @@ def plot_boxplot_series(
     edge_color: str = "#334155",
     significance_flags: Sequence[bool] | None = None,
     comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    top_labels: Sequence[str] | None = None,
 ) -> list[Path]:
     cleaned_values: list[np.ndarray] = []
     cleaned_labels: list[str] = []
     cleaned_series: list[str] = []
     cleaned_colors: list[str] = []
     cleaned_flags: list[bool] = []
+    cleaned_top_labels: list[str] = []
     flags = list(significance_flags) if significance_flags is not None else None
+    top_list = list(top_labels) if top_labels is not None else None
 
     for index, (values, label, series_name, color) in enumerate(zip(values_by_series, labels, series_names, series_colors)):
         arr = np.asarray(values, dtype=float)
@@ -47,6 +50,8 @@ def plot_boxplot_series(
         cleaned_labels.append(str(label))
         cleaned_series.append(str(series_name))
         cleaned_colors.append(str(color))
+        if top_list is not None:
+            cleaned_top_labels.append(str(top_list[index]) if index < len(top_list) else "")
         if flags is not None:
             cleaned_flags.append(bool(flags[index]) if index < len(flags) else False)
 
@@ -128,6 +133,23 @@ def plot_boxplot_series(
         else:
             tick.set_color("#1f2937")
         tick.set_fontweight("bold")
+    if cleaned_top_labels:
+        ax.tick_params(axis="x", pad=18)
+        for xpos, top_label in zip(range(1, len(cleaned_top_labels) + 1), cleaned_top_labels):
+            if not top_label:
+                continue
+            ax.text(
+                xpos,
+                -0.02,
+                top_label,
+                transform=ax.get_xaxis_transform(),
+                rotation=30,
+                ha="right",
+                va="bottom",
+                fontsize=11,
+                color="#6b7280",
+                fontweight="normal",
+            )
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
 

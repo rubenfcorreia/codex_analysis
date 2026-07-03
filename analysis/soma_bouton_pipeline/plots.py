@@ -247,6 +247,7 @@ def _plot_boxplot(
 
     values_by_state: list[np.ndarray] = []
     labels: list[str] = []
+    top_labels: list[str] = []
     present_states: list[str] = []
     colors: list[str] = []
     annotation_rows: list[dict[str, Any]] = []
@@ -260,7 +261,8 @@ def _plot_boxplot(
         sample_size = _unique_roi_count(state_frame)
         present_states.append(state)
         position_lookup[state] = len(present_states)
-        labels.append(f"{pretty_state_label(state)}\n(n={sample_size})")
+        labels.append(pretty_state_label(state))
+        top_labels.append(f"n={sample_size}")
         values_by_state.append(values)
         colors.append(state_display_color(state))
 
@@ -290,6 +292,7 @@ def _plot_boxplot(
         present_states,
         colors,
         Path(output_dir),
+        top_labels=top_labels,
         stem=stem,
         title=title,
         ylabel=ylabel,
@@ -308,14 +311,30 @@ def _state_comparison_rows_for_plot(
 ) -> list[Mapping[str, Any]] | None:
     if not comparison_rows:
         return None
-    if compartment is None:
-        return [row for row in comparison_rows if str(row.get("comparison") or "") == "state_pair"]
-    return [
-        row
-        for row in comparison_rows
-        if str(row.get("comparison") or "") == "state_pair"
-        and str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-    ]
+    filtered: list[Mapping[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    target_compartment = str(compartment).strip().lower() if compartment is not None else None
+    for row in comparison_rows:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("comparison") or "") != "state_pair":
+            continue
+        row_compartment = str(row.get("compartment") or "all").strip().lower()
+        if target_compartment is None:
+            if row_compartment != "all":
+                continue
+        elif row_compartment != target_compartment:
+            continue
+        state_a = str(row.get("state_a") or row.get("state_a_display") or "").strip().lower()
+        state_b = str(row.get("state_b") or row.get("state_b_display") or "").strip().lower()
+        if not state_a or not state_b:
+            continue
+        pair_key = tuple(sorted((state_a, state_b)) + [row_compartment])
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+        filtered.append(row)
+    return filtered or None
 
 
 def _plot_state_metric(
@@ -390,7 +409,7 @@ def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
         value_col="mean",
         title_prefix="Activity",
         ylabel="Activity",
-        stem_prefix="Activity_by_state_boxplot",
+        stem_prefix="state_summary_boxplots_mean",
         comparison_rows=comparison_rows,
         cohort_label=cohort_label,
     )
@@ -407,7 +426,7 @@ def plot_state_event_frequency(*args: Any, **kwargs: Any) -> list[Path]:
         value_col="event_frequency_per_min",
         title_prefix="Event frequency",
         ylabel="Event frequency per min",
-        stem_prefix="Event_frequency_by_state_boxplot",
+        stem_prefix="state_summary_boxplots_event_frequency",
         comparison_rows=comparison_rows,
         cohort_label=cohort_label,
     )
@@ -434,8 +453,8 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
         label_col=label_col,
         value_col=value_col,
         output_dir=Path(output_root) / "figures" / "correlation" / cohort_label,
-        stem="Bouton-soma_correlation_by_state",
-        title="Bouton-soma correlation by state",
+        stem="state_summary_boxplots_correlation",
+        title="state_summary_boxplots_correlation",
         ylabel="Correlation",
         accent_color="#334155",
         comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
@@ -521,4 +540,4 @@ def plot_lag_heatmap(*args: Any, **kwargs: Any) -> list[Path]:
     cbar.ax.tick_params(labelsize=12)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
-    return _save_figure(fig, Path(output_root) / "figures" / "lag" / cohort_label, "Bouton-soma_lag_by_state_heatmap")
+    return _save_figure(fig, Path(output_root) / "figures" / "lag" / cohort_label, "state_summary_lag_heatmap")

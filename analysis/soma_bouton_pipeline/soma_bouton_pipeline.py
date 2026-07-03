@@ -19,6 +19,7 @@ from analysis.compartment_common import (
     ensure_dir,
     filter_comparison_presets,
     normalize_comparison_presets,
+    read_csv_rows,
     resolve_repo_root,
     safe_filename_component,
     write_csv_rows,
@@ -47,6 +48,11 @@ from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
     plot_mixed_model_predicted_means_figure,
+)
+from analysis.shared.plots.poster_ready import (
+    write_blank_movie_state_boxplot_figure,
+    write_state_mixed_model_poster_figure,
+    write_visual_response_poster_figure,
 )
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
@@ -184,11 +190,14 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["comparison_preset_name"] = preset_name
         preset_result_root = base_result_root / safe_name
         preset_config["result_root"] = str(preset_result_root)
-        preset_run_cache_path = base_cache_root / f"{safe_name}_analysis_run_cache.npz"
+        preset_cache_root = base_cache_root / safe_name
+        preset_run_cache_path = preset_cache_root / "analysis_run_cache.npz"
+        preset_results_cache_path = preset_cache_root / "analysis_results_cache.npz"
+        preset_tables_cache_path = preset_cache_root / "analysis_tables_cache.npz"
         preset_config["cache_path"] = str(shared_source_cache_path)
         preset_config["analysis_run_cache_path"] = str(preset_run_cache_path)
-        preset_config["analysis_tables_cache_path"] = None
-        preset_config["analysis_results_cache_path"] = None
+        preset_config["analysis_tables_cache_path"] = str(preset_tables_cache_path)
+        preset_config["analysis_results_cache_path"] = str(preset_results_cache_path)
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
     return manifests
@@ -307,6 +316,29 @@ def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_re
 
 
 
+
+
+def _reload_plot_rows_from_csv(result_root: Path, *, plots_only: bool, activity_rows: List[Dict[str, Any]], correlation_rows: List[Dict[str, Any]], lag_rows: List[Dict[str, Any]], visual_response_rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not plots_only:
+        return activity_rows, correlation_rows, lag_rows, visual_response_rows
+    csv_root = result_root / "csv"
+    if not activity_rows:
+        activity_csv = csv_root / "state_activity_by_experiment.csv"
+        if activity_csv.exists():
+            activity_rows = read_csv_rows(activity_csv)
+    if not correlation_rows:
+        correlation_csv = csv_root / "bouton_soma_correlation_by_roi.csv"
+        if correlation_csv.exists():
+            correlation_rows = read_csv_rows(correlation_csv)
+    if not lag_rows:
+        lag_csv = csv_root / "bouton_soma_lag_scan_by_roi.csv"
+        if lag_csv.exists():
+            lag_rows = read_csv_rows(lag_csv)
+    if not visual_response_rows:
+        visual_csv = csv_root / "visual_response_by_roi.csv"
+        if visual_csv.exists():
+            visual_response_rows = read_csv_rows(visual_csv)
+    return activity_rows, correlation_rows, lag_rows, visual_response_rows
 
 
 def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str) -> Dict[str, Any]:
@@ -440,7 +472,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 }
             )
             _stage("cache load", f"reused analysis-results cache at {analysis_results_cache_file}")
-            return manifest
+            if not bool(config.get("plots_only")):
+                return manifest
 
     for mode in state_modes:
         selected_states = list(selected_states_by_mode.get(mode, []))
@@ -491,6 +524,15 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "mode complete",
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
+
+    activity_rows, correlation_rows, lag_rows, visual_response_rows = _reload_plot_rows_from_csv(
+        result_root,
+        plots_only=bool(config.get("plots_only")),
+        activity_rows=activity_rows,
+        correlation_rows=correlation_rows,
+        lag_rows=lag_rows,
+        visual_response_rows=visual_response_rows,
+    )
 
     visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
     visual_response_family = run_visual_response_family(
@@ -572,10 +614,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             metric_col="event_frequency_per_min",
         )
         cohort_correlation_summary[cohort_name] = correlation_summary_rows(cohort_correlation_rows.get(cohort_name, []))
+        cohort_state_order = [state for state in analysis_state_order if state != "quiet_awake_movies"] if cohort_name in {"responsive", "nonresponsive"} else list(analysis_state_order)
         mixed_model_results[cohort_name] = run_mixed_model_family(
             cohort_rows,
-            state_comparison_states=analysis_state_order,
-            basal_apical_states=analysis_state_order,
+            state_comparison_states=cohort_state_order,
+            basal_apical_states=cohort_state_order,
             shuffle_n=shuffle_n,
             mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
         )
@@ -693,7 +736,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 plot_visual_response_boxplot_figure(
                     {"rows": cohort_rows},
                     cohort_dir,
-                    output_name="visual_response_blank_vs_movies.svg",
+                    output_name="visual_response_movie_vs_blank.svg",
                     title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
                     cohort_label=cohort,
                     kind=compartment,
@@ -749,6 +792,84 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         title=f"Mixed-model contrasts - {cohort_name} - {compartment_key} - {scope_label}",
                         model_key="mixed_model",
                     )
+
+    poster_ready_figures: List[str] = []
+    poster_output_dir = ensure_dir(REPO_ROOT / "results" / "poster_ready")
+
+    def _state_values_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[float]]:
+        grouped: Dict[str, List[float]] = {}
+        for row in rows:
+            state = str(row.get("state") or "").strip()
+            if not state:
+                continue
+            value = row.get("mean")
+            try:
+                value_f = float(value)
+            except Exception:
+                continue
+            if not np.isfinite(value_f):
+                continue
+            grouped.setdefault(state, []).append(value_f)
+        return grouped
+
+    poster_state_order = [str(state) for state in (config.get("state_comparison_states") or []) if str(state)]
+    blank_state_order = [state for state in poster_state_order if state.endswith("_blank")] or ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+    movie_state_order = [state for state in poster_state_order if state.endswith("_movies")] or ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+    mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
+
+    for compartment in ("soma", "bouton"):
+        compartment_root = ensure_dir(poster_output_dir / compartment)
+        visual_dir = ensure_dir(compartment_root / "visual_response")
+        mixed_dir = ensure_dir(compartment_root / "mixed_model")
+        blank_dir = ensure_dir(compartment_root / "blank_movie_states")
+        compartment_visual_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
+        if not compartment_visual_rows:
+            continue
+        visual_path = write_visual_response_poster_figure(
+            output_dir=visual_dir,
+            entity_label=compartment,
+            visual_response_rows=compartment_visual_rows,
+            output_stem=f"{compartment}_visual_response_poster_ready",
+        )
+        if visual_path:
+            poster_ready_figures.append(str(visual_path))
+        responsive_rows = [row for row in cohort_activity_rows.get("responsive", []) if str(row.get("compartment") or "") == compartment]
+        nonresponsive_rows = [row for row in cohort_activity_rows.get("nonresponsive", []) if str(row.get("compartment") or "") == compartment]
+        responsive_values = _state_values_from_rows(responsive_rows)
+        nonresponsive_values = _state_values_from_rows(nonresponsive_rows)
+        if responsive_values or nonresponsive_values:
+            mixed_path = write_state_mixed_model_poster_figure(
+                output_dir=mixed_dir,
+                entity_label=compartment,
+                responsive_state_values={state: values for state, values in responsive_values.items() if state in blank_state_order},
+                nonresponsive_state_values={state: values for state, values in nonresponsive_values.items() if state in blank_state_order},
+                mixed_model_rows={
+                    "responsive": mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}),
+                    "nonresponsive": mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}),
+                },
+                state_order=blank_state_order,
+                output_stem=f"{compartment}_state_mixed_model_poster_ready",
+                title="Quiet blank vs sleep states",
+                preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
+                mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+            )
+            if mixed_path:
+                poster_ready_figures.append(str(mixed_path))
+        blank_path = write_blank_movie_state_boxplot_figure(
+            output_dir=blank_dir,
+            entity_label=compartment,
+            responsive_blank_values={state: values for state, values in responsive_values.items() if state in blank_state_order},
+            responsive_movie_values={state: values for state, values in responsive_values.items() if state in movie_state_order},
+            nonresponsive_blank_values={state: values for state, values in nonresponsive_values.items() if state in blank_state_order},
+            nonresponsive_movie_values={state: values for state, values in nonresponsive_values.items() if state in movie_state_order},
+            blank_state_order=blank_state_order,
+            movie_state_order=movie_state_order,
+            output_stem=f"{compartment}_blank_movie_states_poster_ready",
+            title="Blank vs movie states",
+        )
+        if blank_path:
+            poster_ready_figures.append(str(blank_path))
+
     visual_response_counts = {
         "all": int(len(visual_response_rows)),
         "responsive": int(sum(bool(row.get("responsive", False)) for row in visual_response_rows)),
@@ -814,6 +935,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             },
         },
         "mixed_model": mixed_model_results,
+        "poster_ready_figures": list(poster_ready_figures),
         "cache_summary": {
             "analysis_run_cache_path": str(analysis_run_cache_file),
             "analysis_results_cache_path": str(analysis_results_cache_file),

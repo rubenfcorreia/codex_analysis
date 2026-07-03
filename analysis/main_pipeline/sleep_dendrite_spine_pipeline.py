@@ -3477,6 +3477,15 @@ def normalize_mixed_model_contrast_p_source(value: Any) -> str:
     text = str(value).strip().lower() if value is not None else "classical"
     return text if text in {"classical", "shuffle"} else "classical"
 
+def mixed_model_visual_response_state_order(
+    state_order: Sequence[str],
+    visual_response_cohort: Optional[str] = None,
+) -> List[str]:
+    states = [canonical_state_label(state) for state in state_order if canonical_state_label(state)]
+    if str(visual_response_cohort or "").strip().lower() in {"responsive", "nonresponsive"}:
+        states = [state for state in states if state != "quiet_awake_movies"]
+    return list(dict.fromkeys(states))
+
 def mixed_model_contrast_p_label(value: Any) -> str:
     return "shuffle p" if normalize_mixed_model_contrast_p_source(value) == "shuffle" else "classical p"
 
@@ -5044,13 +5053,21 @@ def plot_state_summary_figure(
             "noncoincident_event_frequency_per_min": "Noncoincident spine event frequency (per min)",
         }.items():
             summary = results.get("state_summaries", {}).get(metric_name, {})
+            metric_comparison_rows = comparison_rows
+            if metric_comparison_rows is None:
+                metric_comparison_rows = _state_summary_significant_pair_rows(
+                    results.get("state_comparisons", []),
+                    metric_name=metric_name,
+                    state_order=state_order,
+                    comparison_name="state_comparison",
+                )
             panel_fig = _render_state_summary_single_panel_figure(
                 metric_name,
                 metric_title,
                 summary,
                 state_order,
                 y_limits.get(metric_name) if y_limits else None,
-                comparison_rows=comparison_rows,
+                comparison_rows=metric_comparison_rows,
             )
             if panel_fig is None:
                 continue
@@ -5701,6 +5718,73 @@ def state_summary_metric_output_dir(
     return figure_nested_dir(root, state_summary_metric_family(metric_name), state_group, cohort_label)
 
 
+def _state_summary_significant_pair_rows(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    metric_name: str,
+    state_order: Sequence[str],
+    comparison_name: str,
+) -> List[Dict[str, Any]]:
+    state_set = {canonical_state_label(state) for state in state_order}
+    filtered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if str(row.get('comparison')) != comparison_name:
+            continue
+        if str(row.get('metric')) != metric_name:
+            continue
+        if not is_significant_row(row):
+            continue
+        state_a = canonical_state_label(row.get('state_a'))
+        state_b = canonical_state_label(row.get('state_b'))
+        if state_a not in state_set or state_b not in state_set:
+            continue
+        filtered.append(dict(row))
+    return filtered
+
+
+def _state_summary_significant_single_rows(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    metric_name: str,
+    state_order: Sequence[str],
+    comparison_name: str,
+) -> List[Dict[str, Any]]:
+    state_set = {canonical_state_label(state) for state in state_order}
+    filtered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if str(row.get('comparison')) != comparison_name:
+            continue
+        if str(row.get('metric')) != metric_name:
+            continue
+        if not is_significant_row(row):
+            continue
+        state = canonical_state_label(row.get('state'))
+        if state not in state_set:
+            continue
+        filtered.append(dict(row))
+    return filtered
+
+
+def _state_summary_significant_basal_apical_rows(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    state_order: Sequence[str],
+    comparison_name: str,
+) -> List[Dict[str, Any]]:
+    state_set = {canonical_state_label(state) for state in state_order}
+    filtered: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if str(row.get('comparison')) != comparison_name:
+            continue
+        if not is_significant_row(row):
+            continue
+        state = canonical_state_label(row.get('state'))
+        if state not in state_set:
+            continue
+        filtered.append(dict(row))
+    return filtered
+
+
 def plot_event_detection_example_figure(
     *,
     output_path: Path,
@@ -5854,28 +5938,50 @@ def _draw_boxplot_significance_annotations(
         x_range = x1 - x0
         if not np.isfinite(x_range) or x_range <= 0:
             x_range = 1.0
-        bracket_base = x1 + 0.04 * x_range
-        bracket_step = max(0.08 * x_range, 0.08)
-        text_offset = max(0.015 * x_range, 0.03)
-        bracket_height = max(0.02 * x_range, 0.025)
+        bracket_base = x1 + 0.018 * x_range
+        bracket_step = max(0.017 * x_range, 0.018)
+        text_offset = max(0.0035 * x_range, 0.008)
+        bracket_height = max(0.007 * x_range, 0.011)
+        max_levels = 3
         levels: List[List[Tuple[float, float]]] = []
         placed: List[Tuple[float, float, int, str, bool]] = []
-        for item in sorted(items, key=lambda entry: (entry["x2"] - entry["x1"], entry["p_value"], entry["x1"], entry["x2"])):
+        # Place longer spans first so they settle into the topmost tiers.
+        for item in sorted(
+            items,
+            key=lambda entry: (
+                -(entry["x2"] - entry["x1"]),
+                entry["p_value"],
+                entry["x1"],
+                entry["x2"],
+            ),
+        ):
             level = 0
             while level < len(levels):
-                overlap = any(not (item["x2"] < existing[0] - 0.05 or item["x1"] > existing[1] + 0.05) for existing in levels[level])
+                overlap = any(
+                    not (item["x2"] < existing[0] - 0.05 or item["x1"] > existing[1] + 0.05)
+                    for existing in levels[level]
+                )
                 if not overlap:
                     break
                 level += 1
             if level == len(levels):
                 levels.append([])
             levels[level].append((item["x1"], item["x2"]))
-            placed.append((item["x1"], item["x2"], level, item["label"], bool(item.get("point_only", False))))
-        top_needed = bracket_base + len(levels) * bracket_step + bracket_height + text_offset + 0.02 * x_range
+            placed.append(
+                (
+                    item["x1"],
+                    item["x2"],
+                    min(level, max_levels - 1),
+                    item["label"],
+                    bool(item.get("point_only", False)),
+                )
+            )
+        render_max_level = min(len(levels), max_levels) - 1
+        top_needed = bracket_base + (render_max_level + 1) * bracket_step + bracket_height + text_offset + 0.015 * x_range
         if top_needed > x1:
             ax.set_xlim(x0, top_needed)
         for y1_pos, y2_pos, level, label, point_only in placed:
-            x = bracket_base + level * bracket_step
+            x = bracket_base + (render_max_level - level) * bracket_step
             if point_only or np.isclose(y1_pos, y2_pos):
                 ax.text(
                     x + bracket_height + text_offset,
@@ -5909,10 +6015,11 @@ def _draw_boxplot_significance_annotations(
     y_range = y1 - y0
     if not np.isfinite(y_range) or y_range <= 0:
         y_range = 1.0
-    bracket_base = y1 + 0.04 * y_range
-    bracket_step = max(0.08 * y_range, 0.08)
-    text_offset = max(0.015 * y_range, 0.03)
-    bracket_height = max(0.02 * y_range, 0.025)
+    bracket_base = y1 + 0.018 * y_range
+    bracket_step = max(0.017 * y_range, 0.018)
+    text_offset = max(0.0035 * y_range, 0.008)
+    bracket_height = max(0.007 * y_range, 0.011)
+    max_levels = 3
 
     levels: List[List[Tuple[float, float]]] = []
     placed: List[Tuple[float, float, int, str, bool]] = []
@@ -5926,14 +6033,15 @@ def _draw_boxplot_significance_annotations(
         if level == len(levels):
             levels.append([])
         levels[level].append((item["x1"], item["x2"]))
-        placed.append((item["x1"], item["x2"], level, item["label"], bool(item.get("point_only", False))))
+        placed.append((item["x1"], item["x2"], min(level, max_levels - 1), item["label"], bool(item.get("point_only", False))))
 
-    top_needed = bracket_base + len(levels) * bracket_step + bracket_height + text_offset + 0.02 * y_range
+    top_needed = bracket_base + min(len(levels), max_levels) * bracket_step + bracket_height + text_offset + 0.015 * y_range
     if top_needed > y1:
         ax.set_ylim(y0, top_needed)
 
+    render_max_level = min(len(levels), max_levels) - 1
     for x1, x2, level, label, point_only in placed:
-        y = bracket_base + level * bracket_step
+        y = bracket_base + (render_max_level - level) * bracket_step
         if point_only or np.isclose(x1, x2):
             ax.text(
                 x1,
@@ -6775,6 +6883,11 @@ def generate_analysis_figures(
             title="All-state summary distributions - Basal vs apical",
             state_labels=all_state_labels,
             y_limits=state_summary_y_limits(cache, all_state_labels),
+            comparison_rows=_state_summary_significant_basal_apical_rows(
+                results.get("basal_apical_comparisons", []),
+                state_order=all_state_labels,
+                comparison_name="basal_vs_apical",
+            ),
             cohort_label="all",
             state_group="all_states",
         )
@@ -6824,7 +6937,7 @@ def generate_analysis_figures(
     mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = output_dir.parent if comparison_preset_name != "default" else output_dir
+        base_root = DEFAULT_RESULTS_DIR
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
     for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
@@ -7261,7 +7374,7 @@ def generate_review_figures(
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = review_dir.parent if comparison_preset_name != "default" else review_dir
+        base_root = DEFAULT_RESULTS_DIR
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     with step_scope("review family: mixed model figures"):
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
@@ -8019,6 +8132,11 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         title="Selected-state summary distributions - Basal vs apical",
         state_labels=basal_apical_state_labels,
         y_limits=comparison_y_limits,
+        comparison_rows=_state_summary_significant_basal_apical_rows(
+            results.get("basal_apical_comparisons", []),
+            state_order=basal_apical_state_labels,
+            comparison_name="basal_vs_apical",
+        ),
     )
     append_entry(
         "state_summary_comparison",
@@ -8177,7 +8295,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = gallery_dir.parent if comparison_preset_name != "default" else gallery_dir
+        base_root = DEFAULT_RESULTS_DIR
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_gallery_dir = figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
@@ -12770,6 +12888,9 @@ def run_mixed_model_analysis(
         filtered_rows = [row for row in table_rows if str(row.get("state")) in state_filter]
         if visual_response_cohort not in (None, "all"):
             filtered_rows = [row for row in filtered_rows if str(row.get("visual_response_cohort") or "nonresponsive") == str(visual_response_cohort)]
+        branch_state_order = mixed_model_visual_response_state_order(state_order, visual_response_cohort)
+        branch_state_pair_states = mixed_model_visual_response_state_order(state_pair_states, visual_response_cohort)
+        branch_basal_apical_states = mixed_model_visual_response_state_order(basal_apical_state_subset, visual_response_cohort)
         if scope == "selected_state":
             present_states = [state for state in state_order if any(str(row.get("state")) == state for row in filtered_rows)]
             if len(present_states) < 2:
@@ -12781,9 +12902,9 @@ def run_mixed_model_analysis(
                 return branch
             branch_state_order = present_states
         else:
-            branch_state_order = list(ALL_REQUESTED_STATES)
-        state_pairs = [{"kind": "state_pair", "state_a": state_a, "state_b": state_b} for state_a, state_b in combinations(state_pair_states, 2)]
-        basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in basal_apical_state_subset]
+            branch_state_order = list(dict.fromkeys(state_order))
+        state_pairs = [{"kind": "state_pair", "state_a": state_a, "state_b": state_b} for state_a, state_b in combinations(branch_state_pair_states, 2)]
+        basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in branch_basal_apical_states]
         visual_response_pairs = [{"kind": "visual_response_cohort"}] if any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in filtered_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in filtered_rows) else []
         contrast_specs = state_pairs + basal_apical_pairs + visual_response_pairs
         for response in ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
@@ -13022,6 +13143,8 @@ def run_mixed_model_analysis(
         filtered_rows = [row for row in table_rows if str(row.get("state")) in state_filter]
         if visual_response_cohort not in (None, "all"):
             filtered_rows = [row for row in filtered_rows if str(row.get("visual_response_cohort") or "nonresponsive") == str(visual_response_cohort)]
+        branch_state_pair_states = mixed_model_visual_response_state_order(state_pair_states, visual_response_cohort)
+        branch_basal_apical_states = mixed_model_visual_response_state_order(basal_apical_state_subset, visual_response_cohort)
         if scope == "selected_state":
             present_states = [state for state in state_order if any(str(row.get("state")) == state for row in filtered_rows)]
             if len(present_states) < 2:
@@ -13033,9 +13156,9 @@ def run_mixed_model_analysis(
                 return branch
             branch_state_order = present_states
         else:
-            branch_state_order = list(ALL_REQUESTED_STATES)
-        state_pairs = [{"kind": "state_pair", "state_a": state_a, "state_b": state_b} for state_a, state_b in combinations(state_pair_states, 2)]
-        basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in basal_apical_state_subset]
+            branch_state_order = list(dict.fromkeys(state_order))
+        state_pairs = [{"kind": "state_pair", "state_a": state_a, "state_b": state_b} for state_a, state_b in combinations(branch_state_pair_states, 2)]
+        basal_apical_pairs = [{"kind": "basal_apical", "state": state} for state in branch_basal_apical_states]
         visual_response_pairs = [{"kind": "visual_response_cohort"}] if any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in filtered_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in filtered_rows) else []
         contrast_specs = state_pairs + basal_apical_pairs + visual_response_pairs
         for response in ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
@@ -13224,7 +13347,7 @@ def process_cached_analysis(
     visual_response_summary = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
     visual_response_state_summaries = build_visual_response_dendrite_summary_results(cache, state_comparison_states, visual_response_summary)
     spine_visual_response_summary = classify_visual_responsive_spines(cache, source_cache=source_cache)
-    spine_visual_response_state_summaries = build_visual_response_spine_summary_results(spine_visual_response_summary)
+    spine_visual_response_state_summaries = build_visual_response_spine_state_summary_results(cache, state_comparison_states, spine_visual_response_summary)
     results["dendrite_visual_response"] = visual_response_summary
     results["dendrite_visual_response_state_summaries"] = visual_response_state_summaries
     results["spine_visual_response"] = spine_visual_response_summary
@@ -14529,7 +14652,7 @@ def write_analysis_outputs(
         generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
         shared_general_root = None
         if generate_shared_general_figures:
-            base_root = output_dir.parent if comparison_preset_name != "default" else output_dir
+            base_root = DEFAULT_RESULTS_DIR
             shared_general_root = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME)
         if source_cache is not None and shared_general_root is not None:
             step_message("visual response figure generation starting")
@@ -14727,6 +14850,11 @@ def write_poster_ready_figures(
         DEFAULT_SPINE_COACTIVITY_WIDTH_CM,
         write_spine_coactivity_poster_figure,
     )
+    from analysis.shared.plots.poster_ready import (
+        write_blank_movie_state_boxplot_figure,
+        write_state_mixed_model_poster_figure,
+        write_visual_response_poster_figure,
+    )
 
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
     written: List[str] = []
@@ -14756,6 +14884,106 @@ def write_poster_ready_figures(
             height_cm=float(DEFAULT_SPINE_COACTIVITY_HEIGHT_CM),
         )
         written.append(report_relative_path(coactivity_path, output_dir))
+
+    if allow_all_families or "poster_ready" in selected_families or not selected_families:
+        with step_scope("poster figure generation: shared poster ready"):
+            def _combined_state_values(cohort_payload: Any, metric_key: str) -> Dict[str, List[float]]:
+                combined: Dict[str, List[float]] = {}
+                if not isinstance(cohort_payload, dict):
+                    return combined
+                for compartment_payload in cohort_payload.values():
+                    if not isinstance(compartment_payload, dict):
+                        continue
+                    metric_summary = compartment_payload.get("state_summaries", {}).get(metric_key, {})
+                    if not isinstance(metric_summary, dict):
+                        continue
+                    for state, by_subject in metric_summary.items():
+                        state_values = flatten_state_summary_values(by_subject)
+                        arr = np.asarray(state_values, dtype=float)
+                        arr = arr[np.isfinite(arr)]
+                        if arr.size:
+                            combined.setdefault(str(state), []).extend([float(value) for value in arr])
+                return combined
+
+            def _entity_state_values(entity_key: str, metric_key: str) -> Dict[str, Dict[str, List[float]]]:
+                summary = results.get(f"{entity_key}_visual_response_state_summaries", {})
+                if not isinstance(summary, dict):
+                    return {"responsive": {}, "nonresponsive": {}}
+                return {
+                    "responsive": _combined_state_values(summary.get("responsive", {}), metric_key),
+                    "nonresponsive": _combined_state_values(summary.get("nonresponsive", {}), metric_key),
+                }
+
+            poster_state_order = [str(state) for state in (results.get("analysis_state_selection", {}) or {}).get("state_comparison_states") or [] if str(state)]
+            blank_state_order = [state for state in poster_state_order if state.endswith("_blank")] or ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+            movie_state_order = [state for state in poster_state_order if state.endswith("_movies")] or ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+
+            mixed_model_contrast_p_source = str(results.get("mixed_model_contrast_p_source") or "classical")
+            entity_specs = [
+                ("dendrite", "dendrite", "dendrite_mean", results.get("dendrite_visual_response", {}), results.get("mixed_model_visual_response_responsive_selected_state", {}), results.get("mixed_model_visual_response_nonresponsive_selected_state", {})),
+                ("spine", "spine", "spine_specific_mean", results.get("spine_visual_response", {}), results.get("mixed_model_visual_response_responsive_selected_state", {}), results.get("mixed_model_visual_response_nonresponsive_selected_state", {})),
+            ]
+            for entity_key, entity_label, metric_key, visual_payload, responsive_mixed, nonresponsive_mixed in entity_specs:
+                entity_root = ensure_dir(poster_output_dir / entity_key)
+                visual_dir = ensure_dir(entity_root / "visual_response")
+                mixed_dir = ensure_dir(entity_root / "mixed_model")
+                blank_dir = ensure_dir(entity_root / "blank_movie_states")
+                rows = list(visual_payload.get("rows", [])) if isinstance(visual_payload, dict) else []
+                if rows:
+                    visual_path = write_visual_response_poster_figure(
+                        output_dir=visual_dir,
+                        entity_label=entity_key,
+                        visual_response_rows=rows,
+                        output_stem=f"{entity_key}_visual_response_poster_ready",
+                    )
+                    if visual_path:
+                        written.append(report_relative_path(Path(visual_path), output_dir))
+                state_values = _entity_state_values(entity_key, metric_key)
+                if state_values.get("responsive") or state_values.get("nonresponsive"):
+                    mixed_path = write_state_mixed_model_poster_figure(
+                        output_dir=mixed_dir,
+                        entity_label=entity_key,
+                        responsive_state_values=state_values.get("responsive", {}),
+                        nonresponsive_state_values=state_values.get("nonresponsive", {}),
+                        mixed_model_rows={
+                            "responsive": responsive_mixed,
+                            "nonresponsive": nonresponsive_mixed,
+                        },
+                        state_order=blank_state_order,
+                        output_stem=f"{entity_key}_state_mixed_model_poster_ready",
+                        title="Quiet blank vs sleep states",
+                        preferred_response_keys=(("mean_dendrite_activity", "mean") if entity_key == "dendrite" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
+                        mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                    )
+                    if mixed_path:
+                        written.append(report_relative_path(Path(mixed_path), output_dir))
+                blank_values = {
+                    state: values for state, values in state_values.get("responsive", {}).items() if state in blank_state_order
+                }
+                movie_values = {
+                    state: values for state, values in state_values.get("responsive", {}).items() if state in movie_state_order
+                }
+                non_blank_values = {
+                    state: values for state, values in state_values.get("nonresponsive", {}).items() if state in blank_state_order
+                }
+                non_movie_values = {
+                    state: values for state, values in state_values.get("nonresponsive", {}).items() if state in movie_state_order
+                }
+                if blank_values or movie_values or non_blank_values or non_movie_values:
+                    state_path = write_blank_movie_state_boxplot_figure(
+                        output_dir=blank_dir,
+                        entity_label=entity_key,
+                        responsive_blank_values=blank_values,
+                        responsive_movie_values=movie_values,
+                        nonresponsive_blank_values=non_blank_values,
+                        nonresponsive_movie_values=non_movie_values,
+                        blank_state_order=blank_state_order,
+                        movie_state_order=movie_state_order,
+                        output_stem=f"{entity_key}_blank_movie_states_poster_ready",
+                        title="Blank vs movie states",
+                    )
+                    if state_path:
+                        written.append(report_relative_path(Path(state_path), output_dir))
 
     return written
 
