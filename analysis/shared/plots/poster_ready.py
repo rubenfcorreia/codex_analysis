@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 import matplotlib
@@ -12,7 +13,7 @@ from matplotlib.lines import Line2D
 import numpy as np
 from scipy import stats
 
-from analysis.shared.shared_calcium_response import load_visual_response_cut_data, visual_response_trial_group
+from analysis.shared.shared_calcium_response import build_state_masks_movie, choose_locomotion_threshold, extract_cut_neural_bundle, find_first_key, load_visual_response_cut_data, read_pickle, visual_response_trial_group
 from analysis.compartment_common import pick_state_bundle
 from poster_plotting import (
     POSTER_FONT_SIZE,
@@ -153,7 +154,7 @@ def _poster_mixed_model_term_label(term: str) -> str:
     if term == "Intercept":
         return term
     if ":" in term:
-        return " X ".join(_poster_mixed_model_term_label(part) for part in term.split(":"))
+        return " x ".join(_poster_mixed_model_term_label(part) for part in term.split(":"))
     kind = _poster_mixed_model_term_kind(term)
     value = _poster_mixed_model_term_value_label(term)
     if kind == "state":
@@ -161,6 +162,19 @@ def _poster_mixed_model_term_label(term: str) -> str:
     if kind == "compartment":
         return _state_display_label(value)
     return _state_display_label(term)
+
+
+def _mixed_model_term_state_keys(term: str) -> set[str]:
+    keys: set[str] = set()
+    for part in str(term or "").split(":"):
+        part = str(part or "")
+        if part.startswith("state[") and part.endswith("]"):
+            keys.add(normalize_state_label(part[len("state[") : -1]))
+        elif part.startswith("state:"):
+            keys.add(normalize_state_label(part.split(":", 1)[1]))
+        elif part.startswith("state_"):
+            keys.add(normalize_state_label(part[len("state_") :]))
+    return keys
 
 
 def _forest_row_label(row: Mapping[str, Any]) -> str:
@@ -175,7 +189,7 @@ def _forest_row_label(row: Mapping[str, Any]) -> str:
         left = _state_display_label(state_a)
         right = _state_display_label(state_b)
         if contrast_type == "basal_apical":
-            return f"{left} X {right}".strip()
+            return f"{left} x {right}".strip()
         return f"{left} - {right}".strip()
     if state_value is not None and contrast_type == "basal_apical":
         return f"{_state_display_label(state_value)} X Basal - Apical"
@@ -214,6 +228,58 @@ def _canonical_state_key(state_label: Any) -> str:
     while "__" in canonical:
         canonical = canonical.replace("__", "_")
     return canonical
+
+
+def normalize_state_label(state_label: Any) -> str:
+    return _canonical_state_key(state_label)
+
+
+def _state_compare_key(state_label: Any) -> str:
+    key = _canonical_state_key(state_label)
+    for prefix in ("basal_", "apical_"):
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+    return key
+
+
+def _state_matches_any(state_label: Any, candidates: Sequence[str]) -> bool:
+    state_key = _canonical_state_key(state_label)
+    state_compare = _state_compare_key(state_label)
+    candidate_keys = {_canonical_state_key(candidate) for candidate in candidates if str(candidate).strip()}
+    candidate_compares = {_state_compare_key(candidate) for candidate in candidates if str(candidate).strip()}
+    return bool(state_key in candidate_keys or state_compare in candidate_compares)
+
+
+def selected_states_present(state_values: Mapping[str, Sequence[float]], state_order: Sequence[str]) -> list[str]:
+    return [state for state in state_order if _finite_array(state_values.get(state, [])).size]
+
+
+def filter_mixed_model_terms_to_states(rows: Sequence[Mapping[str, Any]], allowed_states: Sequence[str]) -> list[dict[str, Any]]:
+    allowed = {normalize_state_label(state) for state in allowed_states if str(state).strip()}
+    allowed_compares = {_state_compare_key(state) for state in allowed_states if str(state).strip()}
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        term = str(row.get("term") or row.get("contrast_name") or "")
+        kind = _poster_mixed_model_term_kind(term) if term else "covariate"
+        if kind not in {"intercept", "state", "compartment", "interaction"}:
+            continue
+        state_keys = set(_mixed_model_term_state_keys(term))
+        compare_keys: set[str] = set()
+        for key in ("state", "state_a", "state_b", "state_display", "state_label", "state_a_display", "state_b_display"):
+            value = row.get(key)
+            if value is not None:
+                state_keys.add(normalize_state_label(value))
+                compare_keys.add(_state_compare_key(value))
+        if kind in {"intercept", "compartment"}:
+            filtered.append(dict(row))
+            continue
+        if not state_keys:
+            continue
+        if state_keys.intersection(allowed) or compare_keys.intersection(allowed_compares):
+            filtered.append(dict(row))
+    return filtered
 
 
 def _state_value_map_from_rows(rows: Sequence[Mapping[str, Any]], *, value_key: str | Sequence[str] = "mean") -> Dict[str, list[float]]:
@@ -386,7 +452,10 @@ def _load_visual_response_plot_data(response_row: Mapping[str, Any], *, locomoti
             duration_f = float("nan")
         if np.isfinite(duration_f) and duration_f > 0:
             durations.append(duration_f)
-    event_duration = float(np.nanmax(np.asarray(durations, dtype=float))) if durations else float("nan")
+    if durations:
+        event_duration = float(np.nanmax(np.asarray(durations, dtype=float)))
+    else:
+        event_duration = 30.0
     return {
         "cut_time": cut_time,
         "event_onset": 0.0,
@@ -665,19 +734,270 @@ def _combined_limits(*series: Sequence[float]) -> tuple[float, float]:
     return lo - pad, hi + pad
 
 
+def _resolve_visual_response_source_exp_id(source_cache: Optional[Mapping[str, Any]], exp_id: str, observation: Optional[Mapping[str, Any]] = None) -> str:
+    if not isinstance(source_cache, Mapping):
+        return exp_id
+    experiments = source_cache.get("experiments", {})
+    if exp_id in experiments:
+        return exp_id
+    if isinstance(observation, Mapping):
+        for candidate in (observation.get("representative_exp_id"), *(observation.get("source_exp_ids", []) or [])):
+            candidate = str(candidate or "")
+            if candidate and candidate in experiments:
+                return candidate
+    return exp_id
+
+
+def _load_visual_response_cut_data_from_source_cache(
+    source_cache: Optional[Mapping[str, Any]],
+    exp_id: str,
+    cut_cache: dict[str, Optional[dict[str, Any]]],
+    observation: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    if exp_id in cut_cache:
+        return cut_cache[exp_id]
+    if not isinstance(source_cache, Mapping):
+        cut_cache[exp_id] = None
+        return None
+    resolved_exp_id = _resolve_visual_response_source_exp_id(source_cache, exp_id, observation)
+    exp_meta = source_cache.get("experiments", {}).get(resolved_exp_id, {})
+    source_paths = exp_meta.get("source_paths", {}) if isinstance(exp_meta, Mapping) else {}
+    exp_root = Path(str(source_paths.get("exp_root") or ""))
+    cut_dir = Path(str(source_paths.get("cut") or (exp_root / "cut" if exp_root else "")))
+    if not cut_dir.exists():
+        cut_cache[exp_id] = None
+        return None
+    config = source_cache.get("config", {}) if isinstance(source_cache.get("config", {}), Mapping) else {}
+    channel_value = config.get("channel") if isinstance(config, Mapping) else None
+    channel = int(channel_value) if channel_value is not None else 1
+    selected_path = None
+    for candidate_path in (
+        exp_root / "cut_intertrials" / f"s2p_ch{channel}_dF_cut.pickle",
+        exp_root / "cut_with_intertrials" / f"s2p_ch{channel}_dF_cut.pickle",
+    ):
+        if candidate_path.exists():
+            selected_path = candidate_path
+            break
+    if selected_path is None:
+        cut_cache[exp_id] = None
+        return None
+    wheel_path = cut_dir / "wheel.pickle"
+    if not wheel_path.exists():
+        cut_cache[exp_id] = None
+        return None
+    try:
+        cut_time, cut_neural, _ = extract_cut_neural_bundle(selected_path)
+    except Exception:
+        cut_cache[exp_id] = None
+        return None
+    try:
+        wheel_bundle = read_pickle(wheel_path)
+    except Exception:
+        cut_cache[exp_id] = None
+        return None
+    wheel_time = find_first_key(wheel_bundle, ["t", "time", "timestamps"]) if isinstance(wheel_bundle, Mapping) else None
+    wheel_speed = find_first_key(wheel_bundle, ["speed", "wheel", "motion", "velocity"]) if isinstance(wheel_bundle, Mapping) else None
+    wheel_interp = None
+    if wheel_time is not None and wheel_speed is not None:
+        wheel_time_arr = np.asarray(wheel_time, dtype=float).ravel()
+        wheel_speed_arr = np.asarray(wheel_speed, dtype=float).ravel()
+        common_len = min(wheel_time_arr.size, wheel_speed_arr.size)
+        if common_len >= 2:
+            wheel_time_arr = wheel_time_arr[:common_len]
+            wheel_speed_arr = wheel_speed_arr[:common_len]
+            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr), dtype=float)
+    trial_meta = [dict(meta) for meta in exp_meta.get("trial_meta", []) if isinstance(meta, Mapping)]
+    payload = {
+        "cut_time": np.asarray(cut_time, dtype=float),
+        "cut_neural": np.asarray(cut_neural, dtype=float),
+        "trial_meta": trial_meta,
+        "source_label": "cut_intertrials" if (exp_root / "cut_intertrials" / f"s2p_ch{channel}_dF_cut.pickle").exists() else "cut_with_intertrials",
+        "source_path": str(selected_path),
+    }
+    cut_cache[exp_id] = payload
+    return payload
+
+
+def _visual_response_entity_observation(
+    cache: Mapping[str, Any],
+    kind: str,
+    response_row: Mapping[str, Any],
+) -> tuple[Optional[str], Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    animal_id = str(response_row.get("animal_id") or "")
+    if not animal_id:
+        return None, None, None, None
+    animals = cache.get("animals", {}) if isinstance(cache, Mapping) else {}
+    animal_entry = animals.get(animal_id, {}) if isinstance(animals, Mapping) else {}
+    if kind == "dendrite":
+        entity_id = str(response_row.get("global_dendrite_id") or response_row.get("dendrite_id") or "")
+        dendrite_record = animal_entry.get("dendrites", {}).get(entity_id) if isinstance(animal_entry, Mapping) else None
+        if not isinstance(dendrite_record, Mapping):
+            return None, None, None, None
+        observations = dendrite_record.get("observations", {}) if isinstance(dendrite_record, Mapping) else {}
+        if not isinstance(observations, Mapping) or not observations:
+            return None, None, dendrite_record, None
+        exp_id, observation = next(iter(sorted(observations.items())))
+        return str(exp_id), observation if isinstance(observation, Mapping) else None, dendrite_record, None
+    if kind == "spine":
+        entity_id = str(response_row.get("global_spine_id") or response_row.get("spine_id") or "")
+        dendrites = animal_entry.get("dendrites", {}) if isinstance(animal_entry, Mapping) else {}
+        if not isinstance(dendrites, Mapping):
+            return None, None, None, None
+        for dendrite_record in dendrites.values():
+            if not isinstance(dendrite_record, Mapping):
+                continue
+            spine_record = dendrite_record.get("spines", {}).get(entity_id) if isinstance(dendrite_record.get("spines", {}), Mapping) else None
+            if not isinstance(spine_record, Mapping):
+                continue
+            observations = spine_record.get("observations", {}) if isinstance(spine_record, Mapping) else {}
+            if not isinstance(observations, Mapping) or not observations:
+                return None, None, dendrite_record, None
+            exp_id, observation = next(iter(sorted(observations.items())))
+            parent_observation = dendrite_record.get("observations", {}).get(exp_id) if isinstance(dendrite_record.get("observations", {}), Mapping) else None
+            return str(exp_id), observation if isinstance(observation, Mapping) else None, dendrite_record, parent_observation if isinstance(parent_observation, Mapping) else None
+        return None, None, None, None
+    entity_key = f"{kind}s"
+    entity_id = str(
+        response_row.get(f"global_{kind}_id")
+        or response_row.get(f"{kind}_id")
+        or response_row.get("roi_id")
+        or response_row.get("roi_index")
+        or ""
+    )
+    entity_record = animal_entry.get(entity_key, {}).get(entity_id) if isinstance(animal_entry, Mapping) else None
+    if not isinstance(entity_record, Mapping):
+        return None, None, None, None
+    observations = entity_record.get("observations", {}) if isinstance(entity_record, Mapping) else {}
+    if not isinstance(observations, Mapping) or not observations:
+        return None, None, entity_record, None
+    exp_id, observation = next(iter(sorted(observations.items())))
+    return str(exp_id), observation if isinstance(observation, Mapping) else None, entity_record, None
+
+
+def _visual_response_entity_plot_data(
+    source_cache: Optional[Mapping[str, Any]],
+    kind: str,
+    exp_id: str,
+    cut_cache: dict[str, Optional[dict[str, Any]]],
+    observation: Mapping[str, Any],
+    parent_dendrite_observation: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    exp_id = str(exp_id or "")
+    if not exp_id:
+        return None
+    cut_data = _load_visual_response_cut_data_from_source_cache(source_cache, exp_id, cut_cache, observation) if source_cache else None
+    if not cut_data:
+        return None
+    roi_index_value = observation.get("local_ids", {}).get("conversion_index")
+    try:
+        roi_index = int(roi_index_value)
+    except Exception:
+        roi_index = -1
+    if roi_index < 0:
+        return None
+    cut_neural = np.asarray(cut_data.get("cut_neural"), dtype=float)
+    cut_time = np.asarray(cut_data.get("cut_time"), dtype=float)
+    trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
+    if roi_index >= cut_neural.shape[0] or cut_time.size == 0:
+        return None
+    if kind == "spine":
+        if parent_dendrite_observation is None:
+            return None
+        dendrite_index_value = parent_dendrite_observation.get("local_ids", {}).get("conversion_index")
+        try:
+            dendrite_index = int(dendrite_index_value)
+        except Exception:
+            dendrite_index = -1
+        alpha = parent_dendrite_observation.get("alpha")
+        try:
+            alpha_f = float(alpha) if alpha is not None else None
+        except Exception:
+            alpha_f = None
+        if dendrite_index < 0 or alpha_f is None or dendrite_index >= cut_neural.shape[0]:
+            return None
+        trial_matrix = np.asarray(cut_neural[roi_index] - alpha_f * cut_neural[dendrite_index], dtype=float)
+    else:
+        trial_matrix = np.asarray(cut_neural[roi_index], dtype=float)
+    visual_traces: list[np.ndarray] = []
+    blank_traces: list[np.ndarray] = []
+    visual_values: list[float] = []
+    blank_values: list[float] = []
+    for meta in trial_meta:
+        if not isinstance(meta, Mapping):
+            continue
+        trial_label = str(meta.get("state_label") or "")
+        group = visual_response_trial_group(trial_label)
+        if group is None:
+            continue
+        trial_index = meta.get("trial_index")
+        try:
+            trial_index = int(trial_index)
+        except Exception:
+            continue
+        if trial_index < 0 or trial_index >= trial_matrix.shape[0]:
+            continue
+        trial_trace = np.asarray(trial_matrix[trial_index], dtype=float)
+        if not np.isfinite(trial_trace).any():
+            continue
+        duration = meta.get("duration")
+        try:
+            duration_f = float(duration) if duration is not None else None
+        except Exception:
+            duration_f = None
+        stim_mask = np.isfinite(trial_trace) & np.isfinite(cut_time) & (cut_time >= 0)
+        if duration_f is not None and np.isfinite(duration_f):
+            stim_mask &= cut_time < duration_f
+        if not np.any(stim_mask):
+            continue
+        stimulus = float(np.nanmean(trial_trace[stim_mask]))
+        if group == "visual":
+            visual_traces.append(trial_trace)
+            visual_values.append(stimulus)
+        else:
+            blank_traces.append(trial_trace)
+            blank_values.append(stimulus)
+    if not visual_values or not blank_values:
+        return None
+    def _mean_trace(traces: Sequence[np.ndarray]) -> np.ndarray:
+        if not traces:
+            return np.asarray([], dtype=float)
+        stacked = np.asarray([np.asarray(trace, dtype=float) for trace in traces], dtype=float)
+        return np.asarray(np.nanmean(stacked, axis=0), dtype=float)
+    return {
+        "cut_time": cut_time,
+        "visual_traces": [np.asarray(trace, dtype=float) for trace in visual_traces],
+        "blank_traces": [np.asarray(trace, dtype=float) for trace in blank_traces],
+        "visual_mean_trace": _mean_trace(visual_traces),
+        "blank_mean_trace": _mean_trace(blank_traces),
+        "visual_values": np.asarray(visual_values, dtype=float),
+        "blank_values": np.asarray(blank_values, dtype=float),
+        "visual_label": "movies",
+        "blank_label": "blank",
+    }
+
+
 def _single_exemplar_panel(
     ax_blank: plt.Axes,
     ax_movie: plt.Axes,
     ax_box: plt.Axes,
     response_row: Mapping[str, Any],
     *,
+    cache: Optional[Mapping[str, Any]] = None,
+    source_cache: Optional[Mapping[str, Any]] = None,
+    kind: str = "dendrite",
     title: str,
     panel_label: str | None = None,
     show_movie_ylabel: bool = False,
     show_box_ylabel: bool = False,
 ) -> None:
     plot_data = _load_visual_response_plot_data(response_row)
+    lookup_cache = source_cache if isinstance(source_cache, Mapping) else cache
+    if not plot_data and lookup_cache is not None:
+        exp_id, observation, _, parent_dendrite_observation = _visual_response_entity_observation(lookup_cache, kind, response_row)
+        if exp_id is not None and observation is not None:
+            plot_data = _visual_response_entity_plot_data(source_cache or lookup_cache, kind, exp_id, {}, observation, parent_dendrite_observation)
     if not plot_data:
+        print(f"[ALERT] poster visual-response traces unavailable for {response_row.get('source_path') or response_row.get('global_dendrite_id') or response_row.get('global_spine_id') or response_row.get('roi_id') or 'unknown row'}", file=sys.stderr)
         ax_blank.set_axis_off()
         ax_movie.set_axis_off()
         ax_box.set_axis_off()
@@ -748,6 +1068,7 @@ def _single_exemplar_panel(
     if finite.size:
         y_low, y_high = _combined_limits(blank_mean_trace, visual_mean_trace, blank_values, visual_values)
         ax_blank.set_ylim(y_low, y_high)
+        ax_movie.set_ylim(y_low, y_high)
     ax_box.text(0.02, 0.98, f"n={int(blank_values.size)} blank, n={int(visual_values.size)} visual", transform=ax_box.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
     p_value = None
     for key in ("shuffle_p", "adjusted_pvalue", "p_value", "raw_pvalue"):
@@ -907,6 +1228,9 @@ def write_visual_response_poster_figure(
     output_dir: Path | str,
     entity_label: str,
     visual_response_rows: Sequence[Mapping[str, Any]],
+    cache: Optional[Mapping[str, Any]] = None,
+    source_cache: Optional[Mapping[str, Any]] = None,
+    kind: str | None = None,
     output_stem: Optional[str] = None,
     locomotion_threshold: float | None = None,
 ) -> Optional[str]:
@@ -931,8 +1255,9 @@ def write_visual_response_poster_figure(
     ax_nonresp_movie = fig.add_subplot(nonresp_grid[0, 1], sharey=ax_nonresp_blank)
     ax_nonresp_box = fig.add_subplot(nonresp_grid[0, 2], sharey=ax_nonresp_blank)
     ax_pie = fig.add_subplot(outer[:, 1])
-    _single_exemplar_panel(ax_resp_blank, ax_resp_movie, ax_resp_box, responsive_row, title="responsive example", panel_label="responsive example", show_movie_ylabel=False, show_box_ylabel=False)
-    _single_exemplar_panel(ax_nonresp_blank, ax_nonresp_movie, ax_nonresp_box, nonresponsive_row, title="nonresponsive example", panel_label="nonresponsive example", show_movie_ylabel=False, show_box_ylabel=False)
+    poster_kind = str(kind or entity_label or "dendrite")
+    _single_exemplar_panel(ax_resp_blank, ax_resp_movie, ax_resp_box, responsive_row, cache=cache, source_cache=source_cache, kind=poster_kind, title="responsive example", panel_label="responsive example", show_movie_ylabel=False, show_box_ylabel=False)
+    _single_exemplar_panel(ax_nonresp_blank, ax_nonresp_movie, ax_nonresp_box, nonresponsive_row, cache=cache, source_cache=source_cache, kind=poster_kind, title="nonresponsive example", panel_label="nonresponsive example", show_movie_ylabel=False, show_box_ylabel=False)
     fig.text(0.017, 0.735, "responsive example", rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold")
     fig.text(0.017, 0.335, "nonresponsive example", rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold")
     for ax in (ax_resp_movie, ax_resp_box, ax_nonresp_movie, ax_nonresp_box):
@@ -1013,59 +1338,15 @@ def write_state_mixed_model_poster_figure(
         for cohort, branch in mixed_model_rows.items():
             if str(cohort) not in {"responsive", "nonresponsive"} or not isinstance(branch, Mapping):
                 continue
-            selected_rows = [row for row in _select_mixed_model_rows(branch, preferred_response_keys=preferred_response_keys) if str(row.get("term") or "").startswith("state[")]
-            contrast_rows = [dict(row) for row in branch.get("contrast_rows", []) if isinstance(row, Mapping)]
-            forest_rows = contrast_rows if contrast_rows else selected_rows
-            combined_rows = list(selected_rows)
-            for row in contrast_rows:
-                row_key = (
-                    str(row.get("term") or ""),
-                    str(row.get("contrast_name") or ""),
-                    str(row.get("state") or ""),
-                    str(row.get("state_a") or ""),
-                    str(row.get("state_b") or ""),
-                )
-                if not any(
-                    (
-                        str(existing.get("term") or ""),
-                        str(existing.get("contrast_name") or ""),
-                        str(existing.get("state") or ""),
-                        str(existing.get("state_a") or ""),
-                        str(existing.get("state_b") or ""),
-                    ) == row_key
-                    for existing in combined_rows
-                ):
-                    combined_rows.append(row)
-            rows_by_cohort[str(cohort)] = combined_rows
-            if forest_rows:
-                forest_rows_by_cohort[str(cohort)] = list(forest_rows)
+            selected_rows = _select_mixed_model_rows(branch, preferred_response_keys=preferred_response_keys)
+            filtered_rows = filter_mixed_model_terms_to_states(selected_rows, present_state_order)
+            rows_by_cohort[str(cohort)] = filtered_rows
+            forest_rows_by_cohort[str(cohort)] = filtered_rows
     else:
-        selected_rows = [row for row in _select_mixed_model_rows(mixed_model_rows, preferred_response_keys=preferred_response_keys) if str(row.get("term") or "").startswith("state[")]
-        rows_by_cohort = {"responsive": selected_rows, "nonresponsive": selected_rows}
-        if isinstance(mixed_model_rows, Mapping):
-            contrast_rows = [dict(row) for row in mixed_model_rows.get("contrast_rows", []) if isinstance(row, Mapping)]
-            if contrast_rows:
-                combined_rows = list(selected_rows)
-                for row in contrast_rows:
-                    row_key = (
-                        str(row.get("term") or ""),
-                        str(row.get("contrast_name") or ""),
-                        str(row.get("state") or ""),
-                        str(row.get("state_a") or ""),
-                        str(row.get("state_b") or ""),
-                    )
-                    if not any(
-                        (
-                            str(existing.get("term") or ""),
-                            str(existing.get("contrast_name") or ""),
-                            str(existing.get("state") or ""),
-                            str(existing.get("state_a") or ""),
-                            str(existing.get("state_b") or ""),
-                        ) == row_key
-                        for existing in combined_rows
-                    ):
-                        combined_rows.append(row)
-                forest_rows_by_cohort = {"responsive": contrast_rows, "nonresponsive": contrast_rows}
+        selected_rows = _select_mixed_model_rows(mixed_model_rows, preferred_response_keys=preferred_response_keys)
+        filtered_rows = filter_mixed_model_terms_to_states(selected_rows, present_state_order)
+        rows_by_cohort = {"responsive": filtered_rows, "nonresponsive": filtered_rows}
+        forest_rows_by_cohort = {"responsive": filtered_rows, "nonresponsive": filtered_rows}
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_state_mixed_model_poster_ready"
     p_source = _normalize_mixed_model_contrast_p_source(mixed_model_contrast_p_source)
@@ -1073,6 +1354,7 @@ def write_state_mixed_model_poster_figure(
     fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(20.5)), constrained_layout=False)
     outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.92, bottom=0.11, wspace=0.24, hspace=0.28, height_ratios=[0.88, 1.12])
     cohort_specs = [("responsive", resp, 0), ("nonresponsive", nonresp, 1)]
+    print(f"[poster] {entity_label} selected boxplot states = {list(present_state_order)}", file=sys.stderr)
     for cohort_label, values, col_index in cohort_specs:
         ax_box = fig.add_subplot(outer[0, col_index])
         ax_forest = fig.add_subplot(outer[1, col_index])
@@ -1082,6 +1364,28 @@ def write_state_mixed_model_poster_figure(
             box_rows = rows_by_cohort.get("responsive", []) or rows_by_cohort.get("nonresponsive", [])
         if not forest_rows:
             forest_rows = box_rows
+        forest_labels = {_state_compare_key(_forest_row_label(row)) for row in forest_rows if _forest_row_label(row)}
+        box_labels = {_state_compare_key(_forest_row_label(row)) for row in box_rows if _forest_row_label(row)}
+        state_forest_labels = {label for label in forest_labels if label}
+        state_box_labels = {label for label in box_labels if label}
+        if state_forest_labels and not state_forest_labels.issubset(state_box_labels):
+            print(f"[ALERT] poster forest labels extend beyond boxplot labels for {entity_label} {cohort_label}: {sorted(state_forest_labels - state_box_labels)}", file=sys.stderr)
+        raw_terms = [str(row.get('term') or row.get('contrast_name') or '') for row in forest_rows]
+        forest_main_effect_states = sorted({
+            _state_compare_key(_forest_row_label(row))
+            for row in forest_rows
+            if str(row.get('term') or '').startswith('state[')
+        })
+        forest_interaction_states = sorted({
+            _state_compare_key(_forest_row_label(row))
+            for row in forest_rows
+            if _poster_mixed_model_term_kind(str(row.get('term') or '')) == 'interaction'
+        })
+        dropped_terms = [term for term in fixed_effect_names if term not in {str(row.get('term') or '') for row in forest_rows}]
+        print(f"[poster] {entity_label} {cohort_label} forest raw terms = {raw_terms}", file=sys.stderr)
+        print(f"[poster] {entity_label} {cohort_label} forest main-effect states = {forest_main_effect_states}", file=sys.stderr)
+        print(f"[poster] {entity_label} {cohort_label} forest interaction states = {forest_interaction_states}", file=sys.stderr)
+        print(f"[poster] {entity_label} {cohort_label} dropped forest terms = {dropped_terms}", file=sys.stderr)
         significant_states = _poster_mixed_model_significant_states(box_rows)
         _boxplot(
             ax_box,
@@ -1090,7 +1394,7 @@ def write_state_mixed_model_poster_figure(
             title=f"{cohort_label} {title.lower()}",
             ylabel="Mean response",
             cohort_label=cohort_label,
-            significance_flags=[state in significant_states for state in present_state_order],
+            significance_flags=[_state_matches_any(state, sorted(significant_states)) for state in present_state_order],
             sample_sizes={state: int(len(_finite_array(values.get(state, [])))) for state in present_state_order},
             horizontal=True,
         )
@@ -1136,6 +1440,7 @@ def write_blank_movie_state_boxplot_figure(
         nonresponsive_sig.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
     blank_state_order = list(dict.fromkeys([str(state) for state in blank_state_order] + [str(state) for state in responsive_blank_values.keys()] + [str(state) for state in nonresponsive_blank_values.keys()]))
     movie_state_order = list(dict.fromkeys([str(state) for state in movie_state_order] + [str(state) for state in responsive_movie_values.keys()] + [str(state) for state in nonresponsive_movie_values.keys()]))
+    print(f"[poster] {entity_label} blank/movie source states: blank={blank_state_order}; movie={movie_state_order}", file=sys.stderr)
     _boxplot(
         ax_resp_blank,
         responsive_blank_values,

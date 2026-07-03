@@ -3353,6 +3353,28 @@ def _mixed_model_response_payload(results: Dict[str, Any], response: str, model_
         return None, []
     rows = list(summary_rows.get(response, []))
     return design, rows
+def _poster_state_display_label(state_label: Any) -> str:
+    canonical = canonical_state_label(state_label)
+    parts = [part for part in canonical.split("_") if part]
+    if not parts:
+        return ""
+    if len(parts) == 1 and parts[0] == "nrem":
+        return "NREM"
+    if len(parts) == 1 and parts[0] == "rem":
+        return "REM"
+    if len(parts) >= 2 and parts[0] in {"quiet", "active"} and parts[1] == "awake":
+        head = f"{parts[0].capitalize()} Awake"
+        tail = " ".join(part.capitalize() for part in parts[2:])
+        return f"{head} {tail}".strip()
+    if parts[0] == "nrem":
+        tail = " ".join(part.capitalize() for part in parts[1:])
+        return f"NREM {tail}".strip()
+    if parts[0] == "rem":
+        tail = " ".join(part.capitalize() for part in parts[1:])
+        return f"REM {tail}".strip()
+    return " ".join(part.capitalize() for part in parts)
+
+
 def _mixed_model_term_kind(term: str) -> str:
     if term == "Intercept":
         return "intercept"
@@ -3371,8 +3393,10 @@ def _mixed_model_term_component_label(term: str) -> str:
     if "[" in term and term.endswith("]"):
         prefix, value = term.split("[", 1)
         value = value[:-1]
-        return f"{prefix.strip()}: {value.strip()}"
-    return term
+        if prefix.strip() in {"state", "compartment", "visual_response_cohort"}:
+            return _poster_state_display_label(value.strip())
+        return f"{prefix.strip()}: {_poster_state_display_label(value.strip())}"
+    return _poster_state_display_label(term)
 def _mixed_model_term_value_label(term: str) -> str:
     if term == "Intercept":
         return term
@@ -3382,18 +3406,18 @@ def _mixed_model_term_value_label(term: str) -> str:
 def _mixed_model_term_interaction_value_label(term: str) -> str:
     value = _mixed_model_term_value_label(term)
     state_aliases = {
-        "quiet_awake_blank": "q_awake_blank",
-        "active_awake_blank": "a_awake_blank",
-        "quiet_awake_blanks": "q_awake_blank",
-        "active_awake_blanks": "a_awake_blank",
-        "quiet_awake_gratings": "q_awake_grating",
-        "active_awake_gratings": "a_awake_grating",
-        "quiet_awake_zebras": "q_awake_zebra",
-        "active_awake_zebras": "a_awake_zebra",
-        "quiet_awake_movies": "q_awake_movies",
-        "active_awake_movies": "a_awake_movies",
-        "quiet_awake": "q_awake",
-        "active_awake": "a_awake",
+        "quiet_awake_blank": "quiet_awake_blank",
+        "active_awake_blank": "active_awake_blank",
+        "quiet_awake_blanks": "quiet_awake_blank",
+        "active_awake_blanks": "active_awake_blank",
+        "quiet_awake_gratings": "quiet_awake_gratings",
+        "active_awake_gratings": "active_awake_gratings",
+        "quiet_awake_zebras": "quiet_awake_zebras",
+        "active_awake_zebras": "active_awake_zebras",
+        "quiet_awake_movies": "quiet_awake_movies",
+        "active_awake_movies": "active_awake_movies",
+        "quiet_awake": "quiet_awake",
+        "active_awake": "active_awake",
         "nrem_blank": "nrem_blank",
         "nrem_blanks": "nrem_blank",
         "nrem_gratings": "nrem_grating",
@@ -3405,7 +3429,7 @@ def _mixed_model_term_interaction_value_label(term: str) -> str:
         "rem_zebras": "rem_zebra",
         "rem_movies": "rem_movies",
     }
-    return state_aliases.get(value, value)
+    return _poster_state_display_label(state_aliases.get(value, value))
 def _mixed_model_term_label(term: str) -> str:
     if ":" not in term:
         return _mixed_model_term_component_label(term)
@@ -14840,6 +14864,7 @@ def write_analysis_outputs(
 def write_poster_ready_figures(
     output_dir: Path,
     cache: Dict[str, Any],
+    source_cache: Dict[str, Any],
     results: Dict[str, Any],
     analysis_families: Optional[Sequence[str]] = None,
 ) -> List[str]:
@@ -14925,7 +14950,7 @@ def write_poster_ready_figures(
             def _state_values_from_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, List[float]]:
                 grouped: Dict[str, List[float]] = {}
                 for row in rows:
-                    state = str(row.get("state") or "").strip()
+                    state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
                     if not state:
                         continue
                     value = row.get("mean")
@@ -15009,6 +15034,9 @@ def write_poster_ready_figures(
                                 output_dir=compartment_dir,
                                 entity_label=f"{entity_label} {compartment}",
                                 visual_response_rows=compartment_rows,
+                                cache=cache,
+                                source_cache=source_cache,
+                                kind=entity_key,
                                 output_stem=f"{entity_key}_{compartment}_visual_response_poster_ready",
                             )
                             if visual_path:
@@ -15018,6 +15046,9 @@ def write_poster_ready_figures(
                             output_dir=visual_dir,
                             entity_label=entity_label,
                             visual_response_rows=rows,
+                            cache=cache,
+                            source_cache=source_cache,
+                            kind=entity_key,
                             output_stem=f"{entity_key}_visual_response_poster_ready",
                         )
                         if visual_path:
@@ -15052,6 +15083,10 @@ def write_poster_ready_figures(
                 movie_values = _state_values_from_rows(movie_rows) if movie_rows else {state: values for state, values in state_values.get("responsive", {}).items() if state in movie_state_order}
                 non_blank_values = _state_values_from_rows(non_blank_rows) if non_blank_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in blank_state_order}
                 non_movie_values = _state_values_from_rows(non_movie_rows) if non_movie_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in movie_state_order}
+                print(f"[poster] {entity_key} responsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
+                print(f"[poster] {entity_key} responsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
+                print(f"[poster] {entity_key} nonresponsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in non_blank_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
+                print(f"[poster] {entity_key} nonresponsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in non_movie_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
                 if blank_values or movie_values or non_blank_values or non_movie_values:
                     responsive_significant_states = set()
                     nonresponsive_significant_states = set()
@@ -16606,6 +16641,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 write_poster_ready_figures(
                     output_dir,
                     analysis_cache,
+                    source_cache,
                     results,
                     analysis_families=None if bool(config.get("poster_ready_only")) else config.get("analysis_families"),
                 )

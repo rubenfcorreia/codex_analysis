@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from analysis.compartment_common import (
+    canonical_state_label,
     ensure_dir,
     filter_comparison_presets,
     normalize_comparison_presets,
@@ -186,7 +187,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     shared_source_cache_path = Path(config.get("cache_path") or (base_cache_root / "source_cache.npz"))
     _stage("comparison presets", f"running {len(presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
-    for preset_name, overrides in presets:
+    for preset_index, (preset_name, overrides) in enumerate(presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
         preset_config.pop("comparison_presets", None)
@@ -629,7 +630,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             metric_col="event_frequency_per_min",
         )
         cohort_correlation_summary[cohort_name] = correlation_summary_rows(cohort_correlation_rows.get(cohort_name, []))
-        cohort_state_order = [state for state in analysis_state_order if state != "quiet_awake_movies"] if cohort_name in {"responsive", "nonresponsive"} else list(analysis_state_order)
+        cohort_state_order = list(analysis_state_order)
         mixed_model_results[cohort_name] = run_mixed_model_family(
             cohort_rows,
             state_comparison_states=cohort_state_order,
@@ -817,7 +818,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     def _state_values_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[float]]:
         grouped: Dict[str, List[float]] = {}
         for row in rows:
-            state = str(row.get("state") or "").strip()
+            state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
             if not state:
                 continue
             value = row.get("mean")
@@ -829,6 +830,37 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             grouped.setdefault(state, []).append(value_f)
         return grouped
+
+    def _state_row_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        roi_keys = []
+        state_keys = []
+        cohort_keys = []
+        raw_count = 0
+        non_nan_count = 0
+        for row in rows:
+            raw_count += 1
+            state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
+            if state:
+                state_keys.append(state)
+            cohort = str(row.get("cohort") or "").strip().lower()
+            if cohort:
+                cohort_keys.append(cohort)
+            roi = str(row.get("roi_id") or row.get("soma_id") or row.get("bouton_id") or row.get("roi_index") or "").strip()
+            if roi:
+                roi_keys.append(roi)
+            try:
+                value = float(row.get("mean"))
+            except Exception:
+                continue
+            if np.isfinite(value):
+                non_nan_count += 1
+        return {
+            "raw_count": raw_count,
+            "non_nan_count": non_nan_count,
+            "unique_roi_count": len(set(roi_keys)),
+            "states": list(dict.fromkeys(state_keys)),
+            "cohorts": list(dict.fromkeys(cohort_keys)),
+        }
 
     poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
     blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
@@ -871,11 +903,17 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         blank_nonresponsive_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "nonresponsive"]
         movie_responsive_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "responsive"]
         movie_nonresponsive_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "nonresponsive"]
+        print(f"[poster] {compartment} responsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
+        print(f"[poster] {compartment} nonresponsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
+        print(f"[poster] {compartment} responsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
+        print(f"[poster] {compartment} nonresponsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
         blank_responsive_values = _state_values_from_rows(blank_responsive_rows) if blank_responsive_rows else {state: values for state, values in responsive_values.items() if state in blank_state_order}
         blank_nonresponsive_values = _state_values_from_rows(blank_nonresponsive_rows) if blank_nonresponsive_rows else {state: values for state, values in nonresponsive_values.items() if state in blank_state_order}
         movie_responsive_values = _state_values_from_rows(movie_responsive_rows) if movie_responsive_rows else {state: values for state, values in responsive_values.items() if state in movie_state_order}
         movie_nonresponsive_values = _state_values_from_rows(movie_nonresponsive_rows) if movie_nonresponsive_rows else {state: values for state, values in nonresponsive_values.items() if state in movie_state_order}
         if responsive_values or nonresponsive_values:
+            print(f"[poster] {compartment} responsive blank/movie n summary = {_state_row_summary(blank_responsive_rows + movie_responsive_rows)}", file=sys.stderr)
+            print(f"[poster] {compartment} nonresponsive blank/movie n summary = {_state_row_summary(blank_nonresponsive_rows + movie_nonresponsive_rows)}", file=sys.stderr)
             mixed_path = write_state_mixed_model_poster_figure(
                 output_dir=mixed_dir,
                 entity_label=compartment,

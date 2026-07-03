@@ -639,18 +639,33 @@ def draw_mixed_model_forest_panel(
     fixed_effect_names = [str(term) for term in design.get("fixed_effect_names", [])]
     selected_state_set = {canonical_state_label(state) for state in selected_mixed_model_state_labels(results)}
     display_terms: List[str] = []
+    main_effect_states: List[str] = []
+    interaction_states: List[str] = []
+    dropped_terms: List[str] = []
     for term in fixed_effect_names:
         kind = _mixed_model_term_kind(term)
+        keep = False
         if kind == "state":
-            if canonical_state_label(_mixed_model_term_value_label(term)) not in selected_state_set:
-                continue
+            state_key = canonical_state_label(_mixed_model_term_value_label(term))
+            keep = state_key in selected_state_set
+            if keep:
+                main_effect_states.append(state_key)
         elif kind == "interaction":
             state_terms = [part for part in str(term).split(":") if part.startswith("state[")]
-            if state_terms and not any(
-                canonical_state_label(_mixed_model_term_value_label(part)) in selected_state_set for part in state_terms
-            ):
-                continue
-        display_terms.append(term)
+            state_keys = [canonical_state_label(_mixed_model_term_value_label(part)) for part in state_terms]
+            keep = bool(state_keys) and any(state_key in selected_state_set for state_key in state_keys)
+            if keep:
+                interaction_states.extend(state_keys)
+        elif kind in {"intercept", "compartment"}:
+            keep = True
+        if keep:
+            display_terms.append(term)
+        else:
+            dropped_terms.append(term)
+    print(f"[poster] selected boxplot states = {list(selected_state_set)}", file=sys.stderr)
+    print(f"[poster] forest main-effect states = {list(dict.fromkeys(main_effect_states))}", file=sys.stderr)
+    print(f"[poster] forest interaction states = {list(dict.fromkeys(interaction_states))}", file=sys.stderr)
+    print(f"[poster] dropped forest terms = {dropped_terms}", file=sys.stderr)
 
     if not display_terms:
         return False
