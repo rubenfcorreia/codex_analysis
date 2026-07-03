@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use("Agg", force=True)
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 from scipy import stats
 
@@ -27,8 +28,8 @@ if plt is not None:
     configure_poster_matplotlib()
 
 
-FIGURE_WIDTH_CM = 35.0
-FIGURE_HEIGHT_CM = 29.0
+FIGURE_WIDTH_CM = 17.0
+FIGURE_HEIGHT_CM = 7.5
 VISUAL_RESPONSE_WIDTH_CM = 19.0
 VISUAL_RESPONSE_HEIGHT_CM = 6.5
 
@@ -44,12 +45,17 @@ MIXED_MODEL_COLOR = "#1F77B4"
 BOX_COLORS = {
     "responsive": "#4C72B0",
     "nonresponsive": "#DD8452",
-    "quiet_awake_blank": "#4C72B0",
-    "nrem_blank": "#55A868",
-    "rem_blank": "#C44E52",
-    "quiet_awake_movies": "#4C72B0",
-    "nrem_movies": "#55A868",
-    "rem_movies": "#C44E52",
+    "quiet_awake_blank": "#ff7f0e",
+    "nrem_blank": "#2ca02c",
+    "rem_blank": "#d62728",
+    "quiet_awake": "#ff7f0e",
+    "nrem": "#2ca02c",
+    "rem": "#d62728",
+    "quiet_awake_movies": "#ff7f0e",
+    "nrem_movies": "#2ca02c",
+    "rem_movies": "#d62728",
+    "basal": "#4C72B0",
+    "apical": "#DD8452",
 }
 
 FIGURE_2_STATE_ORDER = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
@@ -83,13 +89,146 @@ def _finite_array(values: Iterable[Any]) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
-def _state_value_map_from_rows(rows: Sequence[Mapping[str, Any]], *, value_key: str = "mean") -> Dict[str, list[float]]:
-    grouped: Dict[str, list[float]] = {}
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float, np.bool_)):
+        try:
+            return bool(int(value))
+        except Exception:
+            return bool(value)
+    text = str(value).strip().lower()
+    return text in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _row_roi_lookup_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    compartment = str(row.get("compartment") or "").strip().lower()
+    roi_id = row.get("roi_id")
+    if roi_id is None or str(roi_id).strip() == "":
+        roi_id = row.get(f"{compartment}_id")
+    if roi_id is None or str(roi_id).strip() == "":
+        roi_id = row.get("roi_index")
+    return compartment, str(roi_id)
+
+
+def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    lookup: Dict[tuple[str, str], str] = {}
+    for row in visual_response_rows:
+        key = _row_roi_lookup_key(row)
+        lookup[key] = str(row.get("cohort") or "nonresponsive")
+    assigned: list[dict[str, Any]] = []
     for row in rows:
-        state = str(row.get("state") or row.get("state_label") or "").strip()
+        row_copy = dict(row)
+        row_copy["cohort"] = lookup.get(_row_roi_lookup_key(row_copy), "nonresponsive")
+        assigned.append(row_copy)
+    return assigned
+
+
+def _poster_mixed_model_term_kind(term: str) -> str:
+    term = str(term or "")
+    if term == "Intercept":
+        return "intercept"
+    if ":" in term:
+        return "interaction"
+    if term.startswith("state["):
+        return "state"
+    if term.startswith("compartment["):
+        return "compartment"
+    return "covariate"
+
+
+def _poster_mixed_model_term_value_label(term: str) -> str:
+    text = str(term or "")
+    if text.startswith("state[") and text.endswith("]"):
+        return text[len("state[") : -1]
+    if text.startswith("compartment[") and text.endswith("]"):
+        return text[len("compartment[") : -1]
+    return text
+
+
+def _poster_mixed_model_term_label(term: str) -> str:
+    term = str(term or "")
+    if term == "Intercept":
+        return term
+    if ":" in term:
+        return " X ".join(_poster_mixed_model_term_label(part) for part in term.split(":"))
+    kind = _poster_mixed_model_term_kind(term)
+    value = _poster_mixed_model_term_value_label(term)
+    if kind == "state":
+        return _state_display_label(value)
+    if kind == "compartment":
+        return _state_display_label(value)
+    return _state_display_label(term)
+
+
+def _forest_row_label(row: Mapping[str, Any]) -> str:
+    term = str(row.get("term") or "")
+    if term:
+        return _poster_mixed_model_term_label(term)
+    state_a = row.get("state_a")
+    state_b = row.get("state_b")
+    contrast_type = str(row.get("contrast_type") or "")
+    state_value = row.get("state")
+    if state_a is not None or state_b is not None:
+        left = _state_display_label(state_a)
+        right = _state_display_label(state_b)
+        if contrast_type == "basal_apical":
+            return f"{left} X {right}".strip()
+        return f"{left} - {right}".strip()
+    if state_value is not None and contrast_type == "basal_apical":
+        return f"{_state_display_label(state_value)} X Basal - Apical"
+    contrast_name = str(row.get("contrast_name") or "")
+    if contrast_name:
+        return _state_display_label(contrast_name)
+    return ""
+
+
+def _state_display_label(state_label: Any) -> str:
+    canonical = str(state_label or "").strip().lower().replace("-", "_")
+    while "__" in canonical:
+        canonical = canonical.replace("__", "_")
+    parts = [part for part in canonical.split("_") if part]
+    if not parts:
+        return ""
+    if len(parts) == 1 and parts[0] == "nrem":
+        return "NREM"
+    if len(parts) == 1 and parts[0] == "rem":
+        return "REM"
+    if parts[0] == "nrem":
+        tail = " ".join(part.capitalize() for part in parts[1:])
+        return f"NREM {tail}".strip()
+    if parts[0] == "rem":
+        tail = " ".join(part.capitalize() for part in parts[1:])
+        return f"REM {tail}".strip()
+    if len(parts) >= 2 and parts[0] in {"quiet", "active"} and parts[1] == "awake":
+        head = f"{parts[0].capitalize()} Awake"
+        tail = " ".join(part.capitalize() for part in parts[2:])
+        return f"{head} {tail}".strip()
+    return " ".join(part.capitalize() for part in parts)
+
+
+def _canonical_state_key(state_label: Any) -> str:
+    canonical = str(state_label or "").strip().lower().replace("-", "_").replace(" ", "_")
+    while "__" in canonical:
+        canonical = canonical.replace("__", "_")
+    return canonical
+
+
+def _state_value_map_from_rows(rows: Sequence[Mapping[str, Any]], *, value_key: str | Sequence[str] = "mean") -> Dict[str, list[float]]:
+    grouped: Dict[str, list[float]] = {}
+    value_keys = (value_key,) if isinstance(value_key, str) else tuple(str(key) for key in value_key)
+    for row in rows:
+        state = _canonical_state_key(row.get("state") or row.get("state_label") or row.get("state_display") or "")
         if not state:
             continue
-        value = row.get(value_key)
+        value = None
+        for key in value_keys:
+            candidate = row.get(key)
+            if candidate is not None:
+                value = candidate
+                break
         if value is None:
             continue
         try:
@@ -112,8 +251,8 @@ def _mean_and_sem(values: Sequence[float]) -> tuple[float, float]:
 
 
 def _pick_exemplar_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
-    responsive = [dict(row) for row in rows if bool(row.get("responsive", False)) and np.isfinite(float(row.get("delta", float("nan"))))]
-    nonresponsive = [dict(row) for row in rows if not bool(row.get("responsive", False)) and np.isfinite(float(row.get("delta", float("nan"))))]
+    responsive = [dict(row) for row in rows if _coerce_bool(row.get("responsive", False)) and np.isfinite(float(row.get("delta", float("nan"))))]
+    nonresponsive = [dict(row) for row in rows if not _coerce_bool(row.get("responsive", False)) and np.isfinite(float(row.get("delta", float("nan"))))]
     responsive_row = None
     if responsive:
         responsive_row = max(responsive, key=lambda row: float(row.get("delta", float("nan"))))
@@ -125,6 +264,31 @@ def _pick_exemplar_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Optional[dic
             target = float(np.nanmedian(finite))
             nonresponsive_row = min(nonresponsive, key=lambda row: abs(float(row.get("delta", float("nan"))) - target))
     return responsive_row, nonresponsive_row
+
+
+def _visual_response_entity_id(row: Mapping[str, Any]) -> str:
+    for key in ("global_dendrite_id", "global_spine_id", "roi_id", "soma_id", "bouton_id", "entity_id", "roi_index"):
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _visual_response_unique_entity_count(rows: Sequence[Mapping[str, Any]]) -> int:
+    unique_ids: set[str] = set()
+    fallback = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        entity_id = _visual_response_entity_id(row)
+        if entity_id:
+            unique_ids.add(entity_id)
+        else:
+            fallback += 1
+    return int(len(unique_ids) if unique_ids else fallback)
 
 
 def _load_visual_response_plot_data(response_row: Mapping[str, Any], *, locomotion_threshold: float | None = None) -> Optional[Dict[str, Any]]:
@@ -212,8 +376,21 @@ def _load_visual_response_plot_data(response_row: Mapping[str, Any], *, locomoti
         return None
     visual_arr = np.asarray(visual_values, dtype=float)
     blank_arr = np.asarray(blank_values, dtype=float)
+    durations = []
+    for meta in trial_meta:
+        if not isinstance(meta, Mapping):
+            continue
+        try:
+            duration_f = float(meta.get("duration")) if meta.get("duration") is not None else float("nan")
+        except Exception:
+            duration_f = float("nan")
+        if np.isfinite(duration_f) and duration_f > 0:
+            durations.append(duration_f)
+    event_duration = float(np.nanmax(np.asarray(durations, dtype=float))) if durations else float("nan")
     return {
         "cut_time": cut_time,
+        "event_onset": 0.0,
+        "event_duration": event_duration,
         "visual_traces": visual_traces,
         "blank_traces": blank_traces,
         "visual_values": visual_arr,
@@ -229,24 +406,44 @@ def _style_axes(ax: plt.Axes) -> None:
         ax.spines[spine].set_visible(False)
 
 
-def _boxplot(ax: plt.Axes, state_values: Mapping[str, Sequence[float]], state_order: Sequence[str], *, title: str, ylabel: str, cohort_label: str | None = None) -> None:
+def _boxplot(
+    ax: plt.Axes,
+    state_values: Mapping[str, Sequence[float]],
+    state_order: Sequence[str],
+    *,
+    title: str,
+    ylabel: str,
+    cohort_label: str | None = None,
+    significance_flags: Sequence[bool] | None = None,
+    sample_sizes: Mapping[str, int] | None = None,
+    horizontal: bool = False,
+) -> None:
     series = []
     labels = []
     positions = []
     colors = []
-    for idx, state in enumerate(state_order, start=1):
+    sample_counts = []
+    present_states = []
+    present_flags = []
+    flags = list(significance_flags) if significance_flags is not None else None
+    sig_extent = None
+    ordered_states = list(state_order)[::-1] if horizontal else list(state_order)
+    for idx, state in enumerate(ordered_states, start=1):
         arr = _finite_array(state_values.get(state, []))
-        labels.append(state.replace("_", " "))
-        positions.append(float(idx))
-        colors.append(BOX_COLORS.get(state, "#7f7f7f"))
         if arr.size == 0:
             continue
+        present_states.append(state)
+        labels.append(_state_display_label(state))
+        positions.append(float(len(present_states)))
+        colors.append(_poster_label_color(state))
+        sample_counts.append(int(sample_sizes.get(state, int(arr.size)) if sample_sizes is not None else int(arr.size)))
         series.append(arr)
+        if flags is not None:
+            orig_index = state_order.index(state) if state in state_order else idx - 1
+            present_flags.append(bool(flags[orig_index]) if orig_index < len(flags) else False)
     if series:
-        present_positions = [pos for pos, state in zip(positions, state_order) if _finite_array(state_values.get(state, [])).size > 0]
-        present_colors = [BOX_COLORS.get(state, "#7f7f7f") for state in state_order if _finite_array(state_values.get(state, [])).size > 0]
-        bp = ax.boxplot(series, positions=present_positions, widths=0.56, patch_artist=True, showfliers=False)
-        for patch, color in zip(bp.get("boxes", []), present_colors):
+        bp = ax.boxplot(series, positions=positions, widths=0.56, patch_artist=True, showfliers=False, vert=not horizontal)
+        for patch, color in zip(bp.get("boxes", []), colors):
             patch.set_facecolor(color)
             patch.set_edgecolor("#444444")
             patch.set_alpha(0.9)
@@ -256,29 +453,119 @@ def _boxplot(ax: plt.Axes, state_values: Mapping[str, Sequence[float]], state_or
             median.set_color("#222222")
             median.set_linewidth(1.5)
         rng = np.random.default_rng(7)
-        for xpos, state in zip(present_positions, [state for state in state_order if _finite_array(state_values.get(state, [])).size > 0]):
+        for xpos, state in zip(positions, present_states):
             arr = _finite_array(state_values.get(state, []))
             jitter = rng.uniform(-0.08, 0.08, size=arr.size)
-            ax.scatter(np.full(arr.size, xpos) + jitter, arr, s=14, alpha=0.45, color=BOX_COLORS.get(state, "#7f7f7f"), edgecolor="none")
-    ax.set_xlim(0.5, max(float(len(state_order)) + 0.5, 1.5))
-    ax.set_xticks(positions)
-    ax.set_xticklabels(labels, rotation=25, ha="right")
-    ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
+            if horizontal:
+                ax.scatter(arr, np.full(arr.size, xpos) + jitter, s=14, alpha=0.45, color=BOX_COLORS.get(state, "#7f7f7f"), edgecolor="none")
+            else:
+                ax.scatter(np.full(arr.size, xpos) + jitter, arr, s=14, alpha=0.45, color=BOX_COLORS.get(state, "#7f7f7f"), edgecolor="none")
+        finite = np.concatenate(series)
+        finite = finite[np.isfinite(finite)]
+        if finite.size and present_flags:
+            pad = max(0.05 * float(np.ptp(finite)), 0.05)
+            if horizontal:
+                x = float(np.nanmax(finite)) + pad
+                sig_extent = x
+                for ypos, state, is_sig in zip(positions, present_states, present_flags):
+                    if is_sig:
+                        ax.text(x, ypos, "*", ha="left", va="center", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
+            else:
+                y = float(np.nanmax(finite)) + pad
+                sig_extent = y
+                for xpos, state, is_sig in zip(positions, present_states, present_flags):
+                    if is_sig:
+                        ax.text(xpos, y, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
+        if horizontal:
+            ax.set_ylim(0.5, max(float(len(present_states)) + 0.5, 1.5))
+            ax.set_yticks(positions)
+            ax.set_yticklabels(labels, fontsize=FIGURE_TICK_FS)
+            ax.set_xlabel(ylabel, fontsize=FIGURE_LABEL_FS)
+            ax.set_ylabel("")
+        else:
+            ax.set_xlim(0.5, max(float(len(present_states)) + 0.5, 1.5))
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels, rotation=25, ha="right")
+            ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
+    else:
+        if horizontal:
+            ax.set_ylim(0.5, 1.5)
+            ax.set_yticks([])
+            ax.set_yticklabels([])
+            ax.set_xlabel(ylabel, fontsize=FIGURE_LABEL_FS)
+            ax.set_ylabel("")
+        else:
+            ax.set_xlim(0.5, 1.5)
+            ax.set_xticks([])
+            ax.set_xticklabels([])
+            ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
+    if sig_extent is not None:
+        if horizontal:
+            current_left, current_right = ax.get_xlim()
+            ax.set_xlim(current_left, max(current_right, sig_extent + max(0.08 * abs(sig_extent), 0.05)))
+        else:
+            current_bottom, current_top = ax.get_ylim()
+            ax.set_ylim(current_bottom, max(current_top, sig_extent + max(0.08 * abs(sig_extent), 0.05)))
+    y0, y1 = ax.get_ylim()
+    x0, x1 = ax.get_xlim()
+    y_range = max(float(y1 - y0), 1e-6)
+    x_range = max(float(x1 - x0), 1e-6)
+    for pos, state, arr_size in zip(positions, present_states, sample_counts):
+        if horizontal:
+            arr = _finite_array(state_values.get(state, []))
+            annotate_x = float(np.nanmax(arr)) if arr.size else x1
+            ax.text(annotate_x + max(0.02 * x_range, 0.04), pos, f"n={arr_size}", ha="left", va="center", fontsize=FIGURE_NOTE_FS - 1, color=_poster_label_color(state), clip_on=False)
+        else:
+            arr = _finite_array(state_values.get(state, []))
+            annotate_y = min(float(np.nanmax(arr)) + 0.03 * y_range, float(y1) - 0.01 * y_range) if arr.size else float(y1) - 0.01 * y_range
+            ax.text(pos, annotate_y, f"n={arr_size}", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS - 1, color=_poster_label_color(state), clip_on=False)
     ax.set_title(title, fontsize=FIGURE_TITLE_FS, pad=4)
-    ax.grid(axis="y", alpha=0.22)
+    ax.grid(axis="both" if horizontal else "y", alpha=0.22)
     if cohort_label:
         ax.text(0.02, 0.98, cohort_label, transform=ax.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
+    if present_flags and len(present_states) >= 2:
+        comparison_targets = [(state, pos) for state, pos, is_sig in zip(present_states[1:], positions[1:], present_flags[1:]) if is_sig]
+        if comparison_targets:
+            reference_pos = positions[0]
+            if horizontal:
+                x0, x1 = ax.get_xlim()
+                x_range = x1 - x0 if np.isfinite(x1 - x0) and (x1 - x0) > 0 else 1.0
+                bracket_base = x1 + 0.018 * x_range
+                bracket_step = max(0.017 * x_range, 0.018)
+                text_offset = max(0.0035 * x_range, 0.008)
+                bracket_height = max(0.007 * x_range, 0.011)
+                top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.015 * x_range
+                if top_needed > x1:
+                    ax.set_xlim(x0, top_needed)
+                for level, (state, ypos) in enumerate(comparison_targets):
+                    x = bracket_base + level * bracket_step
+                    ax.plot([x, x + bracket_height, x + bracket_height, x], [reference_pos, reference_pos, ypos, ypos], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+            else:
+                y0, y1 = ax.get_ylim()
+                y_range = y1 - y0 if np.isfinite(y1 - y0) and (y1 - y0) > 0 else 1.0
+                bracket_base = y1 + 0.018 * y_range
+                bracket_step = max(0.017 * y_range, 0.018)
+                text_offset = max(0.0035 * y_range, 0.008)
+                bracket_height = max(0.007 * y_range, 0.011)
+                top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.015 * y_range
+                if top_needed > y1:
+                    ax.set_ylim(y0, top_needed)
+                for level, (state, xpos) in enumerate(comparison_targets):
+                    y = bracket_base + level * bracket_step
+                    ax.plot([reference_pos, reference_pos, xpos, xpos], [y, y + bracket_height, y + bracket_height, y], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+    if present_flags and any(present_flags):
+        ax.text(0.98, 0.98, "* significant comparisons", transform=ax.transAxes, ha="right", va="top", fontsize=FIGURE_NOTE_FS, color="#5a1a1a", bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="#d0d0d0", alpha=0.88))
     if not series:
         ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center", va="center", fontsize=FIGURE_NOTE_FS, color="#666666")
     _style_axes(ax)
 
 
-def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str, ylabel: str = "Estimate (95% CI)", p_value_key: str = "p_value") -> None:
+def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str, ylabel: str = "Estimate (95% CI)", p_value_key: str = "p_value", show_legend: bool = False) -> None:
     rows = [dict(row) for row in rows if isinstance(row, Mapping)]
     if not rows:
         ax.set_axis_off()
         return
-    ordered = [row for row in rows if row.get("term") is not None]
+    ordered = [row for row in rows if row.get("term") is not None or row.get("contrast_name") is not None or row.get("state_a") is not None or row.get("state_b") is not None or row.get("state") is not None]
     if not ordered:
         ax.set_axis_off()
         return
@@ -308,7 +595,15 @@ def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str
         if not np.isfinite(est_f):
             continue
         ci = 1.96 * se_f if np.isfinite(se_f) else float("nan")
-        color = MIXED_MODEL_COLOR if str(row.get("term") or "").startswith("state[") else "#7f7f7f"
+        label = _forest_row_label(row)
+        kind = _poster_mixed_model_term_kind(label) if label.startswith(("state[", "compartment[")) or label == "Intercept" else "interaction" if " X " in label else "covariate"
+        color = {
+            "intercept": "#7f7f7f",
+            "state": "#1f77b4",
+            "compartment": "#2ca02c",
+            "interaction": "#ff7f0e",
+            "covariate": "#9467bd",
+        }.get(kind, "#7f7f7f")
         if np.isfinite(ci):
             ax.errorbar(est_f, y_pos, xerr=ci, fmt="none", ecolor=color, elinewidth=1.4, capsize=3)
         ax.scatter(est_f, y_pos, s=50, color=color, edgecolor="#222222", linewidth=0.8, zorder=3)
@@ -322,9 +617,12 @@ def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str
             p_value_f = float("nan")
         if np.isfinite(p_value_f) and p_value_f < 0.05:
             ax.scatter(est_f, y_pos, s=105, marker="*", color="#111111", zorder=4)
-    labels = [str(row.get("term") or "").replace("state[", "").replace("]", "").replace(":compartment[apical]", " apical") for row in ordered]
+    labels = []
+    for row in ordered:
+        label = _forest_row_label(row)
+        labels.append(_poster_mixed_model_term_label(label) if label.startswith(("state[", "compartment[", "Intercept")) else label)
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(labels, fontsize=FIGURE_TICK_FS - 1)
+    ax.set_yticklabels(labels, fontsize=FIGURE_TICK_FS)
     ax.set_xlabel(ylabel, fontsize=FIGURE_LABEL_FS)
     ax.set_title(title, fontsize=FIGURE_TITLE_FS, pad=4)
     ax.grid(axis="x", alpha=0.22)
@@ -335,6 +633,12 @@ def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str
         hi = float(np.nanmax(finite_bounds))
         pad = max(0.12 * max(hi - lo, 1e-6), 0.05)
         ax.set_xlim(lo - pad, hi + pad)
+    if show_legend:
+        legend_handles = [
+            Line2D([0], [0], marker="o", linestyle="none", markerfacecolor="#1F77B4", markeredgecolor="white", markersize=7, label="estimate"),
+            Line2D([0], [0], marker="*", linestyle="none", markerfacecolor="#111111", markeredgecolor="#111111", markersize=9, label="p < 0.05"),
+        ]
+        ax.legend(handles=legend_handles, frameon=False, fontsize=FIGURE_NOTE_FS, loc="upper right")
     _style_axes(ax)
 
 
@@ -361,7 +665,17 @@ def _combined_limits(*series: Sequence[float]) -> tuple[float, float]:
     return lo - pad, hi + pad
 
 
-def _single_exemplar_panel(ax_blank: plt.Axes, ax_movie: plt.Axes, ax_box: plt.Axes, response_row: Mapping[str, Any], *, title: str) -> None:
+def _single_exemplar_panel(
+    ax_blank: plt.Axes,
+    ax_movie: plt.Axes,
+    ax_box: plt.Axes,
+    response_row: Mapping[str, Any],
+    *,
+    title: str,
+    panel_label: str | None = None,
+    show_movie_ylabel: bool = False,
+    show_box_ylabel: bool = False,
+) -> None:
     plot_data = _load_visual_response_plot_data(response_row)
     if not plot_data:
         ax_blank.set_axis_off()
@@ -373,29 +687,39 @@ def _single_exemplar_panel(ax_blank: plt.Axes, ax_movie: plt.Axes, ax_box: plt.A
     blank_mean_trace = np.asarray(plot_data["blank_mean_trace"], dtype=float)
     visual_values = np.asarray(plot_data["visual_values"], dtype=float)
     blank_values = np.asarray(plot_data["blank_values"], dtype=float)
+    event_onset = float(plot_data.get("event_onset", 0.0))
+    event_duration = float(plot_data.get("event_duration", float("nan")))
     if cut_time.size == 0 or visual_mean_trace.size == 0 or blank_mean_trace.size == 0:
         ax_blank.set_axis_off()
         ax_movie.set_axis_off()
         ax_box.set_axis_off()
         return
-
+    if np.isfinite(event_duration) and event_duration > event_onset:
+        for ax in (ax_blank, ax_movie):
+            ax.axvspan(event_onset, event_duration, color="#E5E7EB", alpha=0.45, zorder=0)
+            ax.axvline(event_onset, color="#111111", linestyle="--", linewidth=1.0, alpha=0.8, zorder=4)
+            ax.axvline(event_duration, color="#111111", linestyle=":", linewidth=1.0, alpha=0.8, zorder=4)
+            ax.text((event_onset + event_duration) / 2.0, 0.98, "event", transform=ax.get_xaxis_transform(), ha="center", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
+    if panel_label:
+        ax_blank.text(-0.25, 0.5, panel_label, transform=ax_blank.transAxes, rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold", clip_on=False)
     ax_blank.plot(cut_time, blank_mean_trace, color="#7F8790", linewidth=2.6, zorder=3)
     ax_blank.set_title("Blank traces", fontsize=FIGURE_TITLE_FS, pad=4)
     ax_blank.set_xlabel("Time (s)", fontsize=FIGURE_LABEL_FS)
     ax_blank.set_ylabel("dF/F", fontsize=FIGURE_LABEL_FS)
     ax_blank.grid(axis="y", alpha=0.2)
     ax_blank.text(0.02, 0.98, f"movie nonresponsive: {len(blank_values)} trials", transform=ax_blank.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
-
     ax_movie.plot(cut_time, visual_mean_trace, color="#D97706", linewidth=2.6, zorder=3)
     ax_movie.set_title("Movies traces", fontsize=FIGURE_TITLE_FS, pad=4)
     ax_movie.set_xlabel("Time (s)", fontsize=FIGURE_LABEL_FS)
     ax_movie.set_ylabel("dF/F", fontsize=FIGURE_LABEL_FS)
     ax_movie.grid(axis="y", alpha=0.2)
     ax_movie.text(0.02, 0.98, f"movie responsive: {len(visual_values)} trials", transform=ax_movie.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
-
+    if not show_movie_ylabel:
+        ax_movie.set_ylabel("")
+        ax_movie.tick_params(axis="y", labelleft=False)
     data = [blank_values, visual_values]
     bp = ax_box.boxplot(data, positions=[1.0, 2.0], widths=0.58, patch_artist=True, showfliers=False)
-    for patch, color in zip(bp.get("boxes", []), ["#D9D9D9", "#F8C38B"]):
+    for patch, color in zip(bp.get("boxes", []), ["#7F8790", "#D97706"]):
         patch.set_facecolor(color)
         patch.set_edgecolor("#444444")
         patch.set_alpha(0.95)
@@ -407,7 +731,7 @@ def _single_exemplar_panel(ax_blank: plt.Axes, ax_movie: plt.Axes, ax_box: plt.A
         median.set_color("#222222")
         median.set_linewidth(1.5)
     rng = np.random.default_rng(7)
-    for xpos, values, color in [(1.0, blank_values, "#6B6B6B"), (2.0, visual_values, "#C96E00")]:
+    for xpos, values, color in [(1.0, blank_values, "#7F8790"), (2.0, visual_values, "#D97706")]:
         jitter = rng.uniform(-0.08, 0.08, size=values.size)
         ax_box.scatter(np.full(values.size, xpos) + jitter, values, s=12, alpha=0.42, color=color, edgecolor="none")
     ax_box.set_xticks([1.0, 2.0])
@@ -416,6 +740,9 @@ def _single_exemplar_panel(ax_blank: plt.Axes, ax_movie: plt.Axes, ax_box: plt.A
     ax_box.set_xlabel("Condition", fontsize=FIGURE_LABEL_FS)
     ax_box.set_title("Blank vs movies", fontsize=FIGURE_TITLE_FS, pad=4)
     ax_box.grid(axis="y", alpha=0.2)
+    if not show_box_ylabel:
+        ax_box.set_ylabel("")
+        ax_box.tick_params(axis="y", labelleft=False)
     all_values = np.concatenate([blank_values, visual_values])
     finite = all_values[np.isfinite(all_values)]
     if finite.size:
@@ -441,11 +768,51 @@ def _single_exemplar_panel(ax_blank: plt.Axes, ax_movie: plt.Axes, ax_box: plt.A
         if finite.size:
             y = float(np.nanmax(finite)) + max(0.05 * float(np.ptp(finite)), 0.05)
             ax_box.plot([1.0, 1.0, 2.0, 2.0], [y * 0.98, y, y, y * 0.98], color="#8b0000", linewidth=1.2)
-            ax_box.text(1.5, y, "*", ha="center", va="bottom", fontsize=24, color="#8b0000", fontweight="bold")
-
+            ax_box.text(1.5, y, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
+            ax_box.text(0.98, 0.98, "* significant comparisons", transform=ax_box.transAxes, ha="right", va="top", fontsize=FIGURE_NOTE_FS, color="#5a1a1a", bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="#d0d0d0", alpha=0.88))
     _style_axes(ax_blank)
     _style_axes(ax_movie)
     _style_axes(ax_box)
+def write_correlation_poster_figure(
+    *,
+    output_dir: Path | str,
+    entity_label: str,
+    correlation_rows: Sequence[Mapping[str, Any]],
+    comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    output_stem: Optional[str] = None,
+    title: str = "Correlation summaries",
+) -> Optional[str]:
+    if plt is None:
+        return None
+    rows = [dict(row) for row in correlation_rows if isinstance(row, Mapping)]
+    if not rows:
+        return None
+    state_values = _state_value_map_from_rows(rows, value_key=("mean_corr", "corr", "mean"))
+    if not state_values:
+        return None
+    state_order = [state for state in ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem", "nrem_blank", "rem_blank", "nrem_movies", "rem_movies"] if state in state_values]
+    extras = sorted(state for state in state_values.keys() if state not in state_order)
+    state_order.extend(extras)
+    out_dir = _ensure_dir(Path(output_dir))
+    stem = output_stem or f"{entity_label}_state_summary_boxplots_correlation_poster_ready"
+    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(FIGURE_HEIGHT_CM)), constrained_layout=False)
+    ax = fig.add_subplot(111)
+    significant_states = _significant_state_labels_from_comparison_rows(comparison_rows or [])
+    _boxplot(
+        ax,
+        state_values,
+        state_order,
+        title=title,
+        ylabel="Correlation",
+        cohort_label=entity_label,
+        significance_flags=[state in significant_states for state in state_order],
+        sample_sizes={state: int(len(_finite_array(values))) for state, values in state_values.items()},
+    )
+    fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=FIGURE_TITLE_FS, y=0.965)
+    output_path = out_dir / f"{stem}.svg"
+    return _write_figure(fig, output_path)
+
+
 def _select_mixed_model_rows(mixed_model_branch: Any, preferred_response_keys: Sequence[str] | None = None) -> list[dict[str, Any]]:
     if isinstance(mixed_model_branch, Mapping):
         summary_rows = mixed_model_branch.get("summary_rows")
@@ -468,6 +835,71 @@ def _write_figure(fig: plt.Figure, output_path: Path) -> str:
     return str(output_path)
 
 
+def _poster_mixed_model_significant_states(rows: Sequence[Mapping[str, Any]], *, p_value_key: str = "p_value") -> set[str]:
+    significant: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        term = str(row.get("term") or "")
+        if not term.startswith("state["):
+            continue
+        p_value = row.get(p_value_key)
+        try:
+            p_value_f = float(p_value) if p_value is not None else float("nan")
+        except Exception:
+            p_value_f = float("nan")
+        if not np.isfinite(p_value_f) or p_value_f >= 0.05:
+            continue
+        label = term[len("state[") :]
+        if label.endswith("]"):
+            label = label[:-1]
+        if ":" in label:
+            label = label.split(":", 1)[0]
+        significant.add(label)
+    return significant
+
+
+def _significant_state_labels_from_comparison_rows(rows: Sequence[Mapping[str, Any]], *, p_value_keys: Sequence[str] = ("shuffle_p", "p_value", "adjusted_pvalue", "raw_pvalue")) -> set[str]:
+    significant: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        p_value_f = float("nan")
+        for key in p_value_keys:
+            candidate = row.get(key)
+            try:
+                candidate_f = float(candidate) if candidate is not None else float("nan")
+            except Exception:
+                candidate_f = float("nan")
+            if np.isfinite(candidate_f):
+                p_value_f = candidate_f
+                break
+        if not np.isfinite(p_value_f) or p_value_f >= 0.05:
+            continue
+        for key in ("state", "state_label", "state_display", "state_a", "state_a_display", "state_b", "state_b_display"):
+            state = _canonical_state_key(row.get(key))
+            if state:
+                significant.add(state)
+    return significant
+
+
+def _poster_label_color(label: Any) -> str:
+    key = _canonical_state_key(label)
+    if key in {"basal", "apical"}:
+        return BOX_COLORS.get(key, "#444444")
+    if key.startswith("basal_"):
+        return BOX_COLORS.get("basal", "#4C72B0")
+    if key.startswith("apical_"):
+        return BOX_COLORS.get("apical", "#DD8452")
+    if key.startswith("quiet"):
+        return BOX_COLORS.get("quiet_awake", "#ff7f0e")
+    if key.startswith("nrem"):
+        return BOX_COLORS.get("nrem", "#2ca02c")
+    if key.startswith("rem"):
+        return BOX_COLORS.get("rem", "#d62728")
+    if key.startswith("active"):
+        return "#1f77b4"
+    return BOX_COLORS.get(key, "#444444")
 
 
 def write_visual_response_poster_figure(
@@ -499,11 +931,17 @@ def write_visual_response_poster_figure(
     ax_nonresp_movie = fig.add_subplot(nonresp_grid[0, 1], sharey=ax_nonresp_blank)
     ax_nonresp_box = fig.add_subplot(nonresp_grid[0, 2], sharey=ax_nonresp_blank)
     ax_pie = fig.add_subplot(outer[:, 1])
-    _single_exemplar_panel(ax_resp_blank, ax_resp_movie, ax_resp_box, responsive_row, title="movie responsive exemplar")
-    _single_exemplar_panel(ax_nonresp_blank, ax_nonresp_movie, ax_nonresp_box, nonresponsive_row, title="movie nonresponsive exemplar")
+    _single_exemplar_panel(ax_resp_blank, ax_resp_movie, ax_resp_box, responsive_row, title="responsive example", panel_label="responsive example", show_movie_ylabel=False, show_box_ylabel=False)
+    _single_exemplar_panel(ax_nonresp_blank, ax_nonresp_movie, ax_nonresp_box, nonresponsive_row, title="nonresponsive example", panel_label="nonresponsive example", show_movie_ylabel=False, show_box_ylabel=False)
+    fig.text(0.017, 0.735, "responsive example", rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold")
+    fig.text(0.017, 0.335, "nonresponsive example", rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold")
+    for ax in (ax_resp_movie, ax_resp_box, ax_nonresp_movie, ax_nonresp_box):
+        ax.tick_params(axis="y", labelleft=False)
+    responsive_rows = [row for row in rows if _coerce_bool(row.get("responsive", False))]
+    nonresponsive_rows = [row for row in rows if not _coerce_bool(row.get("responsive", False))]
     counts = np.asarray([
-        sum(bool(row.get("responsive", False)) for row in rows),
-        sum(not bool(row.get("responsive", False)) for row in rows),
+        _visual_response_unique_entity_count(responsive_rows),
+        _visual_response_unique_entity_count(nonresponsive_rows),
     ], dtype=float)
     labels = ["movie responsive", "movie nonresponsive"]
     colors = [RESPONSIVE_COLOR, NONRESPONSIVE_COLOR]
@@ -519,9 +957,14 @@ def write_visual_response_poster_figure(
     )
     for text in texts + autotexts:
         text.set_fontsize(FIGURE_NOTE_FS)
+    legend_handles = [
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=RESPONSIVE_COLOR, markeredgecolor="white", markersize=8, label="movie responsive"),
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=NONRESPONSIVE_COLOR, markeredgecolor="white", markersize=8, label="movie nonresponsive"),
+    ]
+    ax_pie.legend(handles=legend_handles, frameon=False, fontsize=FIGURE_NOTE_FS, loc="lower center", bbox_to_anchor=(0.5, -0.22), ncol=1)
     ax_pie.set_title(f"{entity_label.capitalize()} visual responsiveness", fontsize=FIGURE_TITLE_FS, pad=8)
     ax_pie.text(0.5, -0.08, f"n={int(total)}", transform=ax_pie.transAxes, ha="center", va="top", fontsize=FIGURE_NOTE_FS)
-    fig.suptitle(f"{entity_label.capitalize()} visual response", fontsize=POSTER_TITLE_SIZE + 1, y=0.965)
+    fig.suptitle(f"{entity_label.capitalize()} visual response", fontsize=FIGURE_TITLE_FS, y=0.965)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 def write_state_mixed_model_poster_figure(
@@ -539,37 +982,121 @@ def write_state_mixed_model_poster_figure(
 ) -> Optional[str]:
     if plt is None:
         return None
-    resp = {str(k): list(v) for k, v in responsive_state_values.items()}
-    nonresp = {str(k): list(v) for k, v in nonresponsive_state_values.items()}
+    base_states = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+    dendrite_prefixed = any(str(state).startswith(("basal_", "apical_")) for state in state_order) or any(str(k).startswith(("basal_", "apical_")) for k in responsive_state_values) or any(str(k).startswith(("basal_", "apical_")) for k in nonresponsive_state_values)
+    resp = {
+        str(k): list(v)
+        for k, v in responsive_state_values.items()
+        if str(k) in base_states or str(k).startswith("basal_") or str(k).startswith("apical_")
+    }
+    nonresp = {
+        str(k): list(v)
+        for k, v in nonresponsive_state_values.items()
+        if str(k) in base_states or str(k).startswith("basal_") or str(k).startswith("apical_")
+    }
     if not resp and not nonresp:
         return None
-    state_order = list(dict.fromkeys([str(state) for state in state_order if str(state)] + list(resp.keys()) + list(nonresp.keys())))
-    if isinstance(mixed_model_rows, Mapping) and ("responsive" in mixed_model_rows or "nonresponsive" in mixed_model_rows):
-        rows_by_cohort = {
-            str(cohort): _select_mixed_model_rows(branch, preferred_response_keys=preferred_response_keys)
-            for cohort, branch in mixed_model_rows.items()
-            if str(cohort) in {"responsive", "nonresponsive"}
-        }
+    if dendrite_prefixed:
+        state_order = [str(state) for state in state_order if str(state) in resp or str(state) in nonresp]
+        if not state_order:
+            state_order = list(dict.fromkeys(list(resp.keys()) + list(nonresp.keys())))
     else:
-        selected_rows = _select_mixed_model_rows(mixed_model_rows, preferred_response_keys=preferred_response_keys)
+        state_order = [state for state in base_states if state in state_order or state in resp or state in nonresp]
+    present_state_order = [state for state in state_order if _finite_array(resp.get(state, [])).size or _finite_array(nonresp.get(state, [])).size]
+    if not present_state_order:
+        present_state_order = [state for state in state_order if state in resp or state in nonresp]
+    if not present_state_order:
+        present_state_order = list(state_order)
+    forest_rows_by_cohort: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(mixed_model_rows, Mapping) and ("responsive" in mixed_model_rows or "nonresponsive" in mixed_model_rows):
+        rows_by_cohort = {}
+        for cohort, branch in mixed_model_rows.items():
+            if str(cohort) not in {"responsive", "nonresponsive"} or not isinstance(branch, Mapping):
+                continue
+            selected_rows = [row for row in _select_mixed_model_rows(branch, preferred_response_keys=preferred_response_keys) if str(row.get("term") or "").startswith("state[")]
+            contrast_rows = [dict(row) for row in branch.get("contrast_rows", []) if isinstance(row, Mapping)]
+            forest_rows = contrast_rows if contrast_rows else selected_rows
+            combined_rows = list(selected_rows)
+            for row in contrast_rows:
+                row_key = (
+                    str(row.get("term") or ""),
+                    str(row.get("contrast_name") or ""),
+                    str(row.get("state") or ""),
+                    str(row.get("state_a") or ""),
+                    str(row.get("state_b") or ""),
+                )
+                if not any(
+                    (
+                        str(existing.get("term") or ""),
+                        str(existing.get("contrast_name") or ""),
+                        str(existing.get("state") or ""),
+                        str(existing.get("state_a") or ""),
+                        str(existing.get("state_b") or ""),
+                    ) == row_key
+                    for existing in combined_rows
+                ):
+                    combined_rows.append(row)
+            rows_by_cohort[str(cohort)] = combined_rows
+            if forest_rows:
+                forest_rows_by_cohort[str(cohort)] = list(forest_rows)
+    else:
+        selected_rows = [row for row in _select_mixed_model_rows(mixed_model_rows, preferred_response_keys=preferred_response_keys) if str(row.get("term") or "").startswith("state[")]
         rows_by_cohort = {"responsive": selected_rows, "nonresponsive": selected_rows}
+        if isinstance(mixed_model_rows, Mapping):
+            contrast_rows = [dict(row) for row in mixed_model_rows.get("contrast_rows", []) if isinstance(row, Mapping)]
+            if contrast_rows:
+                combined_rows = list(selected_rows)
+                for row in contrast_rows:
+                    row_key = (
+                        str(row.get("term") or ""),
+                        str(row.get("contrast_name") or ""),
+                        str(row.get("state") or ""),
+                        str(row.get("state_a") or ""),
+                        str(row.get("state_b") or ""),
+                    )
+                    if not any(
+                        (
+                            str(existing.get("term") or ""),
+                            str(existing.get("contrast_name") or ""),
+                            str(existing.get("state") or ""),
+                            str(existing.get("state_a") or ""),
+                            str(existing.get("state_b") or ""),
+                        ) == row_key
+                        for existing in combined_rows
+                    ):
+                        combined_rows.append(row)
+                forest_rows_by_cohort = {"responsive": contrast_rows, "nonresponsive": contrast_rows}
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_state_mixed_model_poster_ready"
     p_source = _normalize_mixed_model_contrast_p_source(mixed_model_contrast_p_source)
     p_source_label = "shuffle p" if p_source == "shuffle" else "classical p"
     fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(20.5)), constrained_layout=False)
-    outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.92, bottom=0.11, wspace=0.20, hspace=0.28, height_ratios=[0.92, 1.08])
+    outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.92, bottom=0.11, wspace=0.24, hspace=0.28, height_ratios=[0.88, 1.12])
     cohort_specs = [("responsive", resp, 0), ("nonresponsive", nonresp, 1)]
     for cohort_label, values, col_index in cohort_specs:
         ax_box = fig.add_subplot(outer[0, col_index])
         ax_forest = fig.add_subplot(outer[1, col_index])
-        _boxplot(ax_box, values, state_order, title=f"{cohort_label} {title.lower()}", ylabel="Mean response", cohort_label=cohort_label)
-        cohort_rows = rows_by_cohort.get(cohort_label, [])
-        if not cohort_rows:
-            cohort_rows = rows_by_cohort.get("responsive", []) or rows_by_cohort.get("nonresponsive", [])
-        _forest_panel(ax_forest, cohort_rows, title=f"{cohort_label} mixed model ({p_source_label})")
+        box_rows = rows_by_cohort.get(cohort_label, [])
+        forest_rows = forest_rows_by_cohort.get(cohort_label, []) or box_rows
+        if not box_rows:
+            box_rows = rows_by_cohort.get("responsive", []) or rows_by_cohort.get("nonresponsive", [])
+        if not forest_rows:
+            forest_rows = box_rows
+        significant_states = _poster_mixed_model_significant_states(box_rows)
+        _boxplot(
+            ax_box,
+            values,
+            present_state_order,
+            title=f"{cohort_label} {title.lower()}",
+            ylabel="Mean response",
+            cohort_label=cohort_label,
+            significance_flags=[state in significant_states for state in present_state_order],
+            sample_sizes={state: int(len(_finite_array(values.get(state, [])))) for state in present_state_order},
+            horizontal=True,
+        )
+        _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True)
         ax_forest.text(0.98, 0.02, p_source_label, transform=ax_forest.transAxes, ha="right", va="bottom", fontsize=FIGURE_NOTE_FS, color="#444444")
-    fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=POSTER_TITLE_SIZE + 1, y=0.985)
+    fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=FIGURE_TITLE_FS, y=0.985)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 
@@ -584,6 +1111,10 @@ def write_blank_movie_state_boxplot_figure(
     nonresponsive_movie_values: Mapping[str, Sequence[float]],
     blank_state_order: Sequence[str],
     movie_state_order: Sequence[str],
+    responsive_significant_states: Sequence[str] | None = None,
+    nonresponsive_significant_states: Sequence[str] | None = None,
+    responsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    nonresponsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     output_stem: Optional[str] = None,
     title: str = "Blank vs movie states",
 ) -> Optional[str]:
@@ -592,17 +1123,62 @@ def write_blank_movie_state_boxplot_figure(
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_blank_movie_states_poster_ready"
     fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(18.5)), constrained_layout=False)
-    outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.93, bottom=0.11, wspace=0.15, hspace=0.28)
-    panels = [
-        ("responsive", responsive_blank_values, responsive_movie_values, 0),
-        ("nonresponsive", nonresponsive_blank_values, nonresponsive_movie_values, 1),
-    ]
-    for cohort_label, blank_values, movie_values, row_index in panels:
-        ax_blank = fig.add_subplot(outer[row_index, 0])
-        ax_movie = fig.add_subplot(outer[row_index, 1])
-        _boxplot(ax_blank, blank_values, blank_state_order, title=f"{cohort_label} blank states", ylabel="Mean response", cohort_label=cohort_label)
-        _boxplot(ax_movie, movie_values, movie_state_order, title=f"{cohort_label} movie states", ylabel="Mean response")
-    fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=POSTER_TITLE_SIZE + 1, y=0.985)
+    outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.93, bottom=0.11, wspace=0.16, hspace=0.30)
+    ax_resp_blank = fig.add_subplot(outer[0, 0])
+    ax_nonresp_blank = fig.add_subplot(outer[0, 1], sharey=ax_resp_blank)
+    ax_resp_movie = fig.add_subplot(outer[1, 0])
+    ax_nonresp_movie = fig.add_subplot(outer[1, 1], sharey=ax_resp_movie)
+    responsive_sig = {str(state) for state in (responsive_significant_states or [])}
+    nonresponsive_sig = {str(state) for state in (nonresponsive_significant_states or [])}
+    if responsive_comparison_rows:
+        responsive_sig.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
+    if nonresponsive_comparison_rows:
+        nonresponsive_sig.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
+    blank_state_order = list(dict.fromkeys([str(state) for state in blank_state_order] + [str(state) for state in responsive_blank_values.keys()] + [str(state) for state in nonresponsive_blank_values.keys()]))
+    movie_state_order = list(dict.fromkeys([str(state) for state in movie_state_order] + [str(state) for state in responsive_movie_values.keys()] + [str(state) for state in nonresponsive_movie_values.keys()]))
+    _boxplot(
+        ax_resp_blank,
+        responsive_blank_values,
+        blank_state_order,
+        title="responsive blank states",
+        ylabel="Mean response",
+        cohort_label="responsive",
+        significance_flags=[state in responsive_sig for state in blank_state_order],
+        sample_sizes={state: int(len(_finite_array(responsive_blank_values.get(state, [])))) for state in blank_state_order},
+    )
+    _boxplot(
+        ax_nonresp_blank,
+        nonresponsive_blank_values,
+        blank_state_order,
+        title="nonresponsive blank states",
+        ylabel="Mean response",
+        cohort_label="nonresponsive",
+        significance_flags=[state in nonresponsive_sig for state in blank_state_order],
+    )
+    _boxplot(
+        ax_resp_movie,
+        responsive_movie_values,
+        movie_state_order,
+        title="responsive movie states",
+        ylabel="Mean response",
+        cohort_label="responsive",
+        significance_flags=[state in responsive_sig for state in movie_state_order],
+    )
+    _boxplot(
+        ax_nonresp_movie,
+        nonresponsive_movie_values,
+        movie_state_order,
+        title="nonresponsive movie states",
+        ylabel="Mean response",
+        cohort_label="nonresponsive",
+        significance_flags=[state in nonresponsive_sig for state in movie_state_order],
+    )
+    for ax in (ax_nonresp_blank, ax_nonresp_movie):
+        ax.tick_params(axis="y", labelleft=False)
+        ax.set_ylabel("")
+    for ax in (ax_resp_blank, ax_nonresp_blank):
+        ax.tick_params(axis="x", labelbottom=False)
+    fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=FIGURE_TITLE_FS, y=0.985)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 

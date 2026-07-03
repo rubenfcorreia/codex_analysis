@@ -72,12 +72,12 @@ class PosterSize(int):
         return self._clamp(float(other) / int(self))
 
 
-POSTER_FONT_SIZE = PosterSize(18, 18)
-POSTER_LABEL_SIZE = PosterSize(20, 20)
-POSTER_TITLE_SIZE = PosterSize(24, 24)
-POSTER_SUPTITLE_SIZE = PosterSize(28, 28)
-POSTER_LEGEND_SIZE = PosterSize(18, 18)
-POSTER_NOTE_SIZE = PosterSize(18, 18)
+POSTER_FONT_SIZE = PosterSize(9, 9)
+POSTER_LABEL_SIZE = PosterSize(11, 11)
+POSTER_TITLE_SIZE = PosterSize(12, 12)
+POSTER_SUPTITLE_SIZE = PosterSize(12, 12)
+POSTER_LEGEND_SIZE = PosterSize(9, 9)
+POSTER_NOTE_SIZE = PosterSize(9, 9)
 POSTER_SINGLE_FIGSIZE = (7.8, 5.4)
 POSTER_DOUBLE_FIGSIZE = (10.4, 5.8)
 POSTER_WIDE_FIGSIZE = (11.2, 6.8)

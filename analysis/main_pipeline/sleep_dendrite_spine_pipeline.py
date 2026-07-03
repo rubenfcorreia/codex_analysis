@@ -1265,6 +1265,10 @@ def _collect_visual_response_trial_rows(
                 "response": float(stimulus),
                 "baseline": float(baseline),
                 "response_metric": response_metric_name,
+                "source_path": str(cut_data.get("source_path") or ""),
+                "mode": str(observation.get("mode") or observation.get("state_mode") or "movie"),
+                "roi_index": int(roi_index),
+                "exp_id": str(exp_id),
             }
         )
     return rows
@@ -5908,7 +5912,7 @@ def _draw_boxplot_significance_annotations(
     items: List[Dict[str, Any]] = []
     for row in comparisons:
         p_value = as_float(row.get(label_key))
-        label = _boxplot_significance_stars(p_value)
+        label = str(row.get("label") or _boxplot_significance_stars(p_value))
         if not label:
             continue
         x1 = as_float(row.get("x1"))
@@ -14852,12 +14856,24 @@ def write_poster_ready_figures(
         write_spine_coactivity_poster_figure,
     )
     from analysis.shared.plots.poster_ready import (
+        _assign_visual_response_cohorts,
+        _poster_mixed_model_significant_states,
+        _select_mixed_model_rows,
+        _significant_state_labels_from_comparison_rows,
         write_blank_movie_state_boxplot_figure,
         write_state_mixed_model_poster_figure,
         write_visual_response_poster_figure,
     )
 
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
+    poster_result_root = Path(results.get("output_root") or output_dir)
+    if not (poster_result_root / "blank_state_comparisons").exists() and (poster_result_root.parent / "blank_state_comparisons").exists():
+        poster_result_root = poster_result_root.parent
+
+    def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
+        csv_path = poster_result_root / preset_name / "csv" / csv_name
+        return read_csv_rows(csv_path) if csv_path.exists() else []
+
     written: List[str] = []
     selected_families = set(str(family) for family in (analysis_families or []) if str(family))
     allow_all_families = not selected_families
@@ -14906,41 +14922,111 @@ def write_poster_ready_figures(
                             combined.setdefault(str(state), []).extend([float(value) for value in arr])
                 return combined
 
+            def _state_values_from_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, List[float]]:
+                grouped: Dict[str, List[float]] = {}
+                for row in rows:
+                    state = str(row.get("state") or "").strip()
+                    if not state:
+                        continue
+                    value = row.get("mean")
+                    try:
+                        value_f = float(value)
+                    except Exception:
+                        continue
+                    if not np.isfinite(value_f):
+                        continue
+                    grouped.setdefault(state, []).append(value_f)
+                return grouped
+
             def _entity_state_values(entity_key: str, metric_key: str) -> Dict[str, Dict[str, List[float]]]:
                 summary = results.get(f"{entity_key}_visual_response_state_summaries", {})
                 if not isinstance(summary, dict):
                     return {"responsive": {}, "nonresponsive": {}}
+                if entity_key != "dendrite":
+                    return {
+                        "responsive": _combined_state_values(summary.get("responsive", {}), metric_key),
+                        "nonresponsive": _combined_state_values(summary.get("nonresponsive", {}), metric_key),
+                    }
+                def _compartment_state_values(cohort_payload: Any) -> Dict[str, List[float]]:
+                    combined: Dict[str, List[float]] = {}
+                    if not isinstance(cohort_payload, dict):
+                        return combined
+                    for compartment, compartment_payload in cohort_payload.items():
+                        if not isinstance(compartment_payload, dict):
+                            continue
+                        metric_summary = compartment_payload.get("state_summaries", {}).get(metric_key, {})
+                        if not isinstance(metric_summary, dict):
+                            continue
+                        for state, by_subject in metric_summary.items():
+                            state_values = flatten_state_summary_values(by_subject)
+                            arr = np.asarray(state_values, dtype=float)
+                            arr = arr[np.isfinite(arr)]
+                            if arr.size:
+                                combined.setdefault(f"{compartment}_{state}", []).extend([float(value) for value in arr])
+                    return combined
                 return {
-                    "responsive": _combined_state_values(summary.get("responsive", {}), metric_key),
-                    "nonresponsive": _combined_state_values(summary.get("nonresponsive", {}), metric_key),
+                    "responsive": _compartment_state_values(summary.get("responsive", {})),
+                    "nonresponsive": _compartment_state_values(summary.get("nonresponsive", {})),
                 }
 
-            poster_state_order = [str(state) for state in (results.get("analysis_state_selection", {}) or {}).get("state_comparison_states") or [] if str(state)]
-            blank_state_order = [state for state in poster_state_order if state.endswith("_blank")] or ["quiet_awake_blank", "nrem_blank", "rem_blank"]
-            movie_state_order = [state for state in poster_state_order if state.endswith("_movies")] or ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+            poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+            blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+            movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
 
             mixed_model_contrast_p_source = str(results.get("mixed_model_contrast_p_source") or "classical")
             entity_specs = [
-                ("dendrite", "dendrite", "dendrite_mean", results.get("dendrite_visual_response", {}), results.get("mixed_model_visual_response_responsive_selected_state", {}), results.get("mixed_model_visual_response_nonresponsive_selected_state", {})),
-                ("spine", "spine", "spine_specific_mean", results.get("spine_visual_response", {}), results.get("mixed_model_visual_response_responsive_selected_state", {}), results.get("mixed_model_visual_response_nonresponsive_selected_state", {})),
+                {"entity_key": "dendrite", "entity_label": "dendrite", "metric_key": "dendrite_mean", "visual_payload": results.get("dendrite_visual_response", {}), "responsive_mixed": results.get("mixed_model_visual_response_responsive_selected_state", {}), "nonresponsive_mixed": results.get("mixed_model_visual_response_nonresponsive_selected_state", {}), "visual_compartments": ("basal", "apical")},
+                {"entity_key": "spine", "entity_label": "spine", "metric_key": "spine_specific_mean", "visual_payload": results.get("spine_visual_response", {}), "responsive_mixed": results.get("mixed_model_visual_response_responsive_selected_state", {}), "nonresponsive_mixed": results.get("mixed_model_visual_response_nonresponsive_selected_state", {}), "visual_compartments": (None,)},
             ]
-            for entity_key, entity_label, metric_key, visual_payload, responsive_mixed, nonresponsive_mixed in entity_specs:
+            for spec in entity_specs:
+                entity_key = str(spec["entity_key"])
+                entity_label = str(spec["entity_label"])
+                metric_key = str(spec["metric_key"])
+                visual_payload = spec["visual_payload"]
+                responsive_mixed = spec["responsive_mixed"]
+                nonresponsive_mixed = spec["nonresponsive_mixed"]
+                visual_compartments = tuple(spec.get("visual_compartments") or (None,))
                 entity_root = ensure_dir(poster_output_dir / entity_key)
                 visual_dir = ensure_dir(entity_root / "visual_response")
                 mixed_dir = ensure_dir(entity_root / "mixed_model")
                 blank_dir = ensure_dir(entity_root / "blank_movie_states")
                 rows = list(visual_payload.get("rows", [])) if isinstance(visual_payload, dict) else []
+                blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), rows)
+                movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), rows)
+                blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), rows)
+                movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), rows)
+                preset_compartments = {str(compartment).strip().lower() for compartment in visual_compartments if str(compartment).strip() and str(compartment).strip().lower() != "none"}
+                if not preset_compartments:
+                    preset_compartments = {entity_key}
                 if rows:
-                    visual_path = write_visual_response_poster_figure(
-                        output_dir=visual_dir,
-                        entity_label=entity_key,
-                        visual_response_rows=rows,
-                        output_stem=f"{entity_key}_visual_response_poster_ready",
-                    )
-                    if visual_path:
-                        written.append(report_relative_path(Path(visual_path), output_dir))
+                    if entity_key == "dendrite":
+                        for compartment in visual_compartments:
+                            compartment_rows = [row for row in rows if str(row.get("compartment") or "") == str(compartment)]
+                            if not compartment_rows:
+                                continue
+                            compartment_dir = ensure_dir(visual_dir / str(compartment))
+                            visual_path = write_visual_response_poster_figure(
+                                output_dir=compartment_dir,
+                                entity_label=f"{entity_label} {compartment}",
+                                visual_response_rows=compartment_rows,
+                                output_stem=f"{entity_key}_{compartment}_visual_response_poster_ready",
+                            )
+                            if visual_path:
+                                written.append(report_relative_path(Path(visual_path), output_dir))
+                    else:
+                        visual_path = write_visual_response_poster_figure(
+                            output_dir=visual_dir,
+                            entity_label=entity_label,
+                            visual_response_rows=rows,
+                            output_stem=f"{entity_key}_visual_response_poster_ready",
+                        )
+                        if visual_path:
+                            written.append(report_relative_path(Path(visual_path), output_dir))
                 state_values = _entity_state_values(entity_key, metric_key)
                 if state_values.get("responsive") or state_values.get("nonresponsive"):
+                    dendrite_state_order = poster_state_order
+                    if entity_key == "dendrite":
+                        dendrite_state_order = [f"basal_{state}" for state in poster_state_order] + [f"apical_{state}" for state in poster_state_order]
                     mixed_path = write_state_mixed_model_poster_figure(
                         output_dir=mixed_dir,
                         entity_label=entity_key,
@@ -14950,7 +15036,7 @@ def write_poster_ready_figures(
                             "responsive": responsive_mixed,
                             "nonresponsive": nonresponsive_mixed,
                         },
-                        state_order=poster_state_order,
+                        state_order=dendrite_state_order,
                         output_stem=f"{entity_key}_state_mixed_model_poster_ready",
                         title="Quiet blank vs sleep states",
                         preferred_response_keys=(("mean_dendrite_activity", "mean") if entity_key == "dendrite" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
@@ -14958,19 +15044,29 @@ def write_poster_ready_figures(
                     )
                     if mixed_path:
                         written.append(report_relative_path(Path(mixed_path), output_dir))
-                blank_values = {
-                    state: values for state, values in state_values.get("responsive", {}).items() if state in blank_state_order
-                }
-                movie_values = {
-                    state: values for state, values in state_values.get("responsive", {}).items() if state in movie_state_order
-                }
-                non_blank_values = {
-                    state: values for state, values in state_values.get("nonresponsive", {}).items() if state in blank_state_order
-                }
-                non_movie_values = {
-                    state: values for state, values in state_values.get("nonresponsive", {}).items() if state in movie_state_order
-                }
+                blank_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() == "responsive"]
+                movie_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() == "responsive"]
+                non_blank_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() != "responsive"]
+                non_movie_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() != "responsive"]
+                blank_values = _state_values_from_rows(blank_rows) if blank_rows else {state: values for state, values in state_values.get("responsive", {}).items() if state in blank_state_order}
+                movie_values = _state_values_from_rows(movie_rows) if movie_rows else {state: values for state, values in state_values.get("responsive", {}).items() if state in movie_state_order}
+                non_blank_values = _state_values_from_rows(non_blank_rows) if non_blank_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in blank_state_order}
+                non_movie_values = _state_values_from_rows(non_movie_rows) if non_movie_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in movie_state_order}
                 if blank_values or movie_values or non_blank_values or non_movie_values:
+                    responsive_significant_states = set()
+                    nonresponsive_significant_states = set()
+                    responsive_selected_rows = _select_mixed_model_rows(
+                        responsive_mixed,
+                        preferred_response_keys=("mean_dendrite_activity", "mean") if entity_key == "dendrite" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"),
+                    )
+                    nonresponsive_selected_rows = _select_mixed_model_rows(
+                        nonresponsive_mixed,
+                        preferred_response_keys=("mean_dendrite_activity", "mean") if entity_key == "dendrite" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"),
+                    )
+                    responsive_significant_states.update(_poster_mixed_model_significant_states(responsive_selected_rows))
+                    nonresponsive_significant_states.update(_poster_mixed_model_significant_states(nonresponsive_selected_rows))
+                    responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
+                    nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
                     state_path = write_blank_movie_state_boxplot_figure(
                         output_dir=blank_dir,
                         entity_label=entity_key,
@@ -14980,6 +15076,8 @@ def write_poster_ready_figures(
                         nonresponsive_movie_values=non_movie_values,
                         blank_state_order=blank_state_order,
                         movie_state_order=movie_state_order,
+                        responsive_significant_states=sorted(responsive_significant_states),
+                        nonresponsive_significant_states=sorted(nonresponsive_significant_states),
                         output_stem=f"{entity_key}_blank_movie_states_poster_ready",
                         title="Blank vs movie states",
                     )
@@ -15890,6 +15988,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
 
     child_script = Path(__file__).resolve()
     for preset_index, (preset_name, overrides) in enumerate(presets):
+        generate_once = preset_index == 0
         safe_name = safe_filename_component(preset_name)
         preset_output_dir = base_output_dir / safe_name
         preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
@@ -15905,6 +16004,12 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["cache_path"] = str(shared_cache_path)
         preset_config["analysis_run_cache_path"] = str(preset_cache_path)
         preset_config["analysis_results_cache_path"] = None
+        preset_rebuild = bool(config.get("rebuild")) if generate_once else False
+        preset_config["rebuild"] = preset_rebuild
+        preset_config["source_cache_rebuild"] = preset_rebuild
+        preset_config["analysis_tables_rebuild"] = preset_rebuild
+        preset_config["analysis_results_rebuild"] = True
+        preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         generate_once = preset_index == 0
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
@@ -16532,6 +16637,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         source_cache_payload.pop("analysis_tables", None)
         source_cache_payload.pop("analysis_results", None)
         save_npz_cache(cache_path, source_cache_payload)
+    poster_ready_outputs = [path for path in written_artifacts if "/poster_ready/" in str(path)]
+    if poster_ready_outputs:
+        step_message(f"poster-ready outputs ({len(poster_ready_outputs)}):")
+        for artifact_path in poster_ready_outputs:
+            print(f"  - {artifact_path}")
         analysis_tables_payload = {
             "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
             "meta": cacheable({

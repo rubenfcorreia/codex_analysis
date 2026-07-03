@@ -14,6 +14,48 @@ import numpy as np
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import _draw_boxplot_significance_annotations, is_significant_row
 
 
+FIGURE_WIDTH_MM = 170.0
+FIGURE_HEIGHT_MM = 75.0
+FIGURE_TITLE_FS = 12
+FIGURE_LABEL_FS = 11
+FIGURE_TICK_FS = 9
+FIGURE_NOTE_FS = 9
+
+
+def _boxplot_significance_stars(p_value: Any) -> str:
+    try:
+        p = float(p_value)
+    except Exception:
+        return ""
+    if not np.isfinite(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return ""
+
+
+def _comparison_display_label(row: Mapping[str, Any]) -> str:
+    def _clean(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return text.replace("_", " ").replace("-", " ").strip().title()
+
+    left = row.get("state_a_display") or row.get("state_a") or row.get("x1_label") or row.get("x1_state") or ""
+    right = row.get("state_b_display") or row.get("state_b") or row.get("x2_label") or row.get("x2_state") or ""
+    left_text = _clean(left)
+    right_text = _clean(right)
+    if left_text and right_text:
+        return f"{left_text} vs {right_text}"
+    if left_text or right_text:
+        return left_text or right_text
+    return ""
+
+
 def plot_boxplot_series(
     values_by_series: Sequence[Sequence[float] | np.ndarray],
     labels: Sequence[str],
@@ -58,8 +100,7 @@ def plot_boxplot_series(
     if not cleaned_values:
         return []
 
-    fig_width = max(12.0, 1.25 * len(cleaned_values))
-    fig, ax = plt.subplots(figsize=(fig_width, 8), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(FIGURE_WIDTH_MM / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=True)
     bp = ax.boxplot(
         cleaned_values,
         patch_artist=True,
@@ -105,7 +146,8 @@ def plot_boxplot_series(
                 x2 = position_lookup.get(state_b)
             if x1 is None or x2 is None:
                 continue
-            annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": row.get("shuffle_p")})
+            stars = _boxplot_significance_stars(row.get("shuffle_p"))
+            annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": row.get("shuffle_p"), "label": f"{_comparison_display_label(row)} {stars}".strip()})
         _draw_boxplot_significance_annotations(ax, annotation_rows)
     elif flags is not None and any(cleaned_flags):
         finite = np.concatenate(cleaned_values)
@@ -117,14 +159,14 @@ def plot_boxplot_series(
         for xpos, is_sig in enumerate(cleaned_flags, start=1):
             if not is_sig:
                 continue
-            ax.text(xpos, y, "*", ha="center", va="bottom", fontsize=22, color="#8b0000", fontweight="bold")
+            ax.text(xpos, y, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
 
-    ax.set_title(title, fontsize=20, fontweight="bold", color=title_color, pad=12)
-    ax.set_ylabel(ylabel, fontsize=18)
-    ax.set_xlabel(xlabel, fontsize=18)
+    ax.set_title(title, fontsize=FIGURE_TITLE_FS, fontweight="bold", color=title_color, pad=8)
+    ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
+    ax.set_xlabel(xlabel, fontsize=FIGURE_LABEL_FS)
     ax.grid(axis="y", alpha=0.18, linewidth=0.8)
-    ax.tick_params(axis="x", labelsize=13)
-    ax.tick_params(axis="y", labelsize=13)
+    ax.tick_params(axis="x", labelsize=FIGURE_TICK_FS)
+    ax.tick_params(axis="y", labelsize=FIGURE_TICK_FS)
     ax.set_xticks(list(range(1, len(cleaned_labels) + 1)))
     ax.set_xticklabels(cleaned_labels, rotation=30, ha="right")
     for tick, series_name in zip(ax.get_xticklabels(), cleaned_series):
@@ -146,7 +188,7 @@ def plot_boxplot_series(
                 rotation=30,
                 ha="right",
                 va="bottom",
-                fontsize=11,
+                fontsize=FIGURE_NOTE_FS,
                 color="#6b7280",
                 fontweight="normal",
             )

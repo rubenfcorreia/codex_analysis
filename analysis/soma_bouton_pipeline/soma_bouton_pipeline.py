@@ -50,7 +50,12 @@ from analysis.shared.plots.mixed_model import (
     plot_mixed_model_predicted_means_figure,
 )
 from analysis.shared.plots.poster_ready import (
+    _assign_visual_response_cohorts,
+    _poster_mixed_model_significant_states,
+    _select_mixed_model_rows,
+    _significant_state_labels_from_comparison_rows,
     write_blank_movie_state_boxplot_figure,
+    write_correlation_poster_figure,
     write_state_mixed_model_poster_figure,
     write_visual_response_poster_figure,
 )
@@ -199,6 +204,12 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_run_cache_path"] = str(preset_run_cache_path)
         preset_config["analysis_tables_cache_path"] = str(preset_tables_cache_path)
         preset_config["analysis_results_cache_path"] = str(preset_results_cache_path)
+        preset_rebuild = bool(config.get("rebuild")) if preset_index == 0 else False
+        preset_config["rebuild"] = preset_rebuild
+        preset_config["source_cache_rebuild"] = preset_rebuild
+        preset_config["analysis_tables_rebuild"] = preset_rebuild
+        preset_config["analysis_results_rebuild"] = True
+        preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
     return manifests
@@ -473,6 +484,9 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 }
             )
             _stage("cache load", f"reused analysis-results cache at {analysis_results_cache_file}")
+            if bool(config.get("poster_ready_only")):
+                config = dict(config)
+                config["plots_only"] = True
             if not bool(config.get("plots_only")):
                 return manifest
 
@@ -816,10 +830,22 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             grouped.setdefault(state, []).append(value_f)
         return grouped
 
-    poster_state_order = [str(state) for state in (config.get("state_comparison_states") or []) if str(state)]
-    blank_state_order = [state for state in poster_state_order if state.endswith("_blank")] or ["quiet_awake_blank", "nrem_blank", "rem_blank"]
-    movie_state_order = [state for state in poster_state_order if state.endswith("_movies")] or ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+    poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+    blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+    movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
     mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
+    preset_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+    if not (preset_result_root / "blank_state_comparisons").exists() and (preset_result_root.parent / "blank_state_comparisons").exists():
+        preset_result_root = preset_result_root.parent
+
+    def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
+        csv_path = preset_result_root / preset_name / "csv" / csv_name
+        return read_csv_rows(csv_path) if csv_path.exists() else []
+
+    blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
+    movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
+    blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
+    movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
 
     for compartment in ("soma", "bouton"):
         compartment_root = ensure_dir(poster_output_dir / compartment)
@@ -841,6 +867,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         nonresponsive_rows = [row for row in cohort_activity_rows.get("nonresponsive", []) if str(row.get("compartment") or "") == compartment]
         responsive_values = _state_values_from_rows(responsive_rows)
         nonresponsive_values = _state_values_from_rows(nonresponsive_rows)
+        blank_responsive_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "responsive"]
+        blank_nonresponsive_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "nonresponsive"]
+        movie_responsive_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "responsive"]
+        movie_nonresponsive_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "nonresponsive"]
+        blank_responsive_values = _state_values_from_rows(blank_responsive_rows) if blank_responsive_rows else {state: values for state, values in responsive_values.items() if state in blank_state_order}
+        blank_nonresponsive_values = _state_values_from_rows(blank_nonresponsive_rows) if blank_nonresponsive_rows else {state: values for state, values in nonresponsive_values.items() if state in blank_state_order}
+        movie_responsive_values = _state_values_from_rows(movie_responsive_rows) if movie_responsive_rows else {state: values for state, values in responsive_values.items() if state in movie_state_order}
+        movie_nonresponsive_values = _state_values_from_rows(movie_nonresponsive_rows) if movie_nonresponsive_rows else {state: values for state, values in nonresponsive_values.items() if state in movie_state_order}
         if responsive_values or nonresponsive_values:
             mixed_path = write_state_mixed_model_poster_figure(
                 output_dir=mixed_dir,
@@ -859,20 +893,80 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             if mixed_path:
                 poster_ready_figures.append(str(mixed_path))
+        responsive_significant_states = set()
+        nonresponsive_significant_states = set()
+        for cohort_label, source, target in (
+            ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
+            ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
+        ):
+            selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"))
+            target.update(_poster_mixed_model_significant_states(selected_rows))
+        responsive_comparison_rows = [
+            row for row in cohort_state_comparison_rows.get("responsive", [])
+            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+        ]
+        nonresponsive_comparison_rows = [
+            row for row in cohort_state_comparison_rows.get("nonresponsive", [])
+            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+        ]
+        blank_comparison_rows = [
+            row for row in blank_preset_comparison_rows
+            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+        ]
+        movie_comparison_rows = [
+            row for row in movie_preset_comparison_rows
+            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+        ]
+        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
+        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
+        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))
+        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(movie_comparison_rows))
+        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))
+        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(movie_comparison_rows))
         blank_path = write_blank_movie_state_boxplot_figure(
             output_dir=blank_dir,
             entity_label=compartment,
-            responsive_blank_values={state: values for state, values in responsive_values.items() if state in blank_state_order},
-            responsive_movie_values={state: values for state, values in responsive_values.items() if state in movie_state_order},
-            nonresponsive_blank_values={state: values for state, values in nonresponsive_values.items() if state in blank_state_order},
-            nonresponsive_movie_values={state: values for state, values in nonresponsive_values.items() if state in movie_state_order},
+            responsive_blank_values=blank_responsive_values,
+            responsive_movie_values=movie_responsive_values,
+            nonresponsive_blank_values=blank_nonresponsive_values,
+            nonresponsive_movie_values=movie_nonresponsive_values,
             blank_state_order=blank_state_order,
             movie_state_order=movie_state_order,
+            responsive_significant_states=sorted(responsive_significant_states),
+            nonresponsive_significant_states=sorted(nonresponsive_significant_states),
+            responsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
+            nonresponsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
             output_stem=f"{compartment}_blank_movie_states_poster_ready",
             title="Blank vs movie states",
         )
         if blank_path:
             poster_ready_figures.append(str(blank_path))
+
+        correlation_dir = ensure_dir(compartment_root / "correlation")
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = [
+                row for row in cohort_correlation_rows.get(cohort_name, [])
+                if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+            ]
+            if not cohort_rows:
+                continue
+            cohort_summary_rows = correlation_summary_rows(cohort_rows)
+            if not cohort_summary_rows:
+                continue
+            comparison_rows = [
+                row for row in cohort_state_comparison_rows.get(cohort_name, [])
+                if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+            ]
+            correlation_path = write_correlation_poster_figure(
+                output_dir=ensure_dir(correlation_dir / cohort_name),
+                entity_label=compartment,
+                correlation_rows=cohort_summary_rows,
+                comparison_rows=comparison_rows,
+                output_stem=f"{compartment}_state_summary_boxplots_correlation_poster_ready",
+                title="Correlation summaries",
+            )
+            if correlation_path:
+                poster_ready_figures.append(str(correlation_path))
 
     visual_response_counts = {
         "all": int(len(visual_response_rows)),
@@ -984,6 +1078,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "analysis_results": analysis_results_cache_payload(manifest_json),
         },
     )
+    if poster_ready_figures:
+        _stage("poster-ready outputs", f"{len(poster_ready_figures)} figures written")
+        for figure_path in poster_ready_figures:
+            print(f"  - {figure_path}")
     _stage("completed", f"{preset_name} with {len(experiment_rows)} experiments")
     return manifest
 
@@ -1015,12 +1113,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.comparison_presets:
         config["comparison_preset_names"] = list(args.comparison_presets)
     if config.get("comparison_presets"):
-        manifests = run_comparison_preset_runs(config)
-        if manifests:
-            print(json.dumps({"comparison_presets": _json_safe(manifests)}, indent=2, sort_keys=True))
-            return 0
-    manifest = run_pipeline(config)
-    print(json.dumps(_json_safe(manifest), indent=2, sort_keys=True))
+        run_comparison_preset_runs(config)
+        return 0
+    run_pipeline(config)
+    return 0
     return 0
 
 
