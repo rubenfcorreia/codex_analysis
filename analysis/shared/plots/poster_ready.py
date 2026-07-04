@@ -30,7 +30,8 @@ if plt is not None:
 
 
 FIGURE_WIDTH_CM = 17.0
-FIGURE_HEIGHT_CM = 6.5
+FIGURE_HEIGHT_CM = 7.5
+MIXED_MODEL_HEIGHT_CM = 8.3
 VISUAL_RESPONSE_WIDTH_CM = 19.0
 VISUAL_RESPONSE_HEIGHT_CM = 6.5
 
@@ -106,24 +107,23 @@ def _coerce_bool(value: Any) -> bool:
 
 def _row_roi_lookup_key(row: Mapping[str, Any]) -> tuple[str, str]:
     compartment = str(row.get("compartment") or "").strip().lower()
-    unit_id = row.get("unit_id")
-    if unit_id is None or str(unit_id).strip() == "":
-        unit_id = row.get("global_soma_id") or row.get("global_bouton_id") or row.get("roi_key")
-    if unit_id is None or str(unit_id).strip() == "":
-        roi_id = row.get("roi_id")
-        if roi_id is None or str(roi_id).strip() == "":
-            roi_id = row.get(f"{compartment}_id")
-        if roi_id is None or str(roi_id).strip() == "":
-            roi_id = row.get("roi_index")
-        unit_id = roi_id
-    return compartment, str(unit_id)
+    if compartment == "soma":
+        global_id = row.get("global_soma_id")
+    elif compartment == "bouton":
+        global_id = row.get("global_bouton_id")
+    else:
+        global_id = row.get("global_soma_id") or row.get("global_bouton_id")
+    return compartment, str(global_id).strip() if global_id is not None else ""
 
 
 def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     lookup: Dict[tuple[str, str], str] = {}
     for row in visual_response_rows:
         key = _row_roi_lookup_key(row)
-        lookup[key] = str(row.get("cohort") or "nonresponsive")
+        if _coerce_bool(row.get("responsive", False)) or str(row.get("cohort") or "").strip().lower() == "responsive":
+            lookup[key] = "responsive"
+        elif key not in lookup:
+            lookup[key] = "nonresponsive"
     assigned: list[dict[str, Any]] = []
     for row in rows:
         row_copy = dict(row)
@@ -338,29 +338,40 @@ def _pick_exemplar_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Optional[dic
 
 
 def _visual_response_entity_id(row: Mapping[str, Any]) -> str:
-    for key in ("global_soma_id", "global_bouton_id", "roi_key", "global_dendrite_id", "global_spine_id"):
-        value = row.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    expid = str(row.get("expid") or row.get("day_id") or "").strip()
     compartment = str(row.get("compartment") or "").strip().lower()
-    local_value = row.get("roi_id")
-    if local_value is None or str(local_value).strip() == "":
-        local_value = row.get(f"{compartment}_id") if compartment in {"soma", "bouton"} else None
-    if local_value is None or str(local_value).strip() == "":
-        local_value = row.get("entity_id")
-    if local_value is None or str(local_value).strip() == "":
-        local_value = row.get("roi_index")
-    local_text = str(local_value).strip() if local_value is not None else ""
-    if expid and local_text:
-        return f"{expid}|{compartment}|{local_text}"
-    return local_text or expid
+    if compartment == "soma":
+        value = row.get("global_soma_id")
+    elif compartment == "bouton":
+        value = row.get("global_bouton_id")
+    else:
+        value = row.get("global_soma_id") or row.get("global_bouton_id")
+    return str(value).strip() if value is not None else ""
+
+
+def _canonicalize_visual_response_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        entity_id = _visual_response_entity_id(row)
+        if not entity_id:
+            continue
+        grouped.setdefault(entity_id, []).append(dict(row))
+    canonical_rows: list[dict[str, Any]] = []
+    for entity_id, members in grouped.items():
+        row = dict(members[0])
+        responsive = any(_coerce_bool(member.get("responsive", False)) or str(member.get("cohort") or "").strip().lower() == "responsive" for member in members)
+        row["responsive"] = responsive
+        row["cohort"] = "responsive" if responsive else "nonresponsive"
+        row["entity_id"] = entity_id
+        canonical_rows.append(row)
+    return canonical_rows
 
 
 def _visual_response_unique_entity_count(rows: Sequence[Mapping[str, Any]]) -> int:
+    canonical_rows = _canonicalize_visual_response_rows(rows)
+    if canonical_rows:
+        return int(len(canonical_rows))
     unique_ids: set[str] = set()
     fallback = 0
     for row in rows:
@@ -520,6 +531,7 @@ def _boxplot(
     bracket_height_scale: float | None = None,
     bracket_text_scale: float | None = None,
     extent_padding_scale: float | None = None,
+    horizontal_extent_padding_scale: float | None = None,
 ) -> None:
     series = []
     labels = []
@@ -566,13 +578,13 @@ def _boxplot(
         finite = np.concatenate(series)
         finite = finite[np.isfinite(finite)]
         if finite.size and present_flags:
-            pad = max(0.05 * float(np.ptp(finite)), 0.05)
+            pad = max(0.03 * float(np.ptp(finite)), 0.02)
             if horizontal:
                 x = float(np.nanmax(finite)) + pad
                 sig_extent = x
                 for ypos, state, is_sig in zip(positions, present_states, present_flags):
                     if is_sig:
-                        ax.text(x, ypos, "*", ha="left", va="center", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
+                        ax.text(x + max(0.002 * float(np.ptp(finite)), 0.0015), ypos, "*", ha="left", va="center", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
             else:
                 y = float(np.nanmax(finite)) + pad
                 sig_extent = y
@@ -605,10 +617,11 @@ def _boxplot(
     if sig_extent is not None:
         if horizontal:
             current_left, current_right = ax.get_xlim()
-            ax.set_xlim(current_left, max(current_right, sig_extent + max(0.08 * abs(sig_extent), 0.05)))
+            horizontal_pad_scale = horizontal_extent_padding_scale if horizontal_extent_padding_scale is not None else 0.025
+            ax.set_xlim(current_left, max(current_right, sig_extent + max(horizontal_pad_scale * abs(sig_extent), 0.015)))
         else:
             current_bottom, current_top = ax.get_ylim()
-            ax.set_ylim(current_bottom, max(current_top, sig_extent + max((extent_padding_scale if extent_padding_scale is not None else 0.08) * abs(sig_extent), 0.05)))
+            ax.set_ylim(current_bottom, max(current_top, sig_extent + max((extent_padding_scale if extent_padding_scale is not None else 0.04) * abs(sig_extent), 0.03)))
     y0, y1 = ax.get_ylim()
     x0, x1 = ax.get_xlim()
     y_range = max(float(y1 - y0), 1e-6)
@@ -633,11 +646,12 @@ def _boxplot(
             if horizontal:
                 x0, x1 = ax.get_xlim()
                 x_range = x1 - x0 if np.isfinite(x1 - x0) and (x1 - x0) > 0 else 1.0
-                bracket_base = x1 + 0.018 * x_range
-                bracket_step = max((bracket_step_scale if bracket_step_scale is not None else 0.017) * x_range, 0.018)
-                text_offset = max((bracket_text_scale if bracket_text_scale is not None else 0.0035) * x_range, 0.008)
-                bracket_height = max((bracket_height_scale if bracket_height_scale is not None else 0.007) * x_range, 0.011)
-                top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.015 * x_range
+                anchor = float(sig_extent if sig_extent is not None else x1)
+                bracket_base = anchor + max(0.003 * x_range, 0.002)
+                bracket_step = max((bracket_step_scale if bracket_step_scale is not None else 0.006) * x_range, 0.002)
+                text_offset = max((bracket_text_scale if bracket_text_scale is not None else 0.0015) * x_range, 0.0015)
+                bracket_height = max((bracket_height_scale if bracket_height_scale is not None else 0.0035) * x_range, 0.002)
+                top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.003 * x_range
                 if top_needed > x1:
                     ax.set_xlim(x0, top_needed)
                 for level, (state, ypos) in enumerate(comparison_targets):
@@ -646,11 +660,12 @@ def _boxplot(
             else:
                 y0, y1 = ax.get_ylim()
                 y_range = y1 - y0 if np.isfinite(y1 - y0) and (y1 - y0) > 0 else 1.0
-                bracket_base = y1 + 0.018 * y_range
-                bracket_step = max((bracket_step_scale if bracket_step_scale is not None else 0.017) * y_range, 0.018)
-                text_offset = max((bracket_text_scale if bracket_text_scale is not None else 0.0035) * y_range, 0.008)
-                bracket_height = max((bracket_height_scale if bracket_height_scale is not None else 0.007) * y_range, 0.011)
-                top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.015 * y_range
+                anchor = float(sig_extent if sig_extent is not None else y1)
+                bracket_base = anchor + max(0.003 * y_range, 0.002)
+                bracket_step = max((bracket_step_scale if bracket_step_scale is not None else 0.006) * y_range, 0.002)
+                text_offset = max((bracket_text_scale if bracket_text_scale is not None else 0.0015) * y_range, 0.0015)
+                bracket_height = max((bracket_height_scale if bracket_height_scale is not None else 0.0035) * y_range, 0.002)
+                top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.003 * y_range
                 if top_needed > y1:
                     ax.set_ylim(y0, top_needed)
                 for level, (state, xpos) in enumerate(comparison_targets):
@@ -663,7 +678,7 @@ def _boxplot(
     _style_axes(ax)
 
 
-def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str, ylabel: str = "Estimate (95% CI)", p_value_key: str = "p_value", show_legend: bool = False) -> None:
+def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str, ylabel: str = "Estimate (95% CI)", p_value_key: str = "p_value", show_legend: bool = False, color_fn: Any = None) -> None:
     rows = [dict(row) for row in rows if isinstance(row, Mapping)]
     if not rows:
         ax.set_axis_off()
@@ -700,13 +715,14 @@ def _forest_panel(ax: plt.Axes, rows: Sequence[Mapping[str, Any]], *, title: str
         ci = 1.96 * se_f if np.isfinite(se_f) else float("nan")
         label = _forest_row_label(row)
         kind = _poster_mixed_model_term_kind(label) if label.startswith(("state[", "compartment[")) or label == "Intercept" else "interaction" if " X " in label else "covariate"
-        color = {
+        default_color = {
             "intercept": "#7f7f7f",
             "state": "#1f77b4",
             "compartment": "#2ca02c",
             "interaction": "#ff7f0e",
             "covariate": "#9467bd",
         }.get(kind, "#7f7f7f")
+        color = color_fn(row, label, kind) if callable(color_fn) else default_color
         if np.isfinite(ci):
             ax.errorbar(est_f, y_pos, xerr=ci, fmt="none", ecolor=color, elinewidth=1.4, capsize=3)
         ax.scatter(est_f, y_pos, s=50, color=color, edgecolor="#222222", linewidth=0.8, zorder=3)
@@ -1151,7 +1167,7 @@ def write_correlation_poster_figure(
     state_order.extend(extras)
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_state_summary_boxplots_correlation_poster_ready"
-    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(FIGURE_HEIGHT_CM)), constrained_layout=False)
+    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(MIXED_MODEL_HEIGHT_CM)), constrained_layout=False)
     ax = fig.add_subplot(111)
     significant_states = _significant_state_labels_from_comparison_rows(comparison_rows or [])
     _boxplot(
@@ -1173,6 +1189,355 @@ def write_correlation_poster_figure(
     fig.suptitle(f"{entity_label.capitalize()} {title.lower()}", fontsize=FIGURE_TITLE_FS, y=0.965)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
+
+
+def _write_blank_movie_and_correlation_panel(
+    ax: plt.Axes,
+    *,
+    entity_label: str,
+    correlation_rows: Sequence[Mapping[str, Any]],
+    comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    title: str = "State correlation summaries",
+) -> bool:
+    rows = [dict(row) for row in correlation_rows if isinstance(row, Mapping)]
+    if not rows:
+        ax.set_axis_off()
+        return False
+    state_values = _state_value_map_from_rows(rows, value_key=("mean_corr", "corr", "mean"))
+    if not state_values:
+        ax.set_axis_off()
+        return False
+    state_order = [state for state in ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem", "nrem_blank", "rem_blank", "nrem_movies", "rem_movies"] if state in state_values]
+    extras = sorted(state for state in state_values.keys() if state not in state_order)
+    state_order.extend(extras)
+    significant_states = _significant_state_labels_from_comparison_rows(comparison_rows or [])
+    _boxplot(
+        ax,
+        state_values,
+        state_order,
+        title=title,
+        ylabel="Correlation",
+        cohort_label=entity_label,
+        significance_flags=[state in significant_states for state in state_order],
+        sample_sizes={state: int(len(_finite_array(values))) for state, values in state_values.items()},
+        box_width=0.72,
+        bracket_step_scale=0.007,
+        bracket_height_scale=0.003,
+        bracket_text_scale=0.0012,
+        extent_padding_scale=0.02,
+        horizontal=True,
+    )
+    return True
+
+
+def write_blank_movie_and_correlation_poster_figure(
+    *,
+    output_dir: Path | str,
+    entity_label: str,
+    responsive_blank_values: Mapping[str, Sequence[float]],
+    responsive_movie_values: Mapping[str, Sequence[float]],
+    nonresponsive_blank_values: Mapping[str, Sequence[float]],
+    nonresponsive_movie_values: Mapping[str, Sequence[float]],
+    blank_state_order: Sequence[str],
+    movie_state_order: Sequence[str],
+    responsive_blank_sample_sizes: Mapping[str, int] | None = None,
+    responsive_movie_sample_sizes: Mapping[str, int] | None = None,
+    nonresponsive_blank_sample_sizes: Mapping[str, int] | None = None,
+    nonresponsive_movie_sample_sizes: Mapping[str, int] | None = None,
+    responsive_significant_states: Sequence[str] | None = None,
+    nonresponsive_significant_states: Sequence[str] | None = None,
+    responsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    nonresponsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    responsive_compartment_significant_states: Sequence[str] | None = None,
+    nonresponsive_compartment_significant_states: Sequence[str] | None = None,
+    correlation_rows: Sequence[Mapping[str, Any]] | None = None,
+    correlation_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    output_stem: Optional[str] = None,
+    title: str = "Blank vs movie states",
+    correlation_title: str = "State correlation summaries",
+) -> Optional[str]:
+    if plt is None:
+        return None
+    out_dir = _ensure_dir(Path(output_dir))
+    stem = output_stem or f"{entity_label}_blank_movie_states_with_correlation_poster_ready"
+    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(8.0)), constrained_layout=False)
+    outer = fig.add_gridspec(3, 2, left=0.07, right=0.985, top=0.93, bottom=0.11, wspace=0.16, hspace=0.28, height_ratios=[1.0, 1.0, 0.88])
+    ax_resp_blank = fig.add_subplot(outer[0, 0])
+    ax_nonresp_blank = fig.add_subplot(outer[0, 1], sharey=ax_resp_blank)
+    ax_resp_movie = fig.add_subplot(outer[1, 0])
+    ax_nonresp_movie = fig.add_subplot(outer[1, 1], sharey=ax_resp_movie)
+    ax_corr = fig.add_subplot(outer[2, :])
+    responsive_sig = {str(state) for state in (responsive_significant_states or [])}
+    nonresponsive_sig = {str(state) for state in (nonresponsive_significant_states or [])}
+    responsive_compartment_sig = {str(state) for state in (responsive_compartment_significant_states or [])}
+    nonresponsive_compartment_sig = {str(state) for state in (nonresponsive_compartment_significant_states or [])}
+    if responsive_comparison_rows:
+        responsive_sig.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
+    if nonresponsive_comparison_rows:
+        nonresponsive_sig.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
+    blank_state_order = list(dict.fromkeys([str(state) for state in blank_state_order] + [str(state) for state in responsive_blank_values.keys()] + [str(state) for state in nonresponsive_blank_values.keys()]))
+    movie_state_order = list(dict.fromkeys([str(state) for state in movie_state_order] + [str(state) for state in responsive_movie_values.keys()] + [str(state) for state in nonresponsive_movie_values.keys()]))
+    print(f"[poster] {entity_label} blank/movie source states: blank={blank_state_order}; movie={movie_state_order}", file=sys.stderr)
+    dendrite_grouped = str(entity_label).strip().lower() == "dendrite" or any(str(key).startswith(("basal_", "apical_")) for key in list(responsive_blank_values) + list(responsive_movie_values) + list(nonresponsive_blank_values) + list(nonresponsive_movie_values))
+
+    def _split_compartment_values(values: Mapping[str, Sequence[float]]) -> tuple[dict[str, Sequence[float]], dict[str, Sequence[float]], dict[str, Sequence[float]]]:
+        basal: dict[str, Sequence[float]] = {}
+        apical: dict[str, Sequence[float]] = {}
+        other: dict[str, Sequence[float]] = {}
+        for key, arr in values.items():
+            state_key = _canonical_state_key(key)
+            if state_key.startswith("basal_"):
+                basal[state_key[len("basal_"):]] = arr
+            elif state_key.startswith("apical_"):
+                apical[state_key[len("apical_"):]] = arr
+            else:
+                other[state_key] = arr
+        return basal, apical, other
+
+    def _project_dendrite_panel_values(values: Mapping[str, Sequence[float]], panel_kind: str) -> dict[str, list[float]]:
+        projected: dict[str, list[float]] = {}
+        if panel_kind not in {"blank", "movie"}:
+            return {str(key): list(_finite_array(arr)) for key, arr in values.items()}
+        exact_suffix = {
+            "blank": {"quiet_awake_blank", "nrem_blank", "rem_blank"},
+            "movie": {"quiet_awake_movies", "nrem_movies", "rem_movies"},
+        }[panel_kind]
+        fallback_suffix = {
+            "blank": {"quiet_awake": "quiet_awake_blank", "nrem": "nrem_blank", "rem": "rem_blank"},
+            "movie": {"quiet_awake": "quiet_awake_movies", "nrem": "nrem_movies", "rem": "rem_movies"},
+        }[panel_kind]
+        for key, arr in values.items():
+            state_key = _canonical_state_key(key)
+            if state_key.startswith("basal_") or state_key.startswith("apical_"):
+                state_key = state_key.split("_", 1)[1]
+            if state_key in exact_suffix:
+                projected.setdefault(state_key, []).extend(_finite_array(arr).tolist())
+            elif state_key in fallback_suffix:
+                projected.setdefault(fallback_suffix[state_key], []).extend(_finite_array(arr).tolist())
+        return projected
+
+    def _grouped_panel(
+        ax: plt.Axes,
+        basal_values: Mapping[str, Sequence[float]],
+        apical_values: Mapping[str, Sequence[float]],
+        state_order: Sequence[str],
+        *,
+        title_text: str,
+        cohort_label: str,
+        significant_states: Sequence[str],
+        compartment_significant_states: Sequence[str],
+        sample_sizes_basal: Mapping[str, int] | None = None,
+        sample_sizes_apical: Mapping[str, int] | None = None,
+    ) -> None:
+        rng = np.random.default_rng(7)
+        basal_state_map = {state: _finite_array(basal_values.get(state, [])) for state in state_order}
+        apical_state_map = {state: _finite_array(apical_values.get(state, [])) for state in state_order}
+        all_data: list[np.ndarray] = []
+        for compartment, summary_map, color, offset in (("basal", basal_state_map, BOX_COLORS.get("basal", "#4C72B0"), -0.18), ("apical", apical_state_map, BOX_COLORS.get("apical", "#DD8452"), 0.18)):
+            positions: list[float] = []
+            data: list[np.ndarray] = []
+            for idx, state in enumerate(state_order, start=1):
+                arr = summary_map.get(state, np.asarray([], dtype=float))
+                if arr.size:
+                    positions.append(float(idx) + offset)
+                    data.append(arr)
+            if not data:
+                continue
+            bp = ax.boxplot(data, positions=positions, widths=0.28, patch_artist=True, showfliers=False, vert=False)
+            _set_boxplot_colors(bp, [color] * len(data))
+            for pos, arr in zip(positions, data):
+                jitter = rng.uniform(-0.08, 0.08, size=arr.size)
+                ax.scatter(arr, np.full(arr.size, pos) + jitter, s=14, alpha=0.48, color=color, edgecolor="none")
+            all_data.extend(data)
+        ax.set_yticks(range(1, len(state_order) + 1))
+        ax.set_yticklabels([_state_display_label(state) for state in state_order], fontsize=FIGURE_TICK_FS)
+        ax.set_xlabel("Mean response", fontsize=FIGURE_LABEL_FS)
+        ax.set_ylabel("State", fontsize=FIGURE_LABEL_FS)
+        ax.set_title(title_text, fontsize=FIGURE_TITLE_FS, pad=4)
+        ax.grid(axis="x", alpha=0.25)
+        finite = np.concatenate(all_data) if all_data else np.asarray([], dtype=float)
+        finite = finite[np.isfinite(finite)] if finite.size else finite
+        if finite.size:
+            lo = float(np.nanmin(finite))
+            hi = float(np.nanmax(finite))
+            pad = max(0.12 * max(hi - lo, 1e-6), 0.05)
+            ax.set_xlim(lo - pad, hi + pad)
+            x0, x1 = ax.get_xlim()
+            x_range = max(x1 - x0, 1e-6)
+            count_x = x1 + max(0.02 * x_range, 0.05)
+            bracket_x = x1 + max(0.045 * x_range, 0.08)
+            bracket_dx = max(0.02 * x_range, 0.035)
+            bracket_step = max(0.028 * x_range, 0.05)
+            sig_states = [state for state in state_order if _state_compare_key(state) in {_state_compare_key(s) for s in significant_states}]
+            comp_sig_states = [state for state in state_order if _state_compare_key(state) in {_state_compare_key(s) for s in compartment_significant_states}]
+            for level, state in enumerate(comp_sig_states):
+                center = float(state_order.index(state) + 1)
+                y_low = center - 0.18
+                y_high = center + 0.18
+                x = bracket_x + level * bracket_step
+                ax.plot([x, x + bracket_dx, x + bracket_dx, x], [y_low, y_low, y_high, y_high], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+                ax.text(x + bracket_dx * 0.5, y_high + 0.06, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
+            for compartment, summary_map, color, offset in (("basal", basal_state_map, BOX_COLORS.get("basal", "#4C72B0"), -0.18), ("apical", apical_state_map, BOX_COLORS.get("apical", "#DD8452"), 0.18)):
+                sample_map = sample_sizes_basal if compartment == "basal" else sample_sizes_apical
+                for idx, state in enumerate(state_order, start=1):
+                    arr = summary_map.get(state, np.asarray([], dtype=float))
+                    if not arr.size:
+                        continue
+                    sample_n = int(sample_map.get(state, int(arr.size))) if sample_map is not None else int(arr.size)
+                    ax.text(count_x, float(idx) + offset, f"n={sample_n}", color=color, fontsize=FIGURE_NOTE_FS - 1, ha="left", va="center", clip_on=False)
+            for level, state in enumerate(sig_states):
+                y = float(state_order.index(state) + 1)
+                x = bracket_x + level * bracket_step
+                ax.plot([x, x + bracket_dx, x + bracket_dx, x], [y, y, y + 0.35, y + 0.35], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+                ax.text(x + bracket_dx * 0.5, y + 0.35, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
+        legend_handles = [
+            Line2D([0], [0], color=BOX_COLORS.get("basal", "#4C72B0"), marker="s", linestyle="", markersize=8, label="Basal"),
+            Line2D([0], [0], color=BOX_COLORS.get("apical", "#DD8452"), marker="s", linestyle="", markersize=8, label="Apical"),
+        ]
+        ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=FIGURE_LEGEND_FS)
+        ax.text(0.02, 0.98, cohort_label, transform=ax.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
+
+    if dendrite_grouped:
+        resp_basal_blank, resp_apical_blank, resp_other_blank = _split_compartment_values(responsive_blank_values)
+        resp_basal_movie, resp_apical_movie, resp_other_movie = _split_compartment_values(responsive_movie_values)
+        nonresp_basal_blank, nonresp_apical_blank, nonresp_other_blank = _split_compartment_values(nonresponsive_blank_values)
+        nonresp_basal_movie, nonresp_apical_movie, nonresp_other_movie = _split_compartment_values(nonresponsive_movie_values)
+        blank_state_order = ["quiet_awake_blank", "nrem_blank"] if "rem_blank" not in blank_state_order else ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+        movie_state_order = ["quiet_awake_movies", "nrem_movies"] if "rem_movies" not in movie_state_order else ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+        _grouped_panel(
+            ax_resp_blank,
+            _project_dendrite_panel_values({**resp_basal_blank, **resp_other_blank}, "blank"),
+            _project_dendrite_panel_values({**resp_apical_blank, **resp_other_blank}, "blank"),
+            blank_state_order,
+            title_text="responsive blank states",
+            cohort_label="responsive",
+            significant_states=[state for state in responsive_sig],
+            compartment_significant_states=[state for state in responsive_compartment_sig],
+            sample_sizes_basal=responsive_blank_sample_sizes,
+            sample_sizes_apical=responsive_blank_sample_sizes,
+        )
+        _grouped_panel(
+            ax_nonresp_blank,
+            _project_dendrite_panel_values({**nonresp_basal_blank, **nonresp_other_blank}, "blank"),
+            _project_dendrite_panel_values({**nonresp_apical_blank, **nonresp_other_blank}, "blank"),
+            blank_state_order,
+            title_text="nonresponsive blank states",
+            cohort_label="nonresponsive",
+            significant_states=[state for state in nonresponsive_sig],
+            compartment_significant_states=[state for state in nonresponsive_compartment_sig],
+            sample_sizes_basal=nonresponsive_blank_sample_sizes,
+            sample_sizes_apical=nonresponsive_blank_sample_sizes,
+        )
+        _grouped_panel(
+            ax_resp_movie,
+            _project_dendrite_panel_values({**resp_basal_movie, **resp_other_movie}, "movie"),
+            _project_dendrite_panel_values({**resp_apical_movie, **resp_other_movie}, "movie"),
+            movie_state_order,
+            title_text="responsive movie states",
+            cohort_label="responsive",
+            significant_states=[state for state in responsive_sig],
+            compartment_significant_states=[state for state in responsive_compartment_sig],
+            sample_sizes_basal=responsive_movie_sample_sizes,
+            sample_sizes_apical=responsive_movie_sample_sizes,
+        )
+        _grouped_panel(
+            ax_nonresp_movie,
+            _project_dendrite_panel_values({**nonresp_basal_movie, **nonresp_other_movie}, "movie"),
+            _project_dendrite_panel_values({**nonresp_apical_movie, **nonresp_other_movie}, "movie"),
+            movie_state_order,
+            title_text="nonresponsive movie states",
+            cohort_label="nonresponsive",
+            significant_states=[state for state in nonresponsive_sig],
+            compartment_significant_states=[state for state in nonresponsive_compartment_sig],
+            sample_sizes_basal=nonresponsive_movie_sample_sizes,
+            sample_sizes_apical=nonresponsive_movie_sample_sizes,
+        )
+    else:
+        _boxplot(
+            ax_resp_blank,
+            responsive_blank_values,
+            blank_state_order,
+            title="responsive blank states",
+            ylabel="Mean response",
+            cohort_label="responsive",
+            significance_flags=[state in responsive_sig for state in blank_state_order],
+            sample_sizes=responsive_blank_sample_sizes or {state: int(len(_finite_array(responsive_blank_values.get(state, [])))) for state in blank_state_order},
+            horizontal=True,
+        )
+        _boxplot(
+            ax_nonresp_blank,
+            nonresponsive_blank_values,
+            blank_state_order,
+            title="nonresponsive blank states",
+            ylabel="Mean response",
+            cohort_label="nonresponsive",
+            significance_flags=[state in nonresponsive_sig for state in blank_state_order],
+            sample_sizes=nonresponsive_blank_sample_sizes,
+            horizontal=True,
+        )
+        _boxplot(
+            ax_resp_movie,
+            responsive_movie_values,
+            movie_state_order,
+            title="responsive movie states",
+            ylabel="Mean response",
+            cohort_label="responsive",
+            significance_flags=[state in responsive_sig for state in movie_state_order],
+            sample_sizes=responsive_movie_sample_sizes,
+            horizontal=True,
+        )
+        _boxplot(
+            ax_nonresp_movie,
+            nonresponsive_movie_values,
+            movie_state_order,
+            title="nonresponsive movie states",
+            ylabel="Mean response",
+            cohort_label="nonresponsive",
+            significance_flags=[state in nonresponsive_sig for state in movie_state_order],
+            sample_sizes=nonresponsive_movie_sample_sizes,
+            horizontal=True,
+        )
+    for ax in (ax_nonresp_blank, ax_nonresp_movie):
+        ax.tick_params(axis="y", labelleft=False)
+        ax.set_ylabel("")
+    for ax in (ax_resp_blank, ax_nonresp_blank):
+        ax.tick_params(axis="x", labelbottom=False)
+
+    corr_rows = [dict(row) for row in (correlation_rows or []) if isinstance(row, Mapping)]
+    if corr_rows:
+        corr_state_values = _state_value_map_from_rows(corr_rows, value_key=("mean_corr", "corr", "mean"))
+        if corr_state_values:
+            corr_state_order = [state for state in ["quiet_awake_blank", "nrem_blank", "quiet_awake_movies", "nrem_movies", "quiet_awake", "nrem"] if state in corr_state_values]
+            corr_extras = sorted(state for state in corr_state_values.keys() if state not in corr_state_order)
+            corr_state_order.extend(corr_extras)
+            corr_sig = _significant_state_labels_from_comparison_rows(correlation_comparison_rows or [])
+            _boxplot(
+                ax_corr,
+                corr_state_values,
+                corr_state_order,
+                title=correlation_title,
+                ylabel="Correlation",
+                cohort_label=entity_label,
+                significance_flags=[state in corr_sig for state in corr_state_order],
+                sample_sizes={state: int(len(_finite_array(values))) for state, values in corr_state_values.items()},
+                box_width=0.72,
+                bracket_step_scale=0.004,
+                bracket_height_scale=0.002,
+                bracket_text_scale=0.0008,
+                extent_padding_scale=0.02,
+                horizontal_extent_padding_scale=0.008,
+                horizontal=True,
+            )
+        else:
+            ax_corr.set_axis_off()
+    else:
+        ax_corr.set_axis_off()
+
+    output_path = out_dir / f"{stem}.svg"
+    fig.savefig(output_path, format="svg", dpi=300)
+    if plt is not None:
+        plt.close(fig)
+    return str(output_path)
 
 
 def _select_mixed_model_rows(mixed_model_branch: Any, preferred_response_keys: Sequence[str] | None = None) -> list[dict[str, Any]]:
@@ -1245,6 +1610,43 @@ def _significant_state_labels_from_comparison_rows(rows: Sequence[Mapping[str, A
     return significant
 
 
+
+def _compartment_comparison_state_labels_from_comparison_rows(rows: Sequence[Mapping[str, Any]], *, p_value_keys: Sequence[str] = ("shuffle_p", "p_value", "adjusted_pvalue", "raw_pvalue")) -> set[str]:
+    significant: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        comparison = _canonical_state_key(row.get("comparison") or row.get("contrast_type") or row.get("contrast_name") or "")
+        if comparison not in {"basal_vs_apical", "apical_vs_basal"}:
+            continue
+        p_value_f = float("nan")
+        for key in p_value_keys:
+            candidate = row.get(key)
+            try:
+                candidate_f = float(candidate) if candidate is not None else float("nan")
+            except Exception:
+                candidate_f = float("nan")
+            if np.isfinite(candidate_f):
+                p_value_f = candidate_f
+                break
+        if not np.isfinite(p_value_f) or p_value_f >= 0.05:
+            continue
+        state = _canonical_state_key(row.get("state") or row.get("state_label") or row.get("state_display") or "")
+        if state:
+            significant.add(state)
+            continue
+        for key in ("state_a", "state_b"):
+            candidate = _canonical_state_key(row.get(key))
+            if not candidate:
+                continue
+            for prefix in ("basal_", "apical_"):
+                if candidate.startswith(prefix):
+                    candidate = candidate[len(prefix):]
+                    significant.add(candidate)
+                    break
+    return significant
+
+
 def _poster_label_color(label: Any) -> str:
     key = _canonical_state_key(label)
     if key in {"basal", "apical"}:
@@ -1277,7 +1679,7 @@ def write_visual_response_poster_figure(
 ) -> Optional[str]:
     if plt is None:
         return None
-    rows = [dict(row) for row in visual_response_rows if isinstance(row, Mapping)]
+    rows = _canonicalize_visual_response_rows([dict(row) for row in visual_response_rows if isinstance(row, Mapping)])
     if not rows:
         return None
     responsive_row, nonresponsive_row = _pick_exemplar_rows(rows)
@@ -1423,17 +1825,22 @@ def write_state_mixed_model_poster_figure(
             x0, x1 = ax.get_xlim()
             x_range = max(x1 - x0, 1e-6)
             count_x = x1 + max(0.02 * x_range, 0.05)
-            sig_x = x1 + max(0.045 * x_range, 0.08)
+            bracket_x = x1 + max(0.045 * x_range, 0.08)
+            bracket_dx = max(0.02 * x_range, 0.035)
+            bracket_step = max(0.028 * x_range, 0.05)
+            significant = {_state_compare_key(state) for state in (significant_states or [])}
+            sig_states = [state for state in state_order if _state_compare_key(state) in significant]
             for compartment, summary_map, color, offset in compartment_specs:
                 for idx, state in enumerate(state_order, start=1):
                     arr = summary_map.get(state, np.asarray([], dtype=float))
                     if not arr.size:
                         continue
                     ax.text(count_x, float(idx) + offset, f"n={int(arr.size)}", color=color, fontsize=FIGURE_NOTE_FS - 1, ha="left", va="center", clip_on=False)
-            significant = {_state_compare_key(state) for state in (significant_states or [])}
-            for idx, state in enumerate(state_order, start=1):
-                if _state_compare_key(state) in significant:
-                    ax.text(sig_x, float(idx), "*", ha="left", va="center", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
+            for level, state in enumerate(sig_states):
+                y = float(state_order.index(state) + 1)
+                x = bracket_x + level * bracket_step
+                ax.plot([x, x + bracket_dx, x + bracket_dx, x], [y, y, y + 0.35, y + 0.35], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+                ax.text(x + bracket_dx * 0.5, y + 0.35, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
 
         legend_handles = [
             Line2D([0], [0], color="#4C72B0", marker="s", linestyle="", markersize=8, label="Basal"),
@@ -1449,6 +1856,26 @@ def write_state_mixed_model_poster_figure(
         return None
 
     dendrite_prefixed = any(str(state).startswith(("basal_", "apical_")) for state in state_order) or any(str(k).startswith(("basal_", "apical_")) for k in resp) or any(str(k).startswith(("basal_", "apical_")) for k in nonresp)
+    forest_color_fn: Any = None
+    if dendrite_prefixed:
+        def _dendrite_forest_color(row: Mapping[str, Any], label: str, kind: str) -> str:
+            label_l = str(label or "").lower()
+            if "apical" in label_l:
+                return BOX_COLORS.get("apical", "#DD8452")
+            if "basal" in label_l:
+                return BOX_COLORS.get("basal", "#4C72B0")
+            if kind == "state":
+                return "#1f77b4"
+            if kind == "compartment":
+                return "#1f77b4"
+            if kind == "interaction":
+                return BOX_COLORS.get("apical", "#DD8452")
+            if kind == "covariate":
+                return "#1f77b4"
+            return {
+                "intercept": "#7f7f7f",
+            }.get(kind, "#1f77b4")
+        forest_color_fn = _dendrite_forest_color
     if dendrite_prefixed:
         resp_basal, resp_apical, resp_other = _split_dendrite_state_values(resp)
         nonresp_basal, nonresp_apical, nonresp_other = _split_dendrite_state_values(nonresp)
@@ -1499,12 +1926,14 @@ def write_state_mixed_model_poster_figure(
     stem = output_stem or f"{entity_label}_state_mixed_model_poster_ready"
     p_source = _normalize_mixed_model_contrast_p_source(mixed_model_contrast_p_source)
     p_source_label = "shuffle p" if p_source == "shuffle" else "classical p"
-    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(FIGURE_HEIGHT_CM)), constrained_layout=False)
-    outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.92, bottom=0.11, wspace=0.24, hspace=0.28, height_ratios=[0.88, 1.12])
+    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(MIXED_MODEL_HEIGHT_CM)), constrained_layout=False)
+    outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.92, bottom=0.11, wspace=0.24, hspace=0.24, height_ratios=[0.95, 1.05])
     print(f"[poster] {entity_label} selected boxplot states = {list(present_state_order)}", file=sys.stderr)
     if dendrite_prefixed:
         resp_basal, resp_apical, _ = _split_dendrite_state_values(resp)
         nonresp_basal, nonresp_apical, _ = _split_dendrite_state_values(nonresp)
+        boxplot_state_order = list(reversed(present_state_order))
+
         cohort_boxplot_data = [
             ("responsive", resp_basal, resp_apical, 0),
             ("nonresponsive", nonresp_basal, nonresp_apical, 1),
@@ -1537,13 +1966,13 @@ def write_state_mixed_model_poster_figure(
                 ax_box,
                 basal_values=basal_values,
                 apical_values=apical_values,
-                state_order=present_state_order,
+                state_order=boxplot_state_order,
                 title=f"{cohort_label} {title.lower()}",
                 ylabel="Mean response",
                 cohort_label=cohort_label,
                 significant_states=sorted(significant_states),
             )
-            _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True)
+            _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True, color_fn=forest_color_fn)
             ax_forest.text(0.98, 0.02, p_source_label, transform=ax_forest.transAxes, ha="right", va="bottom", fontsize=FIGURE_NOTE_FS, color="#444444")
     else:
         cohort_specs = [("responsive", resp, 0), ("nonresponsive", nonresp, 1)]
@@ -1582,7 +2011,7 @@ def write_state_mixed_model_poster_figure(
                 sample_sizes=(responsive_state_sample_sizes if cohort_label == "responsive" else nonresponsive_state_sample_sizes) or {state: int(len(_finite_array(values.get(state, [])))) for state in present_state_order},
                 horizontal=True,
             )
-            _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True)
+            _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True, color_fn=forest_color_fn)
             ax_forest.text(0.98, 0.02, p_source_label, transform=ax_forest.transAxes, ha="right", va="bottom", fontsize=FIGURE_NOTE_FS, color="#444444")
 
     fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=FIGURE_TITLE_FS, y=0.985)
@@ -1607,6 +2036,8 @@ def write_blank_movie_state_boxplot_figure(
     nonresponsive_significant_states: Sequence[str] | None = None,
     responsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     nonresponsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    responsive_compartment_significant_states: Sequence[str] | None = None,
+    nonresponsive_compartment_significant_states: Sequence[str] | None = None,
     output_stem: Optional[str] = None,
     title: str = "Blank vs movie states",
 ) -> Optional[str]:
@@ -1622,6 +2053,8 @@ def write_blank_movie_state_boxplot_figure(
     ax_nonresp_movie = fig.add_subplot(outer[1, 1], sharey=ax_resp_movie)
     responsive_sig = {str(state) for state in (responsive_significant_states or [])}
     nonresponsive_sig = {str(state) for state in (nonresponsive_significant_states or [])}
+    responsive_compartment_sig = {str(state) for state in (responsive_compartment_significant_states or [])}
+    nonresponsive_compartment_sig = {str(state) for state in (nonresponsive_compartment_significant_states or [])}
     if responsive_comparison_rows:
         responsive_sig.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
     if nonresponsive_comparison_rows:
@@ -1629,50 +2062,225 @@ def write_blank_movie_state_boxplot_figure(
     blank_state_order = list(dict.fromkeys([str(state) for state in blank_state_order] + [str(state) for state in responsive_blank_values.keys()] + [str(state) for state in nonresponsive_blank_values.keys()]))
     movie_state_order = list(dict.fromkeys([str(state) for state in movie_state_order] + [str(state) for state in responsive_movie_values.keys()] + [str(state) for state in nonresponsive_movie_values.keys()]))
     print(f"[poster] {entity_label} blank/movie source states: blank={blank_state_order}; movie={movie_state_order}", file=sys.stderr)
-    _boxplot(
-        ax_resp_blank,
-        responsive_blank_values,
-        blank_state_order,
-        title="responsive blank states",
-        ylabel="Mean response",
-        cohort_label="responsive",
-        significance_flags=[state in responsive_sig for state in blank_state_order],
-        sample_sizes=responsive_blank_sample_sizes or {state: int(len(_finite_array(responsive_blank_values.get(state, [])))) for state in blank_state_order},
-        horizontal=True,
-    )
-    _boxplot(
-        ax_nonresp_blank,
-        nonresponsive_blank_values,
-        blank_state_order,
-        title="nonresponsive blank states",
-        ylabel="Mean response",
-        cohort_label="nonresponsive",
-        significance_flags=[state in nonresponsive_sig for state in blank_state_order],
-        sample_sizes=nonresponsive_blank_sample_sizes,
-        horizontal=True,
-    )
-    _boxplot(
-        ax_resp_movie,
-        responsive_movie_values,
-        movie_state_order,
-        title="responsive movie states",
-        ylabel="Mean response",
-        cohort_label="responsive",
-        significance_flags=[state in responsive_sig for state in movie_state_order],
-        sample_sizes=responsive_movie_sample_sizes,
-        horizontal=True,
-    )
-    _boxplot(
-        ax_nonresp_movie,
-        nonresponsive_movie_values,
-        movie_state_order,
-        title="nonresponsive movie states",
-        ylabel="Mean response",
-        cohort_label="nonresponsive",
-        significance_flags=[state in nonresponsive_sig for state in movie_state_order],
-        sample_sizes=nonresponsive_movie_sample_sizes,
-        horizontal=True,
-    )
+    dendrite_grouped = str(entity_label).strip().lower() == "dendrite" or any(str(key).startswith(("basal_", "apical_")) for key in list(responsive_blank_values) + list(responsive_movie_values) + list(nonresponsive_blank_values) + list(nonresponsive_movie_values))
+
+    def _split_compartment_values(values: Mapping[str, Sequence[float]]) -> tuple[dict[str, Sequence[float]], dict[str, Sequence[float]], dict[str, Sequence[float]]]:
+        basal: dict[str, Sequence[float]] = {}
+        apical: dict[str, Sequence[float]] = {}
+        other: dict[str, Sequence[float]] = {}
+        for key, arr in values.items():
+            state_key = _canonical_state_key(key)
+            if state_key.startswith("basal_"):
+                basal[state_key[len("basal_"):]] = arr
+            elif state_key.startswith("apical_"):
+                apical[state_key[len("apical_"):]] = arr
+            else:
+                other[state_key] = arr
+        return basal, apical, other
+
+    def _project_dendrite_panel_values(values: Mapping[str, Sequence[float]], panel_kind: str) -> dict[str, list[float]]:
+        projected: dict[str, list[float]] = {}
+        if panel_kind not in {"blank", "movie"}:
+            return {str(key): list(_finite_array(arr)) for key, arr in values.items()}
+        exact_suffix = {
+            "blank": {"quiet_awake_blank", "nrem_blank", "rem_blank"},
+            "movie": {"quiet_awake_movies", "nrem_movies", "rem_movies"},
+        }[panel_kind]
+        fallback_suffix = {
+            "blank": {"quiet_awake": "quiet_awake_blank", "nrem": "nrem_blank", "rem": "rem_blank"},
+            "movie": {"quiet_awake": "quiet_awake_movies", "nrem": "nrem_movies", "rem": "rem_movies"},
+        }[panel_kind]
+        for key, arr in values.items():
+            state_key = _canonical_state_key(key)
+            if state_key.startswith("basal_") or state_key.startswith("apical_"):
+                state_key = state_key.split("_", 1)[1]
+            if state_key in exact_suffix:
+                projected.setdefault(state_key, []).extend(_finite_array(arr).tolist())
+            elif state_key in fallback_suffix:
+                projected.setdefault(fallback_suffix[state_key], []).extend(_finite_array(arr).tolist())
+        return projected
+
+    def _grouped_panel(
+        ax: plt.Axes,
+        basal_values: Mapping[str, Sequence[float]],
+        apical_values: Mapping[str, Sequence[float]],
+        state_order: Sequence[str],
+        *,
+        title_text: str,
+        cohort_label: str,
+        significant_states: Sequence[str],
+        compartment_significant_states: Sequence[str],
+        sample_sizes_basal: Mapping[str, int] | None = None,
+        sample_sizes_apical: Mapping[str, int] | None = None,
+    ) -> None:
+        rng = np.random.default_rng(7)
+        basal_state_map = {state: _finite_array(basal_values.get(state, [])) for state in state_order}
+        apical_state_map = {state: _finite_array(apical_values.get(state, [])) for state in state_order}
+        all_data: list[np.ndarray] = []
+        for compartment, summary_map, color, offset in (("basal", basal_state_map, BOX_COLORS.get("basal", "#4C72B0"), -0.18), ("apical", apical_state_map, BOX_COLORS.get("apical", "#DD8452"), 0.18)):
+            positions: list[float] = []
+            data: list[np.ndarray] = []
+            for idx, state in enumerate(state_order, start=1):
+                arr = summary_map.get(state, np.asarray([], dtype=float))
+                if arr.size:
+                    positions.append(float(idx) + offset)
+                    data.append(arr)
+            if not data:
+                continue
+            bp = ax.boxplot(data, positions=positions, widths=0.28, patch_artist=True, showfliers=False, vert=False)
+            _set_boxplot_colors(bp, [color] * len(data))
+            for pos, arr in zip(positions, data):
+                jitter = rng.uniform(-0.08, 0.08, size=arr.size)
+                ax.scatter(arr, np.full(arr.size, pos) + jitter, s=14, alpha=0.48, color=color, edgecolor="none")
+            all_data.extend(data)
+        ax.set_yticks(range(1, len(state_order) + 1))
+        ax.set_yticklabels([_state_display_label(state) for state in state_order], fontsize=FIGURE_TICK_FS)
+        ax.set_xlabel("Mean response", fontsize=FIGURE_LABEL_FS)
+        ax.set_ylabel("State", fontsize=FIGURE_LABEL_FS)
+        ax.set_title(title_text, fontsize=FIGURE_TITLE_FS, pad=4)
+        ax.grid(axis="x", alpha=0.25)
+        finite = np.concatenate(all_data) if all_data else np.asarray([], dtype=float)
+        finite = finite[np.isfinite(finite)] if finite.size else finite
+        if finite.size:
+            lo = float(np.nanmin(finite))
+            hi = float(np.nanmax(finite))
+            pad = max(0.12 * max(hi - lo, 1e-6), 0.05)
+            ax.set_xlim(lo - pad, hi + pad)
+            x0, x1 = ax.get_xlim()
+            x_range = max(x1 - x0, 1e-6)
+            count_x = x1 + max(0.02 * x_range, 0.05)
+            bracket_x = x1 + max(0.045 * x_range, 0.08)
+            bracket_dx = max(0.02 * x_range, 0.035)
+            bracket_step = max(0.028 * x_range, 0.05)
+            sig_states = [state for state in state_order if _state_compare_key(state) in {_state_compare_key(s) for s in significant_states}]
+            comp_sig_states = [state for state in state_order if _state_compare_key(state) in {_state_compare_key(s) for s in compartment_significant_states}]
+            for level, state in enumerate(comp_sig_states):
+                center = float(state_order.index(state) + 1)
+                y_low = center - 0.18
+                y_high = center + 0.18
+                x = bracket_x + level * bracket_step
+                ax.plot([x, x + bracket_dx, x + bracket_dx, x], [y_low, y_low, y_high, y_high], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+                ax.text(x + bracket_dx * 0.5, y_high + 0.06, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
+            for compartment, summary_map, color, offset in (("basal", basal_state_map, BOX_COLORS.get("basal", "#4C72B0"), -0.18), ("apical", apical_state_map, BOX_COLORS.get("apical", "#DD8452"), 0.18)):
+                sample_map = sample_sizes_basal if compartment == "basal" else sample_sizes_apical
+                for idx, state in enumerate(state_order, start=1):
+                    arr = summary_map.get(state, np.asarray([], dtype=float))
+                    if not arr.size:
+                        continue
+                    sample_n = int(sample_map.get(state, int(arr.size))) if sample_map is not None else int(arr.size)
+                    ax.text(count_x, float(idx) + offset, f"n={sample_n}", color=color, fontsize=FIGURE_NOTE_FS - 1, ha="left", va="center", clip_on=False)
+            for level, state in enumerate(sig_states):
+                y = float(state_order.index(state) + 1)
+                x = bracket_x + level * bracket_step
+                ax.plot([x, x + bracket_dx, x + bracket_dx, x], [y, y, y + 0.35, y + 0.35], color="#444444", linewidth=1.0, clip_on=False, zorder=5)
+                ax.text(x + bracket_dx * 0.5, y + 0.35, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
+        legend_handles = [
+            Line2D([0], [0], color=BOX_COLORS.get("basal", "#4C72B0"), marker="s", linestyle="", markersize=8, label="Basal"),
+            Line2D([0], [0], color=BOX_COLORS.get("apical", "#DD8452"), marker="s", linestyle="", markersize=8, label="Apical"),
+        ]
+        ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=FIGURE_LEGEND_FS)
+        ax.text(0.02, 0.98, cohort_label, transform=ax.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
+
+    if dendrite_grouped:
+        resp_basal_blank, resp_apical_blank, resp_other_blank = _split_compartment_values(responsive_blank_values)
+        resp_basal_movie, resp_apical_movie, resp_other_movie = _split_compartment_values(responsive_movie_values)
+        nonresp_basal_blank, nonresp_apical_blank, nonresp_other_blank = _split_compartment_values(nonresponsive_blank_values)
+        nonresp_basal_movie, nonresp_apical_movie, nonresp_other_movie = _split_compartment_values(nonresponsive_movie_values)
+        blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+        movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+        _grouped_panel(
+            ax_resp_blank,
+            _project_dendrite_panel_values({**resp_basal_blank, **resp_other_blank}, "blank"),
+            _project_dendrite_panel_values({**resp_apical_blank, **resp_other_blank}, "blank"),
+            blank_state_order,
+            title_text="responsive blank states",
+            cohort_label="responsive",
+            significant_states=[state for state in responsive_sig],
+            compartment_significant_states=[state for state in responsive_compartment_sig],
+            sample_sizes_basal=responsive_blank_sample_sizes,
+            sample_sizes_apical=responsive_blank_sample_sizes,
+        )
+        _grouped_panel(
+            ax_nonresp_blank,
+            _project_dendrite_panel_values({**nonresp_basal_blank, **nonresp_other_blank}, "blank"),
+            _project_dendrite_panel_values({**nonresp_apical_blank, **nonresp_other_blank}, "blank"),
+            blank_state_order,
+            title_text="nonresponsive blank states",
+            cohort_label="nonresponsive",
+            significant_states=[state for state in nonresponsive_sig],
+            compartment_significant_states=[state for state in nonresponsive_compartment_sig],
+            sample_sizes_basal=nonresponsive_blank_sample_sizes,
+            sample_sizes_apical=nonresponsive_blank_sample_sizes,
+        )
+        _grouped_panel(
+            ax_resp_movie,
+            _project_dendrite_panel_values({**resp_basal_movie, **resp_other_movie}, "movie"),
+            _project_dendrite_panel_values({**resp_apical_movie, **resp_other_movie}, "movie"),
+            movie_state_order,
+            title_text="responsive movie states",
+            cohort_label="responsive",
+            significant_states=[state for state in responsive_sig],
+            compartment_significant_states=[state for state in responsive_compartment_sig],
+            sample_sizes_basal=responsive_movie_sample_sizes,
+            sample_sizes_apical=responsive_movie_sample_sizes,
+        )
+        _grouped_panel(
+            ax_nonresp_movie,
+            _project_dendrite_panel_values({**nonresp_basal_movie, **nonresp_other_movie}, "movie"),
+            _project_dendrite_panel_values({**nonresp_apical_movie, **nonresp_other_movie}, "movie"),
+            movie_state_order,
+            title_text="nonresponsive movie states",
+            cohort_label="nonresponsive",
+            significant_states=[state for state in nonresponsive_sig],
+            compartment_significant_states=[state for state in nonresponsive_compartment_sig],
+            sample_sizes_basal=nonresponsive_movie_sample_sizes,
+            sample_sizes_apical=nonresponsive_movie_sample_sizes,
+        )
+    else:
+        _boxplot(
+            ax_resp_blank,
+            responsive_blank_values,
+            blank_state_order,
+            title="responsive blank states",
+            ylabel="Mean response",
+            cohort_label="responsive",
+            significance_flags=[state in responsive_sig for state in blank_state_order],
+            sample_sizes=responsive_blank_sample_sizes or {state: int(len(_finite_array(responsive_blank_values.get(state, [])))) for state in blank_state_order},
+            horizontal=True,
+        )
+        _boxplot(
+            ax_nonresp_blank,
+            nonresponsive_blank_values,
+            blank_state_order,
+            title="nonresponsive blank states",
+            ylabel="Mean response",
+            cohort_label="nonresponsive",
+            significance_flags=[state in nonresponsive_sig for state in blank_state_order],
+            sample_sizes=nonresponsive_blank_sample_sizes,
+            horizontal=True,
+        )
+        _boxplot(
+            ax_resp_movie,
+            responsive_movie_values,
+            movie_state_order,
+            title="responsive movie states",
+            ylabel="Mean response",
+            cohort_label="responsive",
+            significance_flags=[state in responsive_sig for state in movie_state_order],
+            sample_sizes=responsive_movie_sample_sizes,
+            horizontal=True,
+        )
+        _boxplot(
+            ax_nonresp_movie,
+            nonresponsive_movie_values,
+            movie_state_order,
+            title="nonresponsive movie states",
+            ylabel="Mean response",
+            cohort_label="nonresponsive",
+            significance_flags=[state in nonresponsive_sig for state in movie_state_order],
+            sample_sizes=nonresponsive_movie_sample_sizes,
+            horizontal=True,
+        )
     for ax in (ax_nonresp_blank, ax_nonresp_movie):
         ax.tick_params(axis="y", labelleft=False)
         ax.set_ylabel("")
@@ -1687,4 +2295,5 @@ __all__ = [
     "write_visual_response_poster_figure",
     "write_state_mixed_model_poster_figure",
     "write_blank_movie_state_boxplot_figure",
+    "write_blank_movie_and_correlation_poster_figure",
 ]

@@ -210,7 +210,7 @@ def plot_boxplot_series(
         if horizontal:
             xlim = ax.get_xlim()
             xr = float(xlim[1] - xlim[0]) if np.isfinite(xlim[1] - xlim[0]) and (xlim[1] - xlim[0]) > 0 else 1.0
-            text_x = float(np.nanmax(np.concatenate(cleaned_values))) + max(0.03 * xr, 0.04)
+            text_x = float(np.nanmax(np.concatenate(cleaned_values))) + max(0.015 * xr, 0.02)
             for ypos, top_label in zip(range(1, len(cleaned_top_labels) + 1), cleaned_top_labels):
                 if not top_label:
                     continue
@@ -225,7 +225,7 @@ def plot_boxplot_series(
                     fontweight="normal",
                     clip_on=False,
                 )
-            ax.set_xlim(xlim[0], max(xlim[1], text_x + 0.15 * xr))
+            ax.set_xlim(xlim[0], max(xlim[1], text_x + 0.08 * xr))
         else:
             ax.tick_params(axis="x", pad=18)
             for xpos, top_label in zip(range(1, len(cleaned_top_labels) + 1), cleaned_top_labels):

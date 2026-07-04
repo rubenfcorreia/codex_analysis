@@ -5967,10 +5967,10 @@ def _draw_boxplot_significance_annotations(
         x_range = x1 - x0
         if not np.isfinite(x_range) or x_range <= 0:
             x_range = 1.0
-        bracket_base = x1 + 0.018 * x_range
-        bracket_step = max(0.017 * x_range, 0.018)
-        text_offset = max(0.0035 * x_range, 0.008)
-        bracket_height = max(0.007 * x_range, 0.011)
+        bracket_base = x1 + max(0.002 * x_range, 0.0015)
+        bracket_step = max(0.003 * x_range, 0.002)
+        text_offset = max(0.001 * x_range, 0.0015)
+        bracket_height = max(0.002 * x_range, 0.002)
         max_levels = 3
         levels: List[List[Tuple[float, float]]] = []
         placed: List[Tuple[float, float, int, str, bool]] = []
@@ -6006,7 +6006,7 @@ def _draw_boxplot_significance_annotations(
                 )
             )
         render_max_level = min(len(levels), max_levels) - 1
-        top_needed = bracket_base + (render_max_level + 1) * bracket_step + bracket_height + text_offset + 0.015 * x_range
+        top_needed = bracket_base + (render_max_level + 1) * bracket_step + bracket_height + text_offset + 0.002 * x_range
         if top_needed > x1:
             ax.set_xlim(x0, top_needed)
         for y1_pos, y2_pos, level, label, point_only in placed:
@@ -6044,10 +6044,10 @@ def _draw_boxplot_significance_annotations(
     y_range = y1 - y0
     if not np.isfinite(y_range) or y_range <= 0:
         y_range = 1.0
-    bracket_base = y1 + 0.018 * y_range
-    bracket_step = max(0.017 * y_range, 0.018)
-    text_offset = max(0.0035 * y_range, 0.008)
-    bracket_height = max(0.007 * y_range, 0.011)
+    bracket_base = y1 + max(0.002 * y_range, 0.0015)
+    bracket_step = max(0.003 * y_range, 0.002)
+    text_offset = max(0.001 * y_range, 0.0015)
+    bracket_height = max(0.002 * y_range, 0.002)
     max_levels = 3
 
     levels: List[List[Tuple[float, float]]] = []
@@ -6064,7 +6064,7 @@ def _draw_boxplot_significance_annotations(
         levels[level].append((item["x1"], item["x2"]))
         placed.append((item["x1"], item["x2"], min(level, max_levels - 1), item["label"], bool(item.get("point_only", False))))
 
-    top_needed = bracket_base + min(len(levels), max_levels) * bracket_step + bracket_height + text_offset + 0.015 * y_range
+    top_needed = bracket_base + min(len(levels), max_levels) * bracket_step + bracket_height + text_offset + 0.002 * y_range
     if top_needed > y1:
         ax.set_ylim(y0, top_needed)
 
@@ -14897,7 +14897,16 @@ def write_poster_ready_figures(
 
     def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
         csv_path = poster_result_root / preset_name / "csv" / csv_name
-        return read_csv_rows(csv_path) if csv_path.exists() else []
+        if csv_path.exists():
+            return read_csv_rows(csv_path)
+        fallback_path = poster_result_root / preset_name / csv_name
+        if fallback_path.exists():
+            return read_csv_rows(fallback_path)
+        if csv_name == "state_comparisons_movie.csv":
+            fallback_path = poster_result_root / preset_name / "state_comparisons.csv"
+            if fallback_path.exists():
+                return read_csv_rows(fallback_path)
+        return []
 
     written: List[str] = []
     selected_families = set(str(family) for family in (analysis_families or []) if str(family))
@@ -15029,6 +15038,29 @@ def write_poster_ready_figures(
                     collapsed.setdefault(state_key, []).extend(list(values))
                 return collapsed
 
+            def _dendrite_visual_summary_state_values(metric_key: str) -> Dict[str, Dict[str, List[float]]]:
+                summary = results.get("dendrite_visual_response_state_summaries", {})
+                if not isinstance(summary, dict):
+                    return {"responsive": {}, "nonresponsive": {}}
+                combined: Dict[str, Dict[str, List[float]]] = {"responsive": {}, "nonresponsive": {}}
+                for cohort in ("responsive", "nonresponsive"):
+                    cohort_payload = summary.get(cohort, {})
+                    if not isinstance(cohort_payload, dict):
+                        continue
+                    for compartment, compartment_payload in cohort_payload.items():
+                        if not isinstance(compartment_payload, dict):
+                            continue
+                        metric_summary = compartment_payload.get("state_summaries", {}).get(metric_key, {})
+                        if not isinstance(metric_summary, dict):
+                            continue
+                        for state, by_subject in metric_summary.items():
+                            state_values = flatten_state_summary_values(by_subject)
+                            arr = np.asarray(state_values, dtype=float)
+                            arr = arr[np.isfinite(arr)]
+                            if arr.size:
+                                combined[cohort].setdefault(f"{compartment}_{canonical_state_label(state)}", []).extend([float(value) for value in arr])
+                return combined
+
             poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
             blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
             movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
@@ -15055,9 +15087,41 @@ def write_poster_ready_figures(
                 movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), rows)
                 blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), rows)
                 movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), rows)
+
+                def _debug_preset_loaded(preset_name: str, csv_name: str, preset_rows: Sequence[Mapping[str, Any]]) -> None:
+                    state_keys = list(dict.fromkeys(canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "") for row in preset_rows if canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")))
+                    compartment_keys = list(dict.fromkeys(canonical_state_label(row.get("compartment") or row.get("output_compartment") or "") for row in preset_rows if canonical_state_label(row.get("compartment") or row.get("output_compartment") or "")))
+                    cohort_keys = list(dict.fromkeys(str(row.get("cohort") or "").strip().lower() for row in preset_rows if str(row.get("cohort") or "").strip()))
+                    print(f"[poster-debug] loaded preset {preset_name}/{csv_name}: rows={len(preset_rows)} states={state_keys} compartments={compartment_keys} cohorts={cohort_keys}", file=sys.stderr)
+
+                _debug_preset_loaded("blank_state_comparisons", "state_activity_by_experiment.csv", blank_preset_activity_rows)
+                _debug_preset_loaded("movies_state_comparisons", "state_activity_by_experiment.csv", movie_preset_activity_rows)
+                _debug_preset_loaded("blank_state_comparisons", "state_comparisons_movie.csv", blank_preset_comparison_rows)
+                _debug_preset_loaded("movies_state_comparisons", "state_comparisons_movie.csv", movie_preset_comparison_rows)
+
+                def _poster_compartment_matches(row_value: Any, candidates: Sequence[Any]) -> bool:
+                    value = canonical_state_label(row_value)
+                    if not value:
+                        return False
+                    for candidate in candidates:
+                        candidate_key = canonical_state_label(candidate)
+                        if not candidate_key:
+                            continue
+                        if value == candidate_key or value.startswith(f"{candidate_key}_") or candidate_key.startswith(f"{value}_"):
+                            return True
+                    return False
+
+                if entity_key == "dendrite":
+                    raw_blank_compartments = list(dict.fromkeys(str(row.get("compartment") or "").strip().lower() for row in blank_preset_activity_rows if str(row.get("compartment") or "").strip()))
+                    raw_movie_compartments = list(dict.fromkeys(str(row.get("compartment") or "").strip().lower() for row in movie_preset_activity_rows if str(row.get("compartment") or "").strip()))
+                    print(f"[poster-debug] dendrite raw blank preset compartments = {raw_blank_compartments}", file=sys.stderr)
+                    print(f"[poster-debug] dendrite raw movie preset compartments = {raw_movie_compartments}", file=sys.stderr)
+                    print(f"[poster-debug] dendrite preset counts blank_activity={len(blank_preset_activity_rows)} movie_activity={len(movie_preset_activity_rows)} blank_comparisons={len(blank_preset_comparison_rows)} movie_comparisons={len(movie_preset_comparison_rows)}", file=sys.stderr)
                 preset_compartments = {str(compartment).strip().lower() for compartment in visual_compartments if str(compartment).strip() and str(compartment).strip().lower() != "none"}
                 if not preset_compartments:
                     preset_compartments = {entity_key}
+                if entity_key == "dendrite":
+                    preset_compartments.update({"dendrite", "basal_dendrite", "apical_dendrite"})
                 if rows:
                     if entity_key == "dendrite":
                         for compartment in visual_compartments:
@@ -15089,6 +15153,10 @@ def write_poster_ready_figures(
                         if visual_path:
                             written.append(report_relative_path(Path(visual_path), output_dir))
                 state_values = _entity_state_values(entity_key, metric_key)
+                if entity_key == "dendrite":
+                    dendrite_summary_state_values = _dendrite_visual_summary_state_values(metric_key)
+                    if dendrite_summary_state_values.get("responsive") or dendrite_summary_state_values.get("nonresponsive"):
+                        state_values = dendrite_summary_state_values
                 if state_values.get("responsive") or state_values.get("nonresponsive"):
                     dendrite_state_order = poster_state_order
                     if entity_key == "dendrite":
@@ -15110,28 +15178,44 @@ def write_poster_ready_figures(
                     )
                     if mixed_path:
                         written.append(report_relative_path(Path(mixed_path), output_dir))
-                blank_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() == "responsive"]
-                movie_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() == "responsive"]
-                non_blank_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() != "responsive"]
-                non_movie_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "").strip().lower() in preset_compartments and str(row.get("cohort") or "").strip().lower() != "responsive"]
-                blank_values = _state_values_from_rows(blank_rows) if blank_rows else {state: values for state, values in state_values.get("responsive", {}).items() if state in blank_state_order}
-                movie_values = _state_values_from_rows(movie_rows) if movie_rows else {state: values for state, values in state_values.get("responsive", {}).items() if state in movie_state_order}
-                non_blank_values = _state_values_from_rows(non_blank_rows) if non_blank_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in blank_state_order}
-                non_movie_values = _state_values_from_rows(non_movie_rows) if non_movie_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in movie_state_order}
+                blank_rows = [row for row in blank_preset_activity_rows if _poster_compartment_matches(row.get("compartment"), preset_compartments) and str(row.get("cohort") or "").strip().lower() == "responsive"]
+                movie_rows = [row for row in movie_preset_activity_rows if _poster_compartment_matches(row.get("compartment"), preset_compartments) and str(row.get("cohort") or "").strip().lower() == "responsive"]
+                non_blank_rows = [row for row in blank_preset_activity_rows if _poster_compartment_matches(row.get("compartment"), preset_compartments) and str(row.get("cohort") or "").strip().lower() != "responsive"]
+                non_movie_rows = [row for row in movie_preset_activity_rows if _poster_compartment_matches(row.get("compartment"), preset_compartments) and str(row.get("cohort") or "").strip().lower() != "responsive"]
+                responsive_state_values_for_blank = state_values.get("responsive", {})
+                nonresponsive_state_values_for_blank = state_values.get("nonresponsive", {})
                 if entity_key == "dendrite":
-                    blank_values = _collapse_dendrite_state_values(blank_values)
-                    movie_values = _collapse_dendrite_state_values(movie_values)
-                    non_blank_values = _collapse_dendrite_state_values(non_blank_values)
-                    non_movie_values = _collapse_dendrite_state_values(non_movie_values)
+                    blank_values = responsive_state_values_for_blank
+                    movie_values = responsive_state_values_for_blank
+                    non_blank_values = nonresponsive_state_values_for_blank
+                    non_movie_values = nonresponsive_state_values_for_blank
+                else:
+                    blank_values = _state_values_from_rows(blank_rows) if blank_rows else {state: values for state, values in responsive_state_values_for_blank.items() if state in blank_state_order}
+                    movie_values = _state_values_from_rows(movie_rows) if movie_rows else {state: values for state, values in responsive_state_values_for_blank.items() if state in movie_state_order}
+                    non_blank_values = _state_values_from_rows(non_blank_rows) if non_blank_rows else {state: values for state, values in nonresponsive_state_values_for_blank.items() if state in blank_state_order}
+                    non_movie_values = _state_values_from_rows(non_movie_rows) if non_movie_rows else {state: values for state, values in nonresponsive_state_values_for_blank.items() if state in movie_state_order}
+                debug_blank_summary = {
+                    "entity": entity_key,
+                    "blank_rows": len(blank_rows),
+                    "movie_rows": len(movie_rows),
+                    "non_blank_rows": len(non_blank_rows),
+                    "non_movie_rows": len(non_movie_rows),
+                    "responsive_blank_states": list(blank_values.keys()),
+                    "responsive_movie_states": list(movie_values.keys()),
+                    "nonresponsive_blank_states": list(non_blank_values.keys()),
+                    "nonresponsive_movie_states": list(non_movie_values.keys()),
+                }
+                print(f"[poster-debug] blank/movie selection {debug_blank_summary}", file=sys.stderr)
+                if entity_key == "dendrite":
+                    print(f"[poster-debug] dendrite blank/movie source values responsive={list(blank_values.keys()) + list(movie_values.keys())} nonresponsive={list(non_blank_values.keys()) + list(non_movie_values.keys())}", file=sys.stderr)
                 blank_sample_sizes = _state_sample_sizes_from_rows(blank_rows) if blank_rows else {}
                 movie_sample_sizes = _state_sample_sizes_from_rows(movie_rows) if movie_rows else {}
                 non_blank_sample_sizes = _state_sample_sizes_from_rows(non_blank_rows) if non_blank_rows else {}
                 non_movie_sample_sizes = _state_sample_sizes_from_rows(non_movie_rows) if non_movie_rows else {}
-                print(f"[poster] {entity_key} responsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-                print(f"[poster] {entity_key} responsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-                print(f"[poster] {entity_key} nonresponsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in non_blank_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-                print(f"[poster] {entity_key} nonresponsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in non_movie_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-                if blank_values or movie_values or non_blank_values or non_movie_values:
+                has_blank_movie_values = bool(blank_values or movie_values or non_blank_values or non_movie_values)
+                if not has_blank_movie_values:
+                    print(f"[poster-debug] skipping blank/movie plot for {entity_key}: no selected values after filtering", file=sys.stderr)
+                if has_blank_movie_values:
                     responsive_significant_states = set()
                     nonresponsive_significant_states = set()
                     responsive_selected_rows = _select_mixed_model_rows(
@@ -15144,8 +15228,14 @@ def write_poster_ready_figures(
                     )
                     responsive_significant_states.update(_poster_mixed_model_significant_states(responsive_selected_rows))
                     nonresponsive_significant_states.update(_poster_mixed_model_significant_states(nonresponsive_selected_rows))
-                    responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
-                    nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
+                    responsive_compartment_significant_states = set()
+                    nonresponsive_compartment_significant_states = set()
+                    if entity_key == "dendrite":
+                        responsive_compartment_significant_states.update(_compartment_comparison_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
+                        nonresponsive_compartment_significant_states.update(_compartment_comparison_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
+                    else:
+                        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
+                        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_preset_comparison_rows + movie_preset_comparison_rows))
                     state_path = write_blank_movie_state_boxplot_figure(
                         output_dir=blank_dir,
                         entity_label=entity_key,
@@ -15161,12 +15251,14 @@ def write_poster_ready_figures(
                         nonresponsive_movie_sample_sizes=non_movie_sample_sizes,
                         responsive_significant_states=sorted(responsive_significant_states),
                         nonresponsive_significant_states=sorted(nonresponsive_significant_states),
+                        responsive_compartment_significant_states=sorted(responsive_compartment_significant_states),
+                        nonresponsive_compartment_significant_states=sorted(nonresponsive_compartment_significant_states),
                         output_stem=f"{entity_key}_blank_movie_states_poster_ready",
                         title="Blank vs movie states",
                     )
+                    print(f"[poster-debug] wrote blank/movie plot for {entity_key}: {state_path if state_path else None}", file=sys.stderr)
                     if state_path:
                         written.append(report_relative_path(Path(state_path), output_dir))
-
     return written
 
 def load_or_build_cache(

@@ -12,6 +12,52 @@ from analysis.shared.shared_calcium_response import (
 )
 
 
+def _visual_response_entity_id(row: Mapping[str, Any]) -> str:
+    compartment = str(row.get("compartment") or "").strip().lower()
+    if compartment == "soma":
+        value = row.get("global_soma_id")
+    elif compartment == "bouton":
+        value = row.get("global_bouton_id")
+    else:
+        value = row.get("global_soma_id") or row.get("global_bouton_id")
+    return str(value).strip() if value is not None else ""
+
+
+def _coerce_visual_response_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float, np.bool_)):
+        try:
+            return bool(int(value))
+        except Exception:
+            return bool(value)
+    text = str(value).strip().lower()
+    return text in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _canonicalize_visual_response_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        entity_id = _visual_response_entity_id(row)
+        if not entity_id:
+            continue
+        grouped.setdefault(entity_id, []).append(dict(row))
+    canonical_rows: List[Dict[str, Any]] = []
+    for entity_id, members in grouped.items():
+        row = dict(members[0])
+        responsive = any(_coerce_visual_response_bool(member.get("responsive", False)) or str(member.get("cohort") or "").strip().lower() == "responsive" for member in members)
+        row["responsive"] = responsive
+        row["cohort"] = "responsive" if responsive else "nonresponsive"
+        row["entity_id"] = entity_id
+        canonical_rows.append(row)
+    return canonical_rows
+
+
+
 def visual_response_day_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     if not rows:
         return []
@@ -56,13 +102,14 @@ def build_visual_response_family_results(
     response_metric: Optional[str] = None,
 ) -> Dict[str, Any]:
     row_list = [dict(row) for row in rows if isinstance(row, Mapping)]
-    summary = summarize_visual_response_entity_rows(row_list)
+    deduped_rows = _canonicalize_visual_response_rows(row_list)
+    summary = summarize_visual_response_entity_rows(deduped_rows)
     metric = get_active_visual_response_metric(response_metric or summary.get("response_metric"))
 
     cohort_counts = {label: 0 for label in VISUAL_RESPONSE_COHORTS}
     cohort_rows: Dict[str, List[Dict[str, Any]]] = {label: [] for label in VISUAL_RESPONSE_COHORTS}
     by_compartment: Dict[str, List[Dict[str, Any]]] = {}
-    for row in row_list:
+    for row in deduped_rows:
         label = str(row.get("cohort") or DEFAULT_VISUAL_RESPONSE_COHORT)
         if label not in cohort_rows:
             continue
@@ -72,7 +119,7 @@ def build_visual_response_family_results(
         compartment = str(row_copy.get("compartment") or "all")
         by_compartment.setdefault(compartment, []).append(row_copy)
 
-    selected_rows = cohort_rows.get(cohort, row_list) if cohort in cohort_rows else row_list
+    selected_rows = cohort_rows.get(cohort, deduped_rows) if cohort in cohort_rows else deduped_rows
     selected_responsive_rows = [dict(row) for row in selected_rows if bool(row.get("responsive", False))]
     selected_nonresponsive_rows = [dict(row) for row in selected_rows if not bool(row.get("responsive", False))]
     selected_by_compartment = {
@@ -84,12 +131,12 @@ def build_visual_response_family_results(
     }
 
     return {
-        "available": bool(row_list),
+        "available": bool(deduped_rows),
         "cohort": cohort,
         "response_metric": metric,
         "summary": summary,
-        "rows": row_list,
-        "day_rows": visual_response_day_rows(row_list),
+        "rows": deduped_rows,
+        "day_rows": visual_response_day_rows(deduped_rows),
         "cohort_rows": cohort_rows,
         "by_compartment": by_compartment,
         "selected_by_compartment": selected_by_compartment,
@@ -98,9 +145,9 @@ def build_visual_response_family_results(
         "responsive_rows": selected_responsive_rows,
         "nonresponsive_rows": selected_nonresponsive_rows,
         "counts": {
-            "all": int(len(row_list)),
-            "responsive": int(sum(bool(row.get("responsive", False)) for row in row_list)),
-            "nonresponsive": int(sum(not bool(row.get("responsive", False)) for row in row_list)),
+            "all": int(len(deduped_rows)),
+            "responsive": int(sum(bool(row.get("responsive", False)) for row in deduped_rows)),
+            "nonresponsive": int(sum(not bool(row.get("responsive", False)) for row in deduped_rows)),
         },
         "counts_by_compartment": {
             compartment: {

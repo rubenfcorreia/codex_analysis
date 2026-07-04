@@ -7,7 +7,6 @@ import numpy as np
 
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import run_mixed_model_family
 
-from .core import make_unit_id
 
 
 def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -24,18 +23,12 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment:
             roi_id = row.get(f"{row_compartment}_id")
         if roi_id is None or str(roi_id).strip() == "":
             roi_id = row.get("roi_index")
-        unit_id = row.get("unit_id")
-        if unit_id is None or str(unit_id).strip() == "":
-            unit_id = make_unit_id(
-                animal_id=row.get("animal_id"),
-                expid=row.get("expid"),
-                day_id=row.get("day_id"),
-                compartment=row_compartment,
-                channel=row.get("channel"),
-                roi_id=roi_id,
-                roi_index=row.get("roi_index"),
-            )
-        unit_id = str(unit_id)
+        if row_compartment == "soma":
+            unit_id = str(row.get("global_soma_id") or "").strip()
+        else:
+            unit_id = str(row.get("global_bouton_id") or "").strip()
+        if not unit_id:
+            continue
         table_rows.append({
             "animal_id": row.get("animal_id"),
             "day_id": row.get("day_id"),

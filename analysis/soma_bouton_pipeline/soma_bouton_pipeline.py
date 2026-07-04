@@ -26,7 +26,7 @@ from analysis.compartment_common import (
     write_csv_rows,
     write_json_file,
 )
-from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_unit_id
+from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
 from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
 from analysis.shared.analysis_families.visual_response import run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
@@ -55,6 +55,7 @@ from analysis.shared.plots.poster_ready import (
     _poster_mixed_model_significant_states,
     _select_mixed_model_rows,
     _significant_state_labels_from_comparison_rows,
+    write_blank_movie_and_correlation_poster_figure,
     write_blank_movie_state_boxplot_figure,
     write_correlation_poster_figure,
     write_state_mixed_model_poster_figure,
@@ -265,15 +266,9 @@ def _visual_response_entity_rows(
         )
         summary = summarize_visual_response_entity_rows(trial_rows)
         roi_id = roi_ids[roi_index] if roi_index < len(roi_ids) else roi_index
-        unit_id = make_unit_id(
-            animal_id=ctx.animal_id,
-            expid=ctx.expid,
-            day_id=ctx.day_id,
-            compartment=compartment,
-            channel=channel,
-            roi_id=roi_id,
-            roi_index=int(roi_index),
-        )
+        global_soma_id = make_global_soma_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=channel, roi_id=roi_id)
+        global_bouton_id = make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=channel, roi_id=roi_id)
+        unit_id = global_soma_id if compartment == "soma" else global_bouton_id if compartment == "bouton" else ""
         row = {
             "expid": ctx.expid,
             "mode": ctx.mode,
@@ -288,8 +283,8 @@ def _visual_response_entity_rows(
             "roi_key": unit_id,
             "soma_id": roi_id if compartment == "soma" else None,
             "bouton_id": roi_id if compartment == "bouton" else None,
-            "global_soma_id": unit_id if compartment == "soma" else None,
-            "global_bouton_id": unit_id if compartment == "bouton" else None,
+            "global_soma_id": global_soma_id if compartment == "soma" else None,
+            "global_bouton_id": global_bouton_id if compartment == "bouton" else None,
             "response_metric": summary.get(response_metric, response_metric),
             "event_detection_method": event_detection_method,
             "source_label": cut_data.get("source_label"),
@@ -320,24 +315,37 @@ def _visual_response_entity_rows(
 
 def _row_roi_lookup_key(row: Mapping[str, Any]) -> tuple[str, str]:
     compartment = str(row.get("compartment") or "").strip().lower()
-    unit_id = row.get("unit_id")
-    if unit_id is None or str(unit_id).strip() == "":
-        unit_id = row.get("global_soma_id") or row.get("global_bouton_id") or row.get("roi_key")
-    if unit_id is None or str(unit_id).strip() == "":
-        roi_id = row.get("roi_id")
-        if roi_id is None or str(roi_id).strip() == "":
-            roi_id = row.get(f"{compartment}_id")
-        if roi_id is None or str(roi_id).strip() == "":
-            roi_id = row.get("roi_index")
-        unit_id = roi_id
-    return compartment, str(unit_id)
+    unit_id = row.get("global_soma_id") if compartment == "soma" else row.get("global_bouton_id") if compartment == "bouton" else None
+    return compartment, str(unit_id).strip() if unit_id is not None else ""
+
+
+def _coerce_visual_response_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float, np.bool_)):
+        try:
+            return bool(int(value))
+        except Exception:
+            return bool(value)
+    text = str(value).strip().lower()
+    return text in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _canonical_visual_response_cohort_map(rows: Sequence[Mapping[str, Any]]) -> Dict[tuple[str, str], str]:
+    cohort_by_key: Dict[tuple[str, str], str] = {}
+    for row in rows:
+        key = _row_roi_lookup_key(row)
+        if _coerce_visual_response_bool(row.get("responsive", False)) or str(row.get("cohort") or "").strip().lower() == "responsive":
+            cohort_by_key[key] = "responsive"
+        elif key not in cohort_by_key:
+            cohort_by_key[key] = "nonresponsive"
+    return cohort_by_key
 
 
 def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    lookup: Dict[tuple[str, str], str] = {}
-    for row in visual_response_rows:
-        key = _row_roi_lookup_key(row)
-        lookup[key] = str(row.get("cohort") or "nonresponsive")
+    lookup = _canonical_visual_response_cohort_map(visual_response_rows)
     assigned: List[Dict[str, Any]] = []
     for row in rows:
         row_copy = dict(row)
@@ -353,24 +361,67 @@ def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_re
 def _reload_plot_rows_from_csv(result_root: Path, *, plots_only: bool, activity_rows: List[Dict[str, Any]], correlation_rows: List[Dict[str, Any]], lag_rows: List[Dict[str, Any]], visual_response_rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     if not plots_only:
         return activity_rows, correlation_rows, lag_rows, visual_response_rows
-    csv_root = result_root / "csv"
+    preferred_csv_root = result_root / "all_requested_comparisons" / "csv"
+    csv_root = preferred_csv_root if preferred_csv_root.exists() else result_root / "csv"
     if not activity_rows:
         activity_csv = csv_root / "state_activity_by_experiment.csv"
-        if activity_csv.exists():
-            activity_rows = read_csv_rows(activity_csv)
+        if not activity_csv.exists():
+            raise SystemExit(f"Missing poster-ready activity CSV: {activity_csv}")
+        activity_rows = read_csv_rows(activity_csv)
     if not correlation_rows:
         correlation_csv = csv_root / "bouton_soma_correlation_by_roi.csv"
-        if correlation_csv.exists():
-            correlation_rows = read_csv_rows(correlation_csv)
+        if not correlation_csv.exists():
+            raise SystemExit(f"Missing poster-ready correlation CSV: {correlation_csv}")
+        correlation_rows = read_csv_rows(correlation_csv)
     if not lag_rows:
         lag_csv = csv_root / "bouton_soma_lag_scan_by_roi.csv"
-        if lag_csv.exists():
-            lag_rows = read_csv_rows(lag_csv)
+        if not lag_csv.exists():
+            raise SystemExit(f"Missing poster-ready lag CSV: {lag_csv}")
+        lag_rows = read_csv_rows(lag_csv)
     if not visual_response_rows:
         visual_csv = csv_root / "visual_response_by_roi.csv"
-        if visual_csv.exists():
-            visual_response_rows = read_csv_rows(visual_csv)
+        if not visual_csv.exists():
+            raise SystemExit(f"Missing poster-ready visual-response CSV: {visual_csv}")
+        visual_response_rows = read_csv_rows(visual_csv)
     return activity_rows, correlation_rows, lag_rows, visual_response_rows
+
+
+def _normalize_scoped_unit_ids(rows: Sequence[Mapping[str, Any]], *, soma_channel: int, bouton_channel: int) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        row_copy = dict(row)
+        compartment = str(row_copy.get("compartment") or "").strip().lower()
+        channel_value = row_copy.get("channel")
+        if channel_value in {None, ""}:
+            if compartment == "soma":
+                channel_value = soma_channel
+            elif compartment == "bouton":
+                channel_value = bouton_channel
+            if channel_value not in {None, ""}:
+                row_copy["channel"] = int(channel_value)
+        roi_id = row_copy.get("roi_id")
+        if compartment == "soma":
+            global_id = str(row_copy.get("global_soma_id") or "").strip()
+            if not global_id:
+                global_id = make_global_soma_id(animal_id=row_copy.get("animal_id"), day_id=row_copy.get("day_id"), channel=row_copy.get("channel", soma_channel), roi_id=roi_id)
+            row_copy["global_soma_id"] = global_id
+            row_copy["global_bouton_id"] = row_copy.get("global_bouton_id") if str(row_copy.get("global_bouton_id") or "").strip() else None
+            if not str(row_copy.get("unit_id") or "").strip():
+                row_copy["unit_id"] = global_id
+            if not str(row_copy.get("roi_key") or "").strip():
+                row_copy["roi_key"] = row_copy["unit_id"]
+        elif compartment == "bouton":
+            global_id = str(row_copy.get("global_bouton_id") or "").strip()
+            if not global_id:
+                global_id = make_global_bouton_id(animal_id=row_copy.get("animal_id"), day_id=row_copy.get("day_id"), channel=row_copy.get("channel", bouton_channel), roi_id=roi_id)
+            row_copy["global_bouton_id"] = global_id
+            row_copy["global_soma_id"] = row_copy.get("global_soma_id") if str(row_copy.get("global_soma_id") or "").strip() else None
+            if not str(row_copy.get("unit_id") or "").strip():
+                row_copy["unit_id"] = global_id
+            if not str(row_copy.get("roi_key") or "").strip():
+                row_copy["roi_key"] = row_copy["unit_id"]
+        normalized.append(row_copy)
+    return normalized
 
 
 def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str) -> Dict[str, Any]:
@@ -568,6 +619,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         lag_rows=lag_rows,
         visual_response_rows=visual_response_rows,
     )
+    activity_rows = _normalize_scoped_unit_ids(activity_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    correlation_rows = _normalize_scoped_unit_ids(correlation_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    lag_rows = _normalize_scoped_unit_ids(lag_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    visual_response_rows = _normalize_scoped_unit_ids(visual_response_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
 
     visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
     visual_response_family = run_visual_response_family(
@@ -677,7 +732,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     write_csv_rows(result_root / "csv" / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
     if activity_rows:
         _stage("writing csv", "state_activity_by_experiment")
-        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, list(activity_rows[0].keys()))
+        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
     if correlation_rows:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
@@ -722,7 +777,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 write_csv_rows(cohort_csv_dir / "bouton_soma_lag_summary_by_day.csv", cohort_lag_summary_rows, list(cohort_lag_summary_rows[0].keys()))
     if visual_response_rows:
         _stage("writing csv", "visual_response_by_roi")
-        write_csv_rows(result_root / "csv" / "visual_response_by_roi.csv", visual_response_rows, list(visual_response_rows[0].keys()))
+        write_csv_rows(result_root / "csv" / "visual_response_by_roi.csv", visual_response_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "response_metric", "event_detection_method", "source_label", "source_path", "available", "comparison", "statistic", "raw_pvalue", "adjusted_pvalue", "n_visual_values", "n_blank_values", "mean_visual", "mean_blank", "delta", "paired_stimulus_values", "blank_reference_values", "visual_trial_labels", "blank_trial_labels", "significant", "star", "responsive", "cohort", "cohort_requested"])
     if visual_response_day_rows:
         _stage("writing csv", "visual_response_by_day")
         write_csv_rows(result_root / "csv" / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
@@ -832,10 +887,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         )
 
     poster_ready_figures: List[str] = []
+    poster_ready_errors: List[str] = []
     poster_output_dir = ensure_dir(REPO_ROOT / "results" / "poster_ready")
 
     def _state_values_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[float]]:
-        grouped: Dict[str, List[float]] = {}
+        grouped: Dict[str, Dict[str, List[float]]] = {}
         for row in rows:
             state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
             if not state:
@@ -847,8 +903,17 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             if not np.isfinite(value_f):
                 continue
-            grouped.setdefault(state, []).append(value_f)
-        return grouped
+            compartment = str(row.get("compartment") or "").strip().lower()
+            if compartment == "soma":
+                unit_id = str(row.get("global_soma_id") or "").strip()
+            elif compartment == "bouton":
+                unit_id = str(row.get("global_bouton_id") or "").strip()
+            else:
+                unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
+            if not unit_id:
+                continue
+            grouped.setdefault(state, {}).setdefault(unit_id, []).append(value_f)
+        return {state: [float(np.nanmean(values)) for values in unit_map.values() if values] for state, unit_map in grouped.items()}
 
     def _state_sample_sizes_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         grouped: Dict[str, set[str]] = {}
@@ -856,20 +921,13 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
             if not state:
                 continue
-            unit_id = str(
-                row.get("unit_id")
-                or row.get("roi_key")
-                or row.get("global_soma_id")
-                or row.get("global_bouton_id")
-                or row.get("roi_id")
-                or row.get("soma_id")
-                or row.get("bouton_id")
-                or row.get("global_dendrite_id")
-                or row.get("global_spine_id")
-                or row.get("roi_index")
-                or row.get("entity_id")
-                or ""
-            ).strip()
+            compartment = str(row.get("compartment") or "").strip().lower()
+            if compartment == "soma":
+                unit_id = str(row.get("global_soma_id") or "").strip()
+            elif compartment == "bouton":
+                unit_id = str(row.get("global_bouton_id") or "").strip()
+            else:
+                unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
             if not unit_id:
                 continue
             grouped.setdefault(state, set()).add(unit_id)
@@ -889,7 +947,13 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort = str(row.get("cohort") or "").strip().lower()
             if cohort:
                 cohort_keys.append(cohort)
-            unit_id = str(row.get("unit_id") or row.get("roi_key") or row.get("global_soma_id") or row.get("global_bouton_id") or row.get("roi_id") or row.get("soma_id") or row.get("bouton_id") or row.get("roi_index") or "").strip()
+            compartment = str(row.get("compartment") or "").strip().lower()
+            if compartment == "soma":
+                unit_id = str(row.get("global_soma_id") or "").strip()
+            elif compartment == "bouton":
+                unit_id = str(row.get("global_bouton_id") or "").strip()
+            else:
+                unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
             if unit_id:
                 unit_keys.append(unit_id)
             try:
@@ -905,18 +969,29 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "states": list(dict.fromkeys(state_keys)),
             "cohorts": list(dict.fromkeys(cohort_keys)),
         }
-
     poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
     blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
     movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
     mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
     preset_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
-    if not (preset_result_root / "blank_state_comparisons").exists() and (preset_result_root.parent / "blank_state_comparisons").exists():
+    if not preset_result_root.is_absolute():
+        preset_result_root = REPO_ROOT / preset_result_root
+    if preset_result_root.name != "all_requested_comparisons" and not (preset_result_root / "blank_state_comparisons").exists() and (preset_result_root.parent / "blank_state_comparisons").exists():
         preset_result_root = preset_result_root.parent
 
     def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
         csv_path = preset_result_root / preset_name / "csv" / csv_name
-        return read_csv_rows(csv_path) if csv_path.exists() else []
+        if not csv_path.exists() and preset_result_root.name == "all_requested_comparisons":
+            csv_path = preset_result_root / "csv" / csv_name
+        if not csv_path.exists():
+            raise SystemExit(f"Missing preset CSV: {csv_path}")
+        return read_csv_rows(csv_path)
+
+    def _load_all_requested_comparison_rows(csv_name: str) -> List[Dict[str, Any]]:
+        csv_path = preset_result_root / "csv" / csv_name if preset_result_root.name == "all_requested_comparisons" else preset_result_root / "all_requested_comparisons" / "csv" / csv_name
+        if not csv_path.exists():
+            raise SystemExit(f"Missing all_requested_comparisons CSV: {csv_path}")
+        return read_csv_rows(csv_path)
 
     blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
     movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
@@ -945,25 +1020,17 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         nonresponsive_values = _state_values_from_rows(nonresponsive_rows)
         responsive_sample_sizes = _state_sample_sizes_from_rows(responsive_rows)
         nonresponsive_sample_sizes = _state_sample_sizes_from_rows(nonresponsive_rows)
-        blank_responsive_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "responsive"]
-        blank_nonresponsive_rows = [row for row in blank_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "nonresponsive"]
-        movie_responsive_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "responsive"]
-        movie_nonresponsive_rows = [row for row in movie_preset_activity_rows if str(row.get("compartment") or "") == compartment and str(row.get("cohort") or "").strip().lower() == "nonresponsive"]
-        print(f"[poster] {compartment} responsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-        print(f"[poster] {compartment} nonresponsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-        print(f"[poster] {compartment} responsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-        print(f"[poster] {compartment} nonresponsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
-        blank_responsive_values = _state_values_from_rows(blank_responsive_rows) if blank_responsive_rows else {state: values for state, values in responsive_values.items() if state in blank_state_order}
-        blank_nonresponsive_values = _state_values_from_rows(blank_nonresponsive_rows) if blank_nonresponsive_rows else {state: values for state, values in nonresponsive_values.items() if state in blank_state_order}
-        movie_responsive_values = _state_values_from_rows(movie_responsive_rows) if movie_responsive_rows else {state: values for state, values in responsive_values.items() if state in movie_state_order}
-        movie_nonresponsive_values = _state_values_from_rows(movie_nonresponsive_rows) if movie_nonresponsive_rows else {state: values for state, values in nonresponsive_values.items() if state in movie_state_order}
-        blank_responsive_sample_sizes = _state_sample_sizes_from_rows(blank_responsive_rows) if blank_responsive_rows else {}
-        blank_nonresponsive_sample_sizes = _state_sample_sizes_from_rows(blank_nonresponsive_rows) if blank_nonresponsive_rows else {}
-        movie_responsive_sample_sizes = _state_sample_sizes_from_rows(movie_responsive_rows) if movie_responsive_rows else {}
-        movie_nonresponsive_sample_sizes = _state_sample_sizes_from_rows(movie_nonresponsive_rows) if movie_nonresponsive_rows else {}
+        blank_responsive_values = {state: values for state, values in responsive_values.items() if state in blank_state_order}
+        blank_nonresponsive_values = {state: values for state, values in nonresponsive_values.items() if state in blank_state_order}
+        movie_responsive_values = {state: values for state, values in responsive_values.items() if state in movie_state_order}
+        movie_nonresponsive_values = {state: values for state, values in nonresponsive_values.items() if state in movie_state_order}
+        blank_responsive_sample_sizes = {state: count for state, count in responsive_sample_sizes.items() if state in blank_state_order}
+        blank_nonresponsive_sample_sizes = {state: count for state, count in nonresponsive_sample_sizes.items() if state in blank_state_order}
+        movie_responsive_sample_sizes = {state: count for state, count in responsive_sample_sizes.items() if state in movie_state_order}
+        movie_nonresponsive_sample_sizes = {state: count for state, count in nonresponsive_sample_sizes.items() if state in movie_state_order}
         if responsive_values or nonresponsive_values:
-            print(f"[poster] {compartment} responsive blank/movie n summary = {_state_row_summary(blank_responsive_rows + movie_responsive_rows)}", file=sys.stderr)
-            print(f"[poster] {compartment} nonresponsive blank/movie n summary = {_state_row_summary(blank_nonresponsive_rows + movie_nonresponsive_rows)}", file=sys.stderr)
+            print(f"[poster] {compartment} responsive blank/movie n summary = {_state_row_summary([row for row in responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') in blank_state_order + movie_state_order])}", file=sys.stderr)
+            print(f"[poster] {compartment} nonresponsive blank/movie n summary = {_state_row_summary([row for row in nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') in blank_state_order + movie_state_order])}", file=sys.stderr)
             mixed_path = write_state_mixed_model_poster_figure(
                 output_dir=mixed_dir,
                 entity_label=compartment,
@@ -1037,16 +1104,31 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         )
         if blank_path:
             poster_ready_figures.append(str(blank_path))
+        blank_expected_states = [state for state in blank_state_order if "rem" not in state]
+        movie_expected_states = [state for state in movie_state_order if "rem" not in state]
+        blank_missing_states = [state for state in blank_expected_states if state not in blank_responsive_values and state not in blank_nonresponsive_values]
+        movie_missing_states = [state for state in movie_expected_states if state not in movie_responsive_values and state not in movie_nonresponsive_values]
+        if blank_missing_states or movie_missing_states:
+            poster_ready_errors.append(
+                f"[ERROR] {compartment} blank/movie poster missing states: blank_missing={blank_missing_states or '[]'}; movie_missing={movie_missing_states or '[]'}"
+            )
 
         correlation_dir = ensure_dir(compartment_root / "correlation")
+        all_correlation_path: str | None = None
         for cohort_name in ("all", "responsive", "nonresponsive"):
-            cohort_rows = [
-                row for row in cohort_correlation_rows.get(cohort_name, [])
-                if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-            ]
+            if cohort_name == "all":
+                cohort_rows = [
+                    row for row in _load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv")
+                    if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+                ]
+            else:
+                cohort_rows = [
+                    row for row in cohort_correlation_rows.get(cohort_name, [])
+                    if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+                ]
             if not cohort_rows:
                 continue
-            cohort_summary_rows = correlation_summary_rows(cohort_rows)
+            cohort_summary_rows = cohort_rows if cohort_name == "all" else correlation_summary_rows(cohort_rows)
             if not cohort_summary_rows:
                 continue
             comparison_rows = [
@@ -1063,11 +1145,124 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             if correlation_path:
                 poster_ready_figures.append(str(correlation_path))
+                if cohort_name == "all":
+                    all_correlation_path = str(correlation_path)
+        if compartment == "bouton":
+            combined_path = write_blank_movie_and_correlation_poster_figure(
+                output_dir=blank_dir,
+                entity_label=compartment,
+                responsive_blank_values=blank_responsive_values,
+                responsive_movie_values=movie_responsive_values,
+                nonresponsive_blank_values=blank_nonresponsive_values,
+                nonresponsive_movie_values=movie_nonresponsive_values,
+                blank_state_order=blank_state_order,
+                movie_state_order=movie_state_order,
+                responsive_blank_sample_sizes=blank_responsive_sample_sizes,
+                responsive_movie_sample_sizes=movie_responsive_sample_sizes,
+                nonresponsive_blank_sample_sizes=blank_nonresponsive_sample_sizes,
+                nonresponsive_movie_sample_sizes=movie_nonresponsive_sample_sizes,
+                responsive_significant_states=sorted(responsive_significant_states),
+                nonresponsive_significant_states=sorted(nonresponsive_significant_states),
+                responsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
+                nonresponsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
+                responsive_compartment_significant_states=sorted(responsive_significant_states),
+                nonresponsive_compartment_significant_states=sorted(nonresponsive_significant_states),
+                correlation_rows=_load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"),
+                correlation_comparison_rows=[
+                    row for row in cohort_state_comparison_rows.get("all", [])
+                    if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+                ],
+                output_stem=f"{compartment}_blank_movie_states_with_correlation_poster_ready",
+                title="Blank vs movie states",
+                correlation_title="State correlation summaries",
+            )
+            if combined_path:
+                poster_ready_figures.append(str(combined_path))
+
+    canonical_visual_response_lookup = _canonical_visual_response_cohort_map(visual_response_rows)
+    missing_visual_response_global_ids = [
+        row for row in visual_response_rows
+        if str(row.get("compartment") or "") == "soma" and not str(row.get("global_soma_id") or "").strip()
+        or str(row.get("compartment") or "") == "bouton" and not str(row.get("global_bouton_id") or "").strip()
+    ]
+    if missing_visual_response_global_ids:
+        sample_rows = []
+        for row in missing_visual_response_global_ids[:20]:
+            sample_rows.append(
+                "|".join(
+                    [
+                        f"compartment={row.get('compartment')}",
+                        f"expid={row.get('expid')}",
+                        f"day_id={row.get('day_id')}",
+                        f"channel={row.get('channel')}",
+                        f"roi_id={row.get('roi_id')}",
+                        f"roi_index={row.get('roi_index')}",
+                        f"unit_id={row.get('unit_id')}",
+                    ]
+                )
+            )
+        print(
+            f"[ERROR] {len(missing_visual_response_global_ids)} visual-response rows are missing global_soma_id/global_bouton_id; samples: "
+            + "; ".join(sample_rows),
+            file=sys.stderr,
+        )
+
+    def _missing_global_id_rows(rows: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+        missing: List[Mapping[str, Any]] = []
+        for row in rows:
+            compartment = str(row.get("compartment") or "").strip().lower()
+            if compartment == "soma":
+                if not str(row.get("global_soma_id") or "").strip():
+                    missing.append(row)
+            elif compartment == "bouton":
+                if not str(row.get("global_bouton_id") or "").strip():
+                    missing.append(row)
+        return missing
+
+    missing_activity_global_ids = _missing_global_id_rows(cohort_activity_rows.get("responsive", []) + cohort_activity_rows.get("nonresponsive", []))
+    missing_preset_global_ids = _missing_global_id_rows(blank_preset_activity_rows + movie_preset_activity_rows)
+    if missing_activity_global_ids or missing_preset_global_ids:
+        for label, rows_with_missing in (("activity", missing_activity_global_ids), ("preset", missing_preset_global_ids)):
+            if not rows_with_missing:
+                continue
+            sample_rows = []
+            for row in rows_with_missing[:20]:
+                sample_rows.append(
+                    "|".join(
+                        [
+                            f'compartment={row.get("compartment")}',
+                            f'expid={row.get("expid")}',
+                            f'day_id={row.get("day_id")}',
+                            f'channel={row.get("channel")}',
+                            f'roi_id={row.get("roi_id")}',
+                            f'roi_index={row.get("roi_index")}',
+                            f'unit_id={row.get("unit_id")}',
+                        ]
+                    )
+                )
+            print(
+                f"[ERROR] {len(rows_with_missing)} {label} rows are missing compartment-matched global IDs; samples: "
+                + "; ".join(sample_rows),
+                file=sys.stderr,
+            )
+
+    def _visual_response_unique_count(rows: Sequence[Mapping[str, Any]], *, compartment: str | None = None, responsive: bool | None = None) -> int:
+        unique_keys: set[tuple[str, str]] = set()
+        for row in rows:
+            if compartment is not None and str(row.get("compartment") or "") != compartment:
+                continue
+            row_responsive = canonical_visual_response_lookup.get(_row_roi_lookup_key(row), "nonresponsive") == "responsive"
+            if responsive is True and not row_responsive:
+                continue
+            if responsive is False and row_responsive:
+                continue
+            unique_keys.add(_row_roi_lookup_key(row))
+        return int(len(unique_keys))
 
     visual_response_counts = {
-        "all": int(len(visual_response_rows)),
-        "responsive": int(sum(bool(row.get("responsive", False)) for row in visual_response_rows)),
-        "nonresponsive": int(sum(not bool(row.get("responsive", False)) for row in visual_response_rows)),
+        "all": _visual_response_unique_count(visual_response_rows),
+        "responsive": _visual_response_unique_count(visual_response_rows, responsive=True),
+        "nonresponsive": _visual_response_unique_count(visual_response_rows, responsive=False),
     }
     manifest = {
         "config": dict(config),
@@ -1120,12 +1315,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "visual_response_family": visual_response_family,
         "visual_response_cohort_ids": {
             "soma": {
-                "responsive": [str(row.get("unit_id") or row.get("global_soma_id") or row.get("roi_id") or row.get("soma_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and bool(row.get("responsive", False))],
-                "nonresponsive": [str(row.get("unit_id") or row.get("global_soma_id") or row.get("roi_id") or row.get("soma_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "soma" and not bool(row.get("responsive", False))],
+                "responsive": list(dict.fromkeys(key[1] for key, cohort in canonical_visual_response_lookup.items() if key[0] == "soma" and cohort == "responsive")),
+                "nonresponsive": list(dict.fromkeys(key[1] for key, cohort in canonical_visual_response_lookup.items() if key[0] == "soma" and cohort != "responsive")),
             },
             "bouton": {
-                "responsive": [str(row.get("unit_id") or row.get("global_bouton_id") or row.get("roi_id") or row.get("bouton_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "bouton" and bool(row.get("responsive", False))],
-                "nonresponsive": [str(row.get("unit_id") or row.get("global_bouton_id") or row.get("roi_id") or row.get("bouton_id") or row.get("roi_index")) for row in visual_response_rows if str(row.get("compartment")) == "bouton" and not bool(row.get("responsive", False))],
+                "responsive": list(dict.fromkeys(key[1] for key, cohort in canonical_visual_response_lookup.items() if key[0] == "bouton" and cohort == "responsive")),
+                "nonresponsive": list(dict.fromkeys(key[1] for key, cohort in canonical_visual_response_lookup.items() if key[0] == "bouton" and cohort != "responsive")),
             },
         },
         "mixed_model": mixed_model_results,
@@ -1174,6 +1369,9 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "analysis_results": analysis_results_cache_payload(manifest_json),
         },
     )
+    if poster_ready_errors:
+        for error in poster_ready_errors:
+            print(error, file=sys.stderr)
     if poster_ready_figures:
         _stage("poster-ready outputs", f"{len(poster_ready_figures)} figures written")
         for figure_path in poster_ready_figures:

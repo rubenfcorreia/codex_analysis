@@ -87,6 +87,32 @@ def shared_time_axis(ctx: ExperimentContext) -> np.ndarray:
     return np.asarray(t, dtype=float)
 
 
+def _make_scoped_unit_id(
+    *,
+    animal_id: Any = None,
+    day_id: Any = None,
+    compartment: Any = None,
+    channel: Any = None,
+    roi_id: Any = None,
+) -> str:
+    parts = [
+        str(animal_id).strip() if animal_id is not None else "",
+        str(day_id).strip() if day_id is not None else "",
+        str(compartment).strip().lower() if compartment is not None else "",
+        f"ch{int(channel)}" if channel is not None and str(channel).strip() != "" else "",
+        str(roi_id).strip() if roi_id is not None and str(roi_id).strip() != "" else "",
+    ]
+    return "|".join(part for part in parts if part)
+
+
+def make_global_soma_id(*, animal_id: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None) -> str:
+    return _make_scoped_unit_id(animal_id=animal_id, day_id=day_id, compartment="soma", channel=channel, roi_id=roi_id)
+
+
+def make_global_bouton_id(*, animal_id: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None) -> str:
+    return _make_scoped_unit_id(animal_id=animal_id, day_id=day_id, compartment="bouton", channel=channel, roi_id=roi_id)
+
+
 def make_unit_id(
     *,
     animal_id: Any = None,
@@ -97,16 +123,14 @@ def make_unit_id(
     roi_id: Any = None,
     roi_index: Any = None,
 ) -> str:
-    parts = [
-        str(animal_id).strip() if animal_id is not None else "",
-        str(expid).strip() if expid is not None else "",
-        str(day_id).strip() if day_id is not None else "",
-        str(compartment).strip().lower() if compartment is not None else "",
-        f"ch{int(channel)}" if channel is not None and str(channel).strip() != "" else "",
-        str(roi_id).strip() if roi_id is not None and str(roi_id).strip() != "" else "",
-        str(roi_index).strip() if roi_index is not None and str(roi_index).strip() != "" else "",
-    ]
-    return "|".join(part for part in parts if part)
+    del expid, roi_index
+    return _make_scoped_unit_id(
+        animal_id=animal_id,
+        day_id=day_id,
+        compartment=compartment,
+        channel=channel,
+        roi_id=roi_id,
+    )
 
 
 def summarize_activity(matrix: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
@@ -126,4 +150,4 @@ def summarize_activity(matrix: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
     flattened = masked.reshape(-1)
     return summarize_vector(flattened)
 
-__all__ = ["ExperimentContext", "build_experiment_context", "experiment_summary_row", "shared_time_axis", "summarize_activity"]
+__all__ = ["ExperimentContext", "build_experiment_context", "experiment_summary_row", "shared_time_axis", "summarize_activity", "make_unit_id", "make_global_soma_id", "make_global_bouton_id"]

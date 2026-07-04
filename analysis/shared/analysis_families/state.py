@@ -17,7 +17,7 @@ from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
 from analysis.compartment_common import canonical_state_label, read_pickle, state_display_color, state_display_label
 from analysis.shared.shared_calcium_response import build_masked_event_summary
 
-from .core import ExperimentContext, make_unit_id, shared_time_axis, summarize_activity
+from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id, shared_time_axis, summarize_activity
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -228,6 +228,8 @@ def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[
                     roi_id=roi_id,
                     roi_index=int(roi_index),
                 )
+                global_soma_id = make_global_soma_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=channel, roi_id=roi_id)
+                global_bouton_id = make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=channel, roi_id=roi_id)
                 row = {
                     "expid": ctx.expid,
                     "mode": ctx.mode,
@@ -250,13 +252,13 @@ def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[
                 if compartment == "soma":
                     row["soma_id"] = roi_id
                     row["bouton_id"] = None
-                    row["global_soma_id"] = unit_id
+                    row["global_soma_id"] = global_soma_id
                     row["global_bouton_id"] = None
                 else:
                     row["soma_id"] = None
                     row["bouton_id"] = roi_id
                     row["global_soma_id"] = None
-                    row["global_bouton_id"] = unit_id
+                    row["global_bouton_id"] = global_bouton_id
                 rows.append(row)
     return rows
 

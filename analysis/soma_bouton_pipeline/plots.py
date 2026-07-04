@@ -231,6 +231,7 @@ def _plot_boxplot(
     ylabel: str,
     accent_color: str,
     comparison_rows: list[Mapping[str, Any]] | None = None,
+    sample_size_column: str | None = None,
     horizontal: bool = False,
 ) -> list[Path]:
     if frame.empty:
@@ -259,7 +260,14 @@ def _plot_boxplot(
         values = pd.to_numeric(state_frame[value_col], errors="coerce").dropna().to_numpy(dtype=float)
         if values.size == 0:
             continue
-        sample_size = _unique_roi_count(state_frame)
+        if sample_size_column is not None:
+            if sample_size_column not in state_frame.columns:
+                raise ValueError(f"plot_state_correlation requires {sample_size_column} for n labels")
+            sample_values = state_frame[sample_size_column].dropna().astype(str)
+            sample_values = sample_values[sample_values.str.strip() != ""]
+            sample_size = int(sample_values.nunique())
+        else:
+            sample_size = _unique_roi_count(state_frame)
         present_states.append(state)
         position_lookup[state] = len(present_states)
         labels.append(pretty_state_label(state))
@@ -460,6 +468,7 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
         ylabel="Correlation",
         accent_color="#334155",
         comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        sample_size_column="day_id",
         horizontal=True,
     )
 

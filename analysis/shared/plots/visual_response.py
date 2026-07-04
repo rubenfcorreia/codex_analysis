@@ -20,6 +20,24 @@ from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
 )
 
 
+def _safe_filename_component(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-") or "unknown"
+
+
+def _visual_response_entity_id(row: Mapping[str, Any]) -> str:
+    compartment = str(row.get("compartment") or "").strip().lower()
+    if compartment == "soma":
+        value = row.get("global_soma_id")
+    elif compartment == "bouton":
+        value = row.get("global_bouton_id")
+    else:
+        value = row.get("global_soma_id") or row.get("global_bouton_id")
+    return str(value).strip() if value is not None else ""
+
+
 def _infer_source_parts(response_row: Mapping[str, Any]) -> tuple[Optional[Path], Optional[int]]:
     source_path = response_row.get("source_path")
     if not source_path:
@@ -118,6 +136,9 @@ def plot_visual_response_entity_figure(
     blank_mean_trace = np.asarray(plot_data["blank_mean_trace"], dtype=float)
     if cut_time.size == 0 or visual_mean_trace.size == 0 or blank_mean_trace.size == 0:
         return None
+    entity_id = _visual_response_entity_id(response_row)
+    entity_slug = _safe_filename_component(entity_id)
+    animal_slug = _safe_filename_component(response_row.get("animal_id") or "animal")
 
     fig, axes = plt.subplots(1, 3, figsize=(11.8, 4.1), gridspec_kw={"width_ratios": [1.05, 1.05, 0.95]})
     blank_ax, movie_ax, box_ax = axes
@@ -182,11 +203,11 @@ def plot_visual_response_entity_figure(
 
     cohort_text = f" ({cohort_label})" if cohort_label and cohort_label != "all" else ""
     title_prefix = "Soma" if kind == "soma" else "Bouton"
-    fig.suptitle(f"{title_prefix} {response_row.get('animal_id', '')} {response_row.get('roi_index', '')}{cohort_text}", fontsize=14, y=0.985)
+    fig.suptitle(f"{title_prefix} {response_row.get('animal_id', '')} {entity_id}{cohort_text}", fontsize=14, y=0.985)
     fig.subplots_adjust(left=0.06, right=0.99, bottom=0.16, top=0.84, wspace=0.36)
     fig_dir = Path(fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
-    output_path = fig_dir / f"{response_row.get('animal_id', 'animal')}_{response_row.get('roi_index', 'roi')}_{cohort_label}_blank_vs_movies.svg"
+    output_path = fig_dir / f"{animal_slug}_{entity_slug}_{cohort_label}_blank_vs_movies.svg"
     fig.savefig(output_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return str(output_path)
@@ -199,8 +220,18 @@ def render_visual_response_entity_figures(
     cohort_label: str = "all",
     kind: str = "soma",
 ) -> List[str]:
-    saved: List[str] = []
+    deduped_rows: List[Mapping[str, Any]] = []
+    seen_entities: set[str] = set()
     for row in response_rows:
+        if not isinstance(row, Mapping):
+            continue
+        entity_id = _visual_response_entity_id(row)
+        if entity_id in seen_entities:
+            continue
+        seen_entities.add(entity_id)
+        deduped_rows.append(row)
+    saved: List[str] = []
+    for row in deduped_rows:
         output = plot_visual_response_entity_figure(row, fig_dir, cohort_label=cohort_label, kind=kind)
         if output:
             saved.append(output)
