@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 import numpy as np
 
 from ...compartment_common import canonical_state_label, lagged_correlation, state_display_color, state_display_label, summarize_lag_scan
-from .core import ExperimentContext
+from .core import ExperimentContext, make_unit_id
 from .state import state_masks_for_context
 
 
@@ -13,6 +13,7 @@ def lag_scan_rows(ctx: ExperimentContext, selected_states: Sequence[str], lag_wi
     masks = state_masks_for_context(ctx, selected_states)
     soma_matrix = ctx.soma.matrix()
     bouton_matrix = ctx.bouton.matrix()
+    bouton_roi_ids = list(ctx.bouton.roi_ids())
     soma_mean = np.nanmean(soma_matrix, axis=0) if soma_matrix.size else np.array([], dtype=float)
     if soma_mean.size == 0 or bouton_matrix.size == 0:
         return []
@@ -35,6 +36,16 @@ def lag_scan_rows(ctx: ExperimentContext, selected_states: Sequence[str], lag_wi
             bouton_state = bouton_matrix[roi_index, :][mask]
             lag_values_t, corrs = lagged_correlation(state_t, state_soma, state_t, bouton_state, lags_s)
             summary = summarize_lag_scan(lag_values_t, corrs)
+            roi_id = bouton_roi_ids[roi_index] if roi_index < len(bouton_roi_ids) else roi_index
+            unit_id = make_unit_id(
+                animal_id=ctx.animal_id,
+                expid=ctx.expid,
+                day_id=ctx.day_id,
+                compartment="bouton",
+                channel=ctx.bouton_channel,
+                roi_id=roi_id,
+                roi_index=roi_index,
+            )
             for lag, corr in zip(lag_values_t, corrs):
                 rows.append(
                     {
@@ -43,10 +54,13 @@ def lag_scan_rows(ctx: ExperimentContext, selected_states: Sequence[str], lag_wi
                         "animal_id": ctx.animal_id,
                         "date": ctx.date,
                         "day_id": ctx.day_id,
+                        "channel": int(ctx.bouton_channel),
                         "state": canonical_state_label(state),
                         "state_display": state_display_label(state),
                         "state_color": state_display_color(state),
                         "bouton_roi_index": roi_index,
+                        "roi_id": roi_id,
+                        "unit_id": unit_id,
                         "lag_s": float(lag),
                         "corr": float(corr),
                         "zero_lag_corr": summary["zero_lag_corr"],

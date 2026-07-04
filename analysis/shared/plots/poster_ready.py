@@ -30,7 +30,7 @@ if plt is not None:
 
 
 FIGURE_WIDTH_CM = 17.0
-FIGURE_HEIGHT_CM = 7.5
+FIGURE_HEIGHT_CM = 6.5
 VISUAL_RESPONSE_WIDTH_CM = 19.0
 VISUAL_RESPONSE_HEIGHT_CM = 6.5
 
@@ -106,12 +106,17 @@ def _coerce_bool(value: Any) -> bool:
 
 def _row_roi_lookup_key(row: Mapping[str, Any]) -> tuple[str, str]:
     compartment = str(row.get("compartment") or "").strip().lower()
-    roi_id = row.get("roi_id")
-    if roi_id is None or str(roi_id).strip() == "":
-        roi_id = row.get(f"{compartment}_id")
-    if roi_id is None or str(roi_id).strip() == "":
-        roi_id = row.get("roi_index")
-    return compartment, str(roi_id)
+    unit_id = row.get("unit_id")
+    if unit_id is None or str(unit_id).strip() == "":
+        unit_id = row.get("global_soma_id") or row.get("global_bouton_id") or row.get("roi_key")
+    if unit_id is None or str(unit_id).strip() == "":
+        roi_id = row.get("roi_id")
+        if roi_id is None or str(roi_id).strip() == "":
+            roi_id = row.get(f"{compartment}_id")
+        if roi_id is None or str(roi_id).strip() == "":
+            roi_id = row.get("roi_index")
+        unit_id = roi_id
+    return compartment, str(unit_id)
 
 
 def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -333,14 +338,26 @@ def _pick_exemplar_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Optional[dic
 
 
 def _visual_response_entity_id(row: Mapping[str, Any]) -> str:
-    for key in ("global_dendrite_id", "global_spine_id", "roi_id", "soma_id", "bouton_id", "entity_id", "roi_index"):
+    for key in ("global_soma_id", "global_bouton_id", "roi_key", "global_dendrite_id", "global_spine_id"):
         value = row.get(key)
         if value is None:
             continue
         text = str(value).strip()
         if text:
             return text
-    return ""
+    expid = str(row.get("expid") or row.get("day_id") or "").strip()
+    compartment = str(row.get("compartment") or "").strip().lower()
+    local_value = row.get("roi_id")
+    if local_value is None or str(local_value).strip() == "":
+        local_value = row.get(f"{compartment}_id") if compartment in {"soma", "bouton"} else None
+    if local_value is None or str(local_value).strip() == "":
+        local_value = row.get("entity_id")
+    if local_value is None or str(local_value).strip() == "":
+        local_value = row.get("roi_index")
+    local_text = str(local_value).strip() if local_value is not None else ""
+    if expid and local_text:
+        return f"{expid}|{compartment}|{local_text}"
+    return local_text or expid
 
 
 def _visual_response_unique_entity_count(rows: Sequence[Mapping[str, Any]]) -> int:
@@ -475,6 +492,18 @@ def _style_axes(ax: plt.Axes) -> None:
         ax.spines[spine].set_visible(False)
 
 
+def _set_boxplot_colors(bp: Mapping[str, Any], colors: Sequence[str]) -> None:
+    for element_name in ("boxes", "whiskers", "caps", "medians"):
+        for artist in bp.get(element_name, []):
+            if element_name == "boxes":
+                continue
+            artist.set_color("#555555")
+    for patch, color in zip(bp.get("boxes", []), colors):
+        patch.set_facecolor(color)
+        patch.set_edgecolor("#444444")
+        patch.set_alpha(0.9)
+
+
 def _boxplot(
     ax: plt.Axes,
     state_values: Mapping[str, Sequence[float]],
@@ -486,6 +515,11 @@ def _boxplot(
     significance_flags: Sequence[bool] | None = None,
     sample_sizes: Mapping[str, int] | None = None,
     horizontal: bool = False,
+    box_width: float = 0.56,
+    bracket_step_scale: float | None = None,
+    bracket_height_scale: float | None = None,
+    bracket_text_scale: float | None = None,
+    extent_padding_scale: float | None = None,
 ) -> None:
     series = []
     labels = []
@@ -511,7 +545,7 @@ def _boxplot(
             orig_index = state_order.index(state) if state in state_order else idx - 1
             present_flags.append(bool(flags[orig_index]) if orig_index < len(flags) else False)
     if series:
-        bp = ax.boxplot(series, positions=positions, widths=0.56, patch_artist=True, showfliers=False, vert=not horizontal)
+        bp = ax.boxplot(series, positions=positions, widths=box_width, patch_artist=True, showfliers=False, vert=not horizontal)
         for patch, color in zip(bp.get("boxes", []), colors):
             patch.set_facecolor(color)
             patch.set_edgecolor("#444444")
@@ -574,7 +608,7 @@ def _boxplot(
             ax.set_xlim(current_left, max(current_right, sig_extent + max(0.08 * abs(sig_extent), 0.05)))
         else:
             current_bottom, current_top = ax.get_ylim()
-            ax.set_ylim(current_bottom, max(current_top, sig_extent + max(0.08 * abs(sig_extent), 0.05)))
+            ax.set_ylim(current_bottom, max(current_top, sig_extent + max((extent_padding_scale if extent_padding_scale is not None else 0.08) * abs(sig_extent), 0.05)))
     y0, y1 = ax.get_ylim()
     x0, x1 = ax.get_xlim()
     y_range = max(float(y1 - y0), 1e-6)
@@ -600,9 +634,9 @@ def _boxplot(
                 x0, x1 = ax.get_xlim()
                 x_range = x1 - x0 if np.isfinite(x1 - x0) and (x1 - x0) > 0 else 1.0
                 bracket_base = x1 + 0.018 * x_range
-                bracket_step = max(0.017 * x_range, 0.018)
-                text_offset = max(0.0035 * x_range, 0.008)
-                bracket_height = max(0.007 * x_range, 0.011)
+                bracket_step = max((bracket_step_scale if bracket_step_scale is not None else 0.017) * x_range, 0.018)
+                text_offset = max((bracket_text_scale if bracket_text_scale is not None else 0.0035) * x_range, 0.008)
+                bracket_height = max((bracket_height_scale if bracket_height_scale is not None else 0.007) * x_range, 0.011)
                 top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.015 * x_range
                 if top_needed > x1:
                     ax.set_xlim(x0, top_needed)
@@ -613,9 +647,9 @@ def _boxplot(
                 y0, y1 = ax.get_ylim()
                 y_range = y1 - y0 if np.isfinite(y1 - y0) and (y1 - y0) > 0 else 1.0
                 bracket_base = y1 + 0.018 * y_range
-                bracket_step = max(0.017 * y_range, 0.018)
-                text_offset = max(0.0035 * y_range, 0.008)
-                bracket_height = max(0.007 * y_range, 0.011)
+                bracket_step = max((bracket_step_scale if bracket_step_scale is not None else 0.017) * y_range, 0.018)
+                text_offset = max((bracket_text_scale if bracket_text_scale is not None else 0.0035) * y_range, 0.008)
+                bracket_height = max((bracket_height_scale if bracket_height_scale is not None else 0.007) * y_range, 0.011)
                 top_needed = bracket_base + len(comparison_targets) * bracket_step + bracket_height + text_offset + 0.015 * y_range
                 if top_needed > y1:
                     ax.set_ylim(y0, top_needed)
@@ -858,7 +892,8 @@ def _visual_response_entity_observation(
         return None, None, None, None
     entity_key = f"{kind}s"
     entity_id = str(
-        response_row.get(f"global_{kind}_id")
+        response_row.get("unit_id")
+        or response_row.get(f"global_{kind}_id")
         or response_row.get(f"{kind}_id")
         or response_row.get("roi_id")
         or response_row.get("roi_index")
@@ -1101,7 +1136,7 @@ def write_correlation_poster_figure(
     correlation_rows: Sequence[Mapping[str, Any]],
     comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     output_stem: Optional[str] = None,
-    title: str = "Correlation summaries",
+    title: str = "State correlation summaries",
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -1128,8 +1163,14 @@ def write_correlation_poster_figure(
         cohort_label=entity_label,
         significance_flags=[state in significant_states for state in state_order],
         sample_sizes={state: int(len(_finite_array(values))) for state, values in state_values.items()},
+        box_width=0.72,
+        bracket_step_scale=0.010,
+        bracket_height_scale=0.0045,
+        bracket_text_scale=0.002,
+        extent_padding_scale=0.03,
+        horizontal=True,
     )
-    fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=FIGURE_TITLE_FS, y=0.965)
+    fig.suptitle(f"{entity_label.capitalize()} {title.lower()}", fontsize=FIGURE_TITLE_FS, y=0.965)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 
@@ -1304,34 +1345,140 @@ def write_state_mixed_model_poster_figure(
     title: str = "Quiet blank vs sleep states",
     preferred_response_keys: Sequence[str] | None = None,
     mixed_model_contrast_p_source: str = "classical",
+    responsive_state_sample_sizes: Mapping[str, int] | None = None,
+    nonresponsive_state_sample_sizes: Mapping[str, int] | None = None,
 ) -> Optional[str]:
     if plt is None:
         return None
+
+    def _state_series_map(values: Mapping[str, Sequence[float]]) -> dict[str, list[float]]:
+        return {str(key): [float(value) for value in series if value is not None] for key, series in values.items() if isinstance(series, Sequence)}
+
+    def _split_dendrite_state_values(values: Mapping[str, Sequence[float]]) -> tuple[dict[str, list[float]], dict[str, list[float]], dict[str, list[float]]]:
+        basal: dict[str, list[float]] = {}
+        apical: dict[str, list[float]] = {}
+        other: dict[str, list[float]] = {}
+        for state, series in values.items():
+            key = str(state)
+            arr = [float(value) for value in series if value is not None]
+            if key.startswith("basal_"):
+                basal[key[len("basal_"):]] = arr
+            elif key.startswith("apical_"):
+                apical[key[len("apical_"):]] = arr
+            else:
+                other[key] = arr
+        return basal, apical, other
+
+    def _grouped_compartment_boxplot(
+        ax: plt.Axes,
+        *,
+        basal_values: Mapping[str, Sequence[float]],
+        apical_values: Mapping[str, Sequence[float]],
+        state_order: Sequence[str],
+        title: str,
+        ylabel: str,
+        cohort_label: str,
+        significant_states: Sequence[str] | None = None,
+    ) -> None:
+        rng = np.random.default_rng(7)
+        basal_state_map = {state: _finite_array(basal_values.get(state, [])) for state in state_order}
+        apical_state_map = {state: _finite_array(apical_values.get(state, [])) for state in state_order}
+        all_data: list[np.ndarray] = []
+        compartment_specs = [
+            ("basal", basal_state_map, "#4C72B0", -0.18),
+            ("apical", apical_state_map, "#DD8452", 0.18),
+        ]
+        for compartment, summary_map, color, offset in compartment_specs:
+            positions: list[float] = []
+            data: list[np.ndarray] = []
+            for idx, state in enumerate(state_order, start=1):
+                arr = summary_map.get(state, np.asarray([], dtype=float))
+                if arr.size:
+                    positions.append(float(idx) + offset)
+                    data.append(arr)
+            if not data:
+                continue
+            bp = ax.boxplot(data, positions=positions, widths=0.28, patch_artist=True, showfliers=False, vert=False)
+            _set_boxplot_colors(bp, [color] * len(data))
+            for pos, arr in zip(positions, data):
+                jitter = rng.uniform(-0.08, 0.08, size=arr.size)
+                ax.scatter(arr, np.full(arr.size, pos) + jitter, s=14, alpha=0.48, color=color, edgecolor="none")
+            all_data.extend(data)
+
+        state_labels = [_state_display_label(state) for state in state_order]
+        ax.set_yticks(range(1, len(state_order) + 1))
+        ax.set_yticklabels(state_labels, fontsize=FIGURE_TICK_FS)
+        ax.set_xlabel(ylabel, fontsize=FIGURE_LABEL_FS)
+        ax.set_ylabel("State", fontsize=FIGURE_LABEL_FS)
+        ax.set_title(title, fontsize=FIGURE_TITLE_FS, pad=4)
+        ax.grid(axis="x", alpha=0.25)
+
+        finite = np.concatenate(all_data) if all_data else np.asarray([], dtype=float)
+        finite = finite[np.isfinite(finite)] if finite.size else finite
+        if finite.size:
+            lo = float(np.nanmin(finite))
+            hi = float(np.nanmax(finite))
+            pad = max(0.12 * max(hi - lo, 1e-6), 0.05)
+            ax.set_xlim(lo - pad, hi + pad)
+            x0, x1 = ax.get_xlim()
+            x_range = max(x1 - x0, 1e-6)
+            count_x = x1 + max(0.02 * x_range, 0.05)
+            sig_x = x1 + max(0.045 * x_range, 0.08)
+            for compartment, summary_map, color, offset in compartment_specs:
+                for idx, state in enumerate(state_order, start=1):
+                    arr = summary_map.get(state, np.asarray([], dtype=float))
+                    if not arr.size:
+                        continue
+                    ax.text(count_x, float(idx) + offset, f"n={int(arr.size)}", color=color, fontsize=FIGURE_NOTE_FS - 1, ha="left", va="center", clip_on=False)
+            significant = {_state_compare_key(state) for state in (significant_states or [])}
+            for idx, state in enumerate(state_order, start=1):
+                if _state_compare_key(state) in significant:
+                    ax.text(sig_x, float(idx), "*", ha="left", va="center", fontsize=FIGURE_NOTE_FS + 2, color="#8b0000", fontweight="bold", clip_on=False)
+
+        legend_handles = [
+            Line2D([0], [0], color="#4C72B0", marker="s", linestyle="", markersize=8, label="Basal"),
+            Line2D([0], [0], color="#DD8452", marker="s", linestyle="", markersize=8, label="Apical"),
+        ]
+        ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=FIGURE_LEGEND_FS)
+        ax.text(0.02, 0.98, cohort_label, transform=ax.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
+
     base_states = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
-    dendrite_prefixed = any(str(state).startswith(("basal_", "apical_")) for state in state_order) or any(str(k).startswith(("basal_", "apical_")) for k in responsive_state_values) or any(str(k).startswith(("basal_", "apical_")) for k in nonresponsive_state_values)
-    resp = {
-        str(k): list(v)
-        for k, v in responsive_state_values.items()
-        if str(k) in base_states or str(k).startswith("basal_") or str(k).startswith("apical_")
-    }
-    nonresp = {
-        str(k): list(v)
-        for k, v in nonresponsive_state_values.items()
-        if str(k) in base_states or str(k).startswith("basal_") or str(k).startswith("apical_")
-    }
+    resp = _state_series_map(responsive_state_values)
+    nonresp = _state_series_map(nonresponsive_state_values)
     if not resp and not nonresp:
         return None
+
+    dendrite_prefixed = any(str(state).startswith(("basal_", "apical_")) for state in state_order) or any(str(k).startswith(("basal_", "apical_")) for k in resp) or any(str(k).startswith(("basal_", "apical_")) for k in nonresp)
     if dendrite_prefixed:
-        state_order = [str(state) for state in state_order if str(state) in resp or str(state) in nonresp]
-        if not state_order:
-            state_order = list(dict.fromkeys(list(resp.keys()) + list(nonresp.keys())))
+        resp_basal, resp_apical, resp_other = _split_dendrite_state_values(resp)
+        nonresp_basal, nonresp_apical, nonresp_other = _split_dendrite_state_values(nonresp)
+        candidate_order: list[str] = []
+        for candidate in list(state_order) + list(resp.keys()) + list(nonresp.keys()):
+            base = str(candidate)
+            for prefix in ("basal_", "apical_"):
+                if base.startswith(prefix):
+                    base = base[len(prefix):]
+                    break
+            if not base:
+                continue
+            if base in candidate_order:
+                continue
+            if base in resp_basal or base in resp_apical or base in resp_other or base in nonresp_basal or base in nonresp_apical or base in nonresp_other:
+                candidate_order.append(base)
+        if not candidate_order:
+            candidate_order = list(dict.fromkeys([_state_compare_key(state) for state in state_order]))
+        present_state_order = [state for state in candidate_order if _finite_array(resp_basal.get(state, [])).size or _finite_array(resp_apical.get(state, [])).size or _finite_array(nonresp_basal.get(state, [])).size or _finite_array(nonresp_apical.get(state, [])).size or _finite_array(resp_other.get(state, [])).size or _finite_array(nonresp_other.get(state, [])).size]
+        if not present_state_order:
+            present_state_order = candidate_order
     else:
-        state_order = [state for state in base_states if state in state_order or state in resp or state in nonresp]
-    present_state_order = [state for state in state_order if _finite_array(resp.get(state, [])).size or _finite_array(nonresp.get(state, [])).size]
-    if not present_state_order:
-        present_state_order = [state for state in state_order if state in resp or state in nonresp]
-    if not present_state_order:
-        present_state_order = list(state_order)
+        resp = {state: resp[state] for state in base_states if state in resp}
+        nonresp = {state: nonresp[state] for state in base_states if state in nonresp}
+        present_state_order = [state for state in base_states if state in state_order or state in resp or state in nonresp]
+        if not present_state_order:
+            present_state_order = list(dict.fromkeys([state for state in state_order if state in resp or state in nonresp]))
+        if not present_state_order:
+            present_state_order = list(base_states)
+
     forest_rows_by_cohort: dict[str, list[dict[str, Any]]] = {}
     if isinstance(mixed_model_rows, Mapping) and ("responsive" in mixed_model_rows or "nonresponsive" in mixed_model_rows):
         rows_by_cohort = {}
@@ -1347,63 +1494,100 @@ def write_state_mixed_model_poster_figure(
         filtered_rows = filter_mixed_model_terms_to_states(selected_rows, present_state_order)
         rows_by_cohort = {"responsive": filtered_rows, "nonresponsive": filtered_rows}
         forest_rows_by_cohort = {"responsive": filtered_rows, "nonresponsive": filtered_rows}
+
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_state_mixed_model_poster_ready"
     p_source = _normalize_mixed_model_contrast_p_source(mixed_model_contrast_p_source)
     p_source_label = "shuffle p" if p_source == "shuffle" else "classical p"
-    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(20.5)), constrained_layout=False)
+    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(FIGURE_HEIGHT_CM)), constrained_layout=False)
     outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.92, bottom=0.11, wspace=0.24, hspace=0.28, height_ratios=[0.88, 1.12])
-    cohort_specs = [("responsive", resp, 0), ("nonresponsive", nonresp, 1)]
     print(f"[poster] {entity_label} selected boxplot states = {list(present_state_order)}", file=sys.stderr)
-    for cohort_label, values, col_index in cohort_specs:
-        ax_box = fig.add_subplot(outer[0, col_index])
-        ax_forest = fig.add_subplot(outer[1, col_index])
-        box_rows = rows_by_cohort.get(cohort_label, [])
-        forest_rows = forest_rows_by_cohort.get(cohort_label, []) or box_rows
-        if not box_rows:
-            box_rows = rows_by_cohort.get("responsive", []) or rows_by_cohort.get("nonresponsive", [])
-        if not forest_rows:
-            forest_rows = box_rows
-        forest_labels = {_state_compare_key(_forest_row_label(row)) for row in forest_rows if _forest_row_label(row)}
-        box_labels = {_state_compare_key(_forest_row_label(row)) for row in box_rows if _forest_row_label(row)}
-        state_forest_labels = {label for label in forest_labels if label}
-        state_box_labels = {label for label in box_labels if label}
-        if state_forest_labels and not state_forest_labels.issubset(state_box_labels):
-            print(f"[ALERT] poster forest labels extend beyond boxplot labels for {entity_label} {cohort_label}: {sorted(state_forest_labels - state_box_labels)}", file=sys.stderr)
-        raw_terms = [str(row.get('term') or row.get('contrast_name') or '') for row in forest_rows]
-        forest_main_effect_states = sorted({
-            _state_compare_key(_forest_row_label(row))
-            for row in forest_rows
-            if str(row.get('term') or '').startswith('state[')
-        })
-        forest_interaction_states = sorted({
-            _state_compare_key(_forest_row_label(row))
-            for row in forest_rows
-            if _poster_mixed_model_term_kind(str(row.get('term') or '')) == 'interaction'
-        })
-        dropped_terms = [term for term in fixed_effect_names if term not in {str(row.get('term') or '') for row in forest_rows}]
-        print(f"[poster] {entity_label} {cohort_label} forest raw terms = {raw_terms}", file=sys.stderr)
-        print(f"[poster] {entity_label} {cohort_label} forest main-effect states = {forest_main_effect_states}", file=sys.stderr)
-        print(f"[poster] {entity_label} {cohort_label} forest interaction states = {forest_interaction_states}", file=sys.stderr)
-        print(f"[poster] {entity_label} {cohort_label} dropped forest terms = {dropped_terms}", file=sys.stderr)
-        significant_states = _poster_mixed_model_significant_states(box_rows)
-        _boxplot(
-            ax_box,
-            values,
-            present_state_order,
-            title=f"{cohort_label} {title.lower()}",
-            ylabel="Mean response",
-            cohort_label=cohort_label,
-            significance_flags=[_state_matches_any(state, sorted(significant_states)) for state in present_state_order],
-            sample_sizes={state: int(len(_finite_array(values.get(state, [])))) for state in present_state_order},
-            horizontal=True,
-        )
-        _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True)
-        ax_forest.text(0.98, 0.02, p_source_label, transform=ax_forest.transAxes, ha="right", va="bottom", fontsize=FIGURE_NOTE_FS, color="#444444")
+    if dendrite_prefixed:
+        resp_basal, resp_apical, _ = _split_dendrite_state_values(resp)
+        nonresp_basal, nonresp_apical, _ = _split_dendrite_state_values(nonresp)
+        cohort_boxplot_data = [
+            ("responsive", resp_basal, resp_apical, 0),
+            ("nonresponsive", nonresp_basal, nonresp_apical, 1),
+        ]
+        for cohort_label, basal_values, apical_values, col_index in cohort_boxplot_data:
+            ax_box = fig.add_subplot(outer[0, col_index])
+            ax_forest = fig.add_subplot(outer[1, col_index])
+            box_rows = rows_by_cohort.get(cohort_label, [])
+            forest_rows = forest_rows_by_cohort.get(cohort_label, []) or box_rows
+            if not box_rows:
+                box_rows = rows_by_cohort.get("responsive", []) or rows_by_cohort.get("nonresponsive", [])
+            if not forest_rows:
+                forest_rows = box_rows
+            forest_labels = {_state_compare_key(_forest_row_label(row)) for row in forest_rows if _forest_row_label(row)}
+            box_labels = {_state_compare_key(_forest_row_label(row)) for row in box_rows if _forest_row_label(row)}
+            state_forest_labels = {label for label in forest_labels if label}
+            state_box_labels = {label for label in box_labels if label}
+            if state_forest_labels and not state_forest_labels.issubset(state_box_labels):
+                print(f"[ALERT] poster forest labels extend beyond boxplot labels for {entity_label} {cohort_label}: {sorted(state_forest_labels - state_box_labels)}", file=sys.stderr)
+            raw_terms = [str(row.get('term') or row.get('contrast_name') or '') for row in forest_rows]
+            forest_main_effect_states = sorted({_state_compare_key(_forest_row_label(row)) for row in forest_rows if str(row.get('term') or '').startswith('state[')})
+            forest_interaction_states = sorted({_state_compare_key(_forest_row_label(row)) for row in forest_rows if _poster_mixed_model_term_kind(str(row.get('term') or '')) == 'interaction'})
+            dropped_terms = [term for term in raw_terms if term not in {str(row.get("term") or "") for row in forest_rows}]
+            print(f"[poster] {entity_label} {cohort_label} forest raw terms = {raw_terms}", file=sys.stderr)
+            print(f"[poster] {entity_label} {cohort_label} forest main-effect states = {forest_main_effect_states}", file=sys.stderr)
+            print(f"[poster] {entity_label} {cohort_label} forest interaction states = {forest_interaction_states}", file=sys.stderr)
+            print(f"[poster] {entity_label} {cohort_label} dropped forest terms = {dropped_terms}", file=sys.stderr)
+            significant_states = _poster_mixed_model_significant_states(box_rows)
+            _grouped_compartment_boxplot(
+                ax_box,
+                basal_values=basal_values,
+                apical_values=apical_values,
+                state_order=present_state_order,
+                title=f"{cohort_label} {title.lower()}",
+                ylabel="Mean response",
+                cohort_label=cohort_label,
+                significant_states=sorted(significant_states),
+            )
+            _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True)
+            ax_forest.text(0.98, 0.02, p_source_label, transform=ax_forest.transAxes, ha="right", va="bottom", fontsize=FIGURE_NOTE_FS, color="#444444")
+    else:
+        cohort_specs = [("responsive", resp, 0), ("nonresponsive", nonresp, 1)]
+        for cohort_label, values, col_index in cohort_specs:
+            ax_box = fig.add_subplot(outer[0, col_index])
+            ax_forest = fig.add_subplot(outer[1, col_index])
+            box_rows = rows_by_cohort.get(cohort_label, [])
+            forest_rows = forest_rows_by_cohort.get(cohort_label, []) or box_rows
+            if not box_rows:
+                box_rows = rows_by_cohort.get("responsive", []) or rows_by_cohort.get("nonresponsive", [])
+            if not forest_rows:
+                forest_rows = box_rows
+            forest_labels = {_state_compare_key(_forest_row_label(row)) for row in forest_rows if _forest_row_label(row)}
+            box_labels = {_state_compare_key(_forest_row_label(row)) for row in box_rows if _forest_row_label(row)}
+            state_forest_labels = {label for label in forest_labels if label}
+            state_box_labels = {label for label in box_labels if label}
+            if state_forest_labels and not state_forest_labels.issubset(state_box_labels):
+                print(f"[ALERT] poster forest labels extend beyond boxplot labels for {entity_label} {cohort_label}: {sorted(state_forest_labels - state_box_labels)}", file=sys.stderr)
+            raw_terms = [str(row.get('term') or row.get('contrast_name') or '') for row in forest_rows]
+            forest_main_effect_states = sorted({_state_compare_key(_forest_row_label(row)) for row in forest_rows if str(row.get('term') or '').startswith('state[')})
+            forest_interaction_states = sorted({_state_compare_key(_forest_row_label(row)) for row in forest_rows if _poster_mixed_model_term_kind(str(row.get('term') or '')) == 'interaction'})
+            dropped_terms = [term for term in raw_terms if term not in {str(row.get("term") or "") for row in forest_rows}]
+            print(f"[poster] {entity_label} {cohort_label} forest raw terms = {raw_terms}", file=sys.stderr)
+            print(f"[poster] {entity_label} {cohort_label} forest main-effect states = {forest_main_effect_states}", file=sys.stderr)
+            print(f"[poster] {entity_label} {cohort_label} forest interaction states = {forest_interaction_states}", file=sys.stderr)
+            print(f"[poster] {entity_label} {cohort_label} dropped forest terms = {dropped_terms}", file=sys.stderr)
+            significant_states = _poster_mixed_model_significant_states(box_rows)
+            _boxplot(
+                ax_box,
+                values,
+                present_state_order,
+                title=f"{cohort_label} {title.lower()}",
+                ylabel="Mean response",
+                cohort_label=cohort_label,
+                significance_flags=[_state_matches_any(state, sorted(significant_states)) for state in present_state_order],
+                sample_sizes=(responsive_state_sample_sizes if cohort_label == "responsive" else nonresponsive_state_sample_sizes) or {state: int(len(_finite_array(values.get(state, [])))) for state in present_state_order},
+                horizontal=True,
+            )
+            _forest_panel(ax_forest, forest_rows, title=f"{cohort_label} mixed model ({p_source_label})", show_legend=True)
+            ax_forest.text(0.98, 0.02, p_source_label, transform=ax_forest.transAxes, ha="right", va="bottom", fontsize=FIGURE_NOTE_FS, color="#444444")
+
     fig.suptitle(f"{entity_label.capitalize()} {title}", fontsize=FIGURE_TITLE_FS, y=0.985)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
-
 
 def write_blank_movie_state_boxplot_figure(
     *,
@@ -1415,6 +1599,10 @@ def write_blank_movie_state_boxplot_figure(
     nonresponsive_movie_values: Mapping[str, Sequence[float]],
     blank_state_order: Sequence[str],
     movie_state_order: Sequence[str],
+    responsive_blank_sample_sizes: Mapping[str, int] | None = None,
+    responsive_movie_sample_sizes: Mapping[str, int] | None = None,
+    nonresponsive_blank_sample_sizes: Mapping[str, int] | None = None,
+    nonresponsive_movie_sample_sizes: Mapping[str, int] | None = None,
     responsive_significant_states: Sequence[str] | None = None,
     nonresponsive_significant_states: Sequence[str] | None = None,
     responsive_comparison_rows: Sequence[Mapping[str, Any]] | None = None,
@@ -1426,7 +1614,7 @@ def write_blank_movie_state_boxplot_figure(
         return None
     out_dir = _ensure_dir(Path(output_dir))
     stem = output_stem or f"{entity_label}_blank_movie_states_poster_ready"
-    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(18.5)), constrained_layout=False)
+    fig = plt.figure(figsize=(cm_to_inch(FIGURE_WIDTH_CM), cm_to_inch(FIGURE_HEIGHT_CM)), constrained_layout=False)
     outer = fig.add_gridspec(2, 2, left=0.07, right=0.985, top=0.93, bottom=0.11, wspace=0.16, hspace=0.30)
     ax_resp_blank = fig.add_subplot(outer[0, 0])
     ax_nonresp_blank = fig.add_subplot(outer[0, 1], sharey=ax_resp_blank)
@@ -1449,7 +1637,8 @@ def write_blank_movie_state_boxplot_figure(
         ylabel="Mean response",
         cohort_label="responsive",
         significance_flags=[state in responsive_sig for state in blank_state_order],
-        sample_sizes={state: int(len(_finite_array(responsive_blank_values.get(state, [])))) for state in blank_state_order},
+        sample_sizes=responsive_blank_sample_sizes or {state: int(len(_finite_array(responsive_blank_values.get(state, [])))) for state in blank_state_order},
+        horizontal=True,
     )
     _boxplot(
         ax_nonresp_blank,
@@ -1459,6 +1648,8 @@ def write_blank_movie_state_boxplot_figure(
         ylabel="Mean response",
         cohort_label="nonresponsive",
         significance_flags=[state in nonresponsive_sig for state in blank_state_order],
+        sample_sizes=nonresponsive_blank_sample_sizes,
+        horizontal=True,
     )
     _boxplot(
         ax_resp_movie,
@@ -1468,6 +1659,8 @@ def write_blank_movie_state_boxplot_figure(
         ylabel="Mean response",
         cohort_label="responsive",
         significance_flags=[state in responsive_sig for state in movie_state_order],
+        sample_sizes=responsive_movie_sample_sizes,
+        horizontal=True,
     )
     _boxplot(
         ax_nonresp_movie,
@@ -1477,6 +1670,8 @@ def write_blank_movie_state_boxplot_figure(
         ylabel="Mean response",
         cohort_label="nonresponsive",
         significance_flags=[state in nonresponsive_sig for state in movie_state_order],
+        sample_sizes=nonresponsive_movie_sample_sizes,
+        horizontal=True,
     )
     for ax in (ax_nonresp_blank, ax_nonresp_movie):
         ax.tick_params(axis="y", labelleft=False)

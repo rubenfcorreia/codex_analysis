@@ -11715,12 +11715,12 @@ def process_mixed_model_only(
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
     results["mixed_model_visual_response_responsive"] = mixed_model_results.get("mixed_model_visual_response_responsive", {})
     results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive", {})
-    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {})
-    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {}) or results.get("mixed_model_visual_response_responsive", {})
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["mixed_model_visual_response_responsive"] = mixed_model_results.get("mixed_model_visual_response_responsive", {})
     results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive", {})
-    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {})
-    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {}) or results.get("mixed_model_visual_response_responsive", {})
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
     if output_dir is not None:
@@ -13479,8 +13479,8 @@ def process_cached_analysis(
     results["mixed_model_selected_state"] = mixed_model_results.get("selected_state", {})
     results["mixed_model_visual_response_responsive"] = mixed_model_results.get("mixed_model_visual_response_responsive", {})
     results["mixed_model_visual_response_nonresponsive"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive", {})
-    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {})
-    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
+    results["mixed_model_visual_response_responsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_responsive_selected_state", {}) or results.get("mixed_model_visual_response_responsive", {})
+    results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
     if output_dir is not None:
@@ -14779,8 +14779,8 @@ def write_analysis_outputs(
     mixed_model_selected = results.get("mixed_model_selected_state", {})
     mixed_model_visual_response_responsive = results.get("mixed_model_visual_response_responsive", {})
     mixed_model_visual_response_nonresponsive = results.get("mixed_model_visual_response_nonresponsive", {})
-    mixed_model_visual_response_responsive_selected_state = results.get("mixed_model_visual_response_responsive_selected_state", {})
-    mixed_model_visual_response_nonresponsive_selected_state = results.get("mixed_model_visual_response_nonresponsive_selected_state", {})
+    mixed_model_visual_response_responsive_selected_state = results.get("mixed_model_visual_response_responsive_selected_state", {}) or results.get("mixed_model_visual_response_responsive", {})
+    mixed_model_visual_response_nonresponsive_selected_state = results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     mixed_model_branches = [
         ("mixed_model", mixed_model, ""),
         ("mixed_model_selected_state", mixed_model_selected, "selected_state"),
@@ -14963,6 +14963,30 @@ def write_poster_ready_figures(
                     grouped.setdefault(state, []).append(value_f)
                 return grouped
 
+            def _state_sample_sizes_from_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
+                grouped: Dict[str, set[str]] = {}
+                for row in rows:
+                    state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
+                    if not state:
+                        continue
+                    roi = str(
+                        row.get("global_soma_id")
+                        or row.get("global_bouton_id")
+                        or row.get("roi_key")
+                        or row.get("global_spine_id")
+                        or row.get("global_dendrite_id")
+                        or row.get("roi_id")
+                        or row.get("soma_id")
+                        or row.get("bouton_id")
+                        or row.get("roi_index")
+                        or row.get("entity_id")
+                        or ""
+                    ).strip()
+                    if not roi:
+                        continue
+                    grouped.setdefault(state, set()).add(roi)
+                return {state: len(roi_ids) for state, roi_ids in grouped.items()}
+
             def _entity_state_values(entity_key: str, metric_key: str) -> Dict[str, Dict[str, List[float]]]:
                 summary = results.get(f"{entity_key}_visual_response_state_summaries", {})
                 if not isinstance(summary, dict):
@@ -14994,14 +15018,25 @@ def write_poster_ready_figures(
                     "nonresponsive": _compartment_state_values(summary.get("nonresponsive", {})),
                 }
 
+            def _collapse_dendrite_state_values(state_map: Dict[str, List[float]]) -> Dict[str, List[float]]:
+                collapsed: Dict[str, List[float]] = {}
+                for state, values in state_map.items():
+                    state_key = canonical_state_label(state)
+                    for prefix in ("basal_", "apical_"):
+                        if state_key.startswith(prefix):
+                            state_key = state_key[len(prefix):]
+                            break
+                    collapsed.setdefault(state_key, []).extend(list(values))
+                return collapsed
+
             poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
             blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
             movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
 
             mixed_model_contrast_p_source = str(results.get("mixed_model_contrast_p_source") or "classical")
             entity_specs = [
-                {"entity_key": "dendrite", "entity_label": "dendrite", "metric_key": "dendrite_mean", "visual_payload": results.get("dendrite_visual_response", {}), "responsive_mixed": results.get("mixed_model_visual_response_responsive_selected_state", {}), "nonresponsive_mixed": results.get("mixed_model_visual_response_nonresponsive_selected_state", {}), "visual_compartments": ("basal", "apical")},
-                {"entity_key": "spine", "entity_label": "spine", "metric_key": "spine_specific_mean", "visual_payload": results.get("spine_visual_response", {}), "responsive_mixed": results.get("mixed_model_visual_response_responsive_selected_state", {}), "nonresponsive_mixed": results.get("mixed_model_visual_response_nonresponsive_selected_state", {}), "visual_compartments": (None,)},
+                {"entity_key": "dendrite", "entity_label": "dendrite", "metric_key": "dendrite_mean", "visual_payload": results.get("dendrite_visual_response", {}), "responsive_mixed": results.get("mixed_model_visual_response_responsive_selected_state", {}) or results.get("mixed_model_visual_response_responsive", {}), "nonresponsive_mixed": results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {}), "visual_compartments": ("basal", "apical")},
+                {"entity_key": "spine", "entity_label": "spine", "metric_key": "spine_specific_mean", "visual_payload": results.get("spine_visual_response", {}), "responsive_mixed": results.get("mixed_model_visual_response_responsive_selected_state", {}) or results.get("mixed_model_visual_response_responsive", {}), "nonresponsive_mixed": results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {}), "visual_compartments": (None,)},
             ]
             for spec in entity_specs:
                 entity_key = str(spec["entity_key"])
@@ -15083,6 +15118,15 @@ def write_poster_ready_figures(
                 movie_values = _state_values_from_rows(movie_rows) if movie_rows else {state: values for state, values in state_values.get("responsive", {}).items() if state in movie_state_order}
                 non_blank_values = _state_values_from_rows(non_blank_rows) if non_blank_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in blank_state_order}
                 non_movie_values = _state_values_from_rows(non_movie_rows) if non_movie_rows else {state: values for state, values in state_values.get("nonresponsive", {}).items() if state in movie_state_order}
+                if entity_key == "dendrite":
+                    blank_values = _collapse_dendrite_state_values(blank_values)
+                    movie_values = _collapse_dendrite_state_values(movie_values)
+                    non_blank_values = _collapse_dendrite_state_values(non_blank_values)
+                    non_movie_values = _collapse_dendrite_state_values(non_movie_values)
+                blank_sample_sizes = _state_sample_sizes_from_rows(blank_rows) if blank_rows else {}
+                movie_sample_sizes = _state_sample_sizes_from_rows(movie_rows) if movie_rows else {}
+                non_blank_sample_sizes = _state_sample_sizes_from_rows(non_blank_rows) if non_blank_rows else {}
+                non_movie_sample_sizes = _state_sample_sizes_from_rows(non_movie_rows) if non_movie_rows else {}
                 print(f"[poster] {entity_key} responsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in blank_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
                 print(f"[poster] {entity_key} responsive movie source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in movie_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
                 print(f"[poster] {entity_key} nonresponsive blank source states = {list(dict.fromkeys(canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') for row in non_blank_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '')))}", file=sys.stderr)
@@ -15111,6 +15155,10 @@ def write_poster_ready_figures(
                         nonresponsive_movie_values=non_movie_values,
                         blank_state_order=blank_state_order,
                         movie_state_order=movie_state_order,
+                        responsive_blank_sample_sizes=blank_sample_sizes,
+                        responsive_movie_sample_sizes=movie_sample_sizes,
+                        nonresponsive_blank_sample_sizes=non_blank_sample_sizes,
+                        nonresponsive_movie_sample_sizes=non_movie_sample_sizes,
                         responsive_significant_states=sorted(responsive_significant_states),
                         nonresponsive_significant_states=sorted(nonresponsive_significant_states),
                         output_stem=f"{entity_key}_blank_movie_states_poster_ready",

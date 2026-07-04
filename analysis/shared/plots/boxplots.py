@@ -73,6 +73,7 @@ def plot_boxplot_series(
     significance_flags: Sequence[bool] | None = None,
     comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     top_labels: Sequence[str] | None = None,
+    horizontal: bool = False,
 ) -> list[Path]:
     cleaned_values: list[np.ndarray] = []
     cleaned_labels: list[str] = []
@@ -105,6 +106,7 @@ def plot_boxplot_series(
         cleaned_values,
         patch_artist=True,
         showfliers=False,
+        vert=not horizontal,
         medianprops={"color": "#111827", "linewidth": 2.2},
         whiskerprops={"color": "#555555", "linewidth": 1.8},
         capprops={"color": "#555555", "linewidth": 1.8},
@@ -117,15 +119,26 @@ def plot_boxplot_series(
     rng = np.random.default_rng(0)
     for xpos, (series_name, values, color) in enumerate(zip(cleaned_series, cleaned_values, cleaned_colors), start=1):
         jitter = rng.normal(0.0, 0.06, size=values.size)
-        ax.scatter(
-            np.full(values.shape, xpos, dtype=float) + jitter,
-            values,
-            s=20,
-            alpha=0.55,
-            color=color,
-            edgecolors="none",
-            zorder=3,
-        )
+        if horizontal:
+            ax.scatter(
+                values,
+                np.full(values.shape, xpos, dtype=float) + jitter,
+                s=20,
+                alpha=0.55,
+                color=color,
+                edgecolors="none",
+                zorder=3,
+            )
+        else:
+            ax.scatter(
+                np.full(values.shape, xpos, dtype=float) + jitter,
+                values,
+                s=20,
+                alpha=0.55,
+                color=color,
+                edgecolors="none",
+                zorder=3,
+            )
 
     if comparison_rows:
         annotation_rows: list[dict[str, Any]] = []
@@ -148,50 +161,88 @@ def plot_boxplot_series(
                 continue
             stars = _boxplot_significance_stars(row.get("shuffle_p"))
             annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": row.get("shuffle_p"), "label": f"{_comparison_display_label(row)} {stars}".strip()})
-        _draw_boxplot_significance_annotations(ax, annotation_rows)
+        _draw_boxplot_significance_annotations(ax, annotation_rows, orientation="horizontal" if horizontal else "vertical")
     elif flags is not None and any(cleaned_flags):
         finite = np.concatenate(cleaned_values)
         finite = finite[np.isfinite(finite)]
         if finite.size:
-            y = float(np.nanmax(finite)) + max(0.05 * float(np.ptp(finite)), 0.05)
+            extent = float(np.nanmax(finite)) + max(0.05 * float(np.ptp(finite)), 0.05)
         else:
-            y = 1.0
+            extent = 1.0
         for xpos, is_sig in enumerate(cleaned_flags, start=1):
             if not is_sig:
                 continue
-            ax.text(xpos, y, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
+            if horizontal:
+                ax.text(extent, xpos, "*", ha="left", va="center", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
+            else:
+                ax.text(xpos, extent, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
 
     ax.set_title(title, fontsize=FIGURE_TITLE_FS, fontweight="bold", color=title_color, pad=8)
-    ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
-    ax.set_xlabel(xlabel, fontsize=FIGURE_LABEL_FS)
-    ax.grid(axis="y", alpha=0.18, linewidth=0.8)
-    ax.tick_params(axis="x", labelsize=FIGURE_TICK_FS)
-    ax.tick_params(axis="y", labelsize=FIGURE_TICK_FS)
-    ax.set_xticks(list(range(1, len(cleaned_labels) + 1)))
-    ax.set_xticklabels(cleaned_labels, rotation=30, ha="right")
-    for tick, series_name in zip(ax.get_xticklabels(), cleaned_series):
-        if label_color_fn is not None:
-            tick.set_color(label_color_fn(series_name))
-        else:
-            tick.set_color("#1f2937")
-        tick.set_fontweight("bold")
+    if horizontal:
+        ax.set_ylabel(xlabel, fontsize=FIGURE_LABEL_FS)
+        ax.set_xlabel(ylabel, fontsize=FIGURE_LABEL_FS)
+        ax.grid(axis="x", alpha=0.18, linewidth=0.8)
+        ax.tick_params(axis="x", labelsize=FIGURE_TICK_FS)
+        ax.tick_params(axis="y", labelsize=FIGURE_TICK_FS)
+        ax.set_yticks(list(range(1, len(cleaned_labels) + 1)))
+        ax.set_yticklabels(cleaned_labels)
+        for tick, series_name in zip(ax.get_yticklabels(), cleaned_series):
+            if label_color_fn is not None:
+                tick.set_color(label_color_fn(series_name))
+            else:
+                tick.set_color("#1f2937")
+            tick.set_fontweight("bold")
+    else:
+        ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
+        ax.set_xlabel(xlabel, fontsize=FIGURE_LABEL_FS)
+        ax.grid(axis="y", alpha=0.18, linewidth=0.8)
+        ax.tick_params(axis="x", labelsize=FIGURE_TICK_FS)
+        ax.tick_params(axis="y", labelsize=FIGURE_TICK_FS)
+        ax.set_xticks(list(range(1, len(cleaned_labels) + 1)))
+        ax.set_xticklabels(cleaned_labels, rotation=30, ha="right")
+        for tick, series_name in zip(ax.get_xticklabels(), cleaned_series):
+            if label_color_fn is not None:
+                tick.set_color(label_color_fn(series_name))
+            else:
+                tick.set_color("#1f2937")
+            tick.set_fontweight("bold")
     if cleaned_top_labels:
-        ax.tick_params(axis="x", pad=18)
-        for xpos, top_label in zip(range(1, len(cleaned_top_labels) + 1), cleaned_top_labels):
-            if not top_label:
-                continue
-            ax.text(
-                xpos,
-                -0.02,
-                top_label,
-                transform=ax.get_xaxis_transform(),
-                rotation=30,
-                ha="right",
-                va="bottom",
-                fontsize=FIGURE_NOTE_FS,
-                color="#6b7280",
-                fontweight="normal",
-            )
+        if horizontal:
+            xlim = ax.get_xlim()
+            xr = float(xlim[1] - xlim[0]) if np.isfinite(xlim[1] - xlim[0]) and (xlim[1] - xlim[0]) > 0 else 1.0
+            text_x = float(np.nanmax(np.concatenate(cleaned_values))) + max(0.03 * xr, 0.04)
+            for ypos, top_label in zip(range(1, len(cleaned_top_labels) + 1), cleaned_top_labels):
+                if not top_label:
+                    continue
+                ax.text(
+                    text_x,
+                    ypos,
+                    top_label,
+                    ha="left",
+                    va="center",
+                    fontsize=FIGURE_NOTE_FS,
+                    color="#6b7280",
+                    fontweight="normal",
+                    clip_on=False,
+                )
+            ax.set_xlim(xlim[0], max(xlim[1], text_x + 0.15 * xr))
+        else:
+            ax.tick_params(axis="x", pad=18)
+            for xpos, top_label in zip(range(1, len(cleaned_top_labels) + 1), cleaned_top_labels):
+                if not top_label:
+                    continue
+                ax.text(
+                    xpos,
+                    -0.02,
+                    top_label,
+                    transform=ax.get_xaxis_transform(),
+                    rotation=30,
+                    ha="right",
+                    va="bottom",
+                    fontsize=FIGURE_NOTE_FS,
+                    color="#6b7280",
+                    fontweight="normal",
+                )
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
 

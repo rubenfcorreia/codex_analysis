@@ -7,6 +7,8 @@ import numpy as np
 
 from analysis.main_pipeline.sleep_dendrite_spine_pipeline import run_mixed_model_family
 
+from .core import make_unit_id
+
 
 def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment: Optional[str] = None) -> List[Dict[str, Any]]:
     table_rows: List[Dict[str, Any]] = []
@@ -22,6 +24,18 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment:
             roi_id = row.get(f"{row_compartment}_id")
         if roi_id is None or str(roi_id).strip() == "":
             roi_id = row.get("roi_index")
+        unit_id = row.get("unit_id")
+        if unit_id is None or str(unit_id).strip() == "":
+            unit_id = make_unit_id(
+                animal_id=row.get("animal_id"),
+                expid=row.get("expid"),
+                day_id=row.get("day_id"),
+                compartment=row_compartment,
+                channel=row.get("channel"),
+                roi_id=roi_id,
+                roi_index=row.get("roi_index"),
+            )
+        unit_id = str(unit_id)
         table_rows.append({
             "animal_id": row.get("animal_id"),
             "day_id": row.get("day_id"),
@@ -29,10 +43,17 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment:
             "mode": row.get("mode"),
             "state": row.get("state"),
             "compartment": row_compartment,
+            "channel": row.get("channel"),
             "roi_id": roi_id,
+            "unit_id": unit_id,
+            "subject_id": unit_id,
             "soma_id": row.get("soma_id"),
             "bouton_id": row.get("bouton_id"),
-            "roi_key": row.get("roi_key") or str(roi_id),
+            "soma_unit_id": row.get("soma_unit_id"),
+            "bouton_unit_id": row.get("bouton_unit_id"),
+            "global_soma_id": row.get("global_soma_id"),
+            "global_bouton_id": row.get("global_bouton_id"),
+            "roi_key": row.get("roi_key") or unit_id,
             "roi_index": row.get("roi_index"),
             "visual_response_cohort": str(row.get("cohort") or "nonresponsive"),
             "mean_activity": float(row.get("mean", float("nan"))),
@@ -60,6 +81,7 @@ def _run_branch(
     shuffle_n: int,
     p_value_source: str,
     state_filter: Sequence[str] | None = None,
+    vc_level_keys: Sequence[str] | None = ("unit_id",),
 ) -> Dict[str, Any]:
     responses = ["mean_activity", "event_frequency_per_min"]
     include_visual_response = any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in table_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in table_rows)
@@ -102,6 +124,7 @@ def _run_branch(
             contrast_specs,
             shuffle_n,
             alerts=alerts,
+            vc_level_keys=vc_level_keys,
             state_order=branch_state_order,
             p_value_source=p_value_source,
         )
@@ -125,6 +148,7 @@ def run_family(
     basal_apical_states: Sequence[str] | None = None,
     shuffle_n: int,
     mixed_model_contrast_p_source: str = "classical",
+    vc_level_keys: Sequence[str] | None = ("unit_id",),
 ) -> Dict[str, Any]:
     del basal_apical_states
     compartments = [compartment for compartment in ("soma", "bouton") if any(str(row.get("compartment") or "").strip().lower() == compartment for row in activity_rows)]
@@ -147,6 +171,7 @@ def run_family(
                 state_comparison_states=state_comparison_states,
                 shuffle_n=shuffle_n,
                 p_value_source=mixed_model_contrast_p_source,
+                vc_level_keys=vc_level_keys,
             ),
             "selected_state": _run_branch(
                 compartment_rows,
@@ -157,6 +182,7 @@ def run_family(
                 shuffle_n=shuffle_n,
                 p_value_source=mixed_model_contrast_p_source,
                 state_filter=state_comparison_states,
+                vc_level_keys=vc_level_keys,
             ),
         }
     return results

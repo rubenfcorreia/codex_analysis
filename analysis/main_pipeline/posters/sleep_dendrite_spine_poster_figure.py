@@ -306,74 +306,10 @@ def ensure_mixed_model_forest_response(
     summary_rows = mixed_model_results.get("summary_rows", {})
     if isinstance(summary_rows, dict) and summary_rows.get(response):
         return mixed_model_results
-
-    table_entry = load_cached_analysis_table(
-        cache,
-        "mixed_model_table",
-        expected_meta={"analysis_unit": str(cache.get("analysis_unit", "day"))},
-        rebuild=bool(cache.get("config", {}).get("analysis_tables_rebuild")) or bool(cache.get("config", {}).get("rebuild")),
-    )
-    if table_entry is not None:
-        table_rows = list(table_entry.get("table_rows", []))
-    else:
-        table_rows, _ = build_mixed_model_table(cache)
-
-    selected_state_order = [canonical_state_label(state) for state in state_comparison_states if state is not None and str(state).strip()]
-    selected_basal_apical_states = [
-        canonical_state_label(state)
-        for state in basal_apical_states
-        if canonical_state_label(state) in set(selected_state_order)
-    ]
-    contrast_specs = [
-        {"kind": "state_pair", "state_a": state_a, "state_b": state_b}
-        for state_a, state_b in combinations(selected_state_order, 2)
-    ]
-    contrast_specs.extend({"kind": "basal_apical", "state": state} for state in selected_basal_apical_states)
-
-    result = run_mixed_model_family(
-        table_rows,
-        response,
-        "selected_state",
-        contrast_specs,
-        shuffle_n,
-        state_order=selected_state_order,
-        state_filter=selected_state_order,
-    )
-    if not result.get("summary_rows") or result.get("design") is None:
-        return mixed_model_results
-
-    merged = dict(mixed_model_results)
-    merged_summary_rows = dict(mixed_model_results.get("summary_rows", {})) if isinstance(mixed_model_results.get("summary_rows", {}), dict) else {}
-    merged_summary_rows[response] = list(result.get("summary_rows", []))
-    merged["summary_rows"] = merged_summary_rows
-
-    merged_designs = dict(mixed_model_results.get("designs", {})) if isinstance(mixed_model_results.get("designs", {}), dict) else {}
-    merged_designs[response] = dict(result.get("design", {}))
-    merged["designs"] = merged_designs
-
-    merged_equations = dict(mixed_model_results.get("model_equations", {})) if isinstance(mixed_model_results.get("model_equations", {}), dict) else {}
-    merged_equations[response] = result.get("equation")
-    merged["model_equations"] = merged_equations
-
-    merged_tested_terms = dict(mixed_model_results.get("tested_terms", {})) if isinstance(mixed_model_results.get("tested_terms", {}), dict) else {}
-    merged_tested_terms[response] = list(result.get("tested_terms", []))
-    merged["tested_terms"] = merged_tested_terms
-
-    merged_tested_contrasts = dict(mixed_model_results.get("tested_contrasts", {})) if isinstance(mixed_model_results.get("tested_contrasts", {}), dict) else {}
-    merged_tested_contrasts[response] = list(result.get("tested_contrasts", []))
-    merged["tested_contrasts"] = merged_tested_contrasts
-
-    merged["contrast_rows"] = list(mixed_model_results.get("contrast_rows", [])) + list(result.get("contrast_rows", []))
-
-    selection = dict(mixed_model_results.get("selection", {})) if isinstance(mixed_model_results.get("selection", {}), dict) else {}
-    selection.setdefault("state_comparison_states", list(selected_state_order))
-    selection.setdefault("basal_apical_states", list(selected_basal_apical_states))
-    merged["selection"] = selection
-    merged["available"] = bool(result.get("design"))
-    merged.setdefault("alerts", list(mixed_model_results.get("alerts", [])))
-    merged["p_value_source"] = result.get("p_value_source", merged.get("p_value_source"))
-    merged["p_value_source_requested"] = result.get("p_value_source_requested", merged.get("p_value_source_requested"))
-    return merged
+    # Keep the preset branch as-is rather than refitting a trimmed branch from the raw table.
+    # The coefficients depend on the model fit, so the poster must consume the cached branch
+    # that already corresponds to the intended preset.
+    return mixed_model_results
 
 
 def _svg_text_kind_label(text: str) -> Optional[str]:

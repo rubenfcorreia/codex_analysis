@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 import numpy as np
 
 from ...compartment_common import canonical_state_label, pairwise_correlation, state_display_color, state_display_label
-from .core import ExperimentContext
+from .core import ExperimentContext, make_unit_id
 from .state import state_masks_for_context
 
 
@@ -13,6 +13,7 @@ def bouton_soma_correlation_rows(ctx: ExperimentContext, selected_states: Sequen
     masks = state_masks_for_context(ctx, selected_states)
     soma_matrix = ctx.soma.matrix()
     bouton_matrix = ctx.bouton.matrix()
+    bouton_roi_ids = list(ctx.bouton.roi_ids())
     soma_mean = np.nanmean(soma_matrix, axis=0) if soma_matrix.size else np.array([], dtype=float)
     rows: List[Dict[str, Any]] = []
     for state, mask in masks.items():
@@ -29,6 +30,7 @@ def bouton_soma_correlation_rows(ctx: ExperimentContext, selected_states: Sequen
         for roi_index in range(bouton_matrix.shape[0]):
             bouton_state = bouton_matrix[roi_index, :t_len][state_mask]
             corr = pairwise_correlation(soma_state, bouton_state)
+            roi_id = bouton_roi_ids[roi_index] if roi_index < len(bouton_roi_ids) else roi_index
             rows.append(
                 {
                     "expid": ctx.expid,
@@ -36,10 +38,21 @@ def bouton_soma_correlation_rows(ctx: ExperimentContext, selected_states: Sequen
                     "animal_id": ctx.animal_id,
                     "date": ctx.date,
                     "day_id": ctx.day_id,
+                    "channel": int(ctx.bouton_channel),
                     "state": canonical_state_label(state),
                     "state_display": state_display_label(state),
                     "state_color": state_display_color(state),
                     "bouton_roi_index": roi_index,
+                    "roi_id": roi_id,
+                    "unit_id": make_unit_id(
+                        animal_id=ctx.animal_id,
+                        expid=ctx.expid,
+                        day_id=ctx.day_id,
+                        compartment="bouton",
+                        channel=ctx.bouton_channel,
+                        roi_id=roi_id,
+                        roi_index=roi_index,
+                    ),
                     "corr": corr,
                     "n_timepoints": int(np.isfinite(soma_state).sum()),
                 }

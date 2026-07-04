@@ -210,7 +210,7 @@ def _style_state_ticks(ax: plt.Axes, labels: list[str], states: list[str]) -> No
 
 
 def _unique_roi_count(frame: pd.DataFrame) -> int:
-    for column in ("roi_id", "soma_id", "bouton_id", "subject_id", "roi_key", "roi_index"):
+    for column in ("unit_id", "global_soma_id", "global_bouton_id", "roi_key", "roi_id", "soma_id", "bouton_id", "subject_id", "roi_index"):
         if column in frame.columns:
             values = frame[column].dropna().astype(str)
             values = values[values.str.strip() != ""]
@@ -231,6 +231,7 @@ def _plot_boxplot(
     ylabel: str,
     accent_color: str,
     comparison_rows: list[Mapping[str, Any]] | None = None,
+    horizontal: bool = False,
 ) -> list[Path]:
     if frame.empty:
         return []
@@ -301,6 +302,7 @@ def _plot_boxplot(
         label_color_fn=state_display_color,
         edge_color=accent_color,
         comparison_rows=annotation_rows,
+        horizontal=horizontal,
     )
 
 
@@ -458,6 +460,7 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
         ylabel="Correlation",
         accent_color="#334155",
         comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        horizontal=True,
     )
 
 
