@@ -629,19 +629,23 @@ def build_probability_profile(
     return centers, profile
 
 
-def average_probability_summaries(
-    summaries: Sequence[SessionSummary],
+def _average_probability_profiles(
+    probability_time_profiles: Sequence[Tuple[np.ndarray, Mapping[str, np.ndarray]]],
     include_unclassified: Optional[bool] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-    valid = [summary for summary in summaries if summary.probability_time_s.size and summary.state_probability_profile]
+    valid = [
+        (np.asarray(time_s, dtype=float).ravel(), profile)
+        for time_s, profile in probability_time_profiles
+        if np.asarray(time_s, dtype=float).size and profile
+    ]
     if not valid:
         return np.asarray([], dtype=float), {}
-    max_len = max(int(summary.probability_time_s.size) for summary in valid)
+    max_len = max(int(time_s.size) for time_s, _ in valid)
     time_s = (np.arange(max_len, dtype=float) + 0.5) * DEFAULT_PROBABILITY_BIN_S
     if include_unclassified is None:
         include_unclassified = any(
-            probability_series_has_unclassified(summary.state_probability_profile)
-            for summary in valid
+            probability_series_has_unclassified(profile)
+            for _, profile in valid
         )
     state_order = list(DEFAULT_STATE_ORDER)
     if include_unclassified:
@@ -651,14 +655,28 @@ def average_probability_summaries(
         matrix = np.vstack(
             [
                 pad_probability_series(
-                    summary.state_probability_profile.get(state, np.full(summary.probability_time_s.size, np.nan)),
+                    profile.get(state, np.full(time_s.size, np.nan)),
                     max_len,
                 )
-                for summary in valid
+                for time_s, profile in valid
             ]
         )
         profile[state] = columnwise_finite_mean(matrix)
     return time_s, profile
+
+
+def average_probability_summaries(
+    summaries: Sequence[SessionSummary],
+    include_unclassified: Optional[bool] = None,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    return _average_probability_profiles(
+        [
+            (summary.probability_time_s, summary.state_probability_profile)
+            for summary in summaries
+            if summary.probability_time_s.size and summary.state_probability_profile
+        ],
+        include_unclassified=include_unclassified,
+    )
 
 
 def probability_series_has_unclassified(profile: Mapping[str, np.ndarray]) -> bool:
@@ -670,6 +688,25 @@ def probability_series_has_unclassified(profile: Mapping[str, np.ndarray]) -> bo
     if arr.size == 0:
         return False
     return bool(np.nanmax(arr) > DEFAULT_STACKED_UNCLASSIFIED_TOL)
+
+
+def average_combined_day_probability_summaries(exp_summaries: Sequence[SessionSummary]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    grouped: Dict[Tuple[str, str], List[SessionSummary]] = defaultdict(list)
+    for summary in exp_summaries:
+        grouped[(str(summary.animal_id), str(summary.date))].append(summary)
+    day_profiles: List[Tuple[np.ndarray, Dict[str, np.ndarray]]] = []
+    for summaries in grouped.values():
+        ordered = sorted(
+            summaries,
+            key=lambda summary: (
+                str(summary.exp_ids[0]) if summary.exp_ids else '',
+                str(summary.sleep_state_paths[0]) if summary.sleep_state_paths else '',
+            ),
+        )
+        time_min, profile, _ = build_day_timeline_profile(ordered)
+        if time_min.size and profile:
+            day_profiles.append((np.asarray(time_min, dtype=float) * 60.0, profile))
+    return _average_probability_profiles(day_profiles)
 
 
 def resample_probability_profile_to_percent(
@@ -4372,7 +4409,7 @@ def plot_sleep_state_poster_ready_4square_composite(
     # ------------------------------------------------------------------
     # Bottom-right: within-day fractions, redrawn from exp/day data
     # ------------------------------------------------------------------
-    time_s, profile = average_probability_summaries(day_summaries)
+    time_s, profile = average_combined_day_probability_summaries(exp_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
     sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
     x_max = (
@@ -4630,7 +4667,7 @@ def plot_sleep_state_poster_ready_composite(
     ax_stack.set_title('Between-days\nstacked comparison', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=8, loc='left')
     ax_stack.set_xlabel('Within-animal day\nindex (movie + sleep)', fontsize=max(12, POSTER_LABEL_SIZE - 5), labelpad=8)
 
-    time_s, profile = average_probability_summaries(day_summaries)
+    time_s, profile = average_combined_day_probability_summaries(exp_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
     sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
     state_order = list(DEFAULT_STATE_ORDER)
@@ -5680,7 +5717,7 @@ def plot_within_day_sleep_state_fractions(
     line_width = 2.4
 
     day_summaries = aggregate_day_summaries(exp_summaries)
-    time_s, profile = average_probability_summaries(day_summaries)
+    time_s, profile = average_combined_day_probability_summaries(exp_summaries)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
     sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
     state_order = list(DEFAULT_STATE_ORDER)

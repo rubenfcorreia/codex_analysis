@@ -27,7 +27,7 @@
   "lag_window_s": 2.0,
   "lag_step_s": 0.1,
   "shuffle_n": 200,
-  "rebuild": true,
+  "rebuild": false,
   "plots_only": false,
   "poster_ready_only": true,
   "comparison_preset_names": null,

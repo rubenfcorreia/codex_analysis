@@ -14882,6 +14882,7 @@ def write_poster_ready_figures(
     )
     from analysis.shared.plots.poster_ready import (
         _assign_visual_response_cohorts,
+        _compartment_comparison_state_labels_from_comparison_rows,
         _poster_mixed_model_significant_states,
         _select_mixed_model_rows,
         _significant_state_labels_from_comparison_rows,

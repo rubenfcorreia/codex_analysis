@@ -784,6 +784,27 @@ def _combined_limits(*series: Sequence[float]) -> tuple[float, float]:
     return lo - pad, hi + pad
 
 
+def _visual_response_poster_shared_limits(*plot_data_items: Optional[Mapping[str, Any]]) -> tuple[float, float] | None:
+    finite_series: list[np.ndarray] = []
+    for plot_data in plot_data_items:
+        if not isinstance(plot_data, Mapping):
+            continue
+        for key in ("blank_mean_trace", "visual_mean_trace", "blank_values", "visual_values"):
+            series = plot_data.get(key)
+            if series is None:
+                continue
+            arr = np.asarray(series, dtype=float).ravel()
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                finite_series.append(arr)
+    if not finite_series:
+        return None
+    lo, hi = _combined_limits(*finite_series)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        return None
+    return float(lo), float(hi)
+
+
 def _resolve_visual_response_source_exp_id(source_cache: Optional[Mapping[str, Any]], exp_id: str, observation: Optional[Mapping[str, Any]] = None) -> str:
     if not isinstance(source_cache, Mapping):
         return exp_id
@@ -1040,6 +1061,7 @@ def _single_exemplar_panel(
     panel_label: str | None = None,
     show_movie_ylabel: bool = False,
     show_box_ylabel: bool = False,
+    shared_y_limits: tuple[float, float] | None = None,
 ) -> None:
     plot_data = _load_visual_response_plot_data(response_row)
     lookup_cache = source_cache if isinstance(source_cache, Mapping) else cache
@@ -1116,10 +1138,16 @@ def _single_exemplar_panel(
         ax_box.tick_params(axis="y", labelleft=False)
     all_values = np.concatenate([blank_values, visual_values])
     finite = all_values[np.isfinite(all_values)]
-    if finite.size:
+    if shared_y_limits is not None and np.all(np.isfinite(shared_y_limits)):
+        y_low, y_high = float(shared_y_limits[0]), float(shared_y_limits[1])
+    elif finite.size:
         y_low, y_high = _combined_limits(blank_mean_trace, visual_mean_trace, blank_values, visual_values)
+    else:
+        y_low, y_high = float("nan"), float("nan")
+    if np.isfinite(y_low) and np.isfinite(y_high):
         ax_blank.set_ylim(y_low, y_high)
         ax_movie.set_ylim(y_low, y_high)
+        ax_box.set_ylim(y_low, y_high)
     ax_box.text(0.02, 0.98, f"n={int(blank_values.size)} blank, n={int(visual_values.size)} visual", transform=ax_box.transAxes, ha="left", va="top", fontsize=FIGURE_NOTE_FS, color="#444444")
     p_value = None
     for key in ("shuffle_p", "adjusted_pvalue", "p_value", "raw_pvalue"):
@@ -1699,8 +1727,11 @@ def write_visual_response_poster_figure(
     ax_nonresp_box = fig.add_subplot(nonresp_grid[0, 2], sharey=ax_nonresp_blank)
     ax_pie = fig.add_subplot(outer[:, 1])
     poster_kind = str(kind or entity_label or "dendrite")
-    _single_exemplar_panel(ax_resp_blank, ax_resp_movie, ax_resp_box, responsive_row, cache=cache, source_cache=source_cache, kind=poster_kind, title="responsive example", panel_label="responsive example", show_movie_ylabel=False, show_box_ylabel=False)
-    _single_exemplar_panel(ax_nonresp_blank, ax_nonresp_movie, ax_nonresp_box, nonresponsive_row, cache=cache, source_cache=source_cache, kind=poster_kind, title="nonresponsive example", panel_label="nonresponsive example", show_movie_ylabel=False, show_box_ylabel=False)
+    responsive_plot_data = _load_visual_response_plot_data(responsive_row)
+    nonresponsive_plot_data = _load_visual_response_plot_data(nonresponsive_row)
+    shared_y_limits = _visual_response_poster_shared_limits(responsive_plot_data, nonresponsive_plot_data)
+    _single_exemplar_panel(ax_resp_blank, ax_resp_movie, ax_resp_box, responsive_row, cache=cache, source_cache=source_cache, kind=poster_kind, title="responsive example", panel_label="responsive example", show_movie_ylabel=False, show_box_ylabel=False, shared_y_limits=shared_y_limits)
+    _single_exemplar_panel(ax_nonresp_blank, ax_nonresp_movie, ax_nonresp_box, nonresponsive_row, cache=cache, source_cache=source_cache, kind=poster_kind, title="nonresponsive example", panel_label="nonresponsive example", show_movie_ylabel=False, show_box_ylabel=False, shared_y_limits=shared_y_limits)
     fig.text(0.017, 0.735, "responsive example", rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold")
     fig.text(0.017, 0.335, "nonresponsive example", rotation=90, ha="right", va="center", fontsize=FIGURE_NOTE_FS, color="#222222", fontweight="bold")
     for ax in (ax_resp_movie, ax_resp_box, ax_nonresp_movie, ax_nonresp_box):
