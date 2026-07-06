@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     apply_bonferroni_correction,
     build_state_masks_movie,
     build_state_masks_sleep,

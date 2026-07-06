@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     apply_bonferroni_correction,
     build_state_masks_movie,
     build_state_masks_sleep,
@@ -14,7 +14,8 @@ from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
     interpolate_series,
     paired_comparison,
 )
-from analysis.compartment_common import canonical_state_label, read_pickle, state_display_color, state_display_label
+from analysis.compartment_common import read_pickle
+from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
 from analysis.shared.shared_calcium_response import build_masked_event_summary
 
 from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id, shared_time_axis, summarize_activity

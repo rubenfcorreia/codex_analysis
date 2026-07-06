@@ -11,11 +11,11 @@ A compact navigation map for the repo, organized the same way as the README file
 
 ## Analysis Tree
 
-### `analysis/main_pipeline/`
+### `analysis/dendrites_pipeline/`
 Main dendrite/spine workflow. The README describes this as a top-level driver plus smaller analysis-family modules.
 
 - `README.md`
-- `sleep_dendrite_spine_pipeline.py`
+- `dendrites_pipeline.py`
 - `sleep_dendrite_spine_example_config.json`
 - `sleep_dendrite_spine_custom_demo_spec.json`
 - `analysis_families/`
@@ -60,16 +60,20 @@ Sleep-state-only across-days workflow.
 Present in the tree, but no tracked runnable scripts were found when this index was refreshed.
 
 ## Docs
-- `docs/main_pipeline/` - main pipeline notes.
+- `docs/dendrites_pipeline/` - main pipeline notes.
+- `docs/deprecated/main_pipeline/` - deprecated archive of the old main pipeline docs.
 - `docs/methods/` - methods documentation.
 - `docs/sleep_state_across_days/` - across-days documentation.
+
+## Deprecated Archive
+- `analysis/deprecated/main_pipeline/` - retired main dendrite/spine code, configs, figures, posters, demo helpers, and family modules.
 
 ## Tests
 - `tests/` - validation and smoke checks.
 
 ## Where To Start
-- To change the main pipeline, start in `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py`.
-- To change one analysis family, start in `analysis/main_pipeline/analysis_families/`.
+- To change the main pipeline, start in `analysis/dendrites_pipeline/dendrites_pipeline.py`.
+- To change one analysis family, start in `analysis/dendrites_pipeline/analysis_families/`.
 - To change movie visual-response plotting, start in `analysis/visual_response/`.
 - To change sleep-state across-days behavior, start in `analysis/sleep_state_across_days/`.
 - To change documentation, start in `docs/`.

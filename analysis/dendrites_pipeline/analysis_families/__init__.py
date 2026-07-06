@@ -7,9 +7,12 @@ from analysis.shared.analysis_families.registry import normalize_analysis_famili
 
 ANALYSIS_FAMILIES: List[str] = [
     "state",
+    "basal_apical",
+    "direct_trial_type_comparison",
+    "correlation",
+    "matrix_similarity",
     "mixed_model",
-    "calcium_events",
-    "visual_response",
+    "spine_coactivity",
 ]
 
 

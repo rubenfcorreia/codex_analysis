@@ -16,16 +16,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from analysis.compartment_common import (
-    canonical_state_label,
     ensure_dir,
     filter_comparison_presets,
     normalize_comparison_presets,
     read_csv_rows,
     resolve_repo_root,
-    safe_filename_component,
     write_csv_rows,
     write_json_file,
 )
+from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, safe_filename_component
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
 from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
@@ -44,7 +43,6 @@ from analysis.shared.shared_calcium_response import (
 from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_soma_correlation_rows, correlation_summary_rows
 from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
 from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
-from analysis.compartment_common import resolve_analysis_state_selections
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
@@ -62,7 +60,7 @@ from analysis.shared.plots.poster_ready import (
     write_visual_response_poster_figure,
 )
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
     analysis_cache_meta_hash,

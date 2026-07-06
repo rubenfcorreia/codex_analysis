@@ -6,13 +6,14 @@ This directory is organized by workflow.
 
 | Folder | Purpose |
 | --- | --- |
-| `analysis/` | Runnable scripts grouped by workflow, with `main_pipeline/` split into subfolders and separate launchers for `visual_response/` and `sleep_state_across_days/`. |
+| `analysis/` | Runnable scripts grouped by workflow, with shared cache/state/family helpers in `shared/`, the dendrite/spine pipeline under `dendrites_pipeline/`, the deprecated historical archive under `deprecated/main_pipeline/`, and separate launchers for `visual_response/` and `sleep_state_across_days/`. |
 
 ## Docs
 
 | Folder | Purpose |
 | --- | --- |
-| `docs/main_pipeline/` | Main dendrite/spine analysis, folder layout, and demo builder notes. |
+| `docs/dendrites_pipeline/` | Main dendrite/spine analysis, folder layout, shared helper notes, and demo builder notes. |
+| `docs/deprecated/main_pipeline/` | Deprecated historical archive for the old main dendrite/spine pipeline docs. |
 | `docs/visual_response/` | Visual-response launcher and movie-style metric notes. |
 | `docs/methods/` | Repo-wide methods page for metrics, calculations, and statistical tests. |
 | `docs/sleep_state_across_days/` | Sleep-state-only across-days notes. |
@@ -21,6 +22,6 @@ This directory is organized by workflow.
 
 | File | Purpose |
 | --- | --- |
-| `analysis/main_pipeline/sleep_dendrite_spine_example_config.json` | Example config for the main pipeline. |
-| `analysis/main_pipeline/sleep_dendrite_spine_custom_demo_spec.json` | Demo recipe for the main pipeline. |
+| `analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json` | Example config for the main pipeline. |
+| `analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json` | Demo recipe for the main pipeline. |
 | `analysis/sleep_state_across_days/sleep_state_across_days_config.json` | Example config for the sleep-state workflow. |

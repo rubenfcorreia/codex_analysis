@@ -3,15 +3,12 @@ from __future__ import annotations
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-import sys
 
 import numpy as np
 
-MAIN_PIPELINE_DIR = Path(__file__).resolve().parents[1]
-if str(MAIN_PIPELINE_DIR) not in sys.path:
-    sys.path.insert(0, str(MAIN_PIPELINE_DIR))
-
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.shared.analysis_families.registry import analysis_families_to_text as _shared_analysis_families_to_text
+from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     ALL_REQUESTED_STATES,
     DEFAULT_BASAL_APICAL_STATES,
     DENDRITE_RESPONSE_COHORTS,
@@ -85,29 +82,12 @@ ANALYSIS_FAMILIES: List[str] = [
 ]
 
 
-def normalize_analysis_families(values: Optional[Sequence[str] | str]) -> List[str]:
-    if values is None:
-        return list(ANALYSIS_FAMILIES)
-    if isinstance(values, str):
-        raw = [part.strip() for part in values.split(",") if part.strip()]
-    else:
-        raw = [str(value).strip() for value in values if str(value).strip()]
-    if not raw:
-        return list(ANALYSIS_FAMILIES)
-    selected: List[str] = []
-    for family in ANALYSIS_FAMILIES:
-        if family in raw and family not in selected:
-            selected.append(family)
-    unknown = [family for family in raw if family not in ANALYSIS_FAMILIES]
-    if unknown:
-        raise SystemExit(
-            f"Unknown analysis family/families: {', '.join(unknown)}. Allowed values are: {', '.join(ANALYSIS_FAMILIES)}"
-        )
-    return selected
+def normalize_analysis_families(values):
+    return _shared_normalize_analysis_families(values, allowed_families=ANALYSIS_FAMILIES)
 
 
-def analysis_families_to_text(values: Optional[Sequence[str] | str]) -> str:
-    return ",".join(normalize_analysis_families(values))
+def analysis_families_to_text(values):
+    return _shared_analysis_families_to_text(values, allowed_families=ANALYSIS_FAMILIES)
 
 
 def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:

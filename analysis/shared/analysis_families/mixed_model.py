@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import run_mixed_model_family
+from analysis.dendrites_pipeline.dendrites_pipeline import run_mixed_model_family
 
 
 

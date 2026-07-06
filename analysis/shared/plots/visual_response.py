@@ -14,7 +14,7 @@ from scipy import stats
 
 from analysis.compartment_common import pick_state_bundle
 from analysis.shared.shared_calcium_response import load_visual_response_cut_data, visual_response_trial_group
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     plot_visual_response_boxplot_figure,
     visual_response_figure_output_dir,
 )

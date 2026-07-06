@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 import numpy as np
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import _draw_boxplot_significance_annotations, is_significant_row
+from analysis.dendrites_pipeline.dendrites_pipeline import _draw_boxplot_significance_annotations
+from analysis.shared.statistics import is_significant_row
 
 
 FIGURE_WIDTH_MM = 170.0

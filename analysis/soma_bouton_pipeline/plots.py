@@ -14,11 +14,11 @@ from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import is_significant_row
+from analysis.dendrites_pipeline.dendrites_pipeline import is_significant_row
 from analysis.shared.shared_boxplots import plot_boxplot_series
 
 try:  # Keep the state palette aligned with the main dendrite pipeline.
-    from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (  # type: ignore
+    from analysis.dendrites_pipeline.dendrites_pipeline import (  # type: ignore
         state_display_color as _main_state_display_color,
         state_family_label as _main_state_family_label,
     )

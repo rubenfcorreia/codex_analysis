@@ -25,8 +25,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-try:  # pragma: no cover - imported in the live repo when available
-    from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (  # type: ignore
+if False:  # pragma: no cover - imported in the live repo when available
+    from analysis.dendrites_pipeline.dendrites_pipeline import (  # type: ignore
         build_state_masks_movie,
         build_state_masks_sleep,
         canonical_state_label,
@@ -43,7 +43,7 @@ try:  # pragma: no cover - imported in the live repo when available
         write_csv_rows,
         write_json_file,
     )
-except Exception:  # pragma: no cover - local fallback for portability
+else:  # pragma: no cover - local fallback for portability
     def ensure_dir(path: Path | str) -> Path:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)

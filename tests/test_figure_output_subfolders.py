@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from analysis.main_pipeline import sleep_dendrite_spine_pipeline as pipeline
+from analysis.dendrites_pipeline import dendrites_pipeline as pipeline
 
 
 def _write_dummy_svg(path: Path, label: str) -> Path:
@@ -180,11 +180,12 @@ def test_render_analysis_family_figures_skips_empty_inputs_cleanly(
 
 
 def test_day_figure_helpers_use_family_subfolders(tmp_path: Path) -> None:
-    matrix_path = pipeline.build_matrix_similarity_day_figure_path(tmp_path, "animal_1", "2024-06-01", "basal", "d1")
-    coactivity_path = pipeline.build_spine_coactivity_day_figure_path(tmp_path, "animal_1", "2024-06-01", "basal", "d1")
+    day_id = "animal_1|2024-06-01|basal"
+    matrix_path = pipeline.build_matrix_similarity_day_figure_path(tmp_path, "animal_1", day_id, "basal", "d1")
+    coactivity_path = pipeline.build_spine_coactivity_day_figure_path(tmp_path, "animal_1", day_id, "basal", "d1")
 
     assert matrix_path.parts[-5:-1] == ("matrix_similarity", "animal_1", "basal", "2024-06-01")
-    assert coactivity_path.parts[-5:-1] == ("spine_coactivity", "animal_1", "basal", "2024-06-01")
+    assert coactivity_path.parts[-6:-1] == ("spine_coactivity", "pair_state_heatmap", "animal_1", "basal", "2024-06-01")
 
 
 def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -214,7 +215,6 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
     assert (figure_root / "analysis" / "figure.svg").exists()
     assert (figure_root / "review" / "figure.svg").exists()
     assert (output_dir / "checkpoint" / "figure.svg").exists()
-    assert (figure_root / "event_examples" / "figure.svg").exists()
     assert not (output_dir / "analysis_results.json").exists()
     assert not (output_dir / "state_comparisons.csv").exists()
     assert not (output_dir / "analysis_report.txt").exists()

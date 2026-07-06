@@ -1,0 +1,132 @@
+{
+  "_comment": "Compact demo recipe for analysis/dendrites_pipeline/sleep_demo_builder.py. Keep the experiments you want and edit only the response blocks you care about.",
+  "_usage": "python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_demo_builder.py build --recipe /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json --output-dir /tmp/sleep_codex_custom_demo",
+  "repo_subdir": "custom_demo_repository",
+  "user_id": "demo_user",
+  "analysis_families": [
+    "state",
+    "basal_apical",
+    "correlation",
+    "matrix",
+    "mixed_model"
+  ],
+  "stimulus_source_root": "/data/Remote_Repository/bv_resources/all_movie_clips_bv_sets",
+  "experiments": [
+    {
+      "_comment": "Soma-only demo: one neuron responds to trial state instead of a specific stimulus.",
+      "exp_id": "2025-02-11_01_DEMOA01",
+      "animal_id": "DEMOA01",
+      "kind": "movie",
+      "compartment": "soma",
+      "mode": "soma_only",
+      "layout": {
+        "n_cells": 1,
+        "background_rois": 1
+      },
+      "responses": [
+        {
+          "roi_ref": "cell1.soma1",
+          "response": {
+            "kind": "state",
+            "baseline": 0.02,
+            "noise_scale": 0.01,
+            "state_weights": {
+              "quiet_blank": 0.0,
+              "active_blank": 0.03,
+              "quiet_grating": 0.05,
+              "active_grating": 0.08,
+              "quiet_zebra": 0.1,
+              "active_zebra": 0.16,
+              "quiet_movies": 0.2,
+              "active_movies": 0.28
+            }
+          }
+        }
+      ]
+    },
+    {
+      "_comment": "Basal dendrite/spine demo: the dendrite is tuned to x=-20, y=0, angle=45, with one spine inheriting that drive and one off-target control spine.",
+      "exp_id": "2025-02-11_02_DEMOA01",
+      "animal_id": "DEMOA01",
+      "kind": "movie",
+      "compartment": "basal",
+      "mode": "normal",
+      "layout": {
+        "n_cells": 1,
+        "dendrites_per_cell": 1,
+        "spines_per_dendrite": 2,
+        "background_rois": 1
+      },
+      "responses": [
+        {
+          "roi_ref": "cell1.dend1",
+          "response": {
+            "kind": "stimulus",
+            "selector": {
+              "F1_x": -20,
+              "F1_y": 0,
+              "F1_angle": 45
+            },
+            "bandwidth": {
+              "F1_x": 10,
+              "F1_y": 10,
+              "F1_angle": 12
+            },
+            "amplitude": 0.95,
+            "baseline": 0.05,
+            "kernel_width": 0.65,
+            "latency": 0.15,
+            "noise_scale": 0.015
+          }
+        },
+        {
+          "roi_ref": "cell1.dend1.spine1",
+          "response": {
+            "kind": "inherit",
+            "parent_ref": "cell1.dend1",
+            "alpha": 0.85,
+            "specific": {
+              "kind": "stimulus",
+              "selector": {
+                "F1_x": -20,
+                "F1_y": 0,
+                "F1_angle": 45
+              },
+              "bandwidth": {
+                "F1_x": 8,
+                "F1_y": 8,
+                "F1_angle": 10
+              },
+              "amplitude": 0.35,
+              "baseline": 0.02,
+              "kernel_width": 0.55,
+              "latency": 0.1,
+              "noise_scale": 0.015
+            }
+          }
+        },
+        {
+          "roi_ref": "cell1.dend1.spine2",
+          "response": {
+            "kind": "stimulus",
+            "selector": {
+              "F1_x": 20,
+              "F1_y": 0,
+              "F1_angle": 0
+            },
+            "bandwidth": {
+              "F1_x": 8,
+              "F1_y": 8,
+              "F1_angle": 10
+            },
+            "amplitude": 0.05,
+            "baseline": 0.02,
+            "kernel_width": 0.55,
+            "latency": 0.1,
+            "noise_scale": 0.01
+          }
+        }
+      ]
+    }
+  ]
+}

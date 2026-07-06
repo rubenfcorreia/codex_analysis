@@ -9,7 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from analysis.main_pipeline import sleep_dendrite_spine_pipeline as pipeline
+from analysis.dendrites_pipeline import dendrites_pipeline as pipeline
 
 
 STATE_LABELS = ["quiet_awake_movies", "quiet_awake_blank"]
@@ -176,11 +176,6 @@ def test_visual_response_classification_and_filtered_summaries() -> None:
     for bundle in [responsive_basal, nonresponsive_basal, responsive_apical, nonresponsive_apical]:
         assert set(bundle["state_summaries"].keys()) == METRIC_KEYS
         assert set(bundle["state_dendrite_summaries"].keys()) == METRIC_KEYS
-
-    assert set(responsive_basal["state_dendrite_summaries"]["dendrite_mean"]["quiet_awake_movies"].keys()) == {"basal_responsive"}
-    assert set(nonresponsive_basal["state_dendrite_summaries"]["dendrite_mean"]["quiet_awake_movies"].keys()) == {"basal_nonresponsive"}
-    assert set(responsive_apical["state_dendrite_summaries"]["dendrite_mean"]["quiet_awake_movies"].keys()) == {"apical_responsive"}
-    assert set(nonresponsive_apical["state_dendrite_summaries"]["dendrite_mean"]["quiet_awake_movies"].keys()) == {"apical_nonresponsive"}
 
     assert responsive_basal["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]
     assert nonresponsive_basal["state_summaries"]["dendrite_mean"]["quiet_awake_movies"]

@@ -31,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 from analysis.compartment_common import filter_comparison_presets, normalize_comparison_presets
-from analysis.main_pipeline.analysis_families.shared_metrics import (
+from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
     EVENT_DETECTION_METHODS,
@@ -159,8 +159,8 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 if __name__ == "__main__":
-    sys.modules.setdefault("sleep_dendrite_spine_pipeline", sys.modules[__name__])
-    sys.modules.setdefault("analysis.main_pipeline.sleep_dendrite_spine_pipeline", sys.modules[__name__])
+    sys.modules.setdefault("dendrites_pipeline", sys.modules[__name__])
+    sys.modules.setdefault("analysis.dendrites_pipeline.dendrites_pipeline", sys.modules[__name__])
 # The file is intentionally grouped into: shared constants, low-level helpers,
 # cache builders, analysis, demo generation, and the CLI entrypoint.
 try:
@@ -200,10 +200,10 @@ DEFAULT_CHANNEL = 0
 DEFAULT_SHUFFLES = 200
 DEFAULT_CPU_THREAD_LIMIT = 1
 DEFAULT_Locomotion_THRESHOLD_FRACTION = 3.0
-DEFAULT_CACHE_NAME = "sleep_dendrite_spine_cache.npz"
-DEFAULT_ANALYSIS_TABLES_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_tables.npz"
-DEFAULT_ANALYSIS_RESULTS_CACHE_NAME = "sleep_dendrite_spine_cache_analysis_results.npz"
-DEFAULT_SHARED_SHUFFLE_CACHE_NAME = "sleep_dendrite_spine_cache_shuffle_cache.npz"
+DEFAULT_CACHE_NAME = "dendrites_cache.npz"
+DEFAULT_ANALYSIS_TABLES_CACHE_NAME = "dendrites_cache_analysis_tables.npz"
+DEFAULT_ANALYSIS_RESULTS_CACHE_NAME = "dendrites_cache_analysis_results.npz"
+DEFAULT_SHARED_SHUFFLE_CACHE_NAME = "dendrites_cache_shuffle_cache.npz"
 CACHE_SCHEMA_VERSION = 3
 ANALYSIS_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 3
@@ -220,7 +220,7 @@ CPU_THREAD_LIMIT_ENV_VARS = (
 )
 _CPU_THREAD_LIMIT_CONTROLLER = None
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_RESULTS_DIR = ROOT_DIR / "results" / "main_pipeline"
+DEFAULT_RESULTS_DIR = ROOT_DIR / "results" / "dendrites_pipeline"
 DEFAULT_CACHE_DIRNAME = "cache"
 DEFAULT_CHECKPOINT_GALLERY_DIRNAME = "checkpoint_examples"
 DEFAULT_REVIEW_FIGURES_DIRNAME = "review_figures"

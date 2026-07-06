@@ -12,8 +12,8 @@ import numpy as np
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parents[1]
 ANALYSIS_DIR = ROOT_DIR / "analysis"
-MAIN_PIPELINE_DIR = ANALYSIS_DIR / "main_pipeline"
-for extra_path in (ROOT_DIR, ANALYSIS_DIR, MAIN_PIPELINE_DIR):
+DENDRITES_PIPELINE_DIR = ANALYSIS_DIR / "dendrites_pipeline"
+for extra_path in (ROOT_DIR, ANALYSIS_DIR, DENDRITES_PIPELINE_DIR):
     if str(extra_path) not in sys.path:
         sys.path.insert(0, str(extra_path))
 
@@ -39,7 +39,7 @@ from poster_plotting import (
     set_sparse_numeric_ticks,
 )
 
-from main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     as_float,
     as_int,
     determine_conversion_mode,
@@ -51,9 +51,9 @@ from main_pipeline.sleep_dendrite_spine_pipeline import (
     safe_filename_component,
 )
 
-import main_pipeline.sleep_dendrite_spine_day_figures as sday
+import analysis.dendrites_pipeline.figures.sleep_dendrite_spine_day_figures as sday
 
-from main_pipeline.sleep_dendrite_spine_day_figures import (
+from analysis.dendrites_pipeline.figures.sleep_dendrite_spine_day_figures import (
     detail_label_from_local_ids,
     extract_roi_coordinates,
     load_mean_image,
