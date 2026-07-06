@@ -4,6 +4,8 @@ This folder contains the organized entry point for the sleep-state-only across-d
 It hands off to the root script so the defaults and imports stay unchanged.
 This workflow is independent of the main pipeline's visual-response cut-bundle choices.
 
+See also: [../README.md](../README.md), [../../docs/sleep_state_across_days/README.md](../../docs/sleep_state_across_days/README.md).
+
 ## Launcher
 
 - `sleep_state_across_days.py`

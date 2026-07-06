@@ -2,6 +2,8 @@
 
 This folder contains the visual-response launcher for the movie dendrite cohorts and the rapid-retinotopy soma cohorts.
 
+See also: [../README.md](../README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md), [../../docs/visual_response/README.md](../../docs/visual_response/README.md).
+
 ## Launcher
 
 - `movie_visual_response.py`

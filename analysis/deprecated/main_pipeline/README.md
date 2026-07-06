@@ -3,6 +3,8 @@
 The main dendrite/spine workflow is now split into purpose-specific folders under `analysis/main_pipeline/`.
 The top-level driver stays at the root so it remains the single orchestrator.
 
+Deprecated archive. See the current workflow in [../../dendrites_pipeline/README.md](../../dendrites_pipeline/README.md) and the repo map in [../../../README.md](../../../README.md).
+
 ## Top-Level Driver
 
 - `sleep_dendrite_spine_pipeline.py`

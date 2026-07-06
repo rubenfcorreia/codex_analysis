@@ -3,6 +3,8 @@
 This page explains how the main analysis metrics are computed in `codex_analysis` and how the statistical tests are applied.
 It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository.
 
+See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md), [../visual_response/README.md](../visual_response/README.md), [../sleep_state_across_days/README.md](../sleep_state_across_days/README.md).
+
 Visual-response note: the main pipeline now treats dendrite and spine visual-response metrics as separate cohorts, uses movie-style blank-versus-movies comparisons, and reads those metrics from cut stimulus-period data, preferring `cut_intertrials/` and falling back to `cut_with_intertrials/`.
 
 ## Main Dendrite/Spine Pipeline

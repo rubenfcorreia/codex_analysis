@@ -3,13 +3,15 @@
 These folders group the runnable analysis launchers by workflow.
 The runnable code now lives inside these folders, which keeps the root directory much cleaner.
 
+See also: [root README](../README.md), [dendrites_pipeline](dendrites_pipeline/README.md), [visual_response](visual_response/README.md), [sleep_state_across_days](sleep_state_across_days/README.md), [soma_bouton_pipeline](soma_bouton_pipeline/README.md), [deprecated/main_pipeline](deprecated/main_pipeline/README.md).
+
 ## Folders
 
 | Folder | Purpose |
 | --- | --- |
-| `dendrites_pipeline/` | Main dendrite/spine analysis, day figures, demo builder, and poster launchers, now split into subfolders. Common cache/state/family utilities live in `analysis/shared/`. |
-| `sleep_state_across_days/` | Sleep-state-only across-days launcher. |
-| `visual_response/` | Movie dendrite and rapid-retinotopy visual-response launcher. |
+| [dendrites_pipeline/README.md](dendrites_pipeline/README.md) | Main dendrite/spine analysis, day figures, demo builder, and poster launchers, now split into subfolders. Common cache/state/family utilities live in `analysis/shared/`. |
+| [sleep_state_across_days/README.md](sleep_state_across_days/README.md) | Sleep-state-only across-days launcher. |
+| [visual_response/README.md](visual_response/README.md) | Movie dendrite and rapid-retinotopy visual-response launcher. |
 
 ## Notes
 

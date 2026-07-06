@@ -3,6 +3,8 @@
 This workflow compares soma activity from `ch2` data against axonal bouton
 activity from `ch1` data.
 
+See also: [../README.md](../README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md).
+
 Key points:
 
 - same-date experiments are grouped together as the same field of view/day

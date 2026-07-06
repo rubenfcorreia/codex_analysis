@@ -3,6 +3,8 @@
 Use `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
 The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces.
 
+Deprecated archive. See the current workflow in [../../../docs/dendrites_pipeline/README.md](../../../docs/dendrites_pipeline/README.md) and the repo map in [../../../README.md](../../../README.md).
+
 ## Current Workflow
 
 1. Load the config and resolve repository, cache, output, and figure paths.
