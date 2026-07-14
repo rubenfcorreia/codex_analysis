@@ -24,7 +24,7 @@ from analysis.compartment_common import (
     write_csv_rows,
     write_json_file,
 )
-from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, safe_filename_component
+from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
 from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
@@ -181,9 +181,10 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     if not presets:
         return []
 
-    base_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
-    base_cache_root = Path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"])
-    shared_source_cache_path = Path(config.get("cache_path") or (base_cache_root / "source_cache.npz"))
+    repo_root = resolve_repo_root(Path(__file__))
+    base_result_root = resolve_repo_path(config.get("result_root") or DEFAULT_CONFIG["result_root"], repo_root)
+    base_cache_root = resolve_repo_path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"], repo_root)
+    shared_source_cache_path = resolve_repo_path(config.get("cache_path") or (base_cache_root / "source_cache.npz"), repo_root)
     _stage("comparison presets", f"running {len(presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
     for preset_index, (preset_name, overrides) in enumerate(presets):
@@ -443,40 +444,38 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
     }
 
 
-def _source_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _source_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("cache_path"):
-        return Path(config["cache_path"])
-    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
+        return resolve_repo_path(config["cache_path"], repo_root)
+    cache_root = resolve_repo_path(config.get("cache_root") or (result_root / "cache"), repo_root)
     return cache_root / "source_cache.npz"
 
 
-def _analysis_run_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _analysis_run_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("analysis_run_cache_path"):
-        return Path(config["analysis_run_cache_path"])
-    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
+        return resolve_repo_path(config["analysis_run_cache_path"], repo_root)
+    cache_root = resolve_repo_path(config.get("cache_root") or (result_root / "cache"), repo_root)
     preset_name = safe_filename_component(str(config.get("comparison_preset_name") or "default"))
     return cache_root / f"{preset_name}_analysis_run_cache.npz"
 
 
-def _analysis_tables_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _analysis_tables_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("analysis_tables_cache_path"):
-        return Path(config["analysis_tables_cache_path"])
-    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
+        return resolve_repo_path(config["analysis_tables_cache_path"], repo_root)
+    analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_tables_cache.npz")
 
 
-def _analysis_results_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _analysis_results_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("analysis_results_cache_path"):
-        return Path(config["analysis_results_cache_path"])
-    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
+        return resolve_repo_path(config["analysis_results_cache_path"], repo_root)
+    analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
 
 
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
-    result_root = Path(config["result_root"])
-    if not result_root.is_absolute():
-        result_root = repo_root / result_root
+    result_root = resolve_repo_path(config["result_root"], repo_root)
     preset_name = str(config.get("comparison_preset_name") or "default")
     _stage("run preset", f"{preset_name} -> {result_root}")
     ensure_dir(result_root)
@@ -503,10 +502,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
     shuffle_n = int(config.get("shuffle_n", 200))
-    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
-    analysis_results_cache_file = _analysis_results_cache_path(config, result_root)
-    analysis_tables_cache_file = _analysis_tables_cache_path(config, result_root)
-    source_cache_file = _source_cache_path(config, result_root)
+    analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
+    analysis_results_cache_file = _analysis_results_cache_path(config, repo_root, result_root)
+    analysis_tables_cache_file = _analysis_tables_cache_path(config, repo_root, result_root)
+    source_cache_file = _source_cache_path(config, repo_root, result_root)
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []

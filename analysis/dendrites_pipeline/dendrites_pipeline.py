@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 from analysis.compartment_common import filter_comparison_presets, normalize_comparison_presets
+from analysis.shared.state_utils import resolve_repo_path
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
@@ -16158,9 +16159,8 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     if not presets:
         return False
 
-    base_output_dir = Path(config.get("output_dir") or DEFAULT_RESULTS_DIR)
-    shared_cache_path = Path(config.get("cache_path") or (base_output_dir / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME))
-    shared_cache_path = shared_cache_path.resolve()
+    base_output_dir = resolve_repo_path(config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+    shared_cache_path = resolve_repo_path(config.get("cache_path") or (base_output_dir / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME), REPO_ROOT)
 
     child_script = Path(__file__).resolve()
     for preset_index, (preset_name, overrides) in enumerate(presets):
@@ -16370,7 +16370,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     config["analysis_families"] = normalize_analysis_families(config.get("analysis_families"))
     if bool(config.get("demo")) or args.demo:
         # Demo mode first materializes a fake repository, then reroutes the analysis there.
-        demo_output_dir = Path(config.get("output_dir")) if config.get("output_dir") else DEFAULT_RESULTS_DIR
+        demo_output_dir = resolve_repo_path(config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
         demo_base = demo_output_dir
         demo_spec = None
         if args.demo_spec is not None:
@@ -16430,12 +16430,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_tables_rebuild = bool(config.get("analysis_tables_rebuild")) or rebuild
         analysis_results_rebuild = bool(config.get("analysis_results_rebuild")) or rebuild
         shared_shuffle_cache_rebuild = bool(config.get("shared_shuffle_cache_rebuild")) or rebuild
-        output_dir = Path(config.get("output_dir")) if config.get("output_dir") else DEFAULT_RESULTS_DIR
-        cache_path = Path(config.get("cache_path")) if config.get("cache_path") else (ensure_dir(output_dir / DEFAULT_CACHE_DIRNAME) / DEFAULT_CACHE_NAME)
-        analysis_run_cache_path = Path(config.get("analysis_run_cache_path")) if config.get("analysis_run_cache_path") else cache_path
-        analysis_tables_cache_file = Path(config.get("analysis_tables_cache_path")) if config.get("analysis_tables_cache_path") else analysis_table_cache_path(cache_path)
-        analysis_results_cache_file = Path(config.get("analysis_results_cache_path")) if config.get("analysis_results_cache_path") else analysis_results_cache_path(analysis_run_cache_path)
-        figure_output_dir = Path(config.get("figure_output_dir")) if config.get("figure_output_dir") else None
+        output_dir = resolve_repo_path(config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+        cache_path = resolve_repo_path(config.get("cache_path") or (ensure_dir(output_dir / DEFAULT_CACHE_DIRNAME) / DEFAULT_CACHE_NAME), REPO_ROOT)
+        analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
+        analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
+        analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
+        figure_output_dir = resolve_repo_path(config.get("figure_output_dir"), REPO_ROOT) if config.get("figure_output_dir") else None
         plots_only = bool(config.get("plots_only"))
         step_message(
             f"RUN FLAGS: rebuild={rebuild}, plots_only={plots_only}, "

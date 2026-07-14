@@ -11,6 +11,13 @@ def ensure_dir(path: Path | str) -> Path:
     return path
 
 
+def resolve_repo_path(path: Path | str, repo_root: Path | str) -> Path:
+    path = Path(path)
+    if path.is_absolute():
+        return path
+    return Path(repo_root) / path
+
+
 def safe_filename_component(value: Any) -> str:
     text = str(value).strip()
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
@@ -98,6 +105,7 @@ __all__ = [
     "grouped_experiments_by_day",
     "make_day_id",
     "resolve_analysis_state_selections",
+    "resolve_repo_path",
     "safe_filename_component",
     "state_display_color",
     "state_display_label",
