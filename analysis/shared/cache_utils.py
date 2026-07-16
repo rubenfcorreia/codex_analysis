@@ -5,7 +5,7 @@ import importlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -23,6 +23,7 @@ FAMILY_RESULT_CACHE_STAGES = (
     "mixed_model",
     "spine_coactivity",
     "correlation",
+    "pairwise_correlation",
     "matrix_similarity",
 )
 
@@ -145,6 +146,38 @@ def save_family_results_cache(
     return path
 
 
+def load_family_results_cache(
+    path: Path,
+    *,
+    expected_meta: Optional[Dict[str, Any]] = None,
+    rebuild: bool = False,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    if rebuild:
+        return None, "rebuild_requested"
+    if not path.exists():
+        return None, "missing"
+    try:
+        cache = load_npz_cache(path)
+    except Exception:
+        return None, "unreadable"
+    if not isinstance(cache, dict):
+        return None, "invalid_payload"
+    if cache.get("schema_version") != ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION:
+        return None, "schema_mismatch"
+    if expected_meta is not None:
+        expected_hash = analysis_cache_meta_hash(expected_meta)
+        saved_meta = cache.get("meta", {})
+        if not isinstance(saved_meta, dict):
+            saved_meta = {}
+        saved_hash = analysis_cache_meta_hash(saved_meta)
+        if saved_hash != expected_hash:
+            return None, "meta_mismatch"
+    results = cache.get("analysis_results")
+    if not isinstance(results, dict):
+        return None, "invalid_results"
+    return cache, "ok"
+
+
 def source_cache_signature(source_cache: Dict[str, Any]) -> str:
     return stable_hash(
         {
@@ -253,6 +286,45 @@ def build_shared_shuffle_entry(key: str, vector_length: int, shuffle_n: int) -> 
     return {"key": key, "vector_length": int(vector_length), "shuffle_n": int(shuffle_n)}
 
 
+def build_pairwise_correlation_cache_key(
+    *,
+    family: str,
+    comparison_name: str,
+    analysis_unit: str,
+    animal_id: str,
+    day_id: str,
+    mode: str,
+    left_compartment: str,
+    left_channel: Optional[int],
+    right_compartment: Optional[str] = None,
+    right_channel: Optional[int] = None,
+    pair_mode: str = "within_compartment",
+    selected_states: Optional[Sequence[str]] = None,
+    source_signature: Optional[Mapping[str, Any]] = None,
+    scope_id: Optional[str] = None,
+    extra_metadata: Optional[Mapping[str, Any]] = None,
+) -> str:
+    return stable_hash(
+        {
+            "family": family,
+            "comparison_name": comparison_name,
+            "analysis_unit": analysis_unit,
+            "scope_id": scope_id or day_id,
+            "animal_id": animal_id,
+            "day_id": day_id,
+            "mode": mode,
+            "left_compartment": left_compartment,
+            "left_channel": left_channel,
+            "right_compartment": right_compartment or left_compartment,
+            "right_channel": right_channel if right_channel is not None else left_channel,
+            "pair_mode": pair_mode,
+            "selected_states": list(selected_states or []),
+            "source_signature": source_signature,
+            "extra_metadata": dict(extra_metadata or {}),
+        }
+    )
+
+
 __all__ = [
     "ANALYSIS_CACHE_SCHEMA_VERSION",
     "ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION",
@@ -264,12 +336,15 @@ __all__ = [
     "analysis_day_cache_path",
     "analysis_results_cache_path",
     "analysis_table_cache_path",
+    "array_signature",
+    "build_pairwise_correlation_cache_key",
     "cacheable",
     "ensure_numpy_pickle_compatibility",
     "family_results_cache_dir",
     "family_results_cache_index",
     "family_results_cache_path",
     "family_results_cache_stage_for_selection",
+    "load_family_results_cache",
     "load_npz_cache",
     "save_analysis_day_cache",
     "save_family_results_cache",
@@ -281,6 +356,5 @@ __all__ = [
     "stable_hash",
     "build_shared_shuffle_cache_key",
     "build_shared_shuffle_entry",
-    "array_signature",
     "load_shared_shuffle_cache",
 ]

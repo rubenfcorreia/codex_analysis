@@ -1,7 +1,7 @@
 # Soma/Bouton Pipeline
 
 This workflow compares soma activity from `ch2` data against axonal bouton
-activity from `ch1` data.
+activity from `ch1` data. The shared preset flow lives in `analysis/shared/`.
 
 See also: [../README.md](../README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md).
 

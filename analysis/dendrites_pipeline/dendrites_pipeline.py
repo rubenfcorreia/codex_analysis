@@ -30,7 +30,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
-from analysis.compartment_common import filter_comparison_presets, normalize_comparison_presets
+from analysis.compartment_common import normalize_comparison_presets
+from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
@@ -16155,16 +16156,21 @@ def merge_cli_config(cli: Dict[str, Any], file_config: Dict[str, Any]) -> Dict[s
 def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     preset_names = parse_list_argument(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
-    presets = filter_comparison_presets(presets, preset_names)
-    if not presets:
+    plan = build_comparison_preset_batch_plan(
+        presets,
+        selected_names=preset_names,
+        poster_ready_only=bool(config.get("poster_ready_only")),
+        poster_required_names=POSTER_REQUIRED_COMPARISON_PRESETS,
+    )
+    if not plan.presets:
         return False
 
     base_output_dir = resolve_repo_path(config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
     shared_cache_path = resolve_repo_path(config.get("cache_path") or (base_output_dir / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME), REPO_ROOT)
 
     child_script = Path(__file__).resolve()
-    for preset_index, (preset_name, overrides) in enumerate(presets):
-        generate_once = preset_index == 0
+    preset_configs: Dict[str, Dict[str, Any]] = {}
+    for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_output_dir = base_output_dir / safe_name
         preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
@@ -16180,13 +16186,13 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["cache_path"] = str(shared_cache_path)
         preset_config["analysis_run_cache_path"] = str(preset_cache_path)
         preset_config["analysis_results_cache_path"] = None
+        generate_once = preset_index == 0
         preset_rebuild = bool(config.get("rebuild")) if generate_once else False
         preset_config["rebuild"] = preset_rebuild
         preset_config["source_cache_rebuild"] = preset_rebuild
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
-        generate_once = preset_index == 0
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
             preset_family_stage = family_results_cache_stage_for_selection(preset_config.get("analysis_families"))
@@ -16199,7 +16205,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
                 )
                 preset_config["plots_only"] = False
         preset_config["plots_only_include_supporting_figures"] = True if generate_once else False
-        preset_config["generate_poster_ready_figures"] = True if generate_once else False
+        preset_config["generate_poster_ready_figures"] = False
         preset_config["generate_shared_general_figures"] = True if generate_once else False
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
@@ -16209,6 +16215,30 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         try:
             print(
                 f"[comparison preset] {preset_name} -> {preset_output_dir}",
+                file=sys.stderr,
+            )
+            subprocess.run([sys.executable, str(child_script), "--config", str(temp_config_path)], check=True)
+        finally:
+            try:
+                temp_config_path.unlink()
+            except FileNotFoundError:
+                pass
+        preset_configs[preset_name] = preset_config
+
+    if plan.reference_preset_name in preset_configs:
+        final_config = copy.deepcopy(preset_configs[plan.reference_preset_name])
+        final_config["plots_only"] = True
+        final_config["poster_ready_only"] = bool(config.get("poster_ready_only"))
+        final_config["generate_poster_ready_figures"] = True
+        final_config["plots_only_include_supporting_figures"] = False
+        final_config["generate_shared_general_figures"] = False
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            temp_config_path = Path(handle.name)
+            json.dump(final_config, handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+        try:
+            print(
+                f"[comparison preset] poster readback -> {plan.reference_preset_name}",
                 file=sys.stderr,
             )
             subprocess.run([sys.executable, str(child_script), "--config", str(temp_config_path)], check=True)

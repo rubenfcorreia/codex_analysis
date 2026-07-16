@@ -1,7 +1,7 @@
-# Main Pipeline Layout
+# Dendrites Pipeline Layout
 
-The main dendrite/spine workflow is now split into purpose-specific folders under `analysis/dendrites_pipeline/`.
-The top-level driver stays at the root so it remains the single orchestrator.
+The dendrites workflow is now split into purpose-specific folders under `analysis/dendrites_pipeline/`.
+The top-level driver stays at the root so it remains the single orchestrator, and comparison-preset batches now defer the shared poster/readback step until all required presets have finished.
 
 See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/README.md](../../docs/dendrites_pipeline/README.md), [../../docs/deprecated/main_pipeline/README.md](../../docs/deprecated/main_pipeline/README.md).
 
@@ -30,7 +30,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 
 ## Visual Response
 
-- The main pipeline now writes dendrite and spine visual-response summaries and boxplots under `results/dendrites_pipeline/figures/visual_response/`.
+- The dendrites pipeline now writes dendrite and spine visual-response summaries and boxplots under `results/dendrites_pipeline/figures/visual_response/`.
 - Dendrite responsiveness is computed from dendrite cut activity only.
 - Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
 - The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.

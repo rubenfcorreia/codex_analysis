@@ -4,91 +4,108 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from ...compartment_common import canonical_state_label, pairwise_correlation, state_display_color, state_display_label
-from .core import ExperimentContext, make_unit_id
+from analysis.shared.analysis_families.core import ExperimentContext
+from analysis.shared.analysis_families.pairwise import (
+    build_pairwise_correlation_rows,
+    pairwise_correlation_summary_rows,
+    pairwise_mean_member,
+    pairwise_members_from_matrix,
+)
+
 from .state import state_masks_for_context
+
+
+def _bouton_roi_ids(ctx: ExperimentContext, matrix: np.ndarray) -> List[Any]:
+    roi_ids = list(ctx.bouton.roi_ids()) if hasattr(ctx.bouton, "roi_ids") else []
+    if len(roi_ids) < matrix.shape[0]:
+        roi_ids.extend(range(len(roi_ids), matrix.shape[0]))
+    return roi_ids[: matrix.shape[0]]
+
+
+def _soma_roi_ids(ctx: ExperimentContext, matrix: np.ndarray) -> List[Any]:
+    roi_ids = list(ctx.soma.roi_ids()) if hasattr(ctx.soma, "roi_ids") else []
+    if len(roi_ids) < matrix.shape[0]:
+        roi_ids.extend(range(len(roi_ids), matrix.shape[0]))
+    return roi_ids[: matrix.shape[0]]
 
 
 def bouton_soma_correlation_rows(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
     masks = state_masks_for_context(ctx, selected_states)
-    soma_matrix = ctx.soma.matrix()
-    bouton_matrix = ctx.bouton.matrix()
-    bouton_roi_ids = list(ctx.bouton.roi_ids())
-    soma_mean = np.nanmean(soma_matrix, axis=0) if soma_matrix.size else np.array([], dtype=float)
-    rows: List[Dict[str, Any]] = []
-    for state, mask in masks.items():
-        mask = np.asarray(mask, dtype=bool)
-        if soma_mean.size == 0 or bouton_matrix.size == 0:
-            continue
-        t_len = min(soma_mean.size, bouton_matrix.shape[1], mask.size)
-        if t_len == 0:
-            continue
-        state_mask = mask[:t_len]
-        if not np.any(state_mask):
-            continue
-        soma_state = soma_mean[:t_len][state_mask]
-        for roi_index in range(bouton_matrix.shape[0]):
-            bouton_state = bouton_matrix[roi_index, :t_len][state_mask]
-            corr = pairwise_correlation(soma_state, bouton_state)
-            roi_id = bouton_roi_ids[roi_index] if roi_index < len(bouton_roi_ids) else roi_index
-            rows.append(
-                {
-                    "expid": ctx.expid,
-                    "mode": ctx.mode,
-                    "animal_id": ctx.animal_id,
-                    "date": ctx.date,
-                    "day_id": ctx.day_id,
-                    "channel": int(ctx.bouton_channel),
-                    "state": canonical_state_label(state),
-                    "state_display": state_display_label(state),
-                    "state_color": state_display_color(state),
-                    "bouton_roi_index": roi_index,
-                    "roi_id": roi_id,
-                    "unit_id": make_unit_id(
-                        animal_id=ctx.animal_id,
-                        expid=ctx.expid,
-                        day_id=ctx.day_id,
-                        compartment="bouton",
-                        channel=ctx.bouton_channel,
-                        roi_id=roi_id,
-                        roi_index=roi_index,
-                    ),
-                    "corr": corr,
-                    "n_timepoints": int(np.isfinite(soma_state).sum()),
-                }
-            )
-    return rows
+    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
+    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
+    if soma_matrix.size == 0 or bouton_matrix.size == 0:
+        return []
+    soma_mean = np.nanmean(soma_matrix, axis=0)
+    soma_member = pairwise_mean_member(
+        ctx=ctx,
+        compartment="soma",
+        channel=ctx.soma_channel,
+        trace=soma_mean,
+        label="mean",
+    )
+    bouton_members = pairwise_members_from_matrix(
+        ctx=ctx,
+        compartment="bouton",
+        channel=ctx.bouton_channel,
+        matrix=bouton_matrix,
+        roi_ids=_bouton_roi_ids(ctx, bouton_matrix),
+    )
+    return build_pairwise_correlation_rows(
+        ctx,
+        masks,
+        comparison_name="bouton_soma",
+        left_members=[soma_member],
+        right_members=bouton_members,
+    )
+
+
+def soma_pairwise_correlation_rows(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
+    masks = state_masks_for_context(ctx, selected_states)
+    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
+    if soma_matrix.size == 0:
+        return []
+    soma_members = pairwise_members_from_matrix(
+        ctx=ctx,
+        compartment="soma",
+        channel=ctx.soma_channel,
+        matrix=soma_matrix,
+        roi_ids=_soma_roi_ids(ctx, soma_matrix),
+    )
+    return build_pairwise_correlation_rows(
+        ctx,
+        masks,
+        comparison_name="soma_pairwise",
+        left_members=soma_members,
+    )
+
+
+def bouton_pairwise_correlation_rows(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
+    masks = state_masks_for_context(ctx, selected_states)
+    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
+    if bouton_matrix.size == 0:
+        return []
+    bouton_members = pairwise_members_from_matrix(
+        ctx=ctx,
+        compartment="bouton",
+        channel=ctx.bouton_channel,
+        matrix=bouton_matrix,
+        roi_ids=_bouton_roi_ids(ctx, bouton_matrix),
+    )
+    return build_pairwise_correlation_rows(
+        ctx,
+        masks,
+        comparison_name="bouton_pairwise",
+        left_members=bouton_members,
+    )
 
 
 def correlation_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    if not rows:
-        return []
-    grouped: Dict[tuple, List[float]] = {}
-    meta: Dict[tuple, Dict[str, Any]] = {}
-    for row in rows:
-        key = (row["day_id"], row["mode"], row["state"])
-        grouped.setdefault(key, []).append(float(row["corr"]))
-        meta[key] = {
-            "day_id": row["day_id"],
-            "mode": row["mode"],
-            "state": row["state"],
-            "state_display": row["state_display"],
-            "state_color": row["state_color"],
-        }
-    summary_rows: List[Dict[str, Any]] = []
-    for key, values in grouped.items():
-        arr = np.asarray(values, dtype=float)
-        payload = meta[key].copy()
-        payload.update(
-            {
-                "n_boutons": int(arr.size),
-                "mean_corr": float(np.nanmean(arr)),
-                "median_corr": float(np.nanmedian(arr)),
-                "std_corr": float(np.nanstd(arr, ddof=1)) if arr.size > 1 else 0.0,
-                "min_corr": float(np.nanmin(arr)),
-                "max_corr": float(np.nanmax(arr)),
-            }
-        )
-        summary_rows.append(payload)
-    return summary_rows
+    return pairwise_correlation_summary_rows(rows)
 
+
+__all__ = [
+    "bouton_pairwise_correlation_rows",
+    "bouton_soma_correlation_rows",
+    "correlation_summary_rows",
+    "soma_pairwise_correlation_rows",
+]

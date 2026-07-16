@@ -36,15 +36,18 @@ from analysis.soma_bouton_pipeline.analysis_families.core import (  # noqa: E402
     experiment_summary_row,
 )
 from analysis.soma_bouton_pipeline.analysis_families.correlation import (  # noqa: E402
+    bouton_pairwise_correlation_rows,
     bouton_soma_correlation_rows,
     correlation_summary_rows,
+    soma_pairwise_correlation_rows,
 )
 from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows  # noqa: E402
 from analysis.soma_bouton_pipeline.analysis_families.state import activity_rows_for_context, state_summary_rows  # noqa: E402
 from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation  # noqa: E402
+from analysis.shared.plots.poster_ready import assign_pairwise_visual_response_cohorts, split_rows_by_cohort  # noqa: E402
 
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 logger = logging.getLogger(__name__)
 
 
@@ -263,6 +266,8 @@ def _build_experiment_payload(
 ) -> Dict[str, Any]:
     activity_rows = activity_rows_for_context(ctx, selected_states)
     correlation_rows = bouton_soma_correlation_rows(ctx, selected_states)
+    soma_pairwise_rows = soma_pairwise_correlation_rows(ctx, selected_states)
+    bouton_pairwise_rows = bouton_pairwise_correlation_rows(ctx, selected_states)
     lag_rows = lag_scan_rows(
         ctx,
         selected_states,
@@ -277,6 +282,8 @@ def _build_experiment_payload(
         "summary": {
             "activity_rows": len(activity_rows),
             "correlation_rows": len(correlation_rows),
+            "soma_pairwise_correlation_rows": len(soma_pairwise_rows),
+            "bouton_pairwise_correlation_rows": len(bouton_pairwise_rows),
             "lag_rows": len(lag_rows),
         },
         "raw_data": {
@@ -287,6 +294,8 @@ def _build_experiment_payload(
         },
         "activity_rows": activity_rows,
         "correlation_rows": correlation_rows,
+        "soma_pairwise_rows": soma_pairwise_rows,
+        "bouton_pairwise_rows": bouton_pairwise_rows,
         "lag_rows": lag_rows,
     }
 
@@ -337,10 +346,15 @@ def _rows_from_csv_bundle(result_root: Path) -> Dict[str, List[Dict[str, Any]]]:
         "experiments": _load("experiments.csv"),
         "activity": _load("state_activity_by_experiment.csv"),
         "correlation": _load("bouton_soma_correlation_by_roi.csv"),
+        "soma_pairwise": _load("soma_pairwise_correlation_by_roi.csv"),
+        "bouton_pairwise": _load("bouton_pairwise_correlation_by_roi.csv"),
         "lag": _load("bouton_soma_lag_scan_by_roi.csv"),
         "activity_summary": _load("state_activity_by_day.csv"),
         "correlation_summary": _load("bouton_soma_correlation_by_day.csv"),
+        "soma_pairwise_summary": _load("soma_pairwise_correlation_by_day.csv"),
+        "bouton_pairwise_summary": _load("bouton_pairwise_correlation_by_day.csv"),
         "lag_summary": _load("bouton_soma_lag_summary_by_day.csv"),
+        "visual_response": _load("visual_response_by_roi.csv"),
     }
 
 
@@ -348,28 +362,73 @@ def _load_summary_payload_from_csv(result_root: Path) -> Dict[str, Any]:
     rows = _rows_from_csv_bundle(result_root)
     activity_summary_rows = rows["activity_summary"] or state_summary_rows(rows["activity"])
     correlation_summary = rows["correlation_summary"] or correlation_summary_rows(rows["correlation"])
+    soma_pairwise_summary = rows.get("soma_pairwise_summary") or correlation_summary_rows(rows["soma_pairwise"])
+    bouton_pairwise_summary = rows.get("bouton_pairwise_summary") or correlation_summary_rows(rows["bouton_pairwise"])
     lag_summary = rows["lag_summary"] or lag_summary_rows(rows["lag"])
     return {
         "rows": {
             "experiments": rows["experiments"],
             "activity": rows["activity"],
             "correlation": rows["correlation"],
+            "soma_pairwise": rows["soma_pairwise"],
+            "bouton_pairwise": rows["bouton_pairwise"],
             "lag": rows["lag"],
         },
         "summary": {
             "activity_summary_rows": activity_summary_rows,
             "correlation_summary_rows": correlation_summary,
+            "soma_pairwise_summary_rows": soma_pairwise_summary,
+            "bouton_pairwise_summary_rows": bouton_pairwise_summary,
             "lag_summary_rows": lag_summary,
         },
         "counts": {
             "experiments": len(rows["experiments"]),
             "activity_rows": len(rows["activity"]),
             "correlation_rows": len(rows["correlation"]),
+            "soma_pairwise_correlation_rows": len(rows["soma_pairwise"]),
+            "bouton_pairwise_correlation_rows": len(rows["bouton_pairwise"]),
             "lag_rows": len(rows["lag"]),
         },
         "source_signatures": [],
         "day_groups": {},
     }
+
+
+def _plot_pairwise_correlation_figures(
+    result_root: Path,
+    cohort_correlation_rows: Mapping[str, List[Dict[str, Any]]],
+    cohort_soma_pairwise_rows: Mapping[str, List[Dict[str, Any]]],
+    cohort_bouton_pairwise_rows: Mapping[str, List[Dict[str, Any]]],
+) -> None:
+    for cohort_name in ("all", "responsive", "nonresponsive"):
+        if cohort_correlation_rows.get(cohort_name):
+            plot_state_correlation(
+                cohort_correlation_rows[cohort_name],
+                result_root,
+                cohort_label=cohort_name,
+                title="Axon-soma correlation",
+                output_stem="axon_soma_state_summary_boxplots_correlation",
+            )
+        if cohort_soma_pairwise_rows.get(cohort_name):
+            plot_state_correlation(
+                cohort_soma_pairwise_rows[cohort_name],
+                result_root,
+                cohort_label=cohort_name,
+                title="Soma-soma correlation",
+                output_stem="soma_pairwise_state_summary_boxplots_correlation",
+            )
+        if cohort_bouton_pairwise_rows.get(cohort_name):
+            plot_state_correlation(
+                cohort_bouton_pairwise_rows[cohort_name],
+                result_root,
+                cohort_label=cohort_name,
+                title="Axon-axon correlation",
+                output_stem="axon_axon_state_summary_boxplots_correlation",
+            )
+
+
+def _pairwise_rows_by_cohort(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    return split_rows_by_cohort(assign_pairwise_visual_response_cohorts(rows, visual_response_rows))
 
 
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
@@ -417,21 +476,33 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if summary_cache_payload is not None:
         summary = summary_cache_payload["summary"]
         rows = summary_cache_payload["rows"]
+        visual_response_rows = list(rows.get("visual_response", []))
+        cohort_correlation_rows = split_rows_by_cohort(assign_pairwise_visual_response_cohorts(rows["correlation"], visual_response_rows)) if visual_response_rows else {"all": list(rows["correlation"]), "responsive": [], "nonresponsive": []}
+        cohort_soma_pairwise_rows = _pairwise_rows_by_cohort(rows["soma_pairwise"], visual_response_rows) if visual_response_rows else {"all": list(rows["soma_pairwise"]), "responsive": [], "nonresponsive": []}
+        cohort_bouton_pairwise_rows = _pairwise_rows_by_cohort(rows["bouton_pairwise"], visual_response_rows) if visual_response_rows else {"all": list(rows["bouton_pairwise"]), "responsive": [], "nonresponsive": []}
         write_csv_rows(result_root / "csv" / "experiments.csv", rows["experiments"], list(rows["experiments"][0].keys()) if rows["experiments"] else ["expid"])
         if rows["activity"]:
             write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", rows["activity"], list(rows["activity"][0].keys()))
         if rows["correlation"]:
             write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", rows["correlation"], list(rows["correlation"][0].keys()))
+        if rows["soma_pairwise"]:
+            write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_roi.csv", rows["soma_pairwise"], list(rows["soma_pairwise"][0].keys()))
+        if rows["bouton_pairwise"]:
+            write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_roi.csv", rows["bouton_pairwise"], list(rows["bouton_pairwise"][0].keys()))
         if rows["lag"]:
             write_csv_rows(result_root / "csv" / "bouton_soma_lag_scan_by_roi.csv", rows["lag"], list(rows["lag"][0].keys()))
         if summary["activity_summary_rows"]:
             write_csv_rows(result_root / "csv" / "state_activity_by_day.csv", summary["activity_summary_rows"], list(summary["activity_summary_rows"][0].keys()))
         if summary["correlation_summary_rows"]:
             write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", summary["correlation_summary_rows"], list(summary["correlation_summary_rows"][0].keys()))
+        if summary["soma_pairwise_summary_rows"]:
+            write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_day.csv", summary["soma_pairwise_summary_rows"], list(summary["soma_pairwise_summary_rows"][0].keys()))
+        if summary["bouton_pairwise_summary_rows"]:
+            write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_day.csv", summary["bouton_pairwise_summary_rows"], list(summary["bouton_pairwise_summary_rows"][0].keys()))
         if summary["lag_summary_rows"]:
             write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", summary["lag_summary_rows"], list(summary["lag_summary_rows"][0].keys()))
         plot_state_activity(summary["activity_summary_rows"], result_root)
-        plot_state_correlation(summary["correlation_summary_rows"], result_root)
+        _plot_pairwise_correlation_figures(result_root, cohort_correlation_rows, cohort_soma_pairwise_rows, cohort_bouton_pairwise_rows)
         plot_lag_heatmap(rows["lag"], result_root)
         manifest = {
             "config": dict(config),
@@ -452,8 +523,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         payload = _load_summary_payload_from_csv(result_root)
         summary = payload["summary"]
         rows = payload["rows"]
+        visual_response_rows = list(rows.get("visual_response", []))
+        cohort_correlation_rows = split_rows_by_cohort(assign_pairwise_visual_response_cohorts(rows["correlation"], visual_response_rows)) if visual_response_rows else {"all": list(rows["correlation"]), "responsive": [], "nonresponsive": []}
+        cohort_soma_pairwise_rows = _pairwise_rows_by_cohort(rows["soma_pairwise"], visual_response_rows) if visual_response_rows else {"all": list(rows["soma_pairwise"]), "responsive": [], "nonresponsive": []}
+        cohort_bouton_pairwise_rows = _pairwise_rows_by_cohort(rows["bouton_pairwise"], visual_response_rows) if visual_response_rows else {"all": list(rows["bouton_pairwise"]), "responsive": [], "nonresponsive": []}
         plot_state_activity(summary["activity_summary_rows"], result_root)
-        plot_state_correlation(summary["correlation_summary_rows"], result_root)
+        _plot_pairwise_correlation_figures(result_root, cohort_correlation_rows, cohort_soma_pairwise_rows, cohort_bouton_pairwise_rows)
         plot_lag_heatmap(rows["lag"], result_root)
         day_groups = grouped_experiments_by_day([row["expid"] for row in rows["experiments"]]) if rows["experiments"] else {}
         manifest = {
@@ -475,6 +550,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
+    soma_pairwise_rows: List[Dict[str, Any]] = []
+    bouton_pairwise_rows: List[Dict[str, Any]] = []
     lag_rows: List[Dict[str, Any]] = []
 
     for mode in state_modes:
@@ -493,6 +570,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             experiment_rows.append(payload["experiment_row"])
             activity_rows.extend(payload["activity_rows"])
             correlation_rows.extend(payload["correlation_rows"])
+            soma_pairwise_rows.extend(payload.get("soma_pairwise_rows", []))
+            bouton_pairwise_rows.extend(payload.get("bouton_pairwise_rows", []))
             lag_rows.extend(payload["lag_rows"])
 
     activity_summary_rows = state_summary_rows(activity_rows)
@@ -506,17 +585,30 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, list(activity_rows[0].keys()))
         if correlation_rows:
             write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
+        if soma_pairwise_rows:
+            write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_roi.csv", soma_pairwise_rows, list(soma_pairwise_rows[0].keys()))
+        if bouton_pairwise_rows:
+            write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_roi.csv", bouton_pairwise_rows, list(bouton_pairwise_rows[0].keys()))
         if lag_rows:
             write_csv_rows(result_root / "csv" / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
         if activity_summary_rows:
             write_csv_rows(result_root / "csv" / "state_activity_by_day.csv", activity_summary_rows, list(activity_summary_rows[0].keys()))
         if correlation_summary:
             write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", correlation_summary, list(correlation_summary[0].keys()))
+        if soma_pairwise_summary:
+            write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_day.csv", soma_pairwise_summary, list(soma_pairwise_summary[0].keys()))
+        if bouton_pairwise_summary:
+            write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_day.csv", bouton_pairwise_summary, list(bouton_pairwise_summary[0].keys()))
         if lag_summary:
             write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", lag_summary, list(lag_summary[0].keys()))
 
     plot_state_activity(activity_summary_rows, result_root)
-    plot_state_correlation(correlation_summary, result_root)
+    _plot_pairwise_correlation_figures(
+        result_root,
+        {"all": list(correlation_rows), "responsive": [], "nonresponsive": []},
+        {"all": list(soma_pairwise_rows), "responsive": [], "nonresponsive": []},
+        {"all": list(bouton_pairwise_rows), "responsive": [], "nonresponsive": []},
+    )
     plot_lag_heatmap(lag_rows, result_root)
 
     summary_payload = {
@@ -526,17 +618,23 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "experiments": len(experiment_rows),
             "activity_rows": len(activity_rows),
             "correlation_rows": len(correlation_rows),
+            "soma_pairwise_correlation_rows": len(soma_pairwise_rows),
+            "bouton_pairwise_correlation_rows": len(bouton_pairwise_rows),
             "lag_rows": len(lag_rows),
         },
         "rows": {
             "experiments": experiment_rows,
             "activity": activity_rows,
             "correlation": correlation_rows,
+            "soma_pairwise": soma_pairwise_rows,
+            "bouton_pairwise": bouton_pairwise_rows,
             "lag": lag_rows,
         },
         "summary": {
             "activity_summary_rows": activity_summary_rows,
             "correlation_summary_rows": correlation_summary,
+            "soma_pairwise_summary_rows": soma_pairwise_summary,
+            "bouton_pairwise_summary_rows": bouton_pairwise_summary,
             "lag_summary_rows": lag_summary,
         },
         "day_groups": day_groups,
