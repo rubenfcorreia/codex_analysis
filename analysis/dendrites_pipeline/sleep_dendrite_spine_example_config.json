@@ -78,6 +78,19 @@
         "nrem",
         "rem"
       ]
+    },
+    "all_states": {
+      "state_comparison_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ]
     }
   },
   "user_id": "rubencorreia",

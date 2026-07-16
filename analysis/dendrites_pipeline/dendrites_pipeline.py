@@ -1771,7 +1771,10 @@ def padded_value_limits(values: Sequence[float]) -> Tuple[float, float]:
         span = high - low
         pad = max(0.06 * span, 0.05 * max(abs(low), abs(high), 1.0))
     return low - pad, high + pad
-def state_summary_y_limits(cache: Dict[str, Any], state_labels: Sequence[str]) -> Dict[str, Tuple[float, float]]:
+def state_summary_y_limits(
+    cache: Dict[str, Any],
+    state_labels: Sequence[str],
+) -> Dict[str, Tuple[float, float]]:
     cache_key = _state_summary_y_limits_cache_key(cache, state_labels)
     cached = _STATE_SUMMARY_Y_LIMITS_CACHE.get(cache_key)
     if cached is None:
@@ -1795,8 +1798,34 @@ def state_summary_y_limits(cache: Dict[str, Any], state_labels: Sequence[str]) -
     _STATE_SUMMARY_Y_LIMITS_CACHE[cache_key] = y_limits
     _state_summary_cache_store(cache)[cache_key] = y_limits
     return y_limits
+
+
+def state_summary_y_limits_from_results(
+    results: Dict[str, Any],
+    state_labels: Sequence[str],
+) -> Dict[str, Tuple[float, float]]:
+    state_summaries = results.get("state_summaries", {})
+    if not isinstance(state_summaries, dict):
+        return {}
+    y_limits: Dict[str, Tuple[float, float]] = {}
+    for metric_kind in ["dendrite_mean", "spine_specific_mean", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
+        metric_summary = state_summaries.get(metric_kind, {})
+        if not isinstance(metric_summary, dict):
+            continue
+        combined_values: List[float] = []
+        for state_label in state_labels:
+            state_values = flatten_state_summary_values(metric_summary.get(state_label, {}))
+            if state_values.size:
+                combined_values.extend(state_values.tolist())
+        if combined_values:
+            y_limits[metric_kind] = padded_value_limits(combined_values)
+    return y_limits
+
+
 def format_requested_state_label(state_label: str) -> str:
     return state_display_label(state_label)
+
+
 def _square_heatmap_state_labels(state_labels: Sequence[str]) -> List[str]:
     return [format_requested_state_label(label) for label in state_labels]
 
@@ -1895,6 +1924,7 @@ def summarize_state_values_by_dendrite(
     metric_kind: str,
     state_labels: Sequence[str],
     compartment_filter: Optional[str] = None,
+    subject_key: str = "day_id",
     dendrite_ids_filter: Optional[Sequence[str]] = None,
     spine_ids_filter: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
@@ -1904,7 +1934,7 @@ def summarize_state_values_by_dendrite(
         metric_kind=metric_kind,
         state_labels=state_labels,
         compartment_filter=compartment_filter,
-        subject_key="day_id",
+        subject_key=subject_key,
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
     )
@@ -1916,114 +1946,21 @@ def summarize_state_values_by_dendrite(
             return cached
     else:
         return cached
-    by_state: Dict[str, Dict[str, List[float]]] = {}
-    dendrite_id_filter_set = None
-    if dendrite_ids_filter is not None:
-        dendrite_id_filter_set = {str(dendrite_id) for dendrite_id in dendrite_ids_filter if str(dendrite_id)}
-    spine_id_filter_set = None
-    if spine_ids_filter is not None:
-        spine_id_filter_set = {str(spine_id) for spine_id in spine_ids_filter if str(spine_id)}
-    for state_label in state_labels:
-        dendrite_values: Dict[str, List[float]] = defaultdict(list)
-        for animal_id, animal_entry in cache.get("animals", {}).items():
-            for dendrite_id, dendrite_record in animal_entry.get("dendrites", {}).items():
-                if dendrite_id_filter_set is not None and str(dendrite_id) not in dendrite_id_filter_set:
-                    continue
-                observation_values: List[float] = []
-                for exp_id, d_obs in dendrite_record.get("observations", {}).items():
-                    d_compartment = observation_compartment(cache, exp_id, d_obs)
-                    if compartment_filter is not None and d_compartment != compartment_filter:
-                        continue
-                    exp_meta = cache.get("experiments", {}).get(exp_id)
-                    if exp_meta is None:
-                        continue
-                    mask = exp_meta.get("state_masks", {}).get(state_label)
-                    selected_spine_ids = None
-                    if spine_id_filter_set is not None:
-                        selected_spine_ids = [
-                            spine_id
-                            for spine_id in d_obs.get("spine_ids", [])
-                            if str(spine_id) in spine_id_filter_set
-                        ]
-                        if not selected_spine_ids:
-                            continue
-                    if metric_kind == "dendrite_mean":
-                        cut_means = d_obs.get("cut_state_means")
-                        if isinstance(cut_means, dict) and state_label in cut_means and np.isfinite(cut_means[state_label]):
-                            observation_values.append(float(cut_means[state_label]))
-                            continue
-                        if mask is None or not np.any(mask):
-                            continue
-                        values = values_from_observation(d_obs.get("trace"), mask)
-                        if values.size:
-                            observation_values.append(float(np.nanmean(values)))
-                    elif metric_kind == "spine_specific_mean":
-                        spine_iterable = selected_spine_ids if selected_spine_ids is not None else d_obs.get("spine_ids", [])
-                        for spine_id in spine_iterable:
-                            s_obs = dendrite_record.get("spines", {}).get(spine_id, {}).get("observations", {}).get(exp_id)
-                            if s_obs is None:
-                                continue
-                            s_compartment = observation_compartment(cache, exp_id, s_obs)
-                            if compartment_filter is not None and s_compartment != compartment_filter:
-                                continue
-                            cut_means = s_obs.get("cut_state_means")
-                            if isinstance(cut_means, dict) and state_label in cut_means and np.isfinite(cut_means[state_label]):
-                                observation_values.append(float(cut_means[state_label]))
-                                continue
-                            if mask is None or not np.any(mask):
-                                continue
-                            values = values_from_observation(s_obs.get("spine_specific"), mask)
-                            if values.size:
-                                observation_values.append(float(np.nanmean(values)))
-                    elif metric_kind == "dendrite_event_frequency_per_min":
-                        if mask is None or not np.any(mask):
-                            continue
-                        event_info = build_state_masked_event_info(d_obs.get("trace"), d_obs.get("time"), mask, d_obs.get("event_info"))
-                        freq = as_float(event_info.get("event_frequency_per_min"))
-                        if freq is not None and np.isfinite(freq):
-                            observation_values.append(float(freq))
-                    elif metric_kind in {"spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}:
-                        spine_values: List[float] = []
-                        if mask is None or not np.any(mask):
-                            continue
-                        spine_iterable = selected_spine_ids if selected_spine_ids is not None else d_obs.get("spine_ids", [])
-                        for spine_id in spine_iterable:
-                            s_obs = dendrite_record.get("spines", {}).get(spine_id, {}).get("observations", {}).get(exp_id)
-                            if s_obs is None:
-                                continue
-                            s_compartment = observation_compartment(cache, exp_id, s_obs)
-                            if compartment_filter is not None and s_compartment != compartment_filter:
-                                continue
-                            spine_full_info = s_obs.get("event_info") or {}
-                            spine_event_info = build_state_masked_event_info(
-                                s_obs.get("trace"),
-                                s_obs.get("time"),
-                                mask,
-                                spine_full_info,
-                            )
-                            if metric_kind == "spine_event_frequency_per_min":
-                                freq = as_float(spine_event_info.get("spine_event_frequency_per_min", spine_event_info.get("event_frequency_per_min")))
-                            else:
-                                dendrite_event_info = build_state_masked_event_info(
-                                    d_obs.get("trace"),
-                                    d_obs.get("time"),
-                                    mask,
-                                    d_obs.get("event_info"),
-                                )
-                                event_info = annotate_spine_event_info(spine_event_info, dendrite_event_info)
-                                freq = as_float(event_info.get(metric_kind))
-                            if freq is not None and np.isfinite(freq):
-                                spine_values.append(float(freq))
-                        if spine_values:
-                            observation_values.append(float(np.nanmean(spine_values)))
-                    else:
-                        raise ValueError(f"Unknown metric_kind: {metric_kind}")
-                if observation_values:
-                    dendrite_values[str(exp_id)].extend(observation_values)
-        by_state[state_label] = dendrite_values
+    by_state = _collect_state_summary_values(
+        cache,
+        metric_kind,
+        state_labels,
+        compartment_filter,
+        subject_key=subject_key,
+        dendrite_ids_filter=dendrite_ids_filter,
+        spine_ids_filter=spine_ids_filter,
+        by_dendrite=True,
+    )
     _STATE_SUMMARY_DENDRITE_VALUES_CACHE[cache_key] = by_state
     _state_summary_cache_store(cache)[cache_key] = by_state
     return by_state
+
+
 def build_state_summary_gallery_results(
     cache: Dict[str, Any],
     state_labels: Sequence[str],
@@ -6718,11 +6655,13 @@ def generate_analysis_figures(
             )
         return spine_coactivity_results_cache[key]
     with step_scope("figure prep: state summary y-limits"):
-        y_limits = state_summary_y_limits(cache, state_labels)
+        y_limits = state_summary_y_limits_from_results(results, state_labels)
+        if not y_limits:
+            y_limits = state_summary_y_limits(cache, state_labels)
     with step_scope("figure prep: state summary comparison y-limits"):
         comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
     with step_scope("figure prep: state summary overview results"):
-        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+        overview_results = results
     with step_scope("figure prep: state summary basal results"):
         basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
     with step_scope("figure prep: state summary apical results"):
@@ -6870,61 +6809,6 @@ def generate_analysis_figures(
                 saved.append(output_path)
             else:
                 step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or scope_label}")
-    comparison_preset_name = str(results.get("analysis_state_selection", {}).get("comparison_preset_name") or "default")
-    include_all_state_summaries = comparison_preset_name == "default"
-    if include_all_state_summaries:
-        all_state_labels = list(ALL_REQUESTED_STATES)
-        all_summary_fig_dir = state_summary_figure_dir(fig_dir, "all_states")
-        all_y_limits = state_summary_y_limits(cache, all_state_labels)
-        all_overview_results = build_state_summary_gallery_results(cache, all_state_labels, None)
-        all_basal_results = build_state_summary_gallery_results(cache, all_state_labels, "basal")
-        all_apical_results = build_state_summary_gallery_results(cache, all_state_labels, "apical")
-        all_state_output_path = plot_state_summary_figure(
-            all_overview_results,
-            all_summary_fig_dir,
-            output_name="state_summary_boxplots_all_states.svg",
-            title="All-state summary distributions - All compartments",
-            state_labels=all_state_labels,
-            y_limits=all_y_limits,
-            cohort_label="all",
-            state_group="all_states",
-        )
-        if all_state_output_path:
-            saved.append(all_state_output_path)
-        for compartment, compartment_results in [("basal", all_basal_results), ("apical", all_apical_results)]:
-            if compartment not in present_compartments:
-                continue
-            output_path = plot_state_summary_figure(
-                compartment_results,
-                all_summary_fig_dir,
-                output_name=f"state_summary_boxplots_{compartment}_all_states.svg",
-                title=f"All-state summary distributions - {gallery_compartment_title(compartment)}",
-                state_labels=all_state_labels,
-                y_limits=all_y_limits,
-                cohort_label="all",
-                state_group="all_states",
-            )
-            if output_path:
-                saved.append(output_path)
-        comparison_path = plot_state_summary_compartment_comparison_figure(
-            all_basal_results,
-            all_apical_results,
-            all_summary_fig_dir,
-            output_name="state_summary_boxplots_basal_vs_apical_all_states.svg",
-            title="All-state summary distributions - Basal vs apical",
-            state_labels=all_state_labels,
-            y_limits=state_summary_y_limits(cache, all_state_labels),
-            comparison_rows=_state_summary_significant_basal_apical_rows(
-                results.get("basal_apical_comparisons", []),
-                state_order=all_state_labels,
-                comparison_name="basal_vs_apical",
-            ),
-            cohort_label="all",
-            state_group="all_states",
-        )
-        if comparison_path:
-            saved.append(comparison_path)
-
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,
@@ -7279,7 +7163,7 @@ def generate_review_figures(
     with step_scope("review figure prep: state summary comparison y-limits"):
         comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
     with step_scope("review figure prep: state summary overview results"):
-        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+        overview_results = results
     with step_scope("review figure prep: state summary basal results"):
         basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
     with step_scope("review figure prep: state summary apical results"):
@@ -7676,7 +7560,7 @@ def render_analysis_family_figures(
         present_compartments = sorted_present_compartments(cache)
         y_limits = state_summary_y_limits(cache, state_labels)
         comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
-        overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+        overview_results = results
         basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
         apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
         state_summary_specs = [
@@ -8114,7 +7998,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
     y_limits = state_summary_y_limits(cache, state_labels)
     comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
-    overview_results = build_state_summary_gallery_results(cache, state_labels, None)
+    overview_results = results
     basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
     apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
     summary_gallery_dir = state_summary_figure_dir(gallery_dir)
@@ -10641,37 +10525,68 @@ def normalize_state_value(values: Sequence[float]) -> float:
     if arr.size == 0:
         return float("nan")
     return float(np.nanmean(arr))
-def per_experiment_state_metrics(
-    cache: Dict[str, Any],
-    metric_kind: str,
-    state_label: str,
-    compartment_filter: Optional[str] = None,
-    subject_key: str = "day_id",
-    dendrite_ids_filter: Optional[Sequence[str]] = None,
-    spine_ids_filter: Optional[Sequence[str]] = None,
-) -> Dict[str, List[float]]:
-    subject_values: Dict[str, List[float]] = defaultdict(list)
+def _state_summary_filter_sets(
+    dendrite_ids_filter: Optional[Sequence[str]],
+    spine_ids_filter: Optional[Sequence[str]],
+) -> Tuple[Optional[set[str]], Optional[set[str]]]:
     dendrite_id_filter_set = None
     if dendrite_ids_filter is not None:
         dendrite_id_filter_set = {str(dendrite_id) for dendrite_id in dendrite_ids_filter if str(dendrite_id)}
     spine_id_filter_set = None
     if spine_ids_filter is not None:
         spine_id_filter_set = {str(spine_id) for spine_id in spine_ids_filter if str(spine_id)}
-    spine_id_filter_set = None
-    if spine_ids_filter is not None:
-        spine_id_filter_set = {str(spine_id) for spine_id in spine_ids_filter if str(spine_id)}
-    for animal_id, animal_entry in cache.get("animals", {}).items():
-        for dendrite_id, dendrite_record in animal_entry["dendrites"].items():
+    return dendrite_id_filter_set, spine_id_filter_set
+
+
+def _collect_state_summary_values(
+    cache: Dict[str, Any],
+    metric_kind: str,
+    state_labels: Sequence[str],
+    compartment_filter: Optional[str] = None,
+    subject_key: str = "day_id",
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
+    spine_ids_filter: Optional[Sequence[str]] = None,
+    *,
+    by_dendrite: bool = False,
+) -> Dict[str, Dict[str, List[float]]]:
+    ordered_state_labels = list(dict.fromkeys([str(state) for state in state_labels if state is not None and str(state).strip()]))
+    by_state: Dict[str, Dict[str, List[float]]] = {state: defaultdict(list) for state in ordered_state_labels}
+    if not ordered_state_labels:
+        return by_state
+
+    dendrite_id_filter_set, spine_id_filter_set = _state_summary_filter_sets(dendrite_ids_filter, spine_ids_filter)
+    animals = cache.get("animals", {})
+    experiments = cache.get("experiments", {})
+    spine_metric_kinds = {
+        "spine_specific_mean",
+        "spine_event_frequency_per_min",
+        "coincident_event_frequency_per_min",
+        "noncoincident_event_frequency_per_min",
+    }
+
+    for animal_id, animal_entry in animals.items():
+        dendrites = animal_entry.get("dendrites", {})
+        if not isinstance(dendrites, dict):
+            continue
+        for dendrite_id, dendrite_record in dendrites.items():
             if dendrite_id_filter_set is not None and str(dendrite_id) not in dendrite_id_filter_set:
                 continue
-            for exp_id, d_obs in dendrite_record["observations"].items():
+            observations = dendrite_record.get("observations", {})
+            if not isinstance(observations, dict):
+                continue
+            spines = dendrite_record.get("spines", {})
+            if not isinstance(spines, dict):
+                spines = {}
+            for exp_id, d_obs in observations.items():
                 d_compartment = observation_compartment(cache, exp_id, d_obs)
                 if compartment_filter is not None and d_compartment != compartment_filter:
                     continue
-                exp_meta = cache["experiments"].get(exp_id)
+                exp_meta = experiments.get(exp_id)
                 if exp_meta is None:
                     continue
-                mask = exp_meta["state_masks"].get(state_label)
+                state_masks = exp_meta.get("state_masks", {})
+                if not isinstance(state_masks, dict):
+                    state_masks = {}
                 selected_spine_ids = None
                 if spine_id_filter_set is not None:
                     selected_spine_ids = [
@@ -10681,79 +10596,115 @@ def per_experiment_state_metrics(
                     ]
                     if not selected_spine_ids:
                         continue
-                subject_id = str(d_obs.get(subject_key) or exp_id or animal_id)
-                if metric_kind == "dendrite_mean":
-                    cut_means = d_obs.get("cut_state_means")
-                    if isinstance(cut_means, dict) and state_label in cut_means and np.isfinite(cut_means[state_label]):
-                        subject_values[subject_id].append(float(cut_means[state_label]))
-                    elif mask is not None and np.any(mask):
-                        values = values_from_observation(d_obs.get("trace"), mask)
-                        if values.size:
-                            subject_values[subject_id].append(float(np.nanmean(values)))
-                elif metric_kind == "spine_specific_mean":
-                    spine_values: List[float] = []
+                subject_id = str(exp_id) if by_dendrite else str(d_obs.get(subject_key) or exp_id or animal_id)
+                d_trace = d_obs.get("trace")
+                d_time = d_obs.get("time")
+                d_event_info = d_obs.get("event_info") or {}
+                d_cut_means = d_obs.get("cut_state_means") if metric_kind == "dendrite_mean" else None
+                if metric_kind in spine_metric_kinds:
                     spine_iterable = selected_spine_ids if selected_spine_ids is not None else d_obs.get("spine_ids", [])
+                    spine_items: List[Tuple[str, Dict[str, Any]]] = []
                     for spine_id in spine_iterable:
-                        s_obs = dendrite_record["spines"].get(spine_id, {}).get("observations", {}).get(exp_id)
+                        spine_entry = spines.get(spine_id, {})
+                        if not isinstance(spine_entry, dict):
+                            continue
+                        s_obs = spine_entry.get("observations", {}).get(exp_id)
                         if s_obs is None:
                             continue
                         s_compartment = observation_compartment(cache, exp_id, s_obs)
                         if compartment_filter is not None and s_compartment != compartment_filter:
                             continue
-                        cut_means = s_obs.get("cut_state_means")
-                        if isinstance(cut_means, dict) and state_label in cut_means and np.isfinite(cut_means[state_label]):
-                            spine_values.append(float(cut_means[state_label]))
+                        spine_items.append((str(spine_id), s_obs))
+                else:
+                    spine_items = []
+
+                for state_label in ordered_state_labels:
+                    mask = state_masks.get(state_label)
+                    has_mask = mask is not None and np.any(mask)
+                    if metric_kind == "dendrite_mean":
+                        if isinstance(d_cut_means, dict) and state_label in d_cut_means and np.isfinite(d_cut_means[state_label]):
+                            by_state[state_label][subject_id].append(float(d_cut_means[state_label]))
                             continue
-                        if mask is not None and np.any(mask):
+                        if not has_mask:
+                            continue
+                        values = values_from_observation(d_obs.get("trace"), mask)
+                        if values.size:
+                            by_state[state_label][subject_id].append(float(np.nanmean(values)))
+                    elif metric_kind == "spine_specific_mean":
+                        if not spine_items:
+                            continue
+                        spine_values: List[float] = []
+                        for _, s_obs in spine_items:
+                            cut_means = s_obs.get("cut_state_means")
+                            if isinstance(cut_means, dict) and state_label in cut_means and np.isfinite(cut_means[state_label]):
+                                spine_values.append(float(cut_means[state_label]))
+                                continue
+                            if not has_mask:
+                                continue
                             values = values_from_observation(s_obs.get("spine_specific"), mask)
                             if values.size:
                                 spine_values.append(float(np.nanmean(values)))
-                    if spine_values:
-                        subject_values[subject_id].append(float(np.nanmean(spine_values)))
-                elif metric_kind == "dendrite_event_frequency_per_min":
-                    if mask is None or not np.any(mask):
-                        continue
-                    event_info = build_state_masked_event_info(d_obs.get("trace"), d_obs.get("time"), mask, d_obs.get("event_info"))
-                    freq = as_float(event_info.get("event_frequency_per_min"))
-                    if freq is not None and np.isfinite(freq):
-                        subject_values[subject_id].append(float(freq))
-                elif metric_kind in {"spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}:
-                    spine_values: List[float] = []
-                    if mask is None or not np.any(mask):
-                        continue
-                    spine_iterable = selected_spine_ids if selected_spine_ids is not None else d_obs.get("spine_ids", [])
-                    for spine_id in spine_iterable:
-                        s_obs = dendrite_record["spines"].get(spine_id, {}).get("observations", {}).get(exp_id)
-                        if s_obs is None:
+                        if spine_values:
+                            by_state[state_label][subject_id].append(float(np.nanmean(spine_values)))
+                    elif metric_kind == "dendrite_event_frequency_per_min":
+                        if not has_mask:
                             continue
-                        s_compartment = observation_compartment(cache, exp_id, s_obs)
-                        if compartment_filter is not None and s_compartment != compartment_filter:
-                            continue
-                        spine_full_info = s_obs.get("event_info") or {}
-                        spine_event_info = build_state_masked_event_info(
-                            s_obs.get("trace"),
-                            s_obs.get("time"),
-                            mask,
-                            spine_full_info,
-                        )
-                        if metric_kind == "spine_event_frequency_per_min":
-                            freq = as_float(spine_event_info.get("spine_event_frequency_per_min", spine_event_info.get("event_frequency_per_min")))
-                        else:
-                            dendrite_event_info = build_state_masked_event_info(
-                                d_obs.get("trace"),
-                                d_obs.get("time"),
-                                mask,
-                                d_obs.get("event_info"),
-                            )
-                            event_info = annotate_spine_event_info(spine_event_info, dendrite_event_info)
-                            freq = as_float(event_info.get(metric_kind))
+                        event_info = build_state_masked_event_info(d_trace, d_time, mask, d_event_info)
+                        freq = as_float(event_info.get("event_frequency_per_min"))
                         if freq is not None and np.isfinite(freq):
-                            spine_values.append(float(freq))
-                    if spine_values:
-                        subject_values[subject_id].append(float(np.nanmean(spine_values)))
-                else:
-                    raise ValueError(f"Unknown metric_kind: {metric_kind}")
-    return subject_values
+                            by_state[state_label][subject_id].append(float(freq))
+                    elif metric_kind in {"spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}:
+                        if not has_mask or not spine_items:
+                            continue
+                        spine_values: List[float] = []
+                        for _, s_obs in spine_items:
+                            spine_full_info = s_obs.get("event_info") or {}
+                            spine_event_info = build_state_masked_event_info(
+                                s_obs.get("trace"),
+                                s_obs.get("time"),
+                                mask,
+                                spine_full_info,
+                            )
+                            if metric_kind == "spine_event_frequency_per_min":
+                                freq = as_float(spine_event_info.get("spine_event_frequency_per_min", spine_event_info.get("event_frequency_per_min")))
+                            else:
+                                dendrite_event_info = build_state_masked_event_info(
+                                    d_obs.get("trace"),
+                                    d_obs.get("time"),
+                                    mask,
+                                    d_event_info,
+                                )
+                                event_info = annotate_spine_event_info(spine_event_info, dendrite_event_info)
+                                freq = as_float(event_info.get(metric_kind))
+                            if freq is not None and np.isfinite(freq):
+                                spine_values.append(float(freq))
+                        if spine_values:
+                            by_state[state_label][subject_id].append(float(np.nanmean(spine_values)))
+                    else:
+                        raise ValueError(f"Unknown metric_kind: {metric_kind}")
+    return by_state
+
+
+def per_experiment_state_metrics(
+    cache: Dict[str, Any],
+    metric_kind: str,
+    state_label: str,
+    compartment_filter: Optional[str] = None,
+    subject_key: str = "day_id",
+    dendrite_ids_filter: Optional[Sequence[str]] = None,
+    spine_ids_filter: Optional[Sequence[str]] = None,
+) -> Dict[str, List[float]]:
+    return _collect_state_summary_values(
+        cache,
+        metric_kind,
+        [state_label],
+        compartment_filter,
+        subject_key=subject_key,
+        dendrite_ids_filter=dendrite_ids_filter,
+        spine_ids_filter=spine_ids_filter,
+    ).get(state_label, {})
+
+
 def paired_comparison(
     values_by_state: Dict[str, Dict[str, List[float]]],
     state_a: str,
@@ -10908,20 +10859,20 @@ def summarize_state_values(
             return cached
     else:
         return cached
-    by_state: Dict[str, Dict[str, List[float]]] = {}
-    for state in state_labels:
-        by_state[state] = per_experiment_state_metrics(
-            cache,
-            metric_kind,
-            state,
-            compartment_filter,
-            subject_key=subject_key,
-            dendrite_ids_filter=dendrite_ids_filter,
-            spine_ids_filter=spine_ids_filter,
-        )
+    by_state = _collect_state_summary_values(
+        cache,
+        metric_kind,
+        state_labels,
+        compartment_filter,
+        subject_key=subject_key,
+        dendrite_ids_filter=dendrite_ids_filter,
+        spine_ids_filter=spine_ids_filter,
+    )
     _STATE_SUMMARY_VALUES_CACHE[cache_key] = by_state
     _state_summary_cache_store(cache)[cache_key] = by_state
     return by_state
+
+
 def pairwise_state_comparisons(
     cache: Dict[str, Any],
     metric_kind: str,

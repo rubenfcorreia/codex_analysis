@@ -1047,6 +1047,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     poster_ready_figures: List[str] = []
     poster_ready_errors: List[str] = []
+    blank_preset_activity_rows: List[Dict[str, Any]] = []
+    movie_preset_activity_rows: List[Dict[str, Any]] = []
+    blank_preset_comparison_rows: List[Dict[str, Any]] = []
+    movie_preset_comparison_rows: List[Dict[str, Any]] = []
     if bool(config.get("generate_poster_ready_figures", True)):
         poster_output_dir = ensure_dir(REPO_ROOT / "results" / "poster_ready")
 
