@@ -134,6 +134,16 @@ def _paired_trace_values(
     return left_values[valid], right_values[valid], int(valid.sum())
 
 
+def _masked_trace_values(member: PairwiseMember, mask: np.ndarray, usable: int) -> np.ndarray:
+    trace = np.asarray(member.trace, dtype=float).reshape(-1)
+    if usable <= 0:
+        return np.array([], dtype=float)
+    state_mask = np.asarray(mask[:usable], dtype=bool)
+    if not np.any(state_mask):
+        return np.array([], dtype=float)
+    return trace[:usable][state_mask]
+
+
 def build_pairwise_correlation_rows(
     ctx: ExperimentContext,
     state_masks: Mapping[str, Sequence[bool] | np.ndarray],
@@ -143,12 +153,66 @@ def build_pairwise_correlation_rows(
     right_members: Sequence[PairwiseMember] | None = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    pair_members = list(left_members if right_members is None or right_members is left_members else list(left_members) + list(right_members))
+    trace_lengths = {int(np.asarray(member.trace, dtype=float).reshape(-1).size) for member in pair_members}
+    can_pre_mask = len(trace_lengths) == 1 and bool(pair_members)
+    common_trace_length = next(iter(trace_lengths)) if can_pre_mask else 0
     for state, mask in state_masks.items():
         state_key = canonical_state_label(state)
         if not state_key:
             continue
         mask_array = np.asarray(mask, dtype=bool).reshape(-1)
         if mask_array.size == 0:
+            continue
+        if can_pre_mask:
+            usable = min(mask_array.size, common_trace_length)
+            state_member_values = {
+                member.unit_id: _masked_trace_values(member, mask_array, usable)
+                for member in pair_members
+            }
+            for left, right in _pair_iter(left_members, right_members):
+                left_values = state_member_values[left.unit_id]
+                right_values = state_member_values[right.unit_id]
+                usable_pair = min(left_values.size, right_values.size)
+                if usable_pair <= 0:
+                    continue
+                left_values = left_values[:usable_pair]
+                right_values = right_values[:usable_pair]
+                valid = np.isfinite(left_values) & np.isfinite(right_values)
+                if not np.any(valid):
+                    continue
+                corr = pairwise_correlation(left_values[valid], right_values[valid])
+                n_timepoints = int(valid.sum())
+                compartment_label = left.compartment if left.compartment == right.compartment else f"{left.compartment}_vs_{right.compartment}"
+                rows.append(
+                    {
+                        "expid": ctx.expid,
+                        "mode": ctx.mode,
+                        "animal_id": ctx.animal_id,
+                        "date": ctx.date,
+                        "day_id": ctx.day_id,
+                        "analysis_unit": "day",
+                        "comparison_name": comparison_name,
+                        "pair_mode": "within_compartment" if left.compartment == right.compartment else "cross_compartment",
+                        "compartment": compartment_label,
+                        "left_compartment": left.compartment,
+                        "left_channel": int(left.channel),
+                        "left_roi_index": int(left.roi_index),
+                        "left_roi_id": left.roi_id,
+                        "left_unit_id": left.unit_id,
+                        "right_compartment": right.compartment,
+                        "right_channel": int(right.channel),
+                        "right_roi_index": int(right.roi_index),
+                        "right_roi_id": right.roi_id,
+                        "right_unit_id": right.unit_id,
+                        "pair_unit_id": _pair_unit_id(ctx, comparison_name, left, right),
+                        "state": state_key,
+                        "state_display": state_display_label(state),
+                        "state_color": state_display_color(state),
+                        "corr": corr,
+                        "n_timepoints": int(n_timepoints),
+                    }
+                )
             continue
         for left, right in _pair_iter(left_members, right_members):
             left_values, right_values, n_timepoints = _paired_trace_values(left, right, mask_array)

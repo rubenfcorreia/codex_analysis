@@ -31,7 +31,7 @@ from analysis.shared.state_utils import canonical_state_label, resolve_analysis_
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
-from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
+from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_masks_for_context, state_summary_rows
 from analysis.shared.analysis_families.visual_response import run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
 from analysis.shared.shared_calcium_response import (
     DEFAULT_VISUAL_RESPONSE_COHORT,
@@ -673,17 +673,19 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             experiment_rows.append(experiment_summary_row(ctx))
             if config.get("plots_only"):
                 continue
-            activity_rows.extend(activity_rows_for_context(ctx, selected_states))
+            state_masks = state_masks_for_context(ctx, selected_states)
+            activity_rows.extend(activity_rows_for_context(ctx, selected_states, state_masks=state_masks))
             if pairwise_family_rows is None:
-                correlation_rows.extend(bouton_soma_correlation_rows(ctx, selected_states))
-                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, selected_states))
-                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, selected_states))
+                correlation_rows.extend(bouton_soma_correlation_rows(ctx, selected_states, state_masks=state_masks))
+                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
+                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
             lag_rows.extend(
                 lag_scan_rows(
                     ctx,
                     selected_states,
                     lag_window_s=float(config.get("lag_window_s", 2.0)),
                     lag_step_s=float(config.get("lag_step_s", 0.1)),
+                    state_masks=state_masks,
                 )
             )
             if mode == "movie":
@@ -1009,7 +1011,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     if not isinstance(compartment_results, dict) or not compartment_results:
                         continue
                     compartment_dir = ensure_dir(cohort_dir / compartment_key)
-                    for scope_key in ("all_state", "selected_state"):
+                    for scope_key in ("selected_state",):
                         branch = compartment_results.get(scope_key, {})
                         scope_label = scope_key.replace("_", " ")
                         if not isinstance(branch, dict) or not branch:
@@ -1211,10 +1213,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     responsive_state_values=responsive_values,
                     nonresponsive_state_values=nonresponsive_values,
                     mixed_model_rows={
-                        "responsive": mixed_model_results.get("responsive", {}).get(compartment, {}).get("all_state", {})
-                        or mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}),
-                        "nonresponsive": mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("all_state", {})
-                        or mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}),
+                        "responsive": mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}),
+                        "nonresponsive": mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}),
                     },
                     state_order=poster_state_order,
                     output_stem=f"{compartment}_state_mixed_model_poster_ready",
@@ -1227,10 +1227,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             responsive_significant_states = set()
             nonresponsive_significant_states = set()
             for cohort_label, source, target in (
-                ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("all_state", {})
-                or mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
-                ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("all_state", {})
-                or mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
+                ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
+                ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
             ):
                 selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"))
                 target.update(_poster_mixed_model_significant_states(selected_rows))

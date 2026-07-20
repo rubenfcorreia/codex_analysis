@@ -200,7 +200,6 @@ def analysis_day_cache_meta(
         "source_config_hash": str(source_cache.get("config_hash", "")),
         "source_signature": source_cache_signature(source_cache),
         "analysis_config_hash": stable_hash({**source_config, "analysis_unit": str(analysis_unit)}),
-        "analysis_tables_signature": analysis_cache_meta_hash(analysis_tables or {}),
     }
 
 

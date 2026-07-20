@@ -29,8 +29,12 @@ def _soma_roi_ids(ctx: ExperimentContext, matrix: np.ndarray) -> List[Any]:
     return roi_ids[: matrix.shape[0]]
 
 
-def bouton_soma_correlation_rows(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def bouton_soma_correlation_rows(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
     bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
     if soma_matrix.size == 0 or bouton_matrix.size == 0:
@@ -59,8 +63,12 @@ def bouton_soma_correlation_rows(ctx: ExperimentContext, selected_states: Sequen
     )
 
 
-def soma_pairwise_correlation_rows(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def soma_pairwise_correlation_rows(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
     if soma_matrix.size == 0:
         return []
@@ -79,8 +87,12 @@ def soma_pairwise_correlation_rows(ctx: ExperimentContext, selected_states: Sequ
     )
 
 
-def bouton_pairwise_correlation_rows(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def bouton_pairwise_correlation_rows(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
     if bouton_matrix.size == 0:
         return []

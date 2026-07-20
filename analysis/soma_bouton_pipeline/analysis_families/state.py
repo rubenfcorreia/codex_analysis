@@ -132,8 +132,12 @@ def state_masks_for_context(ctx: ExperimentContext, selected_states: Sequence[st
 
     return ordered
 
-def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def activity_rows_for_context(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = ctx.soma.matrix()
     bouton_matrix = ctx.bouton.matrix()
     rows: List[Dict[str, Any]] = []

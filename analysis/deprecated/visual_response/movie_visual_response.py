@@ -13,12 +13,15 @@ from scipy.io import loadmat
 from scipy import stats
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR = SCRIPT_DIR.parents[1]
+ROOT_DIR = SCRIPT_DIR.parents[2]
 ANALYSIS_DIR = ROOT_DIR / 'analysis'
 DENDRITES_PIPELINE_DIR = ANALYSIS_DIR / 'dendrites_pipeline'
 for extra_path in (ROOT_DIR, ANALYSIS_DIR):
     if str(extra_path) not in sys.path:
         sys.path.insert(0, str(extra_path))
+
+if __name__ == "__main__":
+    sys.modules.setdefault("analysis.deprecated.visual_response.movie_visual_response", sys.modules[__name__])
 
 try:
     import matplotlib
@@ -2112,7 +2115,7 @@ def build_group_output_dir(output_dir: Path, group_name: str) -> Path:
 
 
 def render_poster_ready_figure(output_dir: Path, group_name: str, experiments: Dict[str, LoadedExperiment], group: Dict[str, Any]) -> Path:
-    import visual_response.poster_ready_visual_response as pr
+    import analysis.deprecated.visual_response.poster_ready_visual_response as pr
     print(pr.__file__)
 
     poster_output_dir = ensure_dir(output_dir)

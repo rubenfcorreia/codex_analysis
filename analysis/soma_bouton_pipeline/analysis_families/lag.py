@@ -9,8 +9,14 @@ from .core import ExperimentContext, make_unit_id
 from .state import state_masks_for_context
 
 
-def lag_scan_rows(ctx: ExperimentContext, selected_states: Sequence[str], lag_window_s: float = 2.0, lag_step_s: float = 0.1) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def lag_scan_rows(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    lag_window_s: float = 2.0,
+    lag_step_s: float = 0.1,
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = ctx.soma.matrix()
     bouton_matrix = ctx.bouton.matrix()
     bouton_roi_ids = list(ctx.bouton.roi_ids())
@@ -32,8 +38,9 @@ def lag_scan_rows(ctx: ExperimentContext, selected_states: Sequence[str], lag_wi
             continue
         state_t = t[mask]
         state_soma = soma_mean[mask]
-        for roi_index in range(bouton_matrix.shape[0]):
-            bouton_state = bouton_matrix[roi_index, :][mask]
+        state_bouton_matrix = bouton_matrix[:, mask]
+        for roi_index in range(state_bouton_matrix.shape[0]):
+            bouton_state = state_bouton_matrix[roi_index]
             lag_values_t, corrs = lagged_correlation(state_t, state_soma, state_t, bouton_state, lags_s)
             summary = summarize_lag_scan(lag_values_t, corrs)
             roi_id = bouton_roi_ids[roi_index] if roi_index < len(bouton_roi_ids) else roi_index

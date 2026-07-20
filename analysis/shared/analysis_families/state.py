@@ -201,8 +201,12 @@ def _bundle_roi_ids(bundle: Any, n_rows: int) -> List[Any]:
     return roi_ids[:n_rows]
 
 
-def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def activity_rows_for_context(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
     bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
     soma_roi_ids = _bundle_roi_ids(ctx.soma, soma_matrix.shape[0])
@@ -211,12 +215,13 @@ def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[
     rows: List[Dict[str, Any]] = []
     for state, mask in masks.items():
         mask = np.asarray(mask, dtype=bool)
-        for compartment, matrix, roi_ids in (("soma", soma_matrix, soma_roi_ids), ("bouton", bouton_matrix, bouton_roi_ids)):
+        soma_summary = summarize_activity(soma_matrix, mask)
+        bouton_summary = summarize_activity(bouton_matrix, mask)
+        for compartment, summary, matrix, roi_ids in (("soma", soma_summary, soma_matrix, soma_roi_ids), ("bouton", bouton_summary, bouton_matrix, bouton_roi_ids)):
             if matrix.size == 0:
                 continue
             for roi_index in range(matrix.shape[0]):
                 trace = np.asarray(matrix[roi_index], dtype=float)
-                summary = _summarize_roi_trace(trace, mask)
                 events = _event_summary_for_trace(trace, time, mask)
                 roi_id = roi_ids[roi_index] if roi_index < len(roi_ids) else roi_index
                 channel = ctx.soma_channel if compartment == "soma" else ctx.bouton_channel

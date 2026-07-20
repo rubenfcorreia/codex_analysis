@@ -156,16 +156,6 @@ def run_family(
         if not compartment_rows:
             continue
         results[compartment] = {
-            "all_state": _run_branch(
-                compartment_rows,
-                compartment=compartment,
-                scope="all_state",
-                state_order=state_order,
-                state_comparison_states=state_comparison_states,
-                shuffle_n=shuffle_n,
-                p_value_source=mixed_model_contrast_p_source,
-                vc_level_keys=vc_level_keys,
-            ),
             "selected_state": _run_branch(
                 compartment_rows,
                 compartment=compartment,
