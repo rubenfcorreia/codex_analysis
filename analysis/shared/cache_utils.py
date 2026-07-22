@@ -24,6 +24,7 @@ FAMILY_RESULT_CACHE_STAGES = (
     "spine_coactivity",
     "correlation",
     "pairwise_correlation",
+    "coincidence",
     "matrix_similarity",
 )
 

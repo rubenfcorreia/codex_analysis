@@ -33,6 +33,7 @@ import numpy as np
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan
 from analysis.shared.state_utils import resolve_repo_path
+from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
@@ -8612,52 +8613,11 @@ def _annotate_spine_event_info_for_method(
     spine_event_info: Dict[str, Any],
     dendrite_event_info: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    event_info = dict(spine_event_info or {})
-    spine_runs = [(int(start), int(end)) for start, end in (event_info.get("event_runs") or [])]
-    dend_runs = [(int(start), int(end)) for start, end in ((dendrite_event_info or {}).get("event_runs") or [])]
-    dend_onsets = {int(start) for start, _ in dend_runs}
-    coincident_runs: List[Tuple[int, int]] = []
-    for spine_run in spine_runs:
-        if int(spine_run[0]) in dend_onsets:
-            coincident_runs.append(spine_run)
-    coincident_count = len(coincident_runs)
-    event_count = int(event_info.get("event_count", len(spine_runs)) or 0)
-    duration_seconds = as_float(event_info.get("duration_seconds"))
-    if duration_seconds is None or not np.isfinite(duration_seconds) or duration_seconds <= 0:
-        duration_seconds = as_float((dendrite_event_info or {}).get("duration_seconds"))
-    noncoincident_count = max(event_count - coincident_count, 0)
-    event_info["coincident_event_count"] = int(coincident_count)
-    event_info["noncoincident_event_count"] = int(noncoincident_count)
-    event_info["spine_event_count"] = int(event_count)
-    event_info["dendrite_event_count"] = int((dendrite_event_info or {}).get("event_count", 0) or 0)
-    event_info["coincident_event_fraction"] = float(coincident_count / event_count) if event_count > 0 else float("nan")
-    event_info["spine_event_frequency_per_min"] = float(event_info.get("event_frequency_per_min", float("nan")))
-    event_info["dendrite_event_frequency_per_min"] = float((dendrite_event_info or {}).get("event_frequency_per_min", float("nan")))
-    event_info["coincident_event_frequency_per_min"] = event_frequency_per_minute(coincident_count, duration_seconds)
-    event_info["noncoincident_event_frequency_per_min"] = event_frequency_per_minute(noncoincident_count, duration_seconds)
-    event_info["coincident_event_runs"] = coincident_runs
-    event_info["noncoincident_event_runs"] = [run for run in spine_runs if run not in coincident_runs]
-    event_info["coincident"] = bool(coincident_count > 0)
-    if dendrite_event_info is not None:
-        event_info["dendrite_event_info"] = dict(dendrite_event_info)
-    return event_info
+    return shared_annotate_spine_event_info(spine_event_info, dendrite_event_info)
 
 
 def annotate_spine_event_info(spine_event_info: Dict[str, Any], dendrite_event_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    event_info = _annotate_spine_event_info_for_method(spine_event_info, dendrite_event_info)
-    methods = event_info.get("methods")
-    if isinstance(methods, dict):
-        dend_methods = (dendrite_event_info or {}).get("methods") if isinstance(dendrite_event_info, dict) else {}
-        annotated_methods: Dict[str, Any] = {}
-        for method_name, method_spine_info in methods.items():
-            method_dendrite_info = None
-            if isinstance(dend_methods, dict):
-                method_dendrite_info = dend_methods.get(method_name)
-            if method_dendrite_info is None:
-                method_dendrite_info = dendrite_event_info
-            annotated_methods[method_name] = _annotate_spine_event_info_for_method(method_spine_info, method_dendrite_info)
-        event_info["methods"] = annotated_methods
-    return event_info
+    return shared_annotate_spine_event_info(spine_event_info, dendrite_event_info)
 def extract_movie_feature_prefixes(columns: Sequence[str]) -> List[str]:
     prefixes = set()
     for column in columns:

@@ -7,6 +7,7 @@ ANALYSIS_FAMILIES: List[str] = [
     "mixed_model",
     "calcium_events",
     "visual_response",
+    "coincidence",
 ]
 
 __all__ = ["ANALYSIS_FAMILIES"]

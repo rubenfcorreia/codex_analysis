@@ -14,6 +14,9 @@ Key points:
   and lag/offset analyses
 - the lag scan evaluates bouton-vs-soma correlation within a `\u00b12 s`
   offset window
+- the shared coincidence layer measures exact-onset soma-vs-bouton event matches per state and writes both directional views for each pair
+- coincidence example figures default to the top 5 pairs per day/state and live under `figures/coincidence_event_examples/`
+- coincidence CSVs are written alongside the other outputs, including daily summaries and cohort-specific copies under `csv/cohort/`
 
 The default example config uses:
 
@@ -22,3 +25,14 @@ The default example config uses:
 
 Outputs are written under `results/soma_bouton_pipeline/` by default.
 
+
+## Coincidence Outputs
+
+The soma/bouton pipeline now writes:
+
+- `csv/soma_bouton_coincidence_by_roi.csv` for the pair-level coincidence rows
+- `csv/soma_bouton_coincidence_by_day.csv` for day/state summaries
+- `csv/cohort/<cohort>/soma_bouton_coincidence_by_day.csv` for cohort-split summaries
+- `figures/coincidence_event_examples/<event_detection_method>/<mode>/<day_id>/<state>/` for the top-ranked coincidence example figures
+
+Coincidence uses the shared exact-onset event-run match that is also used by the spine-coactivity path, so the soma/bouton and spine/dendrite analyses stay aligned on the same definition.

@@ -10,6 +10,7 @@ ANALYSIS_FAMILIES: List[str] = [
     "mixed_model",
     "calcium_events",
     "visual_response",
+    "coincidence",
 ]
 
 
