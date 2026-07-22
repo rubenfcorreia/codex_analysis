@@ -9,6 +9,7 @@ Key points:
 
 - same-date experiments are grouped together as the same field of view/day
 - the state categories are shared with the spine/dendrite pipeline
+- the workflow keeps its caches under `results/soma_bouton_pipeline/`, and warm reruns reuse the pipeline-local analysis tables and grouped summaries instead of rebuilding them from scratch
 - outputs are split into separate result divisions for activity, correlation,
   and lag/offset analyses
 - the lag scan evaluates bouton-vs-soma correlation within a `\u00b12 s`

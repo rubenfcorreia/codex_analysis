@@ -11107,6 +11107,7 @@ def build_spine_coactivity_table(
     rows: List[Dict[str, Any]] = []
     state_labels = [str(state) for state in state_labels if str(state)]
     state_order = {state: idx for idx, state in enumerate(state_labels)}
+    analysis_unit = str(cache.get("analysis_unit", "day"))
     skip_counts: Dict[str, int] = defaultdict(int)
     tested_pairs = 0
     valid_pairs = 0
@@ -11132,7 +11133,21 @@ def build_spine_coactivity_table(
                 step_progress(idx, total_jobs, label=f"{animal_id} | {global_dendrite_id} | {day_id}")
             compartment = observation_compartment(cache, day_id, d_obs)
             d_time = np.asarray(d_obs.get("time"), dtype=float)
-            state_masks = exp_meta.get("state_masks", {})
+            state_masks = {str(state_label): np.asarray(mask, dtype=bool) for state_label, mask in exp_meta.get("state_masks", {}).items()}
+            state_mask_signatures = {state_label: array_signature(mask) for state_label, mask in state_masks.items()}
+            spines_by_id = dendrite_record.get("spines", {})
+            day_spine_traces: Dict[str, Any] = {}
+            for spine_id in spine_ids:
+                spine_record = spines_by_id.get(spine_id, {})
+                s_obs = spine_record.get("observations", {}).get(day_id)
+                if s_obs is None:
+                    day_spine_traces[spine_id] = None
+                    continue
+                spine_trace = s_obs.get("spine_specific")
+                if spine_trace is None:
+                    day_spine_traces[spine_id] = None
+                    continue
+                day_spine_traces[spine_id] = np.asarray(spine_trace, dtype=float)
             for state_label in state_labels:
                 mask = state_masks.get(state_label)
                 state_index = int(state_order.get(state_label, -1))
@@ -11189,12 +11204,20 @@ def build_spine_coactivity_table(
                         )
                         skip_counts["empty_state_mask"] += 1
                     continue
+                mask_signature = state_mask_signatures.get(state_label)
+                shared_shuffle_meta_base = {
+                    "family": "coactivity",
+                    "signal": "spine_specific_state",
+                    "analysis_unit": analysis_unit,
+                    "animal_id": animal_id,
+                    "day_id": day_id,
+                    "state_label": state_label,
+                    "mask_signature": mask_signature,
+                }
                 for pair_index, (spine_id_1, spine_id_2) in enumerate(spine_pairs, start=1):
                     tested_pairs += 1
-                    spine_record_1 = dendrite_record.get("spines", {}).get(spine_id_1, {})
-                    spine_record_2 = dendrite_record.get("spines", {}).get(spine_id_2, {})
-                    s_obs_1 = spine_record_1.get("observations", {}).get(day_id)
-                    s_obs_2 = spine_record_2.get("observations", {}).get(day_id)
+                    trace_a = day_spine_traces.get(spine_id_1)
+                    trace_b = day_spine_traces.get(spine_id_2)
                     pair_id = _spine_coactivity_pair_id(day_id, str(global_dendrite_id), spine_id_1, spine_id_2)
                     base_row = {
                         "analysis": "spine_coactivity",
@@ -11210,27 +11233,15 @@ def build_spine_coactivity_table(
                         "global_spine_id_2": spine_id_2,
                         "global_pair_id": pair_id,
                     }
-                    if s_obs_1 is None or s_obs_2 is None:
+                    if trace_a is None or trace_b is None:
                         rows.append({**base_row, "n_frames": 0, "coactivity_r": float("nan"), "coactivity_z": float("nan"), "coactive": False, "status": "missing_spine_observation", "skip_reason": "missing_spine_observation"})
                         skip_counts["missing_spine_observation"] += 1
                         continue
-                    trace_a = np.asarray(s_obs_1.get("spine_specific"), dtype=float)
-                    trace_b = np.asarray(s_obs_2.get("spine_specific"), dtype=float)
                     if trace_a.size == 0 or trace_b.size == 0:
                         rows.append({**base_row, "n_frames": 0, "coactivity_r": float("nan"), "coactivity_z": float("nan"), "coactive": False, "status": "empty_trace", "skip_reason": "empty_trace"})
                         skip_counts["empty_trace"] += 1
                         continue
-                    mask_signature = array_signature(mask)
-                    shared_shuffle_meta = {
-                        "family": "coactivity",
-                        "signal": "spine_specific_state",
-                        "analysis_unit": str(cache.get("analysis_unit", "day")),
-                        "animal_id": animal_id,
-                        "day_id": day_id,
-                        "source_id": spine_id_2,
-                        "state_label": state_label,
-                        "mask_signature": mask_signature,
-                    }
+                    shared_shuffle_meta = {**shared_shuffle_meta_base, "source_id": spine_id_2}
                     r_value, z_value, classical_p, shuffle_p, n_frames, skip_reason = _spine_coactivity_compute_pair_row(
                         trace_a,
                         trace_b,

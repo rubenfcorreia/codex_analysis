@@ -31,7 +31,13 @@ from analysis.shared.state_utils import canonical_state_label, resolve_analysis_
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
-from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_masks_for_context, state_summary_rows
+from analysis.shared.analysis_families.state import (
+    activity_rows_for_context,
+    build_state_comparison_row_groups,
+    state_comparison_rows,
+    state_masks_for_context,
+    state_summary_rows,
+)
 from analysis.shared.analysis_families.visual_response import run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
 from analysis.shared.shared_calcium_response import (
     DEFAULT_VISUAL_RESPONSE_COHORT,
@@ -738,28 +744,36 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         response_metric=visual_response_metric,
     )
 
+    movie_activity_rows = [row for row in activity_rows if str(row.get("mode") or "") == "movie"]
+    sleep_activity_rows = [row for row in activity_rows if str(row.get("mode") or "") == "sleep"]
+    movie_state_groups = build_state_comparison_row_groups(movie_activity_rows, selected_states_by_mode.get("movie", []))
+    sleep_state_groups = build_state_comparison_row_groups(sleep_activity_rows, selected_states_by_mode.get("sleep", []))
     activity_summary_rows = state_summary_rows(activity_rows)
     state_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
+        movie_activity_rows,
         selected_states_by_mode.get("movie", []),
         shuffle_n,
+        grouped_rows=movie_state_groups,
     )
     sleep_state_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
+        sleep_activity_rows,
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
+        grouped_rows=sleep_state_groups,
     )
     state_event_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
+        movie_activity_rows,
         selected_states_by_mode.get("movie", []),
         shuffle_n,
         metric_col="event_frequency_per_min",
+        grouped_rows=movie_state_groups,
     )
     sleep_state_event_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
+        sleep_activity_rows,
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
         metric_col="event_frequency_per_min",
+        grouped_rows=sleep_state_groups,
     )
     correlation_summary = correlation_summary_rows(correlation_rows)
     soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows)
@@ -809,16 +823,19 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         cohort_rows = cohort_activity_rows.get(cohort_name, [])
         if not cohort_rows:
             continue
+        cohort_state_groups = build_state_comparison_row_groups(cohort_rows, analysis_state_order)
         cohort_state_comparison_rows[cohort_name] = state_comparison_rows(
             cohort_rows,
             analysis_state_order,
             shuffle_n,
+            grouped_rows=cohort_state_groups,
         )
         cohort_state_event_comparison_rows[cohort_name] = state_comparison_rows(
             cohort_rows,
             analysis_state_order,
             shuffle_n,
             metric_col="event_frequency_per_min",
+            grouped_rows=cohort_state_groups,
         )
         cohort_correlation_summary[cohort_name] = correlation_summary_rows(cohort_correlation_rows.get(cohort_name, []))
         cohort_soma_pairwise_summary[cohort_name] = correlation_summary_rows(cohort_soma_pairwise_rows.get(cohort_name, []))

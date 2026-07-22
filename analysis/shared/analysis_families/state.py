@@ -341,21 +341,59 @@ def _state_values_by_subject(
     return values_by_state
 
 
+def build_state_comparison_row_groups(
+    rows: Sequence[Mapping[str, Any]],
+    selected_states: Sequence[str],
+) -> Dict[str | None, Dict[str, Dict[str, List[Mapping[str, Any]]]]]:
+    selected = [state for state in selected_states if canonical_state_label(state)]
+    selected_lookup = set(selected)
+    if len(selected_lookup) < 2:
+        return {}
+
+    grouped_rows: Dict[str | None, Dict[str, Dict[str, List[Mapping[str, Any]]]]] = {
+        None: {state: {} for state in selected},
+        "soma": {state: {} for state in selected},
+        "bouton": {state: {} for state in selected},
+    }
+    for row in rows:
+        state = canonical_state_label(row.get("state"))
+        if state not in selected_lookup:
+            continue
+        day_id = str(row.get("day_id") or "")
+        if not day_id:
+            continue
+        grouped_rows[None].setdefault(state, {}).setdefault(day_id, []).append(row)
+        compartment = str(row.get("compartment") or "")
+        if compartment in {"soma", "bouton"}:
+            grouped_rows[compartment].setdefault(state, {}).setdefault(day_id, []).append(row)
+    return grouped_rows
+
+
 def state_comparison_rows(
     rows: Sequence[Mapping[str, Any]],
     selected_states: Sequence[str],
     shuffle_n: int,
     *,
     metric_col: str = "mean",
+    grouped_rows: Mapping[str | None, Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]]] | None = None,
 ) -> List[Dict[str, Any]]:
     selected = [state for state in selected_states if canonical_state_label(state)]
     if len(selected) < 2:
         return []
+    if grouped_rows is None:
+        grouped_rows = build_state_comparison_row_groups(rows, selected)
     comparisons: List[Dict[str, Any]] = []
     for compartment in (None, "soma", "bouton"):
-        values_by_state = _state_values_by_subject(rows, selected, compartment=compartment, metric_col=metric_col)
-        if not any(values_by_state.values()):
+        compartment_rows = grouped_rows.get(compartment, {})
+        if not any(compartment_rows.values()):
             continue
+        values_by_state: Dict[str, Dict[str, List[float]]] = {
+            state: {
+                subject_id: [float(row.get(metric_col, float("nan"))) for row in member_rows]
+                for subject_id, member_rows in subject_rows.items()
+            }
+            for state, subject_rows in compartment_rows.items()
+        }
         for idx, state_a in enumerate(selected):
             for state_b in selected[idx + 1:]:
                 subjects_a = values_by_state.get(state_a, {})
@@ -369,9 +407,10 @@ def state_comparison_rows(
                 result["compartment"] = compartment or "all"
                 result["state_a_display"] = state_a
                 result["state_b_display"] = state_b
-                result["metric"] = metric_col
                 comparisons.append(result)
     return comparisons
+
+
 def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
     selected = [state for state in selected_states if canonical_state_label(state)]
     if not selected:
@@ -394,7 +433,8 @@ def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_sta
 
 def build_state_family_results(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> Dict[str, Any]:
     summary_rows = state_summary_rows(rows)
-    comparisons = state_comparison_rows(rows, selected_states, shuffle_n)
+    comparison_groups = build_state_comparison_row_groups(rows, selected_states)
+    comparisons = state_comparison_rows(rows, selected_states, shuffle_n, grouped_rows=comparison_groups)
     basal_apical = basal_apical_comparison_rows(rows, selected_states, shuffle_n)
     return {
         "activity_rows": list(rows),
@@ -407,6 +447,7 @@ __all__ = [
     "ExperimentContext",
     "activity_rows_for_context",
     "basal_apical_comparison_rows",
+    "build_state_comparison_row_groups",
     "build_state_family_results",
     "state_comparison_rows",
     "state_masks_for_context",

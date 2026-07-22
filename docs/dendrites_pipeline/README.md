@@ -1,14 +1,14 @@
 # Main Dendrite/Spine Pipeline
 
 Use `analysis/dendrites_pipeline/dendrites_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
-The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces.
+The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces. The workflow keeps its caches under the dendrites results tree, so reruns with unchanged inputs can reuse the same pipeline-local intermediates.
 
 See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../visual_response/README.md](../visual_response/README.md), [../methods/README.md](../methods/README.md), [../sleep_state_across_days/README.md](../sleep_state_across_days/README.md), [../deprecated/main_pipeline/README.md](../deprecated/main_pipeline/README.md).
 
 ## Current Workflow
 
 1. Load the config and resolve repository, cache, output, and figure paths.
-2. Build or reuse the source cache, analysis-table cache, analysis-results cache, and shared shuffle cache so the pipeline can reuse prior work when the source data and settings match.
+2. Build or reuse the source cache, analysis-table cache, analysis-results cache, and shared shuffle cache so the pipeline can reuse prior work when the source data and settings match. These caches stay inside the dendrites results tree, so repeated runs only reuse dendrites-specific intermediates.
 3. Normalize the data to day-level analysis units.
    - Multiple source expIDs from the same day are pooled into one day-level unit.
    - The pooled unit keeps the source provenance, but downstream summaries are reported per day rather than per raw session.
@@ -17,11 +17,12 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
    - Movie experiments derive trial-by-trial masks from the trial table plus the locomotion and sleep metadata.
    - When a `sleep_state.pickle` bundle is available, the quiet-state labels are refined into `quiet_awake`, `nrem`, and `rem`.
    - These masks are reused by the state-comparison, basal-vs-apical, spine coactivity, and mixed-model branches so every family sees the same pooled day-level observations.
-5. Prepare visual-response cohorts before any family analysis runs.
+5. Prepare visual-response cohorts when the selected families need them.
    - Dendrite responsiveness is computed from dendrite cut activity only.
    - Spine responsiveness is computed from spine-specific cut activity only.
    - The classifier compares visual stimulus trials against blank trials using the cut stimulus-period data, preferring `cut_intertrials/` and falling back to `cut_with_intertrials/` for the visual-response metric inputs.
    - This produces the `all`, `responsive`, and `nonresponsive` cohorts that downstream families can reuse immediately.
+   - Runs that only ask for a family such as `spine_coactivity` skip this cut-bundle work entirely, while `state` and `mixed_model` runs still prepare the cohorts because they need them.
 6. Run the analysis families through the top-level driver.
    - Each family reads the normalized day-level cache rather than raw source files.
    - Family-specific summaries, comparisons, and figures operate on the already-pooled units and selected cohorts.

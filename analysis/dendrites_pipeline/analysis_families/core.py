@@ -215,6 +215,11 @@ def prepare_visual_response_cohorts(
     }
 
 
+def _needs_visual_response_cohorts(selected_families: Sequence[str]) -> bool:
+    selected = {str(family) for family in selected_families}
+    return bool(selected.intersection({"state", "mixed_model"}))
+
+
 def run_state_family(
     cache: Dict[str, Any],
     results: Dict[str, Any],
@@ -656,31 +661,32 @@ def run_cached_analysis(
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
 
-    # Prepare visual-response cohorts before family dispatch so downstream analyses can reuse
-    # all/responsive/nonresponsive splits.
-    with step_scope("visual response cohorts"):
-        results.update(
-            prepare_visual_response_cohorts(
-                cache,
-                state_comparison_states=state_comparison_states,
-                source_cache=source_cache,
-                output_dir=output_dir,
-                figure_root=figure_root,
+    if _needs_visual_response_cohorts(selected_families):
+        # Prepare visual-response cohorts before family dispatch so downstream analyses can reuse
+        # all/responsive/nonresponsive splits.
+        with step_scope("visual response cohorts"):
+            results.update(
+                prepare_visual_response_cohorts(
+                    cache,
+                    state_comparison_states=state_comparison_states,
+                    source_cache=source_cache,
+                    output_dir=output_dir,
+                    figure_root=figure_root,
+                )
             )
-        )
-    if cache_path is not None and analysis_results_meta is not None:
-        save_family_results_cache(cache_path, "visual_response", results, base_meta=analysis_results_meta)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "visual_response", results, base_meta=analysis_results_meta)
 
-    for key in (
-        "dendrite_visual_response_state_summaries",
-        "spine_visual_response_state_summaries",
-    ):
-        value = results.get(key, {})
-        if not isinstance(value, dict) or not value:
-            step_message(f"{key}: empty")
-            continue
+        for key in (
+            "dendrite_visual_response_state_summaries",
+            "spine_visual_response_state_summaries",
+        ):
+            value = results.get(key, {})
+            if not isinstance(value, dict) or not value:
+                step_message(f"{key}: empty")
+                continue
 
-        step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
+            step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
     if "state" in selected_families:
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
