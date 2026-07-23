@@ -11071,7 +11071,7 @@ def build_spine_coactivity_table(
     skip_counts: Dict[str, int] = defaultdict(int)
     tested_pairs = 0
     valid_pairs = 0
-    jobs: List[Tuple[str, str, Dict[str, Any], str, Dict[str, Any], Dict[str, Any], List[Tuple[str, str]]]] = []
+    jobs: List[Tuple[str, str, Dict[str, Any], str, Dict[str, Any], Dict[str, Any], List[str], List[Tuple[str, str]]]] = []
     for animal_id in sorted(animals):
         animal_entry = animals[animal_id]
         for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
@@ -11085,10 +11085,10 @@ def build_spine_coactivity_table(
                 spine_pairs = list(combinations(sorted(spine_ids), 2))
                 if not spine_pairs:
                     continue
-                jobs.append((animal_id, str(global_dendrite_id), dendrite_record, day_id, d_obs, exp_meta, spine_pairs))
+                jobs.append((animal_id, str(global_dendrite_id), dendrite_record, day_id, d_obs, exp_meta, spine_ids, spine_pairs))
     total_jobs = len(jobs)
     with step_scope("spine coactivity pair table", total=total_jobs if total_jobs else None):
-        for idx, (animal_id, global_dendrite_id, dendrite_record, day_id, d_obs, exp_meta, spine_pairs) in enumerate(jobs, start=1):
+        for idx, (animal_id, global_dendrite_id, dendrite_record, day_id, d_obs, exp_meta, spine_ids, spine_pairs) in enumerate(jobs, start=1):
             if total_jobs:
                 step_progress(idx, total_jobs, label=f"{animal_id} | {global_dendrite_id} | {day_id}")
             compartment = observation_compartment(cache, day_id, d_obs)
