@@ -1367,16 +1367,17 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
 
     combined_payload = _spine_coactivity_basal_apical_payload(results, anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE, coactive_only=True)
     if combined_payload is None:
-        raise RuntimeError("No spine coactivity rows were available for the basal-vs-apical poster panel.")
-    state_labels = combined_payload["state_labels"]
-    fig = plt.figure(figsize=(min(max(8.6, 0.62 * len(state_labels) + 4.2), 12.8), min(max(7.0, 0.44 * len(state_labels) + 4.0), 11.5)))
-    ax = fig.add_subplot(1, 1, 1)
-    _draw_spine_coactivity_basal_apical_distribution_panel(
-        ax,
-        combined_payload,
-        title="Quiet awake movies coactive-pair distribution - Basal vs apical",
-    )
-    written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True)))
+        print("[WARN] Skipping basal-vs-apical spine coactivity poster panel because no rows were available.", file=sys.stderr)
+    else:
+        state_labels = combined_payload["state_labels"]
+        fig = plt.figure(figsize=(min(max(8.6, 0.62 * len(state_labels) + 4.2), 12.8), min(max(7.0, 0.44 * len(state_labels) + 4.0), 11.5)))
+        ax = fig.add_subplot(1, 1, 1)
+        _draw_spine_coactivity_basal_apical_distribution_panel(
+            ax,
+            combined_payload,
+            title="Quiet awake movies coactive-pair distribution - Basal vs apical",
+        )
+        written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True)))
 
     for compartment in ["basal", "apical"]:
         compartment_results = build_filtered_spine_coactivity_results(results, compartment)
@@ -1387,7 +1388,8 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
             coactive_only=True,
         )
         if distribution_payload is None:
-            raise RuntimeError(f"No spine coactivity rows were available for the {compartment} anchor distribution panel.")
+            print(f"[WARN] Skipping {compartment} anchor distribution panel because no spine coactivity rows were available.", file=sys.stderr)
+            continue
         fig = plt.figure(figsize=(6.6, 3.9))
         ax = fig.add_subplot(1, 1, 1)
         _draw_spine_coactivity_distribution_panel(
@@ -1408,7 +1410,8 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
             coactive_only=True,
         )
         if heatmap_payload is None:
-            raise RuntimeError(f"No spine coactivity rows were available for the {compartment} pair-state heatmap panel.")
+            print(f"[WARN] Skipping {compartment} pair-state heatmap panel because no spine coactivity rows were available.", file=sys.stderr)
+            continue
         fig = plt.figure(figsize=(7.4, min(max(5.2, 0.14 * len(heatmap_payload['pair_labels']) + 3.4), 14.0)))
         ax = fig.add_subplot(1, 1, 1)
         _draw_spine_coactivity_heatmap_panel(
