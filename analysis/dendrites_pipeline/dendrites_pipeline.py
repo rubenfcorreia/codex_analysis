@@ -16539,6 +16539,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         info(f"Checkpoint gallery saved to: {output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME}")
         info(f"Review figures saved to: {output_dir / DEFAULT_REVIEW_FIGURES_DIRNAME}")
         info(f"Results saved to: {output_dir}")
+    run_issues = list(dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])))
+    if run_issues:
+        info(f"Issues encountered ({len(run_issues)}):")
+        for issue in run_issues:
+            info(f"  - {issue}")
+    else:
+        info("Issues encountered: none")
     return 0
 if __name__ == "__main__":
     raise SystemExit(main())

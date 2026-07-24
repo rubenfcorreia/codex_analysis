@@ -1367,7 +1367,9 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
 
     combined_payload = _spine_coactivity_basal_apical_payload(results, anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE, coactive_only=True)
     if combined_payload is None:
-        print("[WARN] Skipping basal-vs-apical spine coactivity poster panel because no rows were available.", file=sys.stderr)
+        message = "[WARN] Skipping basal-vs-apical spine coactivity poster panel because no rows were available."
+        print(message, file=sys.stderr)
+        _record_spine_coactivity_issue(results, message)
     else:
         state_labels = combined_payload["state_labels"]
         fig = plt.figure(figsize=(min(max(8.6, 0.62 * len(state_labels) + 4.2), 12.8), min(max(7.0, 0.44 * len(state_labels) + 4.0), 11.5)))
@@ -1388,7 +1390,9 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
             coactive_only=True,
         )
         if distribution_payload is None:
-            print(f"[WARN] Skipping {compartment} anchor distribution panel because no spine coactivity rows were available.", file=sys.stderr)
+            message = f"[WARN] Skipping {compartment} anchor distribution panel because no spine coactivity rows were available."
+            print(message, file=sys.stderr)
+            _record_spine_coactivity_issue(results, message)
             continue
         fig = plt.figure(figsize=(6.6, 3.9))
         ax = fig.add_subplot(1, 1, 1)
@@ -1410,7 +1414,9 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
             coactive_only=True,
         )
         if heatmap_payload is None:
-            print(f"[WARN] Skipping {compartment} pair-state heatmap panel because no spine coactivity rows were available.", file=sys.stderr)
+            message = f"[WARN] Skipping {compartment} pair-state heatmap panel because no spine coactivity rows were available."
+            print(message, file=sys.stderr)
+            _record_spine_coactivity_issue(results, message)
             continue
         fig = plt.figure(figsize=(7.4, min(max(5.2, 0.14 * len(heatmap_payload['pair_labels']) + 3.4), 14.0)))
         ax = fig.add_subplot(1, 1, 1)
@@ -1424,6 +1430,32 @@ def render_spine_coactivity_component_svgs(results: Dict[str, Any], output_dir: 
         written.append(_save_svg_figure_exact(fig, output_dir / spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True)))
 
     return written
+
+
+def _record_spine_coactivity_issue(results: Dict[str, Any], message: str) -> None:
+    alerts = results.setdefault("alerts", [])
+    if isinstance(alerts, list):
+        alerts.append(message)
+
+
+def _draw_spine_coactivity_placeholder_panel(ax: Any, *, title: str, message: str) -> None:
+    ax.set_title(title, fontsize=max(10, POSTER_TITLE_SIZE - 12), pad=2)
+    ax.text(
+        0.5,
+        0.5,
+        message,
+        transform=ax.transAxes,
+        ha="center",
+        va="center",
+        fontsize=max(9, POSTER_NOTE_SIZE - 4),
+        color="#666666",
+        wrap=True,
+    )
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.grid(False)
 
 
 def build_spine_coactivity_poster_figure(
@@ -1474,12 +1506,17 @@ def build_spine_coactivity_poster_figure(
         coactive_only=True,
     )
     if left_payload is None:
-        raise RuntimeError("Could not build the basal-vs-apical spine-coactivity poster panel.")
-    _draw_spine_coactivity_basal_apical_distribution_panel(
-        left_ax,
-        left_payload,
-        title="Quiet awake movies coactive-pair distribution - Basal vs apical",
-    )
+        _draw_spine_coactivity_placeholder_panel(
+            left_ax,
+            title="Quiet awake movies coactive-pair distribution - Basal vs apical",
+            message="No spine coactivity rows were available for the basal-vs-apical panel.",
+        )
+    else:
+        _draw_spine_coactivity_basal_apical_distribution_panel(
+            left_ax,
+            left_payload,
+            title="Quiet awake movies coactive-pair distribution - Basal vs apical",
+        )
 
     mid_spec = GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[:, 1], hspace=0.38)
     right_spec = GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[:, 2], hspace=0.38)
@@ -1489,7 +1526,8 @@ def build_spine_coactivity_poster_figure(
     right_top = fig.add_subplot(right_spec[0, 0])
     right_bottom = fig.add_subplot(right_spec[1, 0], sharex=right_top)
 
-    mid_payloads = []
+    mid_payloads: Dict[str, Optional[Dict[str, Any]]] = {}
+    mid_limits_values: List[np.ndarray] = []
     for compartment in ["basal", "apical"]:
         compartment_results = build_filtered_spine_coactivity_results(poster_results, compartment)
         payload = _spine_coactivity_distribution_payload(
@@ -1498,39 +1536,53 @@ def build_spine_coactivity_poster_figure(
             state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
             coactive_only=False,
         )
-        if payload is None:
-            raise RuntimeError(f"Could not build the quiet-awake-movies coactivity distribution panel for {compartment}.")
-        mid_payloads.append((compartment, payload))
+        mid_payloads[compartment] = payload
+        if payload is not None:
+            mid_limits_values.extend(np.asarray(arr, dtype=float) for arr in payload["series"])
 
-    mid_limits_values = np.concatenate([arr for _, payload in mid_payloads for arr in payload["series"]])
-    mid_limits = padded_value_limits(mid_limits_values)
+    mid_limits = padded_value_limits(np.concatenate(mid_limits_values)) if mid_limits_values else None
 
-    _draw_spine_coactivity_distribution_panel(
-        mid_top,
-        mid_payloads[0][1],
-        title="Quiet awake movie spine-pair coactivity - Basal",
-        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-        show_y_ticklabels=False,
-        x_limits=mid_limits,
-        highlight_color="#1f77b4",
-        show_legend=True,
-    )
-    _draw_spine_coactivity_distribution_panel(
-        mid_bottom,
-        mid_payloads[1][1],
-        title="Quiet awake movie spine-pair coactivity - Apical",
-        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-        show_y_ticklabels=False,
-        x_limits=mid_limits,
-        highlight_color="#d95f02",
-        show_legend=False,
-    )
+    if mid_payloads.get("basal") is None:
+        _draw_spine_coactivity_placeholder_panel(
+            mid_top,
+            title="Quiet awake movie spine-pair coactivity - Basal",
+            message="No spine coactivity rows were available for the basal panel.",
+        )
+    else:
+        _draw_spine_coactivity_distribution_panel(
+            mid_top,
+            mid_payloads["basal"],
+            title="Quiet awake movie spine-pair coactivity - Basal",
+            state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            show_y_ticklabels=False,
+            x_limits=mid_limits,
+            highlight_color="#1f77b4",
+            show_legend=True,
+        )
+    if mid_payloads.get("apical") is None:
+        _draw_spine_coactivity_placeholder_panel(
+            mid_bottom,
+            title="Quiet awake movie spine-pair coactivity - Apical",
+            message="No spine coactivity rows were available for the apical panel.",
+        )
+    else:
+        _draw_spine_coactivity_distribution_panel(
+            mid_bottom,
+            mid_payloads["apical"],
+            title="Quiet awake movie spine-pair coactivity - Apical",
+            state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
+            show_y_ticklabels=False,
+            x_limits=mid_limits,
+            highlight_color="#d95f02",
+            show_legend=False,
+        )
     mid_top.set_ylabel("")
     mid_bottom.set_ylabel("")
     mid_top.tick_params(axis="x", labelbottom=False)
     mid_top.set_xlabel("")
 
-    right_payloads = []
+    right_payloads: Dict[str, Optional[Dict[str, Any]]] = {}
+    right_limits_values: List[np.ndarray] = []
     for compartment in ["basal", "apical"]:
         compartment_results = build_filtered_spine_coactivity_results(poster_results, compartment)
         payload = _spine_coactivity_selected_state_comparison_payload(
@@ -1539,30 +1591,43 @@ def build_spine_coactivity_poster_figure(
             selected_states=state_comparison_states,
             anchor_state=SPINE_COACTIVITY_ANCHOR_STATE,
         )
-        if payload is None:
-            raise RuntimeError(f"Could not build the selected-state coactivity comparison panel for {compartment}.")
-        right_payloads.append((compartment, payload))
+        right_payloads[compartment] = payload
+        if payload is not None:
+            right_limits_values.extend(np.asarray(arr, dtype=float) for arr in payload["series"])
 
-    right_limits_values = np.concatenate([arr for _, payload in right_payloads for arr in payload["series"]])
-    right_y_limits = padded_value_limits(right_limits_values)
+    right_y_limits = padded_value_limits(np.concatenate(right_limits_values)) if right_limits_values else None
 
-    _draw_spine_coactivity_selected_state_comparison_panel(
-        right_top,
-        right_payloads[0][1],
-        title="Basal coactive spine pairs across selected states",
-        color="#1f77b4",
-        show_x_ticklabels=False,
-        y_limits=right_y_limits,
-        selection_note=selection_note,
-    )
-    _draw_spine_coactivity_selected_state_comparison_panel(
-        right_bottom,
-        right_payloads[1][1],
-        title="Apical coactive spine pairs across selected states",
-        color="#d95f02",
-        y_limits=right_y_limits,
-        selection_note=selection_note,
-    )
+    if right_payloads.get("basal") is None:
+        _draw_spine_coactivity_placeholder_panel(
+            right_top,
+            title="Basal coactive spine pairs across selected states",
+            message="No selected-state coactivity rows were available for the basal panel.",
+        )
+    else:
+        _draw_spine_coactivity_selected_state_comparison_panel(
+            right_top,
+            right_payloads["basal"],
+            title="Basal coactive spine pairs across selected states",
+            color="#1f77b4",
+            show_x_ticklabels=False,
+            y_limits=right_y_limits,
+            selection_note=selection_note,
+        )
+    if right_payloads.get("apical") is None:
+        _draw_spine_coactivity_placeholder_panel(
+            right_bottom,
+            title="Apical coactive spine pairs across selected states",
+            message="No selected-state coactivity rows were available for the apical panel.",
+        )
+    else:
+        _draw_spine_coactivity_selected_state_comparison_panel(
+            right_bottom,
+            right_payloads["apical"],
+            title="Apical coactive spine pairs across selected states",
+            color="#d95f02",
+            y_limits=right_y_limits,
+            selection_note=selection_note,
+        )
     right_top.set_xlabel("")
     right_top.tick_params(axis="x", labelbottom=False)
     return fig, analysis_state_selection, list(state_comparison_states)
