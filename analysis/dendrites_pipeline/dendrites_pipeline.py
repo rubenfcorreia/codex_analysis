@@ -16484,6 +16484,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shuffle_n": shuffle_n,
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
     }
+    report_path: Optional[Path] = None
     if plots_only:
         results["analysis_mode"] = "plots_only"
         results["output_artifacts"] = list(dict.fromkeys(written_artifacts))
@@ -16531,7 +16532,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict):
             save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
         info(f"Cache saved to: {cache_path}")
-        info(f"Report saved to: {report_path}")
+        if report_path is not None:
+            info(f"Report saved to: {report_path}")
+        else:
+            info(f"Report not rewritten in plots-only mode; existing report remains at: {output_dir / 'analysis_report.txt'}")
         info(f"Checkpoint gallery saved to: {output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME}")
         info(f"Review figures saved to: {output_dir / DEFAULT_REVIEW_FIGURES_DIRNAME}")
         info(f"Results saved to: {output_dir}")
