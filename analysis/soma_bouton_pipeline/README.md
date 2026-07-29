@@ -1,7 +1,7 @@
 # Soma/Bouton Pipeline
 
 This workflow compares soma activity from `ch2` data against axonal bouton
-activity from `ch1` data. The shared preset flow lives in `analysis/shared/`.
+activity from `ch1` data. The shared preset flow lives in `analysis/shared/`, and the more-active vs less-active ROI split helper is shared through `analysis/shared/roi_split.py`.
 
 See also: [../README.md](../README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md).
 
@@ -11,7 +11,7 @@ Key points:
 - the state categories are shared with the spine/dendrite pipeline
 - the workflow keeps its caches under `results/soma_bouton_pipeline/`, and warm reruns reuse the pipeline-local analysis tables and grouped summaries instead of rebuilding them from scratch
 - outputs are split into separate result divisions for activity, correlation,
-  and lag/offset analyses
+  lag/offset analyses, coincidence, and ROI split comparisons
 - the lag scan evaluates bouton-vs-soma correlation within a `\u00b12 s`
   offset window
 - the shared coincidence layer measures exact-onset soma-vs-bouton event matches per state and writes both directional views for each pair
@@ -36,3 +36,14 @@ The soma/bouton pipeline now writes:
 - `figures/coincidence_event_examples/<event_detection_method>/<mode>/<day_id>/<state>/` for the top-ranked coincidence example figures
 
 Coincidence uses the shared exact-onset event-run match that is also used by the spine-coactivity path, so the soma/bouton and spine/dendrite analyses stay aligned on the same definition.
+
+## ROI Split Outputs
+
+The soma/bouton pipeline also writes:
+
+- `csv/roi_split_subject_state.csv` for the pooled per-ROI, per-state rows used to build the split
+- `csv/roi_split_membership.csv` for the more_active / less_active assignments
+- `csv/roi_split_comparisons.csv` for the split comparison rows
+- `csv/roi_split_summary.csv` for the per-window split summaries
+
+The split is global across pooled eligible soma and bouton ROIs, so recordings with only one ROI still contribute. The shared helper in `analysis/shared/roi_split.py` ranks the pooled ROIs by duration-weighted activity or event-frequency scores, then compares the response metrics within `overall`, `NREM`, and `REM`.

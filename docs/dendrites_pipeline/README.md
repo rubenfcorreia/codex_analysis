@@ -16,7 +16,7 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 4. Build the state masks that power the state-group analyses.
    - Movie experiments derive trial-by-trial masks from the trial table plus the locomotion and sleep metadata.
    - When a `sleep_state.pickle` bundle is available, the quiet-state labels are refined into `quiet_awake`, `nrem`, and `rem`.
-   - These masks are reused by the state-comparison, basal-vs-apical, spine coactivity, and mixed-model branches so every family sees the same pooled day-level observations.
+   - These masks are reused by the state-comparison, ROI split, basal-vs-apical, spine coactivity, and mixed-model branches so every family sees the same pooled day-level observations.
 5. Prepare visual-response cohorts when the selected families need them.
    - Dendrite responsiveness is computed from dendrite cut activity only.
    - Spine responsiveness is computed from spine-specific cut activity only.
@@ -204,6 +204,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 - Computes spine-specific activity with robust regression.
 - Splits movie data into quiet and active states.
 - Fits the mixed-model summaries when the design is well-behaved, and falls back to a fixed-effect least-squares approximation when the mixed-model design is singular or the optimizer cannot converge cleanly.
+- Builds global more-active vs less-active ROI split comparisons from the pooled day-level observations, using both activity-derived and event-frequency-derived rankings.
 - Uses `sleep_state.pickle` for sleep analysis and never uses `sleep_state_sim.pickle`.
 - Alerts and skips sleep-state analysis if `sleep_state.pickle` is missing.
 - Saves a reloadable source cache, analysis-table cache, analysis-results cache, and shared shuffle cache.
@@ -211,7 +212,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 ## Methods
 
 For the metric definitions and statistical tests behind these outputs, see the repo-wide methods page at [docs/methods/README.md](../methods/README.md).
-It covers the preprocessing, state comparisons, correlations, spine coactivity, matrix similarity, and mixed-model families.
+It covers the preprocessing, state comparisons, ROI split comparisons, correlations, spine coactivity, matrix similarity, and mixed-model families.
 
 ## Analysis Logic Tree
 
@@ -254,15 +255,17 @@ The generated `analysis_report.txt` is summary-first.
    - points to the strongest significant result
 2. Check `Results at a glance`
    - gives the tested vs significant counts and percentages for each analysis family
-3. Read `Spine-spine matrix similarity`
+3. Read `ROI split comparisons`
+   - shows the global more-active vs less-active split for overall, NREM, and REM, with both activity-derived and event-frequency-derived rankings
+4. Read `Spine-spine matrix similarity`
    - shows the basal/apical split and the positive-significant / negative-significant / non-significant counts for each selected state pair
-4. Read `Model diagnostics`
+5. Read `Model diagnostics`
    - shows the exact mixed-model equation and the random-effect structure that was actually used
-5. Review `Quality / exclusions`
+6. Review `Quality / exclusions`
    - lists missing inputs, skipped states, insufficient-spine cases, and fallback reasons
-6. Use the CSV files for row-level detail
+7. Use the CSV files for row-level detail
    - the report summarizes the run
-   - `state_comparisons.csv`, `correlations.csv`, `matrix_similarity.csv`, and `mixed_model_*.csv` hold the full rows
+   - `state_comparisons.csv`, `roi_split_*.csv`, `correlations.csv`, `matrix_similarity.csv`, and `mixed_model_*.csv` hold the full rows
 
 ## Outputs
 
@@ -274,6 +277,10 @@ Typical outputs are:
 - `sleep_dendrite_spine_cache.npz`
 - `analysis_results.json`
 - `state_comparisons.csv`
+- `roi_split_subject_state.csv`
+- `roi_split_membership.csv`
+- `roi_split_comparisons.csv`
+- `roi_split_summary.csv`
 - `correlations.csv`
 - `matrix_similarity.csv`
 - `mixed_model_summary_mean_dendrite_activity.csv`

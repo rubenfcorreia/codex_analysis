@@ -28,6 +28,7 @@ from analysis.shared.comparison_preset_flow import (
     build_comparison_preset_batch_plan,
 )
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
+from analysis.shared.roi_split import build_roi_split_results
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
@@ -1137,6 +1138,49 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 analysis_state_order.append(state_key)
                 seen_analysis_states.add(state_key)
 
+    roi_split_bundles: List[Dict[str, Any]] = []
+    for roi_type, compartment, subject_key in (("soma", "soma", "global_soma_id"), ("bouton", "bouton", "global_bouton_id")):
+        compartment_rows = [row for row in activity_rows if str(row.get("compartment") or "") == compartment]
+        if not compartment_rows:
+            continue
+        for split_name, score_column in (("activity", "mean"), ("event_frequency", "event_frequency_per_min")):
+            bundle = build_roi_split_results(
+                compartment_rows,
+                roi_type=roi_type,
+                split_name=split_name,
+                score_column=score_column,
+                response_columns=("mean", "event_frequency_per_min"),
+                subject_key=subject_key,
+                compartment=compartment,
+                selected_states=analysis_state_order,
+                state_order=analysis_state_order,
+                shuffle_n=shuffle_n,
+            )
+            if bundle.get("counts", {}).get("n_subject_state_rows", 0):
+                roi_split_bundles.append(bundle)
+    roi_split_subject_state_rows: List[Dict[str, Any]] = []
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str]] = set()
+    for bundle in roi_split_bundles:
+        for row in bundle.get("subject_state_rows", []):
+            key = (str(row.get("roi_type") or ""), str(row.get("compartment") or ""), str(row.get("subject_id") or ""), str(row.get("state") or ""))
+            if key in seen_roi_split_subject_state_keys:
+                continue
+            seen_roi_split_subject_state_keys.add(key)
+            roi_split_subject_state_rows.append(dict(row))
+    roi_split_results = {
+        "bundles": roi_split_bundles,
+        "subject_state_rows": roi_split_subject_state_rows,
+        "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
+        "comparison_rows": [row for bundle in roi_split_bundles for row in bundle.get("comparison_rows", [])],
+        "summary_rows": [row for bundle in roi_split_bundles for row in bundle.get("summary_rows", [])],
+        "counts": {
+            "subject_state_rows": int(len(roi_split_subject_state_rows)),
+            "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
+            "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
+            "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+        },
+    }
+
     cohort_activity_rows = split_rows_by_cohort(activity_rows_with_cohort)
     cohort_correlation_rows = split_rows_by_cohort(correlation_rows_with_cohort)
     cohort_soma_pairwise_rows = split_rows_by_cohort(soma_pairwise_rows_with_cohort)
@@ -1191,7 +1235,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     ) if isinstance(mixed_model_results, dict) else 0
     _stage(
         "summary counts",
-        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, correlation={len(correlation_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
+        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, roi_split={len(roi_split_results.get('comparison_rows', []))}, correlation={len(correlation_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
     )
 
     poster_ready_only = bool(config.get("poster_ready_only"))
@@ -1200,7 +1244,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     write_csv_rows(result_root / "csv" / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
     if activity_rows:
         _stage("writing csv", "state_activity_by_experiment")
-        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
+        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
     if correlation_rows:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
@@ -1228,6 +1272,18 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if sleep_state_event_comparison_summary_rows:
         _stage("writing csv", "state_event_comparisons_sleep")
         write_csv_rows(result_root / "csv" / "state_event_comparisons_sleep.csv", sleep_state_event_comparison_summary_rows, list(sleep_state_event_comparison_summary_rows[0].keys()))
+    if roi_split_results.get("subject_state_rows"):
+        _stage("writing csv", "roi_split_subject_state")
+        write_csv_rows(result_root / "csv" / "roi_split_subject_state.csv", roi_split_results["subject_state_rows"], list(roi_split_results["subject_state_rows"][0].keys()))
+    if roi_split_results.get("membership_rows"):
+        _stage("writing csv", "roi_split_membership")
+        write_csv_rows(result_root / "csv" / "roi_split_membership.csv", roi_split_results["membership_rows"], list(roi_split_results["membership_rows"][0].keys()))
+    if roi_split_results.get("comparison_rows"):
+        _stage("writing csv", "roi_split_comparisons")
+        write_csv_rows(result_root / "csv" / "roi_split_comparisons.csv", roi_split_results["comparison_rows"], list(roi_split_results["comparison_rows"][0].keys()))
+    if roi_split_results.get("summary_rows"):
+        _stage("writing csv", "roi_split_summary")
+        write_csv_rows(result_root / "csv" / "roi_split_summary.csv", roi_split_results["summary_rows"], list(roi_split_results["summary_rows"][0].keys()))
     if correlation_summary:
         _stage("writing csv", "bouton_soma_correlation_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", correlation_summary, list(correlation_summary[0].keys()))
@@ -1857,6 +1913,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "cohort_state_event_comparison_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_state_event_comparison_rows.items()
             },
+            "roi_split_subject_state_rows": len(roi_split_results.get("subject_state_rows", [])),
+            "roi_split_membership_rows": len(roi_split_results.get("membership_rows", [])),
+            "roi_split_comparison_rows": len(roi_split_results.get("comparison_rows", [])),
+            "roi_split_summary_rows": len(roi_split_results.get("summary_rows", [])),
             "cohort_correlation_summary_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_correlation_summary.items()
             },
@@ -1927,6 +1987,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "activity_summary_rows": activity_summary_rows,
             "state_comparison_summary_rows": state_comparison_summary_rows,
             "sleep_state_comparison_summary_rows": sleep_state_comparison_summary_rows,
+            "roi_split_results": roi_split_results,
+            "roi_split_subject_state_rows": roi_split_results.get("subject_state_rows", []),
+            "roi_split_membership_rows": roi_split_results.get("membership_rows", []),
+            "roi_split_comparison_rows": roi_split_results.get("comparison_rows", []),
+            "roi_split_summary_rows": roi_split_results.get("summary_rows", []),
             "correlation_summary": correlation_summary,
             "lag_summary": lag_summary,
             "visual_response_day_rows": visual_response_day_rows,

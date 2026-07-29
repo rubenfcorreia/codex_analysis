@@ -33,6 +33,7 @@ import numpy as np
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan
 from analysis.shared.state_utils import resolve_repo_path
+from analysis.shared.roi_split import build_roi_split_results
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
@@ -11628,6 +11629,63 @@ def process_mixed_model_only(
     results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
+    roi_split_bundles: List[Dict[str, Any]] = []
+    mixed_model_table_rows = list(mixed_model_results.get("table_rows", []))
+    for compartment in ["basal", "apical"]:
+        compartment_rows = [row for row in mixed_model_table_rows if str(row.get("compartment") or "") == compartment]
+        if not compartment_rows:
+            continue
+        for roi_type, subject_key, response_columns, split_specs in (
+            ("dendrite", "global_dendrite_id", ("mean_dendrite_activity", "dendrite_event_frequency_per_min"), (("activity", "mean_dendrite_activity"), ("event_frequency", "dendrite_event_frequency_per_min"))),
+            ("spine", "global_dendrite_id", ("mean_spine_activity_per_dendrite", "spine_event_frequency_per_min"), (("activity", "mean_spine_activity_per_dendrite"), ("event_frequency", "spine_event_frequency_per_min"))),
+        ):
+            for split_name, score_column in split_specs:
+                bundle = build_roi_split_results(
+                    compartment_rows,
+                    roi_type=roi_type,
+                    split_name=split_name,
+                    score_column=score_column,
+                    response_columns=response_columns,
+                    subject_key=subject_key,
+                    compartment=compartment,
+                    selected_states=state_comparison_states,
+                    state_order=state_comparison_states,
+                    shuffle_n=shuffle_n,
+                )
+                if bundle.get("counts", {}).get("n_subject_state_rows", 0):
+                    roi_split_bundles.append(bundle)
+    roi_split_subject_state_rows: List[Dict[str, Any]] = []
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str]] = set()
+    for bundle in roi_split_bundles:
+        for row in bundle.get("subject_state_rows", []):
+            key = (str(row.get("roi_type") or ""), str(row.get("compartment") or ""), str(row.get("subject_id") or ""), str(row.get("state") or ""))
+            if key in seen_roi_split_subject_state_keys:
+                continue
+            seen_roi_split_subject_state_keys.add(key)
+            roi_split_subject_state_rows.append(dict(row))
+    roi_split_results = {
+        "bundles": roi_split_bundles,
+        "subject_state_rows": roi_split_subject_state_rows,
+        "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
+        "comparison_rows": [row for bundle in roi_split_bundles for row in bundle.get("comparison_rows", [])],
+        "summary_rows": [row for bundle in roi_split_bundles for row in bundle.get("summary_rows", [])],
+        "counts": {
+            "subject_state_rows": int(len(roi_split_subject_state_rows)),
+            "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
+            "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
+            "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+        },
+    }
+    results["roi_split"] = roi_split_results
+    analysis_tables = cache.get("analysis_tables")
+    if not isinstance(analysis_tables, dict):
+        analysis_tables = {}
+        cache["analysis_tables"] = analysis_tables
+    analysis_tables["roi_split_results"] = roi_split_results
+    analysis_tables["roi_split_subject_state_rows"] = roi_split_results["subject_state_rows"]
+    analysis_tables["roi_split_membership_rows"] = roi_split_results["membership_rows"]
+    analysis_tables["roi_split_comparison_rows"] = roi_split_results["comparison_rows"]
+    analysis_tables["roi_split_summary_rows"] = roi_split_results["summary_rows"]
     if output_dir is not None:
         with step_scope("figure generation: mixed_model"):
             render_analysis_family_figures(output_dir, results, cache, "mixed_model", figure_root=figure_root)
@@ -13453,6 +13511,15 @@ def write_analysis_report(
             f"classical_p={format_report_pvalue(row.get('classical_p'))} | "
             f"test={row.get('test_choice', 'n/a')} | n={row.get('n_subjects', 'n/a')}"
         )
+    def format_roi_split_row(row: Dict[str, Any]) -> str:
+        return (
+            f"{row.get('roi_type')} | {row.get('compartment')} | {row.get('split_name')} | {row.get('window')} | "
+            f"{row.get('response_column')} | {row.get('state')} | "
+            f"effect={format_report_number(row.get('effect_size'))} | "
+            f"shuffle_p={format_report_pvalue(row.get('shuffle_p'))} | "
+            f"classical_p={format_report_pvalue(row.get('classical_p'))} | "
+            f"test={row.get('test_choice', 'n/a')} | n={row.get('n_subjects', 'n/a')}"
+        )
     def format_direct_trial_row(row: Dict[str, Any]) -> str:
         return (
             f"{row.get('state_a')} vs {row.get('state_b')} | "
@@ -13931,6 +13998,8 @@ def write_analysis_report(
     direct_trial_type = direct_trial_type if isinstance(direct_trial_type, dict) else {}
     mixed_summary = summarize_mixed_model_section(mixed_model)
     mixed_selected_summary = summarize_mixed_model_section(mixed_model_selected)
+    roi_split = results.get("roi_split", {})
+    roi_split = roi_split if isinstance(roi_split, dict) else {}
     mixed_combined_summary = {
         "fallback_used": bool(mixed_summary.get("fallback_used")) or bool(mixed_selected_summary.get("fallback_used")),
         "fixed_rows": list(mixed_summary.get("fixed_rows", [])) + list(mixed_selected_summary.get("fixed_rows", [])),
@@ -14240,6 +14309,24 @@ def write_analysis_report(
         group_key_fn=lambda row: str(row.get("metric", "unknown")),
         tested_label="tested day comparisons",
     )
+    roi_split_rows = list(roi_split.get("comparison_rows", []))
+    if roi_split_rows:
+        append_section("ROI split comparisons")
+        append_kv("tested comparisons", len(roi_split_rows))
+        append_kv("tested subject-state rows", len(roi_split.get("subject_state_rows", [])))
+        append_kv("tested split bundles", len(roi_split.get("bundles", [])))
+        append_kv("roi types", format_report_list(sorted({str(row.get("roi_type") or "") for row in roi_split_rows if str(row.get("roi_type") or "")})))
+        append_kv("split bases", format_report_list(sorted({str(row.get("split_name") or "") for row in roi_split_rows if str(row.get("split_name") or "")})))
+        append_kv("compartments", format_report_list(sorted({str(row.get("compartment") or "") for row in roi_split_rows if str(row.get("compartment") or "")})))
+        append_kv("significant comparisons", sum(1 for row in roi_split_rows if is_significant_row(row, p_key="shuffle_p")))
+        render_state_section(
+            "More-active vs less-active comparisons",
+            roi_split_rows,
+            format_roi_split_row,
+            group_key_fn=lambda row: f"{row.get('roi_type', 'unknown')} | {row.get('compartment', 'unknown')} | {row.get('split_name', 'unknown')} | {row.get('window', 'unknown')}",
+            p_key="shuffle_p",
+            tested_label="tested comparisons",
+        )
     append_section("Direct trial-type comparison")
     append_kv("tested videos", direct_trial_type_summary.get('tested_videos', 0))
     append_kv("tested animals", direct_trial_type_summary.get('tested_animals', 0))
@@ -14474,6 +14561,21 @@ def write_analysis_outputs(
             contrast_csv = output_dir / output_name
             write_csv_rows(contrast_csv, branch_data["contrast_rows"], fieldnames)
             written_artifacts.append(report_relative_path(contrast_csv, output_dir))
+    roi_split = results.get("roi_split", {})
+    if isinstance(roi_split, dict):
+        for key, output_name in [
+            ("subject_state_rows", "roi_split_subject_state.csv"),
+            ("membership_rows", "roi_split_membership.csv"),
+            ("comparison_rows", "roi_split_comparisons.csv"),
+            ("summary_rows", "roi_split_summary.csv"),
+        ]:
+            rows = roi_split.get(key, [])
+            if not rows:
+                continue
+            fieldnames = sorted({field for row in rows for field in row.keys()})
+            csv_path = output_dir / output_name
+            write_csv_rows(csv_path, rows, fieldnames)
+            written_artifacts.append(report_relative_path(csv_path, output_dir))
     spine_coactivity = results.get("spine_coactivity", {})
     if isinstance(spine_coactivity, dict):
         if spine_coactivity.get("table_rows"):

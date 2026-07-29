@@ -1,7 +1,7 @@
 # Dendrites Pipeline Layout
 
 The dendrites workflow is now split into purpose-specific folders under `analysis/dendrites_pipeline/`.
-The top-level driver stays at the root so it remains the single orchestrator, and comparison-preset batches now defer the shared poster/readback step until all required presets have finished.
+The top-level driver stays at the root so it remains the single orchestrator, and comparison-preset batches now defer the shared poster/readback step until all required presets have finished. Shared helpers that are used by multiple workflows live in `analysis/shared/`, including the ROI split helper that powers the more-active vs less-active comparisons shared with soma/bouton.
 
 See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/README.md](../../docs/dendrites_pipeline/README.md), [../../docs/deprecated/main_pipeline/README.md](../../docs/deprecated/main_pipeline/README.md).
 
@@ -19,6 +19,11 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 - `analysis_families/matrix_similarity.py`
 - `analysis_families/mixed_model.py`
 - `analysis_families/spine_coactivity.py`
+
+## Shared Helpers
+
+- `../shared/comparison_preset_flow.py`
+- `../shared/roi_split.py` - shared more-active vs less-active split helper used by the dendrites and soma/bouton pipelines
 
 ## Figure and Demo Scripts
 

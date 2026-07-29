@@ -15,6 +15,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
     paired_comparison,
 )
 
+from analysis.shared.roi_split import summarize_mask_duration
 from ...compartment_common import canonical_state_label, read_pickle, state_display_color, state_display_label
 from .core import ExperimentContext, summarize_activity
 
@@ -143,6 +144,7 @@ def activity_rows_for_context(
     rows: List[Dict[str, Any]] = []
     for state, mask in masks.items():
         mask = np.asarray(mask, dtype=bool)
+        state_n_frames, state_duration_s = summarize_mask_duration(time, mask)
         soma_summary = summarize_activity(soma_matrix, mask)
         bouton_summary = summarize_activity(bouton_matrix, mask)
         for compartment, summary in (("soma", soma_summary), ("bouton", bouton_summary)):
@@ -155,6 +157,8 @@ def activity_rows_for_context(
                 "state": canonical_state_label(state),
                 "state_display": state_display_label(state),
                 "state_color": state_display_color(state),
+                "state_n_frames": int(state_n_frames),
+                "state_duration_s": float(state_duration_s),
                 "compartment": compartment,
                 "n": summary["n"],
                 "mean": summary["mean"],

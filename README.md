@@ -6,7 +6,7 @@ This directory is organized by workflow.
 
 | Folder | Purpose |
 | --- | --- |
-| [analysis/README.md](analysis/README.md) | Runnable scripts grouped by workflow, with shared cache/state/family helpers in `shared/`, the dendrite/spine pipeline under `dendrites_pipeline/`, the deprecated historical archive under `deprecated/main_pipeline/`, and separate launchers for `visual_response/` and `sleep_state_across_days/`. |
+| [analysis/README.md](analysis/README.md) | Runnable scripts grouped by workflow, with shared cache/state/family helpers in `shared/`, the dendrite/spine pipeline under `dendrites_pipeline/`, the soma/bouton pipeline under `soma_bouton_pipeline/`, the deprecated historical archive under `deprecated/main_pipeline/`, and separate launchers for `visual_response/` and `sleep_state_across_days/`. |
 
 ## Docs
 
@@ -25,4 +25,6 @@ This directory is organized by workflow.
 | [analysis/dendrites_pipeline/README.md](analysis/dendrites_pipeline/README.md) | Main dendrite/spine pipeline entrypoint and workflow notes. |
 | `analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json` | Example config for the main pipeline. |
 | `analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json` | Demo recipe for the main pipeline. |
+| [analysis/soma_bouton_pipeline/README.md](analysis/soma_bouton_pipeline/README.md) | Soma/bouton analysis entrypoint, shared preset flow, coincidence outputs, and ROI split comparisons. |
+| `analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json` | Example config for the soma/bouton pipeline. |
 | `analysis/sleep_state_across_days/sleep_state_across_days_config.json` | Example config for the sleep-state workflow. |
