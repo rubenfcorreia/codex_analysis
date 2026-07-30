@@ -24,6 +24,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 
 - `../shared/comparison_preset_flow.py`
 - `../shared/roi_split.py` - shared more-active vs less-active split helper used by the dendrites and soma/bouton pipelines
+- `../shared/plots/roi_split.py` - shared ROI split figure renderer used by the dendrites and soma/bouton pipelines
 
 ## Figure and Demo Scripts
 
@@ -41,6 +42,11 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 - The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.
 - Visual-response metrics use the stimulus-period cut activity from `cut_intertrials/` when available, with `cut_with_intertrials/` as a fallback.
 - If both `cut_intertrials/` and `cut_with_intertrials/` are missing, the pipeline prints an alert instead of silently mixing in a different cut bundle.
+
+## ROI Split Figures
+
+- The main pipeline writes ROI split figures under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png`.
+- The shared renderer is implemented in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 
 ## Config Files
 

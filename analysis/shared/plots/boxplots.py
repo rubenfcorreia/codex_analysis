@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 import numpy as np
 
-from analysis.dendrites_pipeline.dendrites_pipeline import _draw_boxplot_significance_annotations
 from analysis.shared.statistics import is_significant_row
 
 
@@ -57,14 +56,26 @@ def _comparison_display_label(row: Mapping[str, Any]) -> str:
     return ""
 
 
-def plot_boxplot_series(
+def _draw_boxplot_significance_annotations(
+    ax: plt.Axes,
+    annotation_rows: Sequence[Mapping[str, Any]],
+    *,
+    horizontal: bool,
+) -> None:
+    if not annotation_rows:
+        return
+    from analysis.dendrites_pipeline.dendrites_pipeline import _draw_boxplot_significance_annotations as _pipeline_draw_boxplot_significance_annotations
+
+    _pipeline_draw_boxplot_significance_annotations(ax, annotation_rows, orientation="horizontal" if horizontal else "vertical")
+
+
+def draw_boxplot_series(
+    ax: plt.Axes,
     values_by_series: Sequence[Sequence[float] | np.ndarray],
     labels: Sequence[str],
     series_names: Sequence[str],
     series_colors: Sequence[str],
-    output_dir: Path | str,
     *,
-    stem: str,
     title: str,
     ylabel: str,
     xlabel: str = "State",
@@ -75,7 +86,7 @@ def plot_boxplot_series(
     comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     top_labels: Sequence[str] | None = None,
     horizontal: bool = False,
-) -> list[Path]:
+) -> bool:
     cleaned_values: list[np.ndarray] = []
     cleaned_labels: list[str] = []
     cleaned_series: list[str] = []
@@ -100,9 +111,8 @@ def plot_boxplot_series(
             cleaned_flags.append(bool(flags[index]) if index < len(flags) else False)
 
     if not cleaned_values:
-        return []
+        return False
 
-    fig, ax = plt.subplots(figsize=(FIGURE_WIDTH_MM / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=True)
     bp = ax.boxplot(
         cleaned_values,
         patch_artist=True,
@@ -152,8 +162,8 @@ def plot_boxplot_series(
             x1 = row.get("x1")
             x2 = row.get("x2")
             if x1 is None or x2 is None:
-                state_a = str(row.get("state_a") or row.get("state_a_display") or "").strip().lower()
-                state_b = str(row.get("state_b") or row.get("state_b_display") or "").strip().lower()
+                state_a = str(row.get("state_a") or row.get("state_a_display") or row.get("x1_label") or row.get("x1_state") or "").strip().lower()
+                state_b = str(row.get("state_b") or row.get("state_b_display") or row.get("x2_label") or row.get("x2_state") or "").strip().lower()
                 if not state_a or not state_b:
                     continue
                 x1 = position_lookup.get(state_a)
@@ -162,7 +172,7 @@ def plot_boxplot_series(
                 continue
             stars = _boxplot_significance_stars(row.get("shuffle_p"))
             annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": row.get("shuffle_p"), "label": f"{_comparison_display_label(row)} {stars}".strip()})
-        _draw_boxplot_significance_annotations(ax, annotation_rows, orientation="horizontal" if horizontal else "vertical")
+        _draw_boxplot_significance_annotations(ax, annotation_rows, horizontal=horizontal)
     elif flags is not None and any(cleaned_flags):
         finite = np.concatenate(cleaned_values)
         finite = finite[np.isfinite(finite)]
@@ -246,6 +256,50 @@ def plot_boxplot_series(
                 )
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
+
+    return True
+
+
+def plot_boxplot_series(
+    values_by_series: Sequence[Sequence[float] | np.ndarray],
+    labels: Sequence[str],
+    series_names: Sequence[str],
+    series_colors: Sequence[str],
+    output_dir: Path | str,
+    *,
+    stem: str,
+    title: str,
+    ylabel: str,
+    xlabel: str = "State",
+    title_color: str = "#334155",
+    label_color_fn: Callable[[str], str] | None = None,
+    edge_color: str = "#334155",
+    significance_flags: Sequence[bool] | None = None,
+    comparison_rows: Sequence[Mapping[str, Any]] | None = None,
+    top_labels: Sequence[str] | None = None,
+    horizontal: bool = False,
+) -> list[Path]:
+    fig, ax = plt.subplots(figsize=(FIGURE_WIDTH_MM / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=True)
+    plotted = draw_boxplot_series(
+        ax,
+        values_by_series,
+        labels,
+        series_names,
+        series_colors,
+        title=title,
+        ylabel=ylabel,
+        xlabel=xlabel,
+        title_color=title_color,
+        label_color_fn=label_color_fn,
+        edge_color=edge_color,
+        significance_flags=significance_flags,
+        comparison_rows=comparison_rows,
+        top_labels=top_labels,
+        horizontal=horizontal,
+    )
+    if not plotted:
+        plt.close(fig)
+        return []
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

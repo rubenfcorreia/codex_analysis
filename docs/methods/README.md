@@ -44,7 +44,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 ### Summary Metrics
 
 - `state_comparisons.csv` and the paired state summary figures report mean activity by requested state.
-- `roi_split_subject_state.csv`, `roi_split_membership.csv`, `roi_split_comparisons.csv`, and `roi_split_summary.csv` report more-active vs less-active ROI groups, ranked globally across pooled eligible ROIs with duration-weighted scores. The helper runs both activity-derived and event-frequency-derived rankings and compares the same response metrics within overall, NREM, and REM windows.
+- `roi_split_subject_state.csv`, `roi_split_membership.csv`, `roi_split_comparisons.csv`, and `roi_split_summary.csv` report more-active vs less-active ROI groups, ranked globally across pooled eligible ROIs with duration-weighted scores. The helper runs both activity-derived and event-frequency-derived rankings and compares the same response metrics within overall, NREM, and REM windows. Matching figures are written under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png` and `results/soma_bouton_pipeline/figures/roi_split/<roi_type>/<split_name>/roi_split_<roi_type>_<split_name>.svg|png`.
 - `basal_apical_comparisons.csv` and the basal/apical figures compare the same metric between basal and apical compartments.
 - Correlation analyses report Pearson `r` for:
   - dendrite activity vs wheel motion

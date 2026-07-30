@@ -42,6 +42,8 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 ## Visual Response
 
 - The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/figures/visual_response/`.
+- ROI split figures are written under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png`.
+- The shared renderer lives in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 - Dendrite responsiveness is computed from dendrite cut activity only.
 - Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
 - The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.

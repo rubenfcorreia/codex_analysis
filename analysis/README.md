@@ -17,7 +17,7 @@ See also: [root README](../README.md), [dendrites_pipeline](dendrites_pipeline/R
 ## Notes
 
 - Use the folder launchers when you want the organized view.
-- The shared analysis helpers that are used by multiple workflows live in `analysis/shared/` so the imports stay local without duplicating infrastructure. Comparison-preset batching, the deferred poster/readback step, and the shared ROI split logic also live there now (`analysis/shared/comparison_preset_flow.py`, `analysis/shared/roi_split.py`).
+- The shared analysis helpers that are used by multiple workflows live in `analysis/shared/` so the imports stay local without duplicating infrastructure. Comparison-preset batching, the deferred poster/readback step, the shared ROI split logic, and the shared ROI split figure renderer also live there now (`analysis/shared/comparison_preset_flow.py`, `analysis/shared/roi_split.py`, `analysis/shared/plots/roi_split.py`).
 - Each workflow keeps its own cache tree and output tree; the shared helpers reduce repeated preprocessing and regrouping inside a workflow without sharing results across pipelines.
 - `analysis/dendrites_pipeline/` keeps the main driver at the root and the analysis-family modules in subfolders, while the generic cache/state helpers are shared.
 - `analysis/deprecated/main_pipeline/` preserves the retired main pipeline as a historical archive.

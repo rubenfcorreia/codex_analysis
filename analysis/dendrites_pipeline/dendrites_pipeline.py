@@ -6778,6 +6778,31 @@ def generate_analysis_figures(
                 saved.append(output_path)
             else:
                 step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or scope_label}")
+    from analysis.shared.plots.roi_split import plot_roi_split_bundle_figure
+
+    roi_split_results = results.get("roi_split", {})
+    roi_split_bundles = roi_split_results.get("bundles", []) if isinstance(roi_split_results, dict) else []
+    for plot_idx, bundle in enumerate(roi_split_bundles, start=1):
+        if not isinstance(bundle, dict) or not bundle:
+            continue
+        roi_type = str(bundle.get("roi_type") or "roi").strip().lower() or "roi"
+        compartment = str(bundle.get("compartment") or "").strip().lower() or "all"
+        split_name = str(bundle.get("split_name") or "split").strip().lower() or "split"
+        with step_scope(
+            f"figure plotter: roi_split[{roi_type}|{compartment}|{split_name}]",
+            index=plot_idx,
+            total=len(roi_split_bundles),
+        ):
+            try:
+                output_paths = plot_roi_split_bundle_figure(bundle, output_dir)
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with roi_split[{roi_type}|{compartment}|{split_name}]: {exc}")
+                continue
+            if output_paths:
+                saved.extend(str(path) for path in output_paths)
+            else:
+                step_message(f"plotter returned no output: roi_split[{roi_type}|{compartment}|{split_name}]")
+
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,

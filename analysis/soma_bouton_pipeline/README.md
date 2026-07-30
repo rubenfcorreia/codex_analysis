@@ -46,4 +46,4 @@ The soma/bouton pipeline also writes:
 - `csv/roi_split_comparisons.csv` for the split comparison rows
 - `csv/roi_split_summary.csv` for the per-window split summaries
 
-The split is global across pooled eligible soma and bouton ROIs, so recordings with only one ROI still contribute. The shared helper in `analysis/shared/roi_split.py` ranks the pooled ROIs by duration-weighted activity or event-frequency scores, then compares the response metrics within `overall`, `NREM`, and `REM`.
+The split is global across pooled eligible soma and bouton ROIs, so recordings with only one ROI still contribute. The shared helper in `analysis/shared/roi_split.py` ranks the pooled ROIs by duration-weighted activity or event-frequency scores, then compares the response metrics within `overall`, `NREM`, and `REM`. The matching figures are written under `results/soma_bouton_pipeline/figures/roi_split/<roi_type>/<split_name>/roi_split_<roi_type>_<split_name>.svg|png` by the shared renderer in `analysis/shared/plots/roi_split.py`.

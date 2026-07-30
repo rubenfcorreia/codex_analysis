@@ -243,7 +243,42 @@ def _aggregate_subject_state_rows(
             value, _ = _aggregate_metric(group_rows, column, duration_column, n_frames_column)
             payload[column] = float(value)
         subject_state_rows.append(payload)
+
     return subject_state_rows
+
+
+def _aggregate_subject_window_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    score_column: str,
+    response_columns: Sequence[str],
+    duration_column: str,
+    n_frames_column: str,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        'n_states': int(len(rows)),
+        'state_duration_s': 0.0,
+        'state_n_frames': 0,
+    }
+    n_frames_total = 0
+    duration_total = 0.0
+    for row in rows:
+        n_frames = _as_float(row.get(n_frames_column))
+        if np.isfinite(n_frames) and n_frames > 0:
+            n_frames_total += int(n_frames)
+        duration = _as_float(row.get(duration_column))
+        if np.isfinite(duration) and duration > 0:
+            duration_total += float(duration)
+        elif np.isfinite(n_frames) and n_frames > 0:
+            duration_total += float(n_frames)
+    payload['state_n_frames'] = int(n_frames_total)
+    payload['state_duration_s'] = float(duration_total)
+    score_value, _ = _aggregate_metric(rows, score_column, duration_column, n_frames_column)
+    payload['score_value'] = float(score_value)
+    for column in response_columns:
+        value, _ = _aggregate_metric(rows, column, duration_column, n_frames_column)
+        payload[column] = float(value)
+    return payload
 
 
 def _compare_independent_groups(
@@ -363,9 +398,12 @@ def build_roi_split_results(
     available_states = [str(row['state']) for row in subject_state_rows]
     subject_ids = sorted({str(row['subject_id']) for row in subject_state_rows if str(row.get('subject_id') or '').strip()})
 
+
     membership_rows: List[Dict[str, Any]] = []
     comparison_rows: List[Dict[str, Any]] = []
     summary_rows: List[Dict[str, Any]] = []
+    window_response_rows: List[Dict[str, Any]] = []
+    window_response_comparison_rows: List[Dict[str, Any]] = []
 
     for window in windows:
         window_key = canonical_state_label(window)
@@ -456,6 +494,89 @@ def build_roi_split_results(
             }
         )
 
+        window_subject_rows: List[Dict[str, Any]] = []
+        for rank, row in enumerate(ranked_subjects, start=1):
+            subject_id = str(row.get('subject_id'))
+            state_rows = [subject_state_lookup.get((subject_id, state)) for state in window_states]
+            state_rows = [item for item in state_rows if item is not None]
+            if not state_rows:
+                continue
+            group = group_lookup.get(subject_id)
+            if group not in {'more_active', 'less_active'}:
+                continue
+            payload = _aggregate_subject_window_rows(
+                state_rows,
+                score_column=score_column,
+                response_columns=response_columns,
+                duration_column=duration_column,
+                n_frames_column=n_frames_column,
+            )
+            if not payload:
+                continue
+            payload.update(
+                {
+                    'roi_type': roi_type,
+                    'compartment': compartment_label or '',
+                    'split_name': split_name,
+                    'score_column': score_column,
+                    'window': window_key,
+                    'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                    'state': window_key,
+                    'state_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                    'state_color': state_display_color(window_key),
+                    'subject_id': subject_id,
+                    'group': group,
+                    'rank': int(rank),
+                    'n_states': int(len(state_rows)),
+                    'window_n_subjects': int(n_ranked),
+                    'window_n_more_active': int(more_count),
+                    'window_n_less_active': int(less_count),
+                }
+            )
+            window_subject_rows.append(payload)
+            window_response_rows.append(dict(payload))
+
+        for response_column in response_columns:
+            more_values: List[float] = []
+            less_values: List[float] = []
+            for subject_row in window_subject_rows:
+                value = _as_float(subject_row.get(response_column))
+                if not np.isfinite(value):
+                    continue
+                group = str(subject_row.get('group') or '').strip().lower()
+                if group == 'more_active':
+                    more_values.append(value)
+                elif group == 'less_active':
+                    less_values.append(value)
+            comparison = _compare_independent_groups(more_values, less_values, metric_name=response_column, shuffle_n=shuffle_n)
+            comparison.update(
+                {
+                    'comparison': 'more_active_vs_less_active',
+                    'roi_type': roi_type,
+                    'compartment': compartment_label or '',
+                    'split_name': split_name,
+                    'score_column': score_column,
+                    'response_column': response_column,
+                    'window': window_key,
+                    'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                    'state': window_key,
+                    'state_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                    'state_color': state_display_color(window_key),
+                    'group_a': 'more_active',
+                    'group_b': 'less_active',
+                    'state_a': 'more_active',
+                    'state_b': 'less_active',
+                    'state_a_display': 'More Active',
+                    'state_b_display': 'Less Active',
+                    'n_more_active': int(len(more_values)),
+                    'n_less_active': int(len(less_values)),
+                    'window_n_subjects': int(n_ranked),
+                    'window_n_more_active': int(more_count),
+                    'window_n_less_active': int(less_count),
+                }
+            )
+            window_response_comparison_rows.append(comparison)
+
         for response_column in response_columns:
             for state in window_states:
                 more_values: List[float] = []
@@ -507,6 +628,8 @@ def build_roi_split_results(
         row.get('subject_id', ''),
     )
     subject_state_rows.sort(key=lambda row: (row.get('subject_id', ''), row.get('state', '')))
+    window_response_rows.sort(key=lambda row: (row.get('roi_type', ''), row.get('compartment', ''), row.get('split_name', ''), row.get('window', ''), row.get('subject_id', '')))
+    window_response_comparison_rows.sort(key=lambda row: (row.get('roi_type', ''), row.get('compartment', ''), row.get('split_name', ''), row.get('window', ''), row.get('response_column', '')))
     membership_rows.sort(key=sort_key)
     comparison_rows.sort(key=sort_key)
     summary_rows.sort(key=lambda row: (row.get('roi_type', ''), row.get('compartment', ''), row.get('split_name', ''), row.get('window', '')))
@@ -519,12 +642,16 @@ def build_roi_split_results(
         'selected_states': list(selected_states or []),
         'state_order': list(state_order or []),
         'subject_state_rows': subject_state_rows,
+        'window_response_rows': window_response_rows,
+        'window_response_comparison_rows': window_response_comparison_rows,
         'membership_rows': membership_rows,
         'comparison_rows': comparison_rows,
         'summary_rows': summary_rows,
         'counts': {
             'n_input_rows': int(len(filtered_rows)),
             'n_subject_state_rows': int(len(subject_state_rows)),
+            'n_window_response_rows': int(len(window_response_rows)),
+            'n_window_response_comparison_rows': int(len(window_response_comparison_rows)),
             'n_membership_rows': int(len(membership_rows)),
             'n_comparison_rows': int(len(comparison_rows)),
             'n_summary_rows': int(len(summary_rows)),
