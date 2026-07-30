@@ -1394,7 +1394,6 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             plot_lag_heatmap(cohort_rows, result_root, cohort_label=cohort_name)
         from analysis.shared.plots.roi_split import plot_roi_split_bundle_figure
 
-        roi_split_results = results.get("roi_split", {})
         roi_split_bundles = roi_split_results.get("bundles", []) if isinstance(roi_split_results, dict) else []
         for plot_idx, bundle in enumerate(roi_split_bundles, start=1):
             if not isinstance(bundle, dict) or not bundle:
@@ -1406,12 +1405,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             try:
                 figure_bundle = dict(bundle)
                 figure_bundle["compartment"] = ""
-                output_paths = plot_roi_split_bundle_figure(figure_bundle, result_root)
+                plot_roi_split_bundle_figure(figure_bundle, result_root)
             except Exception as exc:
                 logger.exception("Failed to create roi split figure %s/%s/%s", roi_type, compartment, split_name)
                 continue
-            if output_paths:
-                saved.extend(str(output_path) for output_path in output_paths)
         if coincidence_rows:
             _stage("plotting", "soma-bouton coincidence examples")
             coincidence_example_figures = _generate_coincidence_example_figures(
