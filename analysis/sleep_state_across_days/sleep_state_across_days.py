@@ -448,6 +448,19 @@ def as_int(value: Any) -> Optional[int]:
 
 def interval_mask(t: np.ndarray, start: float, end: float) -> np.ndarray:
     t = np.asarray(t, dtype=float)
+    if t.size == 0:
+        return np.zeros(t.shape, dtype=bool)
+    if not np.isfinite(start) or not np.isfinite(end) or start >= end:
+        return np.zeros(t.shape, dtype=bool)
+    if t.ndim == 1 and np.isfinite(t).all():
+        diffs = np.diff(t)
+        if diffs.size == 0 or np.all(diffs >= 0):
+            left = int(np.searchsorted(t, start, side='left'))
+            right = int(np.searchsorted(t, end, side='left'))
+            mask = np.zeros(t.shape, dtype=bool)
+            if right > left:
+                mask[left:right] = True
+            return mask
     return (t >= start) & (t < end)
 
 
@@ -690,7 +703,7 @@ def probability_series_has_unclassified(profile: Mapping[str, np.ndarray]) -> bo
     return bool(np.nanmax(arr) > DEFAULT_STACKED_UNCLASSIFIED_TOL)
 
 
-def average_combined_day_probability_summaries(exp_summaries: Sequence[SessionSummary]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+def average_combined_day_probability_summaries(exp_summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     grouped: Dict[Tuple[str, str], List[SessionSummary]] = defaultdict(list)
     for summary in exp_summaries:
         grouped[(str(summary.animal_id), str(summary.date))].append(summary)
@@ -703,7 +716,7 @@ def average_combined_day_probability_summaries(exp_summaries: Sequence[SessionSu
                 str(summary.sleep_state_paths[0]) if summary.sleep_state_paths else '',
             ),
         )
-        time_min, profile, _ = build_day_timeline_profile(ordered)
+        time_min, profile, _ = build_day_timeline_profile(ordered, cache=cache)
         if time_min.size and profile:
             day_profiles.append((np.asarray(time_min, dtype=float) * 60.0, profile))
     return _average_probability_profiles(day_profiles)
@@ -950,15 +963,60 @@ def normalize_sleep_bundle(bundle: Any, path: Path) -> Dict[str, Any]:
     return bundle
 
 
-def load_sleep_state_bundle(exp_root: Path) -> Tuple[Optional[Dict[str, Any]], Optional[Path], Optional[str]]:
+@dataclass
+class SleepAnalysisCache:
+    sleep_state_bundles: Dict[Path, Tuple[Optional[Dict[str, Any]], Optional[Path], Optional[str]]] = field(default_factory=dict)
+    trial_rows: Dict[Path, Tuple[Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[str]]] = field(default_factory=dict)
+    pupil_series: Dict[Tuple[Path, str], Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]] = field(default_factory=dict)
+
+
+def load_sleep_state_bundle(
+    exp_root: Path,
+    cache: Optional[SleepAnalysisCache] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Path], Optional[str]]:
     sleep_state_path = exp_root / "sleep_score" / "sleep_state.pickle"
+    if cache is not None and sleep_state_path in cache.sleep_state_bundles:
+        return cache.sleep_state_bundles[sleep_state_path]
     if not sleep_state_path.exists():
-        return None, None, f"missing {sleep_state_path.name}"
+        result = (None, None, f"missing {sleep_state_path.name}")
+        if cache is not None:
+            cache.sleep_state_bundles[sleep_state_path] = result
+        return result
     try:
         bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
     except Exception as exc:
-        return None, sleep_state_path, f"failed to load sleep_state.pickle: {exc}"
-    return bundle, sleep_state_path, None
+        result = (None, sleep_state_path, f"failed to load sleep_state.pickle: {exc}")
+        if cache is not None:
+            cache.sleep_state_bundles[sleep_state_path] = result
+        return result
+    result = (bundle, sleep_state_path, None)
+    if cache is not None:
+        cache.sleep_state_bundles[sleep_state_path] = result
+    return result
+
+
+def load_sleep_state_bundle_for_path(
+    sleep_state_path: Path,
+    cache: Optional[SleepAnalysisCache] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Path], Optional[str]]:
+    sleep_state_path = Path(sleep_state_path)
+    if cache is not None and sleep_state_path in cache.sleep_state_bundles:
+        return cache.sleep_state_bundles[sleep_state_path]
+    exp_root = sleep_state_path.parent.parent if len(sleep_state_path.parents) >= 2 else sleep_state_path.parent
+    bundle, loaded_sleep_state_path, bundle_error = load_sleep_state_bundle(exp_root, cache=cache)
+    if bundle is not None and loaded_sleep_state_path is not None:
+        result = (bundle, loaded_sleep_state_path, bundle_error)
+        if cache is not None:
+            cache.sleep_state_bundles[sleep_state_path] = result
+        return result
+    try:
+        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+    except Exception as exc:
+        return None, None, bundle_error or str(exc)
+    result = (bundle, sleep_state_path, None)
+    if cache is not None:
+        cache.sleep_state_bundles[sleep_state_path] = result
+    return result
 
 
 def align_length(*arrays: Optional[np.ndarray]) -> Tuple[np.ndarray, ...]:
@@ -1076,6 +1134,7 @@ def aggregate_summaries(
     category: str,
     exp_summaries: Sequence[SessionSummary],
     day_index: Optional[int] = None,
+    cache: Optional[SleepAnalysisCache] = None,
 ) -> SessionSummary:
     if not exp_summaries:
         raise ValueError("Cannot aggregate an empty summary list")
@@ -1107,7 +1166,7 @@ def aggregate_summaries(
             float(total_bout_time / total_bout_count) if total_bout_count > 0 else float("nan")
         )
     if str(category) == "sleep" and str(scope) == "day" and len(exp_summaries) > 1:
-        pooled_state_epoch, pooled_state_epoch_t = concatenate_sleep_state_arrays(exp_summaries)
+        pooled_state_epoch, pooled_state_epoch_t = concatenate_sleep_state_arrays(exp_summaries, cache=cache)
         if pooled_state_epoch.size and pooled_state_epoch_t.size:
             pooled_epoch_duration_s = epoch_duration_seconds(pooled_state_epoch_t)
             probability_time_s, state_probability_profile = build_probability_profile(
@@ -1191,6 +1250,7 @@ def build_requested_expids(config: Mapping[str, Any]) -> Dict[str, str]:
 def collect_exp_summaries(
     requested_expids: Mapping[str, str],
     repo_base: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Tuple[List[SessionSummary], List[Dict[str, Any]]]:
     exp_summaries: List[SessionSummary] = []
     skipped: List[Dict[str, Any]] = []
@@ -1211,7 +1271,7 @@ def collect_exp_summaries(
                 }
             )
             continue
-        bundle, sleep_state_path, error = load_sleep_state_bundle(exp_root)
+        bundle, sleep_state_path, error = load_sleep_state_bundle(exp_root, cache=load_cache)
         if bundle is None or sleep_state_path is None:
             skipped.append(
                 {
@@ -1246,14 +1306,14 @@ def collect_exp_summaries(
     return exp_summaries, skipped
 
 
-def aggregate_day_summaries(exp_summaries: Sequence[SessionSummary]) -> List[SessionSummary]:
+def aggregate_day_summaries(exp_summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> List[SessionSummary]:
     grouped: Dict[Tuple[str, str, str], List[SessionSummary]] = defaultdict(list)
     for summary in exp_summaries:
         grouped[(summary.animal_id, summary.date, summary.category)].append(summary)
     day_summaries: List[SessionSummary] = []
     for (animal_id, date, category), items in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
         day_summaries.append(
-            aggregate_summaries("day", animal_id, date, category, sorted(items, key=lambda s: s.exp_ids[0]))
+            aggregate_summaries("day", animal_id, date, category, sorted(items, key=lambda s: s.exp_ids[0]), cache=cache)
         )
     return day_summaries
 
@@ -1381,17 +1441,29 @@ def movie_feature_blocks(row: Mapping[str, Any], columns: Sequence[str]) -> List
     return ordered_blocks
 
 
-def load_trial_rows(trial_csv_path: Path) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[str]]:
+def load_trial_rows(
+    trial_csv_path: Path,
+    cache: Optional[SleepAnalysisCache] = None,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[str]], Optional[str]]:
+    if cache is not None and trial_csv_path in cache.trial_rows:
+        return cache.trial_rows[trial_csv_path]
     if not trial_csv_path.exists():
-        return None, None, f'missing {trial_csv_path.name}'
+        result = (None, None, f'missing {trial_csv_path.name}')
+        if cache is not None:
+            cache.trial_rows[trial_csv_path] = result
+        return result
     try:
         with trial_csv_path.open('r', encoding='utf-8', newline='') as handle:
             reader = csv.DictReader(handle)
             if reader.fieldnames is None:
-                return [], [], None
-            return [dict(row) for row in reader], list(reader.fieldnames), None
+                result = ([], [], None)
+            else:
+                result = ([dict(row) for row in reader], list(reader.fieldnames), None)
     except Exception as exc:
-        return None, None, f'failed to load {trial_csv_path.name}: {exc}'
+        result = (None, None, f'failed to load {trial_csv_path.name}: {exc}')
+    if cache is not None:
+        cache.trial_rows[trial_csv_path] = result
+    return result
 
 
 def load_sleep_state_timeline(bundle: Mapping[str, Any]) -> Tuple[np.ndarray, np.ndarray, str]:
@@ -1705,13 +1777,42 @@ def analyze_movie_expid_trials(
 
 
 
-def summarize_movie_video_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
-    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+@dataclass
+class MovieTrialGroupIndex:
+    video_groups_all: Dict[Tuple[str, str], List[Mapping[str, Any]]]
+    video_groups_after_blank_or_zebra: Dict[Tuple[str, str], List[Mapping[str, Any]]]
+    prev_group_groups: Dict[Tuple[str, str], List[Mapping[str, Any]]]
+
+
+def build_movie_trial_group_index(trial_rows: Sequence[Mapping[str, Any]]) -> MovieTrialGroupIndex:
+    video_groups_all: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    video_groups_after_blank_or_zebra: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    prev_group_groups: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
     for row in trial_rows:
-        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
+        if not isinstance(row, Mapping):
             continue
-        key = (str(row.get('trial_category')), str(row.get('video_id')))
-        grouped[key].append(dict(row))
+        trial_category = str(row.get('trial_category') or '')
+        video_id = str(row.get('video_id') or '')
+        if trial_category and video_id:
+            key = (trial_category, video_id)
+            video_groups_all[key].append(row)
+            if bool(row.get('after_blank_or_zebra')):
+                video_groups_after_blank_or_zebra[key].append(row)
+        current_trial_category = str(row.get('trial_category') or '').strip().lower()
+        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
+        if current_trial_category in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER and prev_group:
+            prev_group_groups[(current_trial_category, prev_group)].append(row)
+    return MovieTrialGroupIndex(
+        video_groups_all=dict(video_groups_all),
+        video_groups_after_blank_or_zebra=dict(video_groups_after_blank_or_zebra),
+        prev_group_groups=dict(prev_group_groups),
+    )
+
+
+def summarize_movie_video_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str, group_index: Optional[MovieTrialGroupIndex] = None) -> List[Dict[str, Any]]:
+    if group_index is None:
+        group_index = build_movie_trial_group_index(trial_rows)
+    grouped = group_index.video_groups_after_blank_or_zebra if subset_label == 'after_blank_or_zebra' else group_index.video_groups_all
 
     def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
         arr = np.asarray([as_float(value) for value in values], dtype=float)
@@ -1767,14 +1868,10 @@ def summarize_movie_video_groups(trial_rows: Sequence[Mapping[str, Any]], subset
     return summaries
 
 
-def summarize_movie_prev_group_comparisons(trial_rows: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
-    for row in trial_rows:
-        current_trial_category = str(row.get('trial_category') or '').strip().lower()
-        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
-        if current_trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not prev_group:
-            continue
-        grouped[(current_trial_category, prev_group)].append(dict(row))
+def summarize_movie_prev_group_comparisons(trial_rows: Sequence[Mapping[str, Any]], group_index: Optional[MovieTrialGroupIndex] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if group_index is None:
+        group_index = build_movie_trial_group_index(trial_rows)
+    grouped = group_index.prev_group_groups
 
     def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
         arr = np.asarray([as_float(value) for value in values], dtype=float)
@@ -1853,13 +1950,10 @@ def summarize_movie_prev_group_comparisons(trial_rows: Sequence[Mapping[str, Any
     return group_rows, comparison_rows
 
 
-def summarize_movie_video_awake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
-    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
-    for row in trial_rows:
-        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
-            continue
-        key = (str(row.get('trial_category')), str(row.get('video_id')))
-        grouped[key].append(dict(row))
+def summarize_movie_video_awake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str, group_index: Optional[MovieTrialGroupIndex] = None) -> List[Dict[str, Any]]:
+    if group_index is None:
+        group_index = build_movie_trial_group_index(trial_rows)
+    grouped = group_index.video_groups_after_blank_or_zebra if subset_label == 'after_blank_or_zebra' else group_index.video_groups_all
 
     def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
         arr = np.asarray([as_float(value) for value in values], dtype=float)
@@ -1909,13 +2003,10 @@ def summarize_movie_video_awake_groups(trial_rows: Sequence[Mapping[str, Any]], 
     return summaries
 
 
-def summarize_movie_post_clip_wake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
-    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
-    for row in trial_rows:
-        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
-            continue
-        key = (str(row.get('trial_category')), str(row.get('video_id')))
-        grouped[key].append(dict(row))
+def summarize_movie_post_clip_wake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str, group_index: Optional[MovieTrialGroupIndex] = None) -> List[Dict[str, Any]]:
+    if group_index is None:
+        group_index = build_movie_trial_group_index(trial_rows)
+    grouped = group_index.video_groups_after_blank_or_zebra if subset_label == 'after_blank_or_zebra' else group_index.video_groups_all
 
     def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
         arr = np.asarray([as_float(value) for value in values], dtype=float)
@@ -1970,13 +2061,10 @@ def summarize_movie_post_clip_wake_groups(trial_rows: Sequence[Mapping[str, Any]
     return summaries
 
 
-def summarize_movie_video_onset_awake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str) -> List[Dict[str, Any]]:
-    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
-    for row in trial_rows:
-        if subset_label == 'after_blank_or_zebra' and not bool(row.get('after_blank_or_zebra')):
-            continue
-        key = (str(row.get('trial_category')), str(row.get('video_id')))
-        grouped[key].append(dict(row))
+def summarize_movie_video_onset_awake_groups(trial_rows: Sequence[Mapping[str, Any]], subset_label: str, group_index: Optional[MovieTrialGroupIndex] = None) -> List[Dict[str, Any]]:
+    if group_index is None:
+        group_index = build_movie_trial_group_index(trial_rows)
+    grouped = group_index.video_groups_after_blank_or_zebra if subset_label == 'after_blank_or_zebra' else group_index.video_groups_all
 
     def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
         arr = np.asarray([as_float(value) for value in values], dtype=float)
@@ -2046,14 +2134,10 @@ def summarize_movie_video_onset_awake_groups(trial_rows: Sequence[Mapping[str, A
     return summaries
 
 
-def summarize_movie_prev_group_post_clip_wake_comparisons(trial_rows: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    grouped: Dict[Tuple[str, str], List[Mapping[str, Any]]] = defaultdict(list)
-    for row in trial_rows:
-        current_trial_category = str(row.get('trial_category') or '').strip().lower()
-        prev_group = classify_movie_prev_group(row.get('prev_trial_category'))
-        if current_trial_category not in DEFAULT_MOVIE_TRIAL_CATEGORY_ORDER or not prev_group:
-            continue
-        grouped[(current_trial_category, prev_group)].append(dict(row))
+def summarize_movie_prev_group_post_clip_wake_comparisons(trial_rows: Sequence[Mapping[str, Any]], group_index: Optional[MovieTrialGroupIndex] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if group_index is None:
+        group_index = build_movie_trial_group_index(trial_rows)
+    grouped = group_index.prev_group_groups
 
     def mean_sem(values: Sequence[Any]) -> Tuple[float, float]:
         arr = np.asarray([as_float(value) for value in values], dtype=float)
@@ -2137,14 +2221,16 @@ def summarize_movie_prev_group_post_clip_wake_comparisons(trial_rows: Sequence[M
     return group_rows, comparison_rows
 
 
-def load_sleep_state_arrays(sleep_state_path: Path) -> Tuple[np.ndarray, np.ndarray]:
-    bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+def load_sleep_state_arrays(sleep_state_path: Path, cache: Optional[SleepAnalysisCache] = None) -> Tuple[np.ndarray, np.ndarray]:
+    bundle, loaded_sleep_state_path, bundle_error = load_sleep_state_bundle_for_path(sleep_state_path, cache=cache)
+    if bundle is None or loaded_sleep_state_path is None:
+        raise FileNotFoundError(bundle_error or f'Unable to load sleep state bundle: {sleep_state_path}')
     state_epoch = np.asarray(bundle["state_epoch"], dtype=int).ravel()
     state_epoch_t = np.asarray(bundle["state_epoch_t"], dtype=float).ravel()
     return align_length(state_epoch, state_epoch_t)
 
 
-def concatenate_sleep_state_arrays(exp_summaries: Sequence[SessionSummary]) -> Tuple[np.ndarray, np.ndarray]:
+def concatenate_sleep_state_arrays(exp_summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> Tuple[np.ndarray, np.ndarray]:
     ordered = sorted(
         [summary for summary in exp_summaries if summary.sleep_state_paths],
         key=lambda summary: (
@@ -2159,7 +2245,7 @@ def concatenate_sleep_state_arrays(exp_summaries: Sequence[SessionSummary]) -> T
     previous_duration_s = 10.0
     for summary in ordered:
         sleep_state_path = Path(summary.sleep_state_paths[0])
-        state_epoch, state_epoch_t = load_sleep_state_arrays(sleep_state_path)
+        state_epoch, state_epoch_t = load_sleep_state_arrays(sleep_state_path, cache=cache)
         if state_epoch.size == 0:
             continue
         finite_t = np.asarray(state_epoch_t, dtype=float)
@@ -2383,14 +2469,15 @@ def select_representative_state_window(
     *,
     window_s: float = 600.0,
     active_wake_rem_buffer_s: float = 600.0,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Optional[MontageSelection]:
     if str(summary.category) != 'sleep' or not summary.sleep_state_paths:
         return None
     sleep_state_path = Path(summary.sleep_state_paths[0])
-    try:
-        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
-    except Exception:
+    bundle, loaded_sleep_state_path, _ = load_sleep_state_bundle_for_path(sleep_state_path, cache=load_cache)
+    if bundle is None or loaded_sleep_state_path is None:
         return None
+    sleep_state_path = Path(loaded_sleep_state_path)
 
     state_epoch = np.asarray(bundle.get('state_epoch', []), dtype=int).ravel()
     state_epoch_t = np.asarray(bundle.get('state_epoch_t', []), dtype=float).ravel()
@@ -2625,6 +2712,7 @@ def align_movie_pupil_series_to_timeline(pupil_t: np.ndarray, pupil_diameter: np
 def compute_animal_pupil_normalization(
     movie_exp_summaries: Sequence[SessionSummary],
     repo_base: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Dict[str, Dict[str, float]]:
     per_animal_values: Dict[str, List[np.ndarray]] = defaultdict(list)
     for summary in movie_exp_summaries:
@@ -2632,7 +2720,7 @@ def compute_animal_pupil_normalization(
         if not exp_id:
             continue
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
-        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category, cache=load_cache)
         if pupil_t is None or pupil_diameter is None or pupil_source is None:
             continue
         values = np.asarray(pupil_diameter, dtype=float).ravel()
@@ -2658,8 +2746,15 @@ def compute_animal_pupil_normalization(
     return normalization
 
 
-def load_session_pupil_series(exp_root: Path, category: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
+def load_session_pupil_series(
+    exp_root: Path,
+    category: str,
+    cache: Optional[SleepAnalysisCache] = None,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
     category = str(category).strip().lower()
+    cache_key = (exp_root, category)
+    if cache is not None and cache_key in cache.pupil_series:
+        return cache.pupil_series[cache_key]
     if category == 'sleep':
         video_path = find_eye_video_path(exp_root)
         if video_path is not None:
@@ -2667,11 +2762,17 @@ def load_session_pupil_series(exp_root: Path, category: str) -> Tuple[Optional[n
             if eye_side is not None:
                 pupil_t, pupil_diameter, pupil_source = load_resampled_eye_pupil_series(exp_root, eye_side)
                 if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
-                    return pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye'
+                    result = (pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye')
+                    if cache is not None:
+                        cache.pupil_series[cache_key] = result
+                    return result
     movie_loader = load_movie_pupil_series
     pupil_t, pupil_diameter, pupil_source = movie_loader(exp_root)
     if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
-        return pupil_t, pupil_diameter, pupil_source
+        result = (pupil_t, pupil_diameter, pupil_source)
+        if cache is not None:
+            cache.pupil_series[cache_key] = result
+        return result
     if category != 'sleep':
         video_path = find_eye_video_path(exp_root)
         if video_path is not None:
@@ -2679,13 +2780,20 @@ def load_session_pupil_series(exp_root: Path, category: str) -> Tuple[Optional[n
             if eye_side is not None:
                 pupil_t, pupil_diameter, pupil_source = load_resampled_eye_pupil_series(exp_root, eye_side)
                 if pupil_t is not None and pupil_diameter is not None and pupil_source is not None:
-                    return pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye'
-    return None, None, None
+                    result = (pupil_t, pupil_diameter, f'{pupil_source} | {eye_side} eye')
+                    if cache is not None:
+                        cache.pupil_series[cache_key] = result
+                    return result
+    result = (None, None, None)
+    if cache is not None:
+        cache.pupil_series[cache_key] = result
+    return result
 
 
 def build_animal_pupil_normalization(
     exp_summaries: Sequence[SessionSummary],
     repo_base: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Dict[str, Dict[str, Any]]:
     pooled_by_animal: Dict[str, List[np.ndarray]] = defaultdict(list)
     for summary in exp_summaries:
@@ -2693,7 +2801,7 @@ def build_animal_pupil_normalization(
         if not exp_id:
             continue
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
-        pupil_t, pupil_size, pupil_source = load_session_pupil_series(exp_root, summary.category)
+        pupil_t, pupil_size, pupil_source = load_session_pupil_series(exp_root, summary.category, cache=load_cache)
         if pupil_t is None or pupil_size is None or pupil_source is None:
             continue
         pupil_t = np.asarray(pupil_t, dtype=float).ravel()
@@ -2728,6 +2836,7 @@ def compute_pupil_state_percentiles_for_expid(
     summary: SessionSummary,
     repo_base: Path,
     animal_pupil_normalization: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     sample_rows: List[Dict[str, Any]] = []
     summary_rows: List[Dict[str, Any]] = []
@@ -2756,11 +2865,10 @@ def compute_pupil_state_percentiles_for_expid(
 
     sleep_state_path = Path(summary.sleep_state_paths[0])
     exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
-    try:
-        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
-    except Exception as exc:
-        checks['skip_reason'] = f'failed to load sleep state bundle: {exc}'
-        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: {exc}')
+    bundle, loaded_sleep_state_path, bundle_error = load_sleep_state_bundle(exp_root, cache=load_cache)
+    if bundle is None or loaded_sleep_state_path is None:
+        checks['skip_reason'] = f'failed to load sleep state bundle: {bundle_error or "missing sleep state bundle"}'
+        warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: {bundle_error or "missing sleep state bundle"}')
         return sample_rows, summary_rows, checks
 
     state_t, state_values, state_source = load_sleep_state_timeline(bundle)
@@ -2770,7 +2878,7 @@ def compute_pupil_state_percentiles_for_expid(
         warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: empty sleep state timeline')
         return sample_rows, summary_rows, checks
 
-    pupil_t, pupil_size, pupil_source = load_session_pupil_series(exp_root, summary.category)
+    pupil_t, pupil_size, pupil_source = load_session_pupil_series(exp_root, summary.category, cache=load_cache)
     if pupil_t is None or pupil_size is None or pupil_source is None:
         checks['skip_reason'] = 'missing pupil data'
         warnings.warn(f'Skipping pupil percentile analysis for {summary.animal_id} {exp_id}: missing pupil data')
@@ -2867,6 +2975,7 @@ def summarize_pupil_state_percentiles_by_category(
     by_exp_table_path: Path,
     summary_table_path: Path,
     plots_only: bool,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     if plots_only and by_exp_table_path.exists() and summary_table_path.exists():
         by_exp_rows = read_csv_rows(by_exp_table_path)
@@ -2879,12 +2988,12 @@ def summarize_pupil_state_percentiles_by_category(
             'exp_checks': [],
         }
 
-    animal_pupil_normalization = build_animal_pupil_normalization(exp_summaries, repo_base)
+    animal_pupil_normalization = build_animal_pupil_normalization(exp_summaries, repo_base, load_cache=load_cache)
     by_exp_rows: List[Dict[str, Any]] = []
     summary_rows: List[Dict[str, Any]] = []
     exp_checks: List[Dict[str, Any]] = []
     for summary in exp_summaries:
-        sample_rows, exp_summary_rows, check = compute_pupil_state_percentiles_for_expid(summary, repo_base, animal_pupil_normalization)
+        sample_rows, exp_summary_rows, check = compute_pupil_state_percentiles_for_expid(summary, repo_base, animal_pupil_normalization, load_cache=load_cache)
         by_exp_rows.extend(sample_rows)
         summary_rows.extend(exp_summary_rows)
         exp_checks.append(check)
@@ -2900,6 +3009,8 @@ def summarize_pupil_state_percentiles_by_category(
 def summarize_movie_pupil_state(
     movie_exp_summaries: Sequence[SessionSummary],
     repo_base: Path,
+    animal_pupil_normalization: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     per_exp_rows: List[Dict[str, Any]] = []
     pooled_values: Dict[str, List[float]] = defaultdict(list)
@@ -2917,7 +3028,8 @@ def summarize_movie_pupil_state(
             return float('nan')
         return float(value)
 
-    animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base)
+    if animal_pupil_normalization is None:
+        animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base, load_cache=load_cache)
 
     for summary in movie_exp_summaries:
         exp_id = str(summary.exp_ids[0]) if summary.exp_ids else ''
@@ -2925,9 +3037,11 @@ def summarize_movie_pupil_state(
             continue
         sleep_state_path = Path(summary.sleep_state_paths[0]) if summary.sleep_state_paths else resolve_repo_root(repo_base, summary.animal_id, exp_id) / 'sleep_score' / 'sleep_state.pickle'
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
-        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+        bundle, loaded_sleep_state_path, bundle_error = load_sleep_state_bundle(exp_root, cache=load_cache)
+        if bundle is None or loaded_sleep_state_path is None:
+            continue
         state_t, state_values, state_source = load_sleep_state_timeline(bundle)
-        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category, cache=load_cache)
         if pupil_t is None or pupil_diameter is None or pupil_source is None:
             continue
         checks['n_expids_with_pupil'] += 1
@@ -2990,6 +3104,8 @@ def summarize_movie_pupil_transitions(
     movie_exp_summaries: Sequence[SessionSummary],
     repo_base: Path,
     window_s: float = DEFAULT_MOVIE_PUPIL_TRANSITION_WINDOW_S,
+    animal_pupil_normalization: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     transition_events: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     per_exp_transition_events: Dict[str, Dict[Tuple[str, str], List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
@@ -3007,7 +3123,8 @@ def summarize_movie_pupil_transitions(
             return float('nan')
         return float(value)
 
-    animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base)
+    if animal_pupil_normalization is None:
+        animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base, load_cache=load_cache)
 
     for summary in movie_exp_summaries:
         exp_id = str(summary.exp_ids[0]) if summary.exp_ids else ''
@@ -3015,9 +3132,11 @@ def summarize_movie_pupil_transitions(
             continue
         sleep_state_path = Path(summary.sleep_state_paths[0]) if summary.sleep_state_paths else resolve_repo_root(repo_base, summary.animal_id, exp_id) / 'sleep_score' / 'sleep_state.pickle'
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
-        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+        bundle, loaded_sleep_state_path, bundle_error = load_sleep_state_bundle(exp_root, cache=load_cache)
+        if bundle is None or loaded_sleep_state_path is None:
+            continue
         state_t, state_values, state_source = load_sleep_state_timeline(bundle)
-        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category, cache=load_cache)
         if pupil_t is None or pupil_diameter is None or pupil_source is None:
             continue
         checks['n_expids_with_pupil'] += 1
@@ -3400,6 +3519,7 @@ def lighten_color(color: str, amount: float = 0.65) -> str:
 def plot_state_montage_per_exp(
     summary: SessionSummary,
     output_dir: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -3411,7 +3531,7 @@ def plot_state_montage_per_exp(
     animal_id = str(summary.animal_id)
     exp_id = str(summary.exp_ids[0]) if summary.exp_ids else Path(summary.sleep_state_paths[0]).stem
     selections = {
-        state: select_representative_state_window(summary, state_code)
+        state: select_representative_state_window(summary, state_code, load_cache=load_cache)
         for state_code, state in enumerate(DEFAULT_STATE_ORDER)
     }
 
@@ -3734,7 +3854,7 @@ def plot_state_montage_per_exp(
     return output_paths
 
 
-def build_day_timeline_profile(day_exp_summaries: Sequence[SessionSummary]) -> Tuple[np.ndarray, Dict[str, np.ndarray], Optional[float]]:
+def build_day_timeline_profile(day_exp_summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> Tuple[np.ndarray, Dict[str, np.ndarray], Optional[float]]:
     ordered = sorted(
         [summary for summary in day_exp_summaries if summary.sleep_state_paths],
         key=lambda summary: (
@@ -3752,7 +3872,7 @@ def build_day_timeline_profile(day_exp_summaries: Sequence[SessionSummary]) -> T
     sleep_start_s: Optional[float] = None
     for summary in ordered:
         sleep_state_path = Path(summary.sleep_state_paths[0])
-        state_epoch, state_epoch_t = load_sleep_state_arrays(sleep_state_path)
+        state_epoch, state_epoch_t = load_sleep_state_arrays(sleep_state_path, cache=cache)
         if state_epoch.size == 0:
             continue
         finite_t = np.asarray(state_epoch_t, dtype=float)
@@ -3783,7 +3903,7 @@ def build_day_timeline_profile(day_exp_summaries: Sequence[SessionSummary]) -> T
     return probability_time_s / 60.0, state_probability_profile, (sleep_start_s / 60.0 if sleep_start_s is not None else None)
 
 
-def estimate_average_sleep_start_min(exp_summaries: Sequence[SessionSummary]) -> Optional[float]:
+def estimate_average_sleep_start_min(exp_summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> Optional[float]:
     grouped: Dict[Tuple[str, str], List[SessionSummary]] = defaultdict(list)
     for summary in exp_summaries:
         grouped[(str(summary.animal_id), str(summary.date))].append(summary)
@@ -3796,7 +3916,7 @@ def estimate_average_sleep_start_min(exp_summaries: Sequence[SessionSummary]) ->
                 str(summary.sleep_state_paths[0]) if summary.sleep_state_paths else '',
             ),
         )
-        _, _, sleep_start_min = build_day_timeline_profile(ordered)
+        _, _, sleep_start_min = build_day_timeline_profile(ordered, cache=cache)
         if sleep_start_min is not None and np.isfinite(sleep_start_min):
             sleep_start_values.append(float(sleep_start_min))
     if not sleep_start_values:
@@ -3946,6 +4066,7 @@ def plot_sleep_state_poster_ready_4square_composite(
     exp_summaries: Sequence[SessionSummary],
     day_summaries: Sequence[SessionSummary],
     output_dir: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -4409,9 +4530,9 @@ def plot_sleep_state_poster_ready_4square_composite(
     # ------------------------------------------------------------------
     # Bottom-right: within-day fractions, redrawn from exp/day data
     # ------------------------------------------------------------------
-    time_s, profile = average_combined_day_probability_summaries(exp_summaries)
+    time_s, profile = average_combined_day_probability_summaries(exp_summaries, cache=load_cache)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
-    sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
+    sleep_start_min = estimate_average_sleep_start_min(exp_summaries, cache=load_cache)
     x_max = (
         max(
             float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0),
@@ -4592,6 +4713,7 @@ def plot_sleep_state_poster_ready_composite(
     day_summaries: Sequence[SessionSummary],
     state_montage_artifacts: Sequence[str],
     output_dir: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -4667,9 +4789,9 @@ def plot_sleep_state_poster_ready_composite(
     ax_stack.set_title('Between-days\nstacked comparison', fontsize=max(13, POSTER_TITLE_SIZE - 11), pad=8, loc='left')
     ax_stack.set_xlabel('Within-animal day\nindex (movie + sleep)', fontsize=max(12, POSTER_LABEL_SIZE - 5), labelpad=8)
 
-    time_s, profile = average_combined_day_probability_summaries(exp_summaries)
+    time_s, profile = average_combined_day_probability_summaries(exp_summaries, cache=load_cache)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
-    sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
+    sleep_start_min = estimate_average_sleep_start_min(exp_summaries, cache=load_cache)
     state_order = list(DEFAULT_STATE_ORDER)
     x_max = max(float(np.nanmax(time_min)) + 0.5 * (DEFAULT_PROBABILITY_BIN_S / 60.0), DEFAULT_PROBABILITY_BIN_S / 60.0) if time_min.size else 1.0
     fraction_axes = ax_frac.ravel().tolist()
@@ -5696,6 +5818,7 @@ def _plot_stacked_area_panel(
 def plot_within_day_sleep_state_fractions(
     exp_summaries: Sequence[SessionSummary],
     output_dir: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -5716,10 +5839,10 @@ def plot_within_day_sleep_state_fractions(
     note_size = 14
     line_width = 2.4
 
-    day_summaries = aggregate_day_summaries(exp_summaries)
-    time_s, profile = average_combined_day_probability_summaries(exp_summaries)
+    day_summaries = aggregate_day_summaries(exp_summaries, cache=load_cache)
+    time_s, profile = average_combined_day_probability_summaries(exp_summaries, cache=load_cache)
     time_min = time_s / 60.0 if time_s.size else np.asarray([], dtype=float)
-    sleep_start_min = estimate_average_sleep_start_min(exp_summaries)
+    sleep_start_min = estimate_average_sleep_start_min(exp_summaries, cache=load_cache)
     state_order = list(DEFAULT_STATE_ORDER)
 
     x_max = (
@@ -6137,12 +6260,12 @@ def plot_rem_day_presence_pie(rem_day_presence_rows: Sequence[Mapping[str, Any]]
     return save_figure(fig, output_path, dpi=POSTER_DPI)
 
 
-def _rem_latencies_for_summaries(summaries: Sequence[SessionSummary]) -> List[Dict[str, Any]]:
+def _rem_latencies_for_summaries(summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for summary in summaries:
         if str(summary.category) != 'sleep' or not summary.sleep_state_paths:
             continue
-        epoch_state, epoch_t = concatenate_sleep_state_arrays([summary])
+        epoch_state, epoch_t = concatenate_sleep_state_arrays([summary], cache=cache)
         epoch_state = np.asarray(epoch_state, dtype=int).ravel()
         epoch_t = np.asarray(epoch_t, dtype=float).ravel()
         if epoch_state.size == 0 or epoch_t.size == 0:
@@ -6197,11 +6320,11 @@ def _cdf_rows(values_by_scope: Mapping[Tuple[str, str], Sequence[float]], metric
     return rows
 
 
-def build_sleep_rem_analysis(exp_summaries: Sequence[SessionSummary], day_summaries: Sequence[SessionSummary]) -> Dict[str, Any]:
+def build_sleep_rem_analysis(exp_summaries: Sequence[SessionSummary], day_summaries: Sequence[SessionSummary], cache: Optional[SleepAnalysisCache] = None) -> Dict[str, Any]:
     sleep_exp_summaries = [summary for summary in exp_summaries if str(summary.category) == 'sleep']
     sleep_day_summaries = [summary for summary in day_summaries if str(summary.category) == 'sleep']
-    exp_rows = _rem_latencies_for_summaries(sleep_exp_summaries)
-    day_rows = _rem_latencies_for_summaries(sleep_day_summaries)
+    exp_rows = _rem_latencies_for_summaries(sleep_exp_summaries, cache=cache)
+    day_rows = _rem_latencies_for_summaries(sleep_day_summaries, cache=cache)
 
     day_index_rows: List[Dict[str, Any]] = []
     grouped_day_index: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
@@ -6789,6 +6912,7 @@ def plot_movie_pupil_transition_examples_per_exp(
     per_exp_example_traces: Sequence[Mapping[str, Any]],
     repo_base: Path,
     output_dir: Path,
+    load_cache: Optional[SleepAnalysisCache] = None,
 ) -> List[Path]:
     if plt is None:
         raise RuntimeError('matplotlib is required to generate figures')
@@ -6813,10 +6937,7 @@ def plot_movie_pupil_transition_examples_per_exp(
             continue
         exp_root = resolve_repo_root(repo_base, animal_id, exp_id)
         sleep_state_path = exp_root / 'sleep_score' / 'sleep_state.pickle'
-        try:
-            bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
-        except Exception:
-            bundle = None
+        bundle, _, _ = load_sleep_state_bundle_for_path(sleep_state_path, cache=load_cache)
         fig = plt.figure(figsize=(18.8, 22.0))
         outer = fig.add_gridspec(4, 3, wspace=0.18, hspace=0.22)
         pupil_axes: List[Any] = []
@@ -7669,11 +7790,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not requested_expids:
         raise SystemExit("No expIDs were configured.")
 
-    exp_summaries, skipped = collect_exp_summaries(requested_expids, repo_base)
+    load_cache = SleepAnalysisCache()
+    exp_summaries, skipped = collect_exp_summaries(requested_expids, repo_base, load_cache=load_cache)
     if not exp_summaries:
         raise SystemExit("No sleep_state.pickle bundles were loaded successfully.")
 
-    day_summaries = aggregate_day_summaries(exp_summaries)
+    day_summaries = aggregate_day_summaries(exp_summaries, cache=load_cache)
     assign_day_indices(day_summaries)
 
     exp_rows = rows_to_metric_rows(
@@ -7688,7 +7810,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_csv_rows(exp_table_path, exp_rows, fieldnames=sorted({key for row in exp_rows for key in row.keys()}))
     write_csv_rows(day_table_path, day_rows, fieldnames=sorted({key for row in day_rows for key in row.keys()}))
 
-    rem_analysis = build_sleep_rem_analysis(exp_summaries, day_summaries)
+    rem_analysis = build_sleep_rem_analysis(exp_summaries, day_summaries, cache=load_cache)
     rem_exp_table_path = output_dir / "sleep_rem_exp_transition_summary.csv"
     rem_day_table_path = output_dir / "sleep_rem_day_transition_summary.csv"
     rem_probability_table_path = output_dir / "sleep_rem_probability_curve.csv"
@@ -7725,7 +7847,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sleep_state_path = Path(summary.sleep_state_paths[0]) if summary.sleep_state_paths else resolve_repo_root(repo_base, summary.animal_id, exp_id) / 'sleep_score' / 'sleep_state.pickle'
         exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
         trial_csv_path = exp_root / f'{exp_id}_all_trials.csv'
-        trial_rows, trial_fieldnames, trial_error = load_trial_rows(trial_csv_path)
+        trial_rows, trial_fieldnames, trial_error = load_trial_rows(trial_csv_path, cache=load_cache)
         if trial_error is not None or trial_rows is None:
             movie_trial_skip_rows.append(
                 {
@@ -7762,7 +7884,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 }
             )
             continue
-        bundle = normalize_sleep_bundle(load_pickle(sleep_state_path), sleep_state_path)
+        bundle, loaded_sleep_state_path, bundle_error = load_sleep_state_bundle_for_path(sleep_state_path, cache=load_cache)
+        if bundle is None or loaded_sleep_state_path is None:
+            raise FileNotFoundError(bundle_error or f'Missing sleep state bundle: {sleep_state_path}')
+        sleep_state_path = loaded_sleep_state_path
         trial_summary_rows, _, trial_analysis = analyze_movie_expid_trials(
             exp_id,
             summary.animal_id,
@@ -7788,16 +7913,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         movie_trial_exp_checks.append(checks)
 
-    movie_video_rows = summarize_movie_video_groups(movie_trial_rows, 'all')
-    movie_after_blank_or_zebra_rows = summarize_movie_video_groups(movie_trial_rows, 'after_blank_or_zebra')
-    movie_prev_group_rows, movie_prev_group_comparison_rows = summarize_movie_prev_group_comparisons(movie_trial_rows)
-    movie_awake_video_rows = summarize_movie_video_awake_groups(movie_trial_rows, 'all')
-    movie_onset_video_rows = summarize_movie_video_onset_awake_groups(movie_trial_rows, 'all')
-    movie_post_clip_wake_rows = summarize_movie_post_clip_wake_groups(movie_trial_rows, 'all')
-    movie_prev_group_post_clip_wake_rows, movie_prev_group_post_clip_wake_comparison_rows = summarize_movie_prev_group_post_clip_wake_comparisons(movie_trial_rows)
-    movie_pupil_state_by_exp_rows, movie_pupil_state_rows, movie_pupil_state_checks = summarize_movie_pupil_state(pupil_exp_summaries, repo_base)
-    movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(movie_exp_summaries, repo_base)
-    sleep_pupil_transition_rows, sleep_pupil_transition_example_rows, sleep_pupil_transition_example_traces, sleep_pupil_transition_example_per_exp_traces, sleep_pupil_transition_checks = summarize_movie_pupil_transitions(sleep_exp_summaries, repo_base)
+    movie_trial_group_index = build_movie_trial_group_index(movie_trial_rows)
+    movie_video_rows = summarize_movie_video_groups(movie_trial_rows, 'all', group_index=movie_trial_group_index)
+    movie_after_blank_or_zebra_rows = summarize_movie_video_groups(movie_trial_rows, 'after_blank_or_zebra', group_index=movie_trial_group_index)
+    movie_prev_group_rows, movie_prev_group_comparison_rows = summarize_movie_prev_group_comparisons(movie_trial_rows, group_index=movie_trial_group_index)
+    movie_awake_video_rows = summarize_movie_video_awake_groups(movie_trial_rows, 'all', group_index=movie_trial_group_index)
+    movie_onset_video_rows = summarize_movie_video_onset_awake_groups(movie_trial_rows, 'all', group_index=movie_trial_group_index)
+    movie_post_clip_wake_rows = summarize_movie_post_clip_wake_groups(movie_trial_rows, 'all', group_index=movie_trial_group_index)
+    movie_prev_group_post_clip_wake_rows, movie_prev_group_post_clip_wake_comparison_rows = summarize_movie_prev_group_post_clip_wake_comparisons(movie_trial_rows, group_index=movie_trial_group_index)
+    movie_animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base, load_cache=load_cache)
+    sleep_animal_pupil_normalization = compute_animal_pupil_normalization(sleep_exp_summaries, repo_base, load_cache=load_cache)
+    movie_pupil_state_by_exp_rows, movie_pupil_state_rows, movie_pupil_state_checks = summarize_movie_pupil_state(pupil_exp_summaries, repo_base, animal_pupil_normalization=movie_animal_pupil_normalization, load_cache=load_cache)
+    movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(movie_exp_summaries, repo_base, animal_pupil_normalization=movie_animal_pupil_normalization, load_cache=load_cache)
+    sleep_pupil_transition_rows, sleep_pupil_transition_example_rows, sleep_pupil_transition_example_traces, sleep_pupil_transition_example_per_exp_traces, sleep_pupil_transition_checks = summarize_movie_pupil_transitions(sleep_exp_summaries, repo_base, animal_pupil_normalization=sleep_animal_pupil_normalization, load_cache=load_cache)
 
     pupil_percentile_specs = {
         'movie': {
@@ -7819,6 +7947,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             spec['by_exp_table_path'],
             spec['summary_table_path'],
             args.plots_only,
+            load_cache=load_cache,
         )
         pupil_percentile_outputs[category] = {
             'by_exp_rows': by_exp_rows,
@@ -8281,7 +8410,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     saved = plot_rem_day_presence_pie(rem_day_presence_rows, output_dir)
     rem_day_presence_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
-    saved = plot_within_day_sleep_state_fractions(exp_summaries, output_dir)
+    saved = plot_within_day_sleep_state_fractions(exp_summaries, output_dir, load_cache=load_cache)
     within_day_fraction_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
     saved = plot_movie_video_sleep_fraction(movie_trial_rows, output_dir)
@@ -8306,11 +8435,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_examples(sleep_pupil_transition_example_traces, output_dir, figure_dirname=f'{DEFAULT_SLEEP_FIGURE_DIRNAME}/sleep_pupil_transition', figure_stem=DEFAULT_SLEEP_PUPIL_TRANSITION_EXAMPLES_FIGURE_STEM)
     sleep_pupil_transition_example_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
-    saved = plot_movie_pupil_transition_examples_per_exp(movie_pupil_transition_example_per_exp_traces, repo_base, output_dir)
+    saved = plot_movie_pupil_transition_examples_per_exp(movie_pupil_transition_example_per_exp_traces, repo_base, output_dir, load_cache=load_cache)
     movie_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     for group in sleep_pupil_transition_example_per_exp_traces:
         group['output_stem_suffix'] = DEFAULT_SLEEP_PUPIL_TRANSITION_PER_EXP_FIGURE_STEM
-    saved = plot_movie_pupil_transition_examples_per_exp(sleep_pupil_transition_example_per_exp_traces, repo_base, output_dir)
+    saved = plot_movie_pupil_transition_examples_per_exp(sleep_pupil_transition_example_per_exp_traces, repo_base, output_dir, load_cache=load_cache)
     sleep_pupil_transition_example_per_exp_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     movie_percentile = pupil_percentile_outputs['movie']
     sleep_percentile = pupil_percentile_outputs['sleep']
@@ -8352,10 +8481,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sleep_pupil_z_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
     for summary in sorted(sleep_exp_summaries, key=lambda s: (str(s.animal_id), str(s.date), str(s.exp_ids[0]) if s.exp_ids else "", str(s.sleep_state_paths[0]) if s.sleep_state_paths else "")):
-        saved = plot_state_montage_per_exp(summary, output_dir)
+        saved = plot_state_montage_per_exp(summary, output_dir, load_cache=load_cache)
         state_montage_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
 
-    saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, exp_summaries, day_summaries, state_montage_artifacts, output_dir)
+    saved = plot_sleep_state_poster_ready_composite(state_composition_rows, rem_day_presence_rows, exp_summaries, day_summaries, state_montage_artifacts, output_dir, load_cache=load_cache)
     poster_ready_artifacts.extend(project_relative_path(path) for path in saved)
 
     poster_4square_artifacts: List[str] = []
@@ -8367,6 +8496,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         exp_summaries,
         day_summaries,
         output_dir,
+        load_cache=load_cache,
     )
     poster_4square_artifacts.extend(project_relative_path(path) for path in saved)
 

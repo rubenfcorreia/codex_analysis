@@ -3,6 +3,8 @@
 Use `sleep_state_across_days.py` when you want to compare sleep metrics across days for each animal and across animals.
 It reads directly from the repository, only uses `sleep_score/sleep_state.pickle`, and still works when neuronal activity is missing.
 
+See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../../analysis/sleep_state_across_days/README.md](../../analysis/sleep_state_across_days/README.md), [../methods/README.md](../methods/README.md).
+
 ## Script And Config
 
 | File | What it does |

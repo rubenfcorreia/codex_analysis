@@ -31,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 from analysis.compartment_common import filter_comparison_presets, normalize_comparison_presets
-from analysis.main_pipeline.analysis_families.shared_metrics import (
+from analysis.deprecated.main_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
     EVENT_DETECTION_METHODS,
@@ -161,6 +161,7 @@ if str(ROOT_DIR) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("sleep_dendrite_spine_pipeline", sys.modules[__name__])
     sys.modules.setdefault("analysis.main_pipeline.sleep_dendrite_spine_pipeline", sys.modules[__name__])
+    sys.modules.setdefault("analysis.deprecated.main_pipeline.sleep_dendrite_spine_pipeline", sys.modules[__name__])
 # The file is intentionally grouped into: shared constants, low-level helpers,
 # cache builders, analysis, demo generation, and the CLI entrypoint.
 try:
@@ -9357,7 +9358,6 @@ def analysis_day_cache_meta(
         "source_config_hash": str(source_cache.get("config_hash", "")),
         "source_signature": source_cache_signature(source_cache),
         "analysis_config_hash": stable_hash({**source_config, "analysis_unit": str(analysis_unit)}),
-        "analysis_tables_signature": analysis_cache_meta_hash(analysis_tables or {}),
     }
 
 
@@ -9376,6 +9376,7 @@ def load_analysis_day_cache(
     path: Path,
     *,
     expected_meta: Optional[Dict[str, Any]] = None,
+    ignore_meta_keys: Optional[Sequence[str]] = None,
     rebuild: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     if rebuild:
@@ -9396,11 +9397,21 @@ def load_analysis_day_cache(
         step_message("rebuilding day-pooled analysis cache")
         return None, "schema_mismatch"
     if expected_meta is not None:
+        ignore_keys = {str(key) for key in (ignore_meta_keys or []) if str(key)}
+        filtered_expected_meta = {key: value for key, value in expected_meta.items() if key not in ignore_keys}
         saved_meta = cache.get("meta", {})
         if not isinstance(saved_meta, dict):
             saved_meta = {}
-        if analysis_cache_meta_hash(saved_meta) != analysis_cache_meta_hash(expected_meta):
+        filtered_saved_meta = {key: value for key, value in saved_meta.items() if key not in ignore_keys}
+        if analysis_cache_meta_hash(filtered_saved_meta) != analysis_cache_meta_hash(filtered_expected_meta):
             step_message("day-pooled analysis cache meta mismatch")
+            differing_keys = [
+                key
+                for key in sorted(set(filtered_saved_meta) | set(filtered_expected_meta))
+                if filtered_saved_meta.get(key) != filtered_expected_meta.get(key)
+            ]
+            if differing_keys:
+                step_message(f"meta mismatch keys: {', '.join(differing_keys)}")
             return None, "meta_mismatch"
     analysis_cache = cache.get("analysis_cache")
     if not isinstance(analysis_cache, dict):
@@ -16483,11 +16494,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     analysis_tables = analysis_tables_cache.get("analysis_tables", {}) if isinstance(analysis_tables_cache, dict) else None
     analysis_cache_file = analysis_day_cache_path(cache_path)
     analysis_cache_expected_meta = analysis_day_cache_meta(source_cache, analysis_tables, analysis_unit="day")
+    analysis_meta_ignore_keys = ("analysis_tables_signature",)
     analysis_cache_rebuild = bool(rebuild or source_cache_rebuild or analysis_tables_rebuild)
     with step_scope("day-level cache construction"):
         analysis_cache_payload, analysis_cache_status = load_analysis_day_cache(
             analysis_cache_file,
             expected_meta=analysis_cache_expected_meta,
+            ignore_meta_keys=analysis_meta_ignore_keys,
             rebuild=analysis_cache_rebuild,
         )
         if analysis_cache_status == "ok" and isinstance(analysis_cache_payload, dict):
@@ -16521,14 +16534,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shared_shuffle_cache = None
     from analysis_families.core import run_cached_analysis
     source_signature = source_cache_signature(source_cache)
-    analysis_tables_signature = analysis_cache_meta_hash(analysis_cache.get("analysis_tables", {}))
     analysis_results_meta = {
         "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
         "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
         "source_config_hash": str(source_cache.get("config_hash", "")),
         "source_signature": source_signature,
         "analysis_config_hash": str(analysis_cache.get("config_hash", "")),
-        "analysis_tables_signature": analysis_tables_signature,
         "state_comparison_states": list(state_comparison_states or []),
         "basal_apical_states": list(basal_apical_states or []),
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
@@ -16571,13 +16582,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "visual_response_trial_types",
         "visual_response_blank_trial_type",
     ) if plots_only else None
+    results_meta_ignore_keys = analysis_meta_ignore_keys + tuple(plots_only_ignore_meta_keys or ())
     family_result_stage = family_results_cache_stage_for_selection(config.get("analysis_families"))
     family_results_cache_file = family_results_cache_path(analysis_run_cache_path, family_result_stage)
     analysis_results_cache_file_for_run = analysis_results_cache_file
     analysis_results_cache, analysis_results_cache_status = load_analysis_results_cache(
             analysis_results_cache_file,
             expected_meta=analysis_results_meta,
-            ignore_meta_keys=plots_only_ignore_meta_keys,
+            ignore_meta_keys=results_meta_ignore_keys,
             rebuild=False if plots_only else analysis_results_rebuild,
         )
     if plots_only and analysis_results_cache_status == "meta_mismatch":
@@ -16595,7 +16607,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         family_results_cache, family_results_cache_status = load_analysis_results_cache(
             family_results_cache_file,
             expected_meta=family_expected_meta,
-            ignore_meta_keys=plots_only_ignore_meta_keys,
+            ignore_meta_keys=results_meta_ignore_keys,
             rebuild=False,
         )
         if family_results_cache_status == "meta_mismatch":

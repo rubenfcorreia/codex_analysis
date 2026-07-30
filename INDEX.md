@@ -11,11 +11,11 @@ A compact navigation map for the repo, organized the same way as the README file
 
 ## Analysis Tree
 
-### `analysis/main_pipeline/`
+### `analysis/dendrites_pipeline/`
 Main dendrite/spine workflow. The README describes this as a top-level driver plus smaller analysis-family modules.
 
 - `README.md`
-- `sleep_dendrite_spine_pipeline.py`
+- `dendrites_pipeline.py`
 - `sleep_dendrite_spine_example_config.json`
 - `sleep_dendrite_spine_custom_demo_spec.json`
 - `analysis_families/`
@@ -40,14 +40,6 @@ Main dendrite/spine workflow. The README describes this as a top-level driver pl
   - `sleep_dendrite_spine_poster_figure.py`
   - `sleep_dendrite_spine_spine_coactivity_poster_figure.py`
 
-### `analysis/visual_response/`
-Movie visual-response workflow and poster-ready visual-response plots.
-
-- `README.md`
-- `movie_visual_response.py`
-- `movie_visual_response_config.json`
-- `poster_ready_visual_response.py`
-
 ### `analysis/sleep_state_across_days/`
 Sleep-state-only across-days workflow.
 
@@ -56,23 +48,35 @@ Sleep-state-only across-days workflow.
 - `export_thresholded_cinematic_clips.py`
 - `sleep_state_across_days_config.json`
 
-### `analysis/zebra_movies/`
-Present in the tree, but no tracked runnable scripts were found when this index was refreshed.
-
 ## Docs
-- `docs/main_pipeline/` - main pipeline notes.
+- `docs/dendrites_pipeline/` - main pipeline notes.
+- `docs/deprecated/main_pipeline/` - deprecated archive of the old main pipeline docs.
 - `docs/methods/` - methods documentation.
 - `docs/sleep_state_across_days/` - across-days documentation.
+
+## Deprecated Archive
+- `analysis/deprecated/main_pipeline/` - retired main dendrite/spine code, configs, figures, posters, demo helpers, and family modules.
+
+### `analysis/deprecated/visual_response/`
+Archived movie visual-response workflow and poster-ready visual-response plots.
+
+- `README.md`
+- `movie_visual_response.py`
+- `movie_visual_response_config.json`
+- `poster_ready_visual_response.py`
+
+### `analysis/deprecated/zebra_movies/`
+Archived generated zebra-movie bytecode only. No tracked source scripts were present in this folder before it was moved.
 
 ## Tests
 - `tests/` - validation and smoke checks.
 
 ## Where To Start
-- To change the main pipeline, start in `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py`.
-- To change one analysis family, start in `analysis/main_pipeline/analysis_families/`.
-- To change movie visual-response plotting, start in `analysis/visual_response/`.
+- To change the main pipeline, start in `analysis/dendrites_pipeline/dendrites_pipeline.py`.
+- To change one analysis family, start in `analysis/dendrites_pipeline/analysis_families/`.
 - To change sleep-state across-days behavior, start in `analysis/sleep_state_across_days/`.
 - To change documentation, start in `docs/`.
+
 
 ## Token-Efficient Reading Order
 1. Read the relevant workflow README first.

@@ -3,15 +3,12 @@ from __future__ import annotations
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-import sys
 
 import numpy as np
 
-MAIN_PIPELINE_DIR = Path(__file__).resolve().parents[1]
-if str(MAIN_PIPELINE_DIR) not in sys.path:
-    sys.path.insert(0, str(MAIN_PIPELINE_DIR))
-
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.shared.analysis_families.registry import analysis_families_to_text as _shared_analysis_families_to_text
+from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     ALL_REQUESTED_STATES,
     DEFAULT_BASAL_APICAL_STATES,
     DENDRITE_RESPONSE_COHORTS,
@@ -85,29 +82,12 @@ ANALYSIS_FAMILIES: List[str] = [
 ]
 
 
-def normalize_analysis_families(values: Optional[Sequence[str] | str]) -> List[str]:
-    if values is None:
-        return list(ANALYSIS_FAMILIES)
-    if isinstance(values, str):
-        raw = [part.strip() for part in values.split(",") if part.strip()]
-    else:
-        raw = [str(value).strip() for value in values if str(value).strip()]
-    if not raw:
-        return list(ANALYSIS_FAMILIES)
-    selected: List[str] = []
-    for family in ANALYSIS_FAMILIES:
-        if family in raw and family not in selected:
-            selected.append(family)
-    unknown = [family for family in raw if family not in ANALYSIS_FAMILIES]
-    if unknown:
-        raise SystemExit(
-            f"Unknown analysis family/families: {', '.join(unknown)}. Allowed values are: {', '.join(ANALYSIS_FAMILIES)}"
-        )
-    return selected
+def normalize_analysis_families(values):
+    return _shared_normalize_analysis_families(values, allowed_families=ANALYSIS_FAMILIES)
 
 
-def analysis_families_to_text(values: Optional[Sequence[str] | str]) -> str:
-    return ",".join(normalize_analysis_families(values))
+def analysis_families_to_text(values):
+    return _shared_analysis_families_to_text(values, allowed_families=ANALYSIS_FAMILIES)
 
 
 def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:
@@ -233,6 +213,11 @@ def prepare_visual_response_cohorts(
         "spine_visual_response": spine_visual_response,
         "spine_visual_response_state_summaries": spine_visual_response_state_summaries,
     }
+
+
+def _needs_visual_response_cohorts(selected_families: Sequence[str]) -> bool:
+    selected = {str(family) for family in selected_families}
+    return bool(selected.intersection({"state", "mixed_model"}))
 
 
 def run_state_family(
@@ -676,31 +661,32 @@ def run_cached_analysis(
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
 
-    # Prepare visual-response cohorts before family dispatch so downstream analyses can reuse
-    # all/responsive/nonresponsive splits.
-    with step_scope("visual response cohorts"):
-        results.update(
-            prepare_visual_response_cohorts(
-                cache,
-                state_comparison_states=state_comparison_states,
-                source_cache=source_cache,
-                output_dir=output_dir,
-                figure_root=figure_root,
+    if _needs_visual_response_cohorts(selected_families):
+        # Prepare visual-response cohorts before family dispatch so downstream analyses can reuse
+        # all/responsive/nonresponsive splits.
+        with step_scope("visual response cohorts"):
+            results.update(
+                prepare_visual_response_cohorts(
+                    cache,
+                    state_comparison_states=state_comparison_states,
+                    source_cache=source_cache,
+                    output_dir=output_dir,
+                    figure_root=figure_root,
+                )
             )
-        )
-    if cache_path is not None and analysis_results_meta is not None:
-        save_family_results_cache(cache_path, "visual_response", results, base_meta=analysis_results_meta)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "visual_response", results, base_meta=analysis_results_meta)
 
-    for key in (
-        "dendrite_visual_response_state_summaries",
-        "spine_visual_response_state_summaries",
-    ):
-        value = results.get(key, {})
-        if not isinstance(value, dict) or not value:
-            step_message(f"{key}: empty")
-            continue
+        for key in (
+            "dendrite_visual_response_state_summaries",
+            "spine_visual_response_state_summaries",
+        ):
+            value = results.get(key, {})
+            if not isinstance(value, dict) or not value:
+                step_message(f"{key}: empty")
+                continue
 
-        step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
+            step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
     if "state" in selected_families:
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:

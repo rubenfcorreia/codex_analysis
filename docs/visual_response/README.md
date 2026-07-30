@@ -1,6 +1,8 @@
 # Visual Response Methods
 
-This page documents the visual-response launcher in `analysis/visual_response/`.
+This page documents the archived visual-response launcher in `analysis/deprecated/visual_response/`.
+
+See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../../analysis/deprecated/visual_response/README.md](../../analysis/deprecated/visual_response/README.md).
 
 ## Data Split
 

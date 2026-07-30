@@ -14,11 +14,11 @@ from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import is_significant_row
+from analysis.dendrites_pipeline.dendrites_pipeline import is_significant_row
 from analysis.shared.shared_boxplots import plot_boxplot_series
 
 try:  # Keep the state palette aligned with the main dendrite pipeline.
-    from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (  # type: ignore
+    from analysis.dendrites_pipeline.dendrites_pipeline import (  # type: ignore
         state_display_color as _main_state_display_color,
         state_family_label as _main_state_family_label,
     )
@@ -447,6 +447,8 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
     comparison_rows = kwargs.get("comparison_rows")
     cohort_label = kwargs.get("cohort_label", "all")
+    title = kwargs.get("title", "state_summary_boxplots_correlation")
+    output_stem = kwargs.get("output_stem", "state_summary_boxplots_correlation")
     if output_root is None:
         raise ValueError("plot_state_correlation needs an output root")
     frame = _read_frame(rows)
@@ -463,8 +465,8 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
         label_col=label_col,
         value_col=value_col,
         output_dir=Path(output_root) / "figures" / "correlation" / cohort_label,
-        stem="state_summary_boxplots_correlation",
-        title="state_summary_boxplots_correlation",
+        stem=output_stem,
+        title=title,
         ylabel="Correlation",
         accent_color="#334155",
         comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
@@ -521,7 +523,7 @@ def plot_lag_heatmap(*args: Any, **kwargs: Any) -> list[Path]:
         cmap="coolwarm",
         norm=mcolors.TwoSlopeNorm(vcenter=0.0, vmin=-bound, vmax=bound),
     )
-    ax.set_title("Bouton-soma correlation by state and lag", fontsize=20, fontweight="bold", color="#334155", pad=12)
+    ax.set_title("Axon-soma correlation by state and lag", fontsize=20, fontweight="bold", color="#334155", pad=12)
     ax.set_xlabel("Lag (s)", fontsize=18)
     ax.set_ylabel("State", fontsize=18)
     ax.set_yticks(np.arange(len(labels)))

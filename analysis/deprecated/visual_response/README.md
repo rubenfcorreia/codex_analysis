@@ -1,6 +1,8 @@
-# Movie Dendrites and Rapid Retinotopy
+# Archived Movie Dendrites and Rapid Retinotopy
 
-This folder contains the visual-response launcher for the movie dendrite cohorts and the rapid-retinotopy soma cohorts.
+This folder contains the archived visual-response launcher for the movie dendrite cohorts and the rapid-retinotopy soma cohorts.
+
+See also: [../../../README.md](../../../README.md), [../../README.md](../../README.md), [../../../docs/visual_response/README.md](../../../docs/visual_response/README.md).
 
 ## Launcher
 
@@ -33,7 +35,7 @@ This folder contains the visual-response launcher for the movie dendrite cohorts
 ## Example
 
 ```bash
-python3 /home/rubencorreia/code/codex_analysis/analysis/visual_response/movie_visual_response.py --config /home/rubencorreia/code/codex_analysis/analysis/visual_response/movie_visual_response_config.json
+python3 /home/rubencorreia/code/codex_analysis/analysis/deprecated/visual_response/movie_visual_response.py --config /home/rubencorreia/code/codex_analysis/analysis/deprecated/visual_response/movie_visual_response_config.json
 ```
 
 ## Notes

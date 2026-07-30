@@ -6,8 +6,10 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 from scipy import stats
 
-from analysis.compartment_common import canonical_state_label, find_first_key, read_pickle
-from analysis.main_pipeline.analysis_families.shared_metrics import (
+from analysis.compartment_common import find_first_key, read_pickle
+from analysis.shared.cache_utils import stable_hash
+from analysis.shared.state_utils import canonical_state_label
+from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
     EVENT_DETECTION_METHODS,
@@ -21,7 +23,7 @@ from analysis.main_pipeline.analysis_families.shared_metrics import (
     visual_response_metric_field,
     visual_response_metric_label,
 )
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     apply_bonferroni_correction,
     build_event_info,
     build_state_masks_movie,
@@ -37,6 +39,8 @@ VISUAL_RESPONSE_BLANK_TRIAL_TYPE = "blank"
 VISUAL_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
 
 DEFAULT_VISUAL_RESPONSE_COHORT = "all"
+
+_VISUAL_RESPONSE_CUT_DATA_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
 
 
 def event_frequency_per_minute(event_count: int, duration_seconds: float) -> float:
@@ -144,6 +148,17 @@ def visual_response_trial_group(state_label: Any) -> Optional[str]:
     return None
 
 
+def _path_signature(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if path is None or not path.exists():
+        return None
+    stat = path.stat()
+    return {
+        "path": str(path),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
 def load_visual_response_cut_data(
     exp_root: Path,
     channel: int,
@@ -163,11 +178,9 @@ def load_visual_response_cut_data(
             break
     if selected_path is None:
         return None
-    cut_time, cut_neural, _ = extract_cut_neural_bundle(selected_path)
-    cut_time = np.asarray(cut_time, dtype=float)
-    cut_neural = np.asarray(cut_neural, dtype=float)
-    clean_rows = [dict(row) for row in trial_rows if isinstance(row, Mapping)]
+    clean_rows = [row for row in trial_rows if isinstance(row, Mapping)]
     columns = list(clean_rows[0].keys()) if clean_rows else []
+    selected_wheel_path: Optional[Path] = None
     wheel_path_candidates = (
         exp_root / "cut" / "wheel.pickle",
         exp_root / "cut_intertrials" / "wheel.pickle",
@@ -180,7 +193,24 @@ def load_visual_response_cut_data(
                 wheel_bundle = read_pickle(wheel_path)
             except Exception:
                 wheel_bundle = None
+            selected_wheel_path = wheel_path
             break
+    cache_key = stable_hash(
+        {
+            "exp_root": str(exp_root),
+            "channel": int(channel),
+            "locomotion_threshold": float(locomotion_threshold) if locomotion_threshold is not None else None,
+            "selected_path": _path_signature(selected_path),
+            "wheel_path": _path_signature(selected_wheel_path),
+            "columns": list(columns),
+            "trial_rows": clean_rows,
+        }
+    )
+    if cache_key in _VISUAL_RESPONSE_CUT_DATA_CACHE:
+        return _VISUAL_RESPONSE_CUT_DATA_CACHE[cache_key]
+    cut_time, cut_neural, _ = extract_cut_neural_bundle(selected_path)
+    cut_time = np.asarray(cut_time, dtype=float)
+    cut_neural = np.asarray(cut_neural, dtype=float)
     wheel_time = find_first_key(wheel_bundle, ["t", "time", "timestamps"]) if isinstance(wheel_bundle, Mapping) else None
     wheel_speed = find_first_key(wheel_bundle, ["speed", "wheel", "motion", "velocity"]) if isinstance(wheel_bundle, Mapping) else None
     wheel_interp = None
@@ -206,13 +236,15 @@ def load_visual_response_cut_data(
         None,
         threshold,
     )
-    return {
+    result = {
         "cut_time": cut_time,
         "cut_neural": cut_neural,
         "trial_meta": trial_meta,
         "source_label": selected_label,
         "source_path": str(selected_path),
     }
+    _VISUAL_RESPONSE_CUT_DATA_CACHE[cache_key] = result
+    return result
 
 
 def visual_response_trial_rows(

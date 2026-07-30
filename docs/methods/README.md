@@ -3,6 +3,8 @@
 This page explains how the main analysis metrics are computed in `codex_analysis` and how the statistical tests are applied.
 It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository.
 
+See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md), [../visual_response/README.md](../visual_response/README.md), [../sleep_state_across_days/README.md](../sleep_state_across_days/README.md).
+
 Visual-response note: the main pipeline now treats dendrite and spine visual-response metrics as separate cohorts, uses movie-style blank-versus-movies comparisons, and reads those metrics from cut stimulus-period data, preferring `cut_intertrials/` and falling back to `cut_with_intertrials/`.
 
 ## Main Dendrite/Spine Pipeline
@@ -42,6 +44,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 ### Summary Metrics
 
 - `state_comparisons.csv` and the paired state summary figures report mean activity by requested state.
+- `roi_split_subject_state.csv`, `roi_split_membership.csv`, `roi_split_comparisons.csv`, and `roi_split_summary.csv` report more-active vs less-active ROI groups, ranked globally across pooled eligible ROIs with duration-weighted scores. The helper runs both activity-derived and event-frequency-derived rankings and compares the same response metrics within overall, NREM, and REM windows. Matching figures are written under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png` and `results/soma_bouton_pipeline/figures/roi_split/<roi_type>/<split_name>/roi_split_<roi_type>_<split_name>.svg|png`.
 - `basal_apical_comparisons.csv` and the basal/apical figures compare the same metric between basal and apical compartments.
 - Correlation analyses report Pearson `r` for:
   - dendrite activity vs wheel motion
@@ -62,13 +65,14 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - Unpaired comparisons use:
   - Welch's t-test when the data look approximately normal
   - Mann-Whitney U otherwise
+- ROI split comparisons use independent-group tests on the more-active and less-active ROI groups: Welch's t-test when both groups look approximately normal, Mann-Whitney U otherwise, plus a shuffle null from permuting the group labels.
 - Correlation analyses use Pearson `r` plus:
   - the classical `pearsonr` p-value
   - a shuffle p-value from circular-shift or permutation nulls
 - The circular-shift nulls used by the trace-based correlation and coactivity families are built from a shared cache so the same surrogate shifts can be reused across those analyses.
 - Spine-spine matrix similarity uses Pearson `r` between the upper triangles of state-specific correlation matrices, with a shuffle null made by reassigning spine vectors across the two state groups.
 - Spine coactivity uses Pearson `r` on state-masked `spine_specific` traces and a circular-shift shuffle null.
-- The repository treats `shuffle_p < 0.05` as the primary significance rule for the state, correlation, matrix, and coactivity families.
+- The repository treats `shuffle_p < 0.05` as the primary significance rule for the state, ROI split, correlation, matrix, and coactivity families.
 - For visual-response boxplots, compare the mean cut-period activity during blank trials against the mean cut-period activity during movie trials, and only use the `cut_with_intertrials/` bundle for that metric.
 
 ### Mixed-Model Layer
@@ -91,6 +95,10 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 ### Main Pipeline Outputs
 
 - `state_comparisons.csv`
+- `roi_split_subject_state.csv`
+- `roi_split_membership.csv`
+- `roi_split_comparisons.csv`
+- `roi_split_summary.csv`
 - `correlations.csv`
 - `matrix_similarity.csv`
 - `mixed_model_summary_mean_dendrite_activity.csv`

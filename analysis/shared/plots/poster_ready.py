@@ -132,6 +132,42 @@ def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_re
     return assigned
 
 
+def _unit_cohort_lookup(visual_response_rows: Sequence[Mapping[str, Any]]) -> Dict[str, str]:
+    lookup: Dict[str, str] = {}
+    for row in visual_response_rows:
+        unit_id = str(row.get("unit_id") or "").strip()
+        if not unit_id:
+            continue
+        cohort = "responsive" if _coerce_bool(row.get("responsive", False)) or str(row.get("cohort") or "").strip().lower() == "responsive" else "nonresponsive"
+        lookup[unit_id] = cohort
+    return lookup
+
+
+def assign_pairwise_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_response_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    lookup = _unit_cohort_lookup(visual_response_rows)
+    assigned: list[dict[str, Any]] = []
+    for row in rows:
+        row_copy = dict(row)
+        left_cohort = lookup.get(str(row_copy.get("left_unit_id") or "").strip(), "mixed")
+        right_cohort = lookup.get(str(row_copy.get("right_unit_id") or "").strip(), "mixed")
+        row_copy["left_member_cohort"] = left_cohort
+        row_copy["right_member_cohort"] = right_cohort
+        row_copy["cohort"] = left_cohort if left_cohort == right_cohort and left_cohort in {"responsive", "nonresponsive"} else "mixed"
+        assigned.append(row_copy)
+    return assigned
+
+
+def split_rows_by_cohort(rows: Sequence[Mapping[str, Any]], *, cohort_key: str = "cohort") -> Dict[str, list[dict[str, Any]]]:
+    grouped: Dict[str, list[dict[str, Any]]] = {"all": [] , "responsive": [], "nonresponsive": []}
+    for row in rows:
+        row_copy = dict(row)
+        grouped["all"].append(row_copy)
+        cohort = str(row_copy.get(cohort_key) or "").strip().lower()
+        if cohort in {"responsive", "nonresponsive"}:
+            grouped[cohort].append(row_copy)
+    return grouped
+
+
 def _poster_mixed_model_term_kind(term: str) -> str:
     term = str(term or "")
     if term == "Intercept":
@@ -1181,6 +1217,7 @@ def write_correlation_poster_figure(
     comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     output_stem: Optional[str] = None,
     title: str = "State correlation summaries",
+    figure_label: Optional[str] = None,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -1214,7 +1251,8 @@ def write_correlation_poster_figure(
         extent_padding_scale=0.03,
         horizontal=True,
     )
-    fig.suptitle(f"{entity_label.capitalize()} {title.lower()}", fontsize=FIGURE_TITLE_FS, y=0.965)
+    label = figure_label if figure_label is not None else entity_label.capitalize()
+    fig.suptitle(f"{label} {title.lower()}", fontsize=FIGURE_TITLE_FS, y=0.965)
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 
@@ -2323,6 +2361,8 @@ def write_blank_movie_state_boxplot_figure(
 
 
 __all__ = [
+    "assign_pairwise_visual_response_cohorts",
+    "split_rows_by_cohort",
     "write_visual_response_poster_figure",
     "write_state_mixed_model_poster_figure",
     "write_blank_movie_state_boxplot_figure",

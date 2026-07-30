@@ -1,12 +1,14 @@
 # Main Dendrite/Spine Pipeline
 
-Use `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
-The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces.
+Use `analysis/dendrites_pipeline/dendrites_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
+The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces. The workflow keeps its caches under the dendrites results tree, so reruns with unchanged inputs can reuse the same pipeline-local intermediates.
+
+See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../visual_response/README.md](../visual_response/README.md), [../methods/README.md](../methods/README.md), [../sleep_state_across_days/README.md](../sleep_state_across_days/README.md), [../deprecated/main_pipeline/README.md](../deprecated/main_pipeline/README.md).
 
 ## Current Workflow
 
 1. Load the config and resolve repository, cache, output, and figure paths.
-2. Build or reuse the source cache, analysis-table cache, analysis-results cache, and shared shuffle cache so the pipeline can reuse prior work when the source data and settings match.
+2. Build or reuse the source cache, analysis-table cache, analysis-results cache, and shared shuffle cache so the pipeline can reuse prior work when the source data and settings match. These caches stay inside the dendrites results tree, so repeated runs only reuse dendrites-specific intermediates.
 3. Normalize the data to day-level analysis units.
    - Multiple source expIDs from the same day are pooled into one day-level unit.
    - The pooled unit keeps the source provenance, but downstream summaries are reported per day rather than per raw session.
@@ -14,12 +16,13 @@ The day-figure helper, demo builder, and poster scripts now live in dedicated su
 4. Build the state masks that power the state-group analyses.
    - Movie experiments derive trial-by-trial masks from the trial table plus the locomotion and sleep metadata.
    - When a `sleep_state.pickle` bundle is available, the quiet-state labels are refined into `quiet_awake`, `nrem`, and `rem`.
-   - These masks are reused by the state-comparison, basal-vs-apical, spine coactivity, and mixed-model branches so every family sees the same pooled day-level observations.
-5. Prepare visual-response cohorts before any family analysis runs.
+   - These masks are reused by the state-comparison, ROI split, basal-vs-apical, spine coactivity, and mixed-model branches so every family sees the same pooled day-level observations.
+5. Prepare visual-response cohorts when the selected families need them.
    - Dendrite responsiveness is computed from dendrite cut activity only.
    - Spine responsiveness is computed from spine-specific cut activity only.
    - The classifier compares visual stimulus trials against blank trials using the cut stimulus-period data, preferring `cut_intertrials/` and falling back to `cut_with_intertrials/` for the visual-response metric inputs.
    - This produces the `all`, `responsive`, and `nonresponsive` cohorts that downstream families can reuse immediately.
+   - Runs that only ask for a family such as `spine_coactivity` skip this cut-bundle work entirely, while `state` and `mixed_model` runs still prepare the cohorts because they need them.
 6. Run the analysis families through the top-level driver.
    - Each family reads the normalized day-level cache rather than raw source files.
    - Family-specific summaries, comparisons, and figures operate on the already-pooled units and selected cohorts.
@@ -30,15 +33,17 @@ The day-figure helper, demo builder, and poster scripts now live in dedicated su
 
 | Script | What it does |
 | --- | --- |
-| `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` | Main analysis CLI for real data and demo runs. |
-| `analysis/main_pipeline/figures/sleep_dendrite_spine_day_figures.py` | Rebuilds the day-level figures and checkpoint gallery from an existing cache. |
-| `analysis/main_pipeline/demo/sleep_demo_builder.py` | Builds and validates the synthetic demo repository. |
-| `analysis/main_pipeline/posters/` | Poster-generation scripts and shared poster helpers. |
-| `analysis/main_pipeline/analysis_families/` | Family-specific analysis runners and shared dispatcher logic. |
+| `analysis/dendrites_pipeline/dendrites_pipeline.py` | Main analysis CLI for real data and demo runs. |
+| `analysis/dendrites_pipeline/figures/sleep_dendrite_spine_day_figures.py` | Rebuilds the day-level figures and checkpoint gallery from an existing cache. |
+| `analysis/dendrites_pipeline/demo/sleep_demo_builder.py` | Builds and validates the synthetic demo repository. |
+| `analysis/dendrites_pipeline/posters/` | Poster-generation scripts and shared poster helpers. |
+| `analysis/dendrites_pipeline/analysis_families/` | Family-specific analysis runners and shared dispatcher logic. |
 
 ## Visual Response
 
-- The main pipeline writes dendrite and spine visual-response summaries under `results/main_pipeline/figures/visual_response/`.
+- The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/figures/visual_response/`.
+- ROI split figures are written under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png`.
+- The shared renderer lives in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 - Dendrite responsiveness is computed from dendrite cut activity only.
 - Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
 - The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.
@@ -63,11 +68,11 @@ The preprocessing stage keeps event detection tied to the cached `dF/F` traces r
 
 ## Where To Set Inputs
 
-1. Edit `analysis/main_pipeline/sleep_dendrite_spine_example_config.json` for the easiest real-data workflow.
+1. Edit `analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json` for the easiest real-data workflow.
 2. Pass `--config <file>` when you run the script.
 3. Override any field on the CLI if you need a one-off change.
-4. If you want a single script-level place to edit defaults, use `USER_EDITABLE_DEFAULTS` near the top of `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py`.
-5. By default, results are written to `/home/rubencorreia/code/codex_analysis/results/main_pipeline/`.
+4. If you want a single script-level place to edit defaults, use `USER_EDITABLE_DEFAULTS` near the top of `analysis/dendrites_pipeline/dendrites_pipeline.py`.
+5. By default, results are written to `/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline/`.
 
 The main fields you will usually set are:
 
@@ -109,15 +114,15 @@ The repository layout is resolved as:
 Use the example config as a starting point:
 
 ```bash
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_pipeline.py \
-  --config /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_example_config.json
+python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
+  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json
 ```
 
 You can still override the expID lists on the command line; they are treated as source-session provenance and then pooled by day:
 
 ```bash
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_pipeline.py \
-  --config /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_example_config.json \
+python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
+  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json \
   --movie-expids 2025-11-05_01_ESRC020 2026-01-26_01_ESRC023
 ```
 
@@ -153,7 +158,7 @@ The downstream summaries pool same-day source sessions into day-level analysis u
 The default demo builds a synthetic repository with sensible defaults:
 
 ```bash
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_pipeline.py \
+python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
   --demo \
   --output-dir /tmp/sleep_codex_demo
 ```
@@ -161,16 +166,16 @@ python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dend
 The custom demo recipe is a compact builder recipe:
 
 ```bash
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/demo/sleep_demo_builder.py build \
-  --recipe /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_custom_demo_spec.json \
+python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/demo/sleep_demo_builder.py build \
+  --recipe /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json \
   --output-dir /tmp/sleep_codex_custom_demo
 
-python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/demo/sleep_demo_builder.py validate \
-  --recipe /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_custom_demo_spec.json \
+python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/demo/sleep_demo_builder.py validate \
+  --recipe /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json \
   --output-dir /tmp/sleep_codex_custom_demo
 ```
 
-If you omit `--output-dir` when using `demo/sleep_demo_builder.py`, it writes under `/home/rubencorreia/code/codex_analysis/results/main_pipeline/demo/`.
+If you omit `--output-dir` when using `demo/sleep_demo_builder.py`, it writes under `/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline/demo/`.
 
 The recipe usually only needs:
 
@@ -201,6 +206,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 - Computes spine-specific activity with robust regression.
 - Splits movie data into quiet and active states.
 - Fits the mixed-model summaries when the design is well-behaved, and falls back to a fixed-effect least-squares approximation when the mixed-model design is singular or the optimizer cannot converge cleanly.
+- Builds global more-active vs less-active ROI split comparisons from the pooled day-level observations, using both activity-derived and event-frequency-derived rankings.
 - Uses `sleep_state.pickle` for sleep analysis and never uses `sleep_state_sim.pickle`.
 - Alerts and skips sleep-state analysis if `sleep_state.pickle` is missing.
 - Saves a reloadable source cache, analysis-table cache, analysis-results cache, and shared shuffle cache.
@@ -208,7 +214,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 ## Methods
 
 For the metric definitions and statistical tests behind these outputs, see the repo-wide methods page at [docs/methods/README.md](../methods/README.md).
-It covers the preprocessing, state comparisons, correlations, spine coactivity, matrix similarity, and mixed-model families.
+It covers the preprocessing, state comparisons, ROI split comparisons, correlations, spine coactivity, matrix similarity, and mixed-model families.
 
 ## Analysis Logic Tree
 
@@ -251,26 +257,32 @@ The generated `analysis_report.txt` is summary-first.
    - points to the strongest significant result
 2. Check `Results at a glance`
    - gives the tested vs significant counts and percentages for each analysis family
-3. Read `Spine-spine matrix similarity`
+3. Read `ROI split comparisons`
+   - shows the global more-active vs less-active split for overall, NREM, and REM, with both activity-derived and event-frequency-derived rankings
+4. Read `Spine-spine matrix similarity`
    - shows the basal/apical split and the positive-significant / negative-significant / non-significant counts for each selected state pair
-4. Read `Model diagnostics`
+5. Read `Model diagnostics`
    - shows the exact mixed-model equation and the random-effect structure that was actually used
-5. Review `Quality / exclusions`
+6. Review `Quality / exclusions`
    - lists missing inputs, skipped states, insufficient-spine cases, and fallback reasons
-6. Use the CSV files for row-level detail
+7. Use the CSV files for row-level detail
    - the report summarizes the run
-   - `state_comparisons.csv`, `correlations.csv`, `matrix_similarity.csv`, and `mixed_model_*.csv` hold the full rows
+   - `state_comparisons.csv`, `roi_split_*.csv`, `correlations.csv`, `matrix_similarity.csv`, and `mixed_model_*.csv` hold the full rows
 
 ## Outputs
 
 The run writes a compressed cache plus analysis files to the output directory.
-If you do not set `output_dir`, the script uses `/home/rubencorreia/code/codex_analysis/results/main_pipeline/`.
+If you do not set `output_dir`, the script uses `/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline/`.
 
 Typical outputs are:
 
 - `sleep_dendrite_spine_cache.npz`
 - `analysis_results.json`
 - `state_comparisons.csv`
+- `roi_split_subject_state.csv`
+- `roi_split_membership.csv`
+- `roi_split_comparisons.csv`
+- `roi_split_summary.csv`
 - `correlations.csv`
 - `matrix_similarity.csv`
 - `mixed_model_summary_mean_dendrite_activity.csv`
@@ -296,10 +308,10 @@ Typical outputs are:
 
 ## Checkpoint Gallery
 
-The checkpoint gallery is written to `results/main_pipeline/checkpoint_examples/` and gives you one representative image for each major stage of the pipeline.
+The checkpoint gallery is written to `results/dendrites_pipeline/checkpoint_examples/` and gives you one representative image for each major stage of the pipeline.
 The gallery is generated for both demo and real runs whenever the relevant data exist, and the basal/apical variants are picked from the observation-level compartment labels so a dendrite can still contribute the correct anatomy even if it appears in multiple experiments.
 The spine-spine coefficient distribution figure prefers basal/apical panels when those labels are present; if a dataset only has other compartment labels, it falls back to those labels so the figure still renders.
-The per-dendrite spine-spine matrix heatmaps are written under `results/main_pipeline/figures/<animal_id>/<compartment>/<date>/` instead of the checkpoint folder, so they stay grouped the same way as the day figures and are easier to browse alongside the other figures.
+The per-dendrite spine-spine matrix heatmaps are written under `results/dendrites_pipeline/figures/<animal_id>/<compartment>/<date>/` instead of the checkpoint folder, so they stay grouped the same way as the day figures and are easier to browse alongside the other figures.
 
 The gallery includes:
 

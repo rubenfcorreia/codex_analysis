@@ -16,35 +16,45 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from analysis.compartment_common import (
-    canonical_state_label,
     ensure_dir,
-    filter_comparison_presets,
     normalize_comparison_presets,
     read_csv_rows,
     resolve_repo_root,
-    safe_filename_component,
     write_csv_rows,
     write_json_file,
 )
-from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id
+from analysis.shared.comparison_preset_flow import (
+    POSTER_REQUIRED_COMPARISON_PRESETS,
+    build_comparison_preset_batch_plan,
+)
+from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
+from analysis.shared.roi_split import build_roi_split_results
+from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
+from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
-from analysis.shared.analysis_families.state import activity_rows_for_context, state_comparison_rows, state_summary_rows
+from analysis.shared.analysis_families.state import (
+    activity_rows_for_context,
+    build_state_comparison_row_groups,
+    state_comparison_rows,
+    state_masks_for_context,
+    state_summary_rows,
+)
 from analysis.shared.analysis_families.visual_response import run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
 from analysis.shared.shared_calcium_response import (
     DEFAULT_VISUAL_RESPONSE_COHORT,
     VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
     VISUAL_RESPONSE_COHORTS,
     VISUAL_RESPONSE_VISUAL_TRIAL_TYPES,
+    build_masked_event_summary,
     load_visual_response_cut_data,
     set_active_event_detection_method,
     set_active_visual_response_metric,
     summarize_visual_response_entity_rows,
     visual_response_trial_rows,
 )
-from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_soma_correlation_rows, correlation_summary_rows
+from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
 from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
 from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
-from analysis.compartment_common import resolve_analysis_state_selections
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
@@ -55,14 +65,18 @@ from analysis.shared.plots.poster_ready import (
     _poster_mixed_model_significant_states,
     _select_mixed_model_rows,
     _significant_state_labels_from_comparison_rows,
+    assign_pairwise_visual_response_cohorts,
+    split_rows_by_cohort,
     write_blank_movie_and_correlation_poster_figure,
     write_blank_movie_state_boxplot_figure,
     write_correlation_poster_figure,
     write_state_mixed_model_poster_figure,
     write_visual_response_poster_figure,
 )
+from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, run_family as run_coincidence_family
+from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
     analysis_cache_meta_hash,
@@ -71,6 +85,7 @@ from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
+from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, save_family_results_cache
 
 
 logger = logging.getLogger(__name__)
@@ -127,6 +142,7 @@ DEFAULT_CONFIG = {
     "visual_response_metric": "calcium_events",
     "visual_response_cohort": DEFAULT_VISUAL_RESPONSE_COHORT,
     "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+    "coincidence_example_top_n": 5,
     "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
     "state_comparison_states": [
         "quiet_awake_blank",
@@ -179,16 +195,23 @@ def _preset_selection_names(value: Any) -> List[str] | None:
 def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     preset_names = _preset_selection_names(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
-    presets = filter_comparison_presets(presets, preset_names)
-    if not presets:
+    plan = build_comparison_preset_batch_plan(
+        presets,
+        selected_names=preset_names,
+        poster_ready_only=bool(config.get("poster_ready_only")),
+        poster_required_names=POSTER_REQUIRED_COMPARISON_PRESETS,
+    )
+    if not plan.presets:
         return []
 
-    base_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
-    base_cache_root = Path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"])
-    shared_source_cache_path = Path(config.get("cache_path") or (base_cache_root / "source_cache.npz"))
-    _stage("comparison presets", f"running {len(presets)} preset(s)")
+    repo_root = resolve_repo_root(Path(__file__))
+    base_result_root = resolve_repo_path(config.get("result_root") or DEFAULT_CONFIG["result_root"], repo_root)
+    base_cache_root = resolve_repo_path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"], repo_root)
+    shared_source_cache_path = resolve_repo_path(config.get("cache_path") or (base_cache_root / "source_cache.npz"), repo_root)
+    _stage("comparison presets", f"running {len(plan.presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
-    for preset_index, (preset_name, overrides) in enumerate(presets):
+    preset_configs: Dict[str, Dict[str, Any]] = {}
+    for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
         preset_config.pop("comparison_presets", None)
@@ -212,8 +235,19 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
+        preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
+        preset_configs[preset_name] = preset_config
+
+    if plan.reference_preset_name in preset_configs:
+        final_config = copy.deepcopy(preset_configs[plan.reference_preset_name])
+        final_config["plots_only"] = True
+        final_config["poster_ready_only"] = True
+        final_config["generate_poster_ready_figures"] = True
+        final_config["plots_only_include_supporting_figures"] = False
+        _stage("comparison poster readback", f"{plan.reference_preset_name} -> {base_result_root}")
+        manifests.append(run_pipeline(final_config))
     return manifests
 
 
@@ -354,13 +388,74 @@ def _assign_visual_response_cohorts(rows: Sequence[Mapping[str, Any]], visual_re
     return assigned
 
 
+def _normalize_scoped_unit_ids(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    soma_channel: int,
+    bouton_channel: int,
+) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        row_copy = dict(row)
+        compartment = str(row_copy.get("compartment") or "").strip().lower()
+        animal_id = row_copy.get("animal_id")
+        day_id = row_copy.get("day_id")
+        roi_id = row_copy.get("roi_id")
+        if compartment == "soma":
+            channel = int(row_copy.get("channel") or soma_channel)
+            global_soma_id = make_global_soma_id(animal_id=animal_id, day_id=day_id, channel=channel, roi_id=roi_id)
+            unit_id = str(global_soma_id)
+            row_copy["channel"] = int(channel)
+            row_copy["unit_id"] = unit_id
+            row_copy["roi_key"] = unit_id
+            row_copy["global_soma_id"] = global_soma_id
+            row_copy["global_bouton_id"] = None
+            if row_copy.get("soma_id") in (None, "") and roi_id is not None:
+                row_copy["soma_id"] = roi_id
+            row_copy["bouton_id"] = None
+        elif compartment == "bouton":
+            channel = int(row_copy.get("channel") or bouton_channel)
+            global_bouton_id = make_global_bouton_id(animal_id=animal_id, day_id=day_id, channel=channel, roi_id=roi_id)
+            unit_id = str(global_bouton_id)
+            row_copy["channel"] = int(channel)
+            row_copy["unit_id"] = unit_id
+            row_copy["roi_key"] = unit_id
+            row_copy["global_soma_id"] = None
+            row_copy["global_bouton_id"] = global_bouton_id
+            if row_copy.get("bouton_id") in (None, "") and roi_id is not None:
+                row_copy["bouton_id"] = roi_id
+            row_copy["soma_id"] = None
+        else:
+            unit_id = str(
+                row_copy.get("unit_id")
+                or row_copy.get("global_soma_id")
+                or row_copy.get("global_bouton_id")
+                or row_copy.get("roi_key")
+                or ""
+            ).strip()
+            if unit_id:
+                row_copy["unit_id"] = unit_id
+                row_copy["roi_key"] = str(row_copy.get("roi_key") or unit_id).strip()
+        normalized.append(row_copy)
+    return normalized
 
 
 
 
-def _reload_plot_rows_from_csv(result_root: Path, *, plots_only: bool, activity_rows: List[Dict[str, Any]], correlation_rows: List[Dict[str, Any]], lag_rows: List[Dict[str, Any]], visual_response_rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+def _reload_plot_rows_from_csv(
+    result_root: Path,
+    *,
+    plots_only: bool,
+    activity_rows: List[Dict[str, Any]],
+    correlation_rows: List[Dict[str, Any]],
+    soma_pairwise_rows: List[Dict[str, Any]],
+    bouton_pairwise_rows: List[Dict[str, Any]],
+    lag_rows: List[Dict[str, Any]],
+    visual_response_rows: List[Dict[str, Any]],
+    coincidence_rows: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     if not plots_only:
-        return activity_rows, correlation_rows, lag_rows, visual_response_rows
+        return activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows
     preferred_csv_root = result_root / "all_requested_comparisons" / "csv"
     csv_root = preferred_csv_root if preferred_csv_root.exists() else result_root / "csv"
     if not activity_rows:
@@ -373,6 +468,14 @@ def _reload_plot_rows_from_csv(result_root: Path, *, plots_only: bool, activity_
         if not correlation_csv.exists():
             raise SystemExit(f"Missing poster-ready correlation CSV: {correlation_csv}")
         correlation_rows = read_csv_rows(correlation_csv)
+    if not soma_pairwise_rows:
+        soma_pairwise_csv = csv_root / "soma_pairwise_correlation_by_roi.csv"
+        if soma_pairwise_csv.exists():
+            soma_pairwise_rows = read_csv_rows(soma_pairwise_csv)
+    if not bouton_pairwise_rows:
+        bouton_pairwise_csv = csv_root / "bouton_pairwise_correlation_by_roi.csv"
+        if bouton_pairwise_csv.exists():
+            bouton_pairwise_rows = read_csv_rows(bouton_pairwise_csv)
     if not lag_rows:
         lag_csv = csv_root / "bouton_soma_lag_scan_by_roi.csv"
         if not lag_csv.exists():
@@ -383,48 +486,304 @@ def _reload_plot_rows_from_csv(result_root: Path, *, plots_only: bool, activity_
         if not visual_csv.exists():
             raise SystemExit(f"Missing poster-ready visual-response CSV: {visual_csv}")
         visual_response_rows = read_csv_rows(visual_csv)
-    return activity_rows, correlation_rows, lag_rows, visual_response_rows
+    if not coincidence_rows:
+        coincidence_csv = csv_root / "soma_bouton_coincidence_by_roi.csv"
+        if not coincidence_csv.exists():
+            raise SystemExit(f"Missing poster-ready coincidence CSV: {coincidence_csv}")
+        coincidence_rows = read_csv_rows(coincidence_csv)
+    return activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows
 
 
-def _normalize_scoped_unit_ids(rows: Sequence[Mapping[str, Any]], *, soma_channel: int, bouton_channel: int) -> List[Dict[str, Any]]:
-    normalized: List[Dict[str, Any]] = []
-    for row in rows:
-        row_copy = dict(row)
-        compartment = str(row_copy.get("compartment") or "").strip().lower()
-        channel_value = row_copy.get("channel")
-        if channel_value in {None, ""}:
-            if compartment == "soma":
-                channel_value = soma_channel
-            elif compartment == "bouton":
-                channel_value = bouton_channel
-            if channel_value not in {None, ""}:
-                row_copy["channel"] = int(channel_value)
-        roi_id = row_copy.get("roi_id")
-        if compartment == "soma":
-            global_id = str(row_copy.get("global_soma_id") or "").strip()
-            if not global_id:
-                global_id = make_global_soma_id(animal_id=row_copy.get("animal_id"), day_id=row_copy.get("day_id"), channel=row_copy.get("channel", soma_channel), roi_id=roi_id)
-            row_copy["global_soma_id"] = global_id
-            row_copy["global_bouton_id"] = row_copy.get("global_bouton_id") if str(row_copy.get("global_bouton_id") or "").strip() else None
-            if not str(row_copy.get("unit_id") or "").strip():
-                row_copy["unit_id"] = global_id
-            if not str(row_copy.get("roi_key") or "").strip():
-                row_copy["roi_key"] = row_copy["unit_id"]
-        elif compartment == "bouton":
-            global_id = str(row_copy.get("global_bouton_id") or "").strip()
-            if not global_id:
-                global_id = make_global_bouton_id(animal_id=row_copy.get("animal_id"), day_id=row_copy.get("day_id"), channel=row_copy.get("channel", bouton_channel), roi_id=roi_id)
-            row_copy["global_bouton_id"] = global_id
-            row_copy["global_soma_id"] = row_copy.get("global_soma_id") if str(row_copy.get("global_soma_id") or "").strip() else None
-            if not str(row_copy.get("unit_id") or "").strip():
-                row_copy["unit_id"] = global_id
-            if not str(row_copy.get("roi_key") or "").strip():
-                row_copy["roi_key"] = row_copy["unit_id"]
-        normalized.append(row_copy)
-    return normalized
+
+def _coincidence_row_sort_key(row: Mapping[str, Any]) -> tuple[float, int, float, str]:
+    strength = row.get("pair_coincidence_strength")
+    fraction = row.get("pair_coincident_event_fraction")
+    count = row.get("pair_coincident_event_count")
+    try:
+        strength_f = float(strength)
+    except Exception:
+        strength_f = float("nan")
+    try:
+        fraction_f = float(fraction)
+    except Exception:
+        fraction_f = float("nan")
+    try:
+        count_i = int(count)
+    except Exception:
+        count_i = 0
+    if not np.isfinite(strength_f):
+        strength_f = 0.0
+    if not np.isfinite(fraction_f):
+        fraction_f = 0.0
+    return (-strength_f, -count_i, -fraction_f, str(row.get("pair_unit_id") or row.get("left_unit_id") or ""))
 
 
-def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str) -> Dict[str, Any]:
+
+def _strip_coincidence_event_run_fields(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in dict(row).items() if not key.endswith("_event_runs")}
+
+
+
+def _masked_event_summary_for_trace(
+    trace: Sequence[float] | np.ndarray,
+    time: Sequence[float] | np.ndarray,
+    mask: Sequence[bool] | np.ndarray,
+    *,
+    event_detection_method: str,
+) -> Dict[str, Any]:
+    trace_array = np.asarray(trace, dtype=float).reshape(-1)
+    time_array = np.asarray(time, dtype=float).reshape(-1)
+    mask_array = np.asarray(mask, dtype=bool).reshape(-1)
+    usable = min(trace_array.size, time_array.size, mask_array.size)
+    if usable <= 0:
+        return build_masked_event_summary(np.asarray([], dtype=float), np.asarray([], dtype=float), np.asarray([], dtype=bool), method=event_detection_method)
+    return build_masked_event_summary(
+        trace_array[:usable],
+        time_array[:usable],
+        mask_array[:usable],
+        method=event_detection_method,
+    )
+
+
+
+def _build_coincidence_rows_for_context(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None,
+    *,
+    event_detection_method: str,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
+    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
+    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
+    if soma_matrix.size == 0 or bouton_matrix.size == 0:
+        return []
+    if soma_matrix.ndim != 2 or bouton_matrix.ndim != 2:
+        return []
+    shared_time = np.asarray(shared_time_axis(ctx), dtype=float).reshape(-1)
+    soma_roi_ids = list(ctx.soma.roi_ids()) if hasattr(ctx.soma, "roi_ids") else list(range(soma_matrix.shape[0]))
+    bouton_roi_ids = list(ctx.bouton.roi_ids()) if hasattr(ctx.bouton, "roi_ids") else list(range(bouton_matrix.shape[0]))
+    rows: List[Dict[str, Any]] = []
+    for state, mask in masks.items():
+        state_key = canonical_state_label(state)
+        if not state_key:
+            continue
+        mask_array = np.asarray(mask, dtype=bool).reshape(-1)
+        usable = min(shared_time.size, mask_array.size, soma_matrix.shape[1], bouton_matrix.shape[1])
+        if usable <= 0:
+            state_time = np.asarray([], dtype=float)
+            state_mask = np.asarray([], dtype=bool)
+        else:
+            state_time = shared_time[:usable]
+            state_mask = mask_array[:usable]
+        soma_event_infos = [
+            _masked_event_summary_for_trace(trace[:usable], state_time, state_mask, event_detection_method=event_detection_method)
+            for trace in soma_matrix
+        ]
+        bouton_event_infos = [
+            _masked_event_summary_for_trace(trace[:usable], state_time, state_mask, event_detection_method=event_detection_method)
+            for trace in bouton_matrix
+        ]
+        for soma_index, soma_event_info in enumerate(soma_event_infos):
+            soma_roi_id = soma_roi_ids[soma_index] if soma_index < len(soma_roi_ids) else soma_index
+            soma_unit_id = make_global_soma_id(
+                animal_id=ctx.animal_id,
+                day_id=ctx.day_id,
+                channel=ctx.soma_channel,
+                roi_id=soma_roi_id,
+            )
+            for bouton_index, bouton_event_info in enumerate(bouton_event_infos):
+                bouton_roi_id = bouton_roi_ids[bouton_index] if bouton_index < len(bouton_roi_ids) else bouton_index
+                bouton_unit_id = make_global_bouton_id(
+                    animal_id=ctx.animal_id,
+                    day_id=ctx.day_id,
+                    channel=ctx.bouton_channel,
+                    roi_id=bouton_roi_id,
+                )
+                coincidence_row = _strip_coincidence_event_run_fields(
+                    build_bidirectional_coincidence_metrics(
+                        soma_event_info,
+                        bouton_event_info,
+                        first_name="soma",
+                        second_name="bouton",
+                    )
+                )
+                coincidence_row.update(
+                    {
+                        "expid": ctx.expid,
+                        "mode": ctx.mode,
+                        "animal_id": ctx.animal_id,
+                        "date": ctx.date,
+                        "day_id": ctx.day_id,
+                        "analysis_unit": "day",
+                        "comparison_name": "soma_bouton_coincidence",
+                        "pair_mode": "cross_compartment",
+                        "compartment": "soma_vs_bouton",
+                        "left_compartment": "soma",
+                        "left_channel": int(ctx.soma_channel),
+                        "left_roi_index": int(soma_index),
+                        "left_roi_id": soma_roi_id,
+                        "left_unit_id": soma_unit_id,
+                        "right_compartment": "bouton",
+                        "right_channel": int(ctx.bouton_channel),
+                        "right_roi_index": int(bouton_index),
+                        "right_roi_id": bouton_roi_id,
+                        "right_unit_id": bouton_unit_id,
+                        "pair_unit_id": "|".join(
+                            [
+                                str(ctx.day_id),
+                                "soma_bouton_coincidence",
+                                *sorted([str(soma_unit_id), str(bouton_unit_id)]),
+                            ]
+                        ),
+                        "state": state_key,
+                        "state_display": state_display_label(state_key),
+                        "state_color": state_display_color(state_key),
+                        "event_detection_method": str(event_detection_method),
+                        "soma_channel": int(ctx.soma_channel),
+                        "bouton_channel": int(ctx.bouton_channel),
+                    }
+                )
+                rows.append(coincidence_row)
+    return rows
+
+
+
+def _coincidence_example_payload_for_row(
+    ctx: ExperimentContext,
+    row: Mapping[str, Any],
+    *,
+    event_detection_method: str,
+) -> Dict[str, Any] | None:
+    state_key = canonical_state_label(row.get("state"))
+    if not state_key:
+        return None
+    masks = state_masks_for_context(ctx, [state_key])
+    mask: np.ndarray | None = None
+    for state_name, state_mask in masks.items():
+        if canonical_state_label(state_name) == state_key:
+            mask = np.asarray(state_mask, dtype=bool).reshape(-1)
+            break
+    if mask is None and masks:
+        mask = np.asarray(next(iter(masks.values())), dtype=bool).reshape(-1)
+    if mask is None:
+        mask = np.asarray([], dtype=bool)
+    time = np.asarray(shared_time_axis(ctx), dtype=float).reshape(-1)
+    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
+    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
+    if soma_matrix.ndim != 2 or bouton_matrix.ndim != 2:
+        return None
+    left_index = int(row.get("left_roi_index", -1))
+    right_index = int(row.get("right_roi_index", -1))
+    if left_index < 0 or right_index < 0:
+        return None
+    if left_index >= soma_matrix.shape[0] or right_index >= bouton_matrix.shape[0]:
+        return None
+    usable = min(time.size, mask.size, soma_matrix.shape[1], bouton_matrix.shape[1])
+    if usable <= 0:
+        time_slice = np.asarray([], dtype=float)
+        mask_slice = np.asarray([], dtype=bool)
+    else:
+        time_slice = time[:usable]
+        mask_slice = mask[:usable]
+    soma_trace = np.asarray(soma_matrix[left_index], dtype=float)[:usable]
+    bouton_trace = np.asarray(bouton_matrix[right_index], dtype=float)[:usable]
+    return {
+        "time": time_slice,
+        "soma_trace": soma_trace,
+        "bouton_trace": bouton_trace,
+        "soma_event_info": _masked_event_summary_for_trace(soma_trace, time_slice, mask_slice, event_detection_method=event_detection_method),
+        "bouton_event_info": _masked_event_summary_for_trace(bouton_trace, time_slice, mask_slice, event_detection_method=event_detection_method),
+    }
+
+
+def _generate_coincidence_example_figures(
+    coincidence_rows: Sequence[Mapping[str, Any]],
+    *,
+    result_root: Path,
+    repo_root: Path,
+    coincidence_example_top_n: int,
+    soma_channel: int,
+    bouton_channel: int,
+    default_event_detection_method: str,
+) -> List[str]:
+    if coincidence_example_top_n <= 0 or not coincidence_rows:
+        return []
+    saved: List[str] = []
+    context_cache: Dict[tuple[str, str, int, int], ExperimentContext] = {}
+    grouped: Dict[tuple[str, str, str, str], List[Dict[str, Any]]] = {}
+    for row in coincidence_rows:
+        key = (
+            str(row.get("mode") or ""),
+            str(row.get("day_id") or ""),
+            str(row.get("state") or ""),
+            str(row.get("event_detection_method") or default_event_detection_method or "amplitude"),
+        )
+        grouped.setdefault(key, []).append(dict(row))
+    for mode, day_id, state, event_detection_method in sorted(grouped):
+        group_rows = sorted(grouped[(mode, day_id, state, event_detection_method)], key=_coincidence_row_sort_key)
+        written = 0
+        for row in group_rows:
+            if written >= coincidence_example_top_n:
+                break
+            expid = str(row.get("expid") or "").strip()
+            if not expid:
+                continue
+            row_mode = str(row.get("mode") or mode or "").strip() or mode or "movie"
+            row_soma_channel = int(row.get("soma_channel", soma_channel))
+            row_bouton_channel = int(row.get("bouton_channel", bouton_channel))
+            context_key = (expid, row_mode, row_soma_channel, row_bouton_channel)
+            ctx = context_cache.get(context_key)
+            if ctx is None:
+                try:
+                    ctx = build_experiment_context(
+                        expid=expid,
+                        mode=row_mode,
+                        soma_channel=row_soma_channel,
+                        bouton_channel=row_bouton_channel,
+                        repo_root=repo_root,
+                    )
+                except Exception:
+                    continue
+                context_cache[context_key] = ctx
+            payload = _coincidence_example_payload_for_row(ctx, row, event_detection_method=event_detection_method)
+            if not payload:
+                continue
+            pair_unit_id = str(row.get("pair_unit_id") or "pair")
+            path = build_coincidence_example_figure_path(
+                result_root / "figures",
+                expid=expid,
+                mode=row_mode,
+                day_id=day_id,
+                state=state,
+                pair_unit_id=pair_unit_id,
+                rank=written + 1,
+                event_detection_method=event_detection_method,
+            )
+            title = (
+                f"{state_display_label(state)} coincidence example - {expid} | {pair_unit_id} | "
+                f"score={float(row.get('pair_coincidence_strength', 0.0) or 0.0):.3f} | "
+                f"coincident={int(row.get('pair_coincident_event_count', 0) or 0)}"
+            )
+            saved_path = plot_coincidence_event_example_figure(
+                output_path=path,
+                time=np.asarray(payload["time"], dtype=float),
+                focus_trace=np.asarray(payload["soma_trace"], dtype=float),
+                reference_trace=np.asarray(payload["bouton_trace"], dtype=float),
+                focus_event_info=dict(payload["soma_event_info"] or {}),
+                reference_event_info=dict(payload["bouton_event_info"] or {}),
+                title=title,
+                focus_label="Soma dF/F",
+                reference_label="Bouton dF/F",
+                max_examples=10,
+            )
+            if saved_path:
+                saved.append(saved_path)
+                written += 1
+    return saved
+
+
+def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str, coincidence_example_top_n: int) -> Dict[str, Any]:
     return {
         "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
@@ -442,43 +801,44 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "sleep_expids": list(config.get("sleep_expids") or []),
         "soma_channel": int(config.get("soma_channel", 1)),
         "bouton_channel": int(config.get("bouton_channel", 0)),
+        "pairwise_correlation_schema_version": 2,
+        "coincidence_family_schema_version": 1,
+        "coincidence_example_top_n": int(coincidence_example_top_n),
     }
 
 
-def _source_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _source_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("cache_path"):
-        return Path(config["cache_path"])
-    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
+        return resolve_repo_path(config["cache_path"], repo_root)
+    cache_root = resolve_repo_path(config.get("cache_root") or (result_root / "cache"), repo_root)
     return cache_root / "source_cache.npz"
 
 
-def _analysis_run_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _analysis_run_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("analysis_run_cache_path"):
-        return Path(config["analysis_run_cache_path"])
-    cache_root = Path(config.get("cache_root") or (result_root / "cache"))
+        return resolve_repo_path(config["analysis_run_cache_path"], repo_root)
+    cache_root = resolve_repo_path(config.get("cache_root") or (result_root / "cache"), repo_root)
     preset_name = safe_filename_component(str(config.get("comparison_preset_name") or "default"))
     return cache_root / f"{preset_name}_analysis_run_cache.npz"
 
 
-def _analysis_tables_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _analysis_tables_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("analysis_tables_cache_path"):
-        return Path(config["analysis_tables_cache_path"])
-    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
+        return resolve_repo_path(config["analysis_tables_cache_path"], repo_root)
+    analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_tables_cache.npz")
 
 
-def _analysis_results_cache_path(config: Mapping[str, Any], result_root: Path) -> Path:
+def _analysis_results_cache_path(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     if config.get("analysis_results_cache_path"):
-        return Path(config["analysis_results_cache_path"])
-    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
+        return resolve_repo_path(config["analysis_results_cache_path"], repo_root)
+    analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
 
 
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
-    result_root = Path(config["result_root"])
-    if not result_root.is_absolute():
-        result_root = repo_root / result_root
+    result_root = resolve_repo_path(config["result_root"], repo_root)
     preset_name = str(config.get("comparison_preset_name") or "default")
     _stage("run preset", f"{preset_name} -> {result_root}")
     ensure_dir(result_root)
@@ -505,18 +865,23 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
     shuffle_n = int(config.get("shuffle_n", 200))
-    analysis_run_cache_file = _analysis_run_cache_path(config, result_root)
-    analysis_results_cache_file = _analysis_results_cache_path(config, result_root)
-    analysis_tables_cache_file = _analysis_tables_cache_path(config, result_root)
-    source_cache_file = _source_cache_path(config, result_root)
+    analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
+    analysis_results_cache_file = _analysis_results_cache_path(config, repo_root, result_root)
+    analysis_tables_cache_file = _analysis_tables_cache_path(config, repo_root, result_root)
+    source_cache_file = _source_cache_path(config, repo_root, result_root)
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
+    soma_pairwise_rows: List[Dict[str, Any]] = []
+    bouton_pairwise_rows: List[Dict[str, Any]] = []
     lag_rows: List[Dict[str, Any]] = []
     visual_response_rows: List[Dict[str, Any]] = []
+    coincidence_rows: List[Dict[str, Any]] = []
+    coincidence_example_figures: List[str] = []
     selected_states_by_mode: Dict[str, List[str]] = {mode: list(resolve_analysis_state_selections(config, mode)) for mode in state_modes}
     selected_states_by_mode_payload = {mode: list(states) for mode, states in selected_states_by_mode.items()}
     day_groups = build_day_groups(expids_by_mode)
+    coincidence_example_top_n = int(config.get("coincidence_example_top_n", DEFAULT_CONFIG["coincidence_example_top_n"]))
     analysis_results_meta = _soma_analysis_results_meta(
         config,
         selected_states_by_mode,
@@ -524,7 +889,44 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         visual_response_cohort,
         event_detection_method,
         visual_response_metric,
+        coincidence_example_top_n,
     )
+    pairwise_family_cache_file = family_results_cache_path(analysis_results_cache_file, "pairwise_correlation")
+    pairwise_family_meta = {
+        "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "state_modes": list(state_modes),
+        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+        "pairwise_correlation_schema_version": 2,
+        "family_result_stage": "pairwise_correlation",
+    }
+    coincidence_family_cache_file = family_results_cache_path(analysis_results_cache_file, "coincidence")
+    coincidence_family_meta = {
+        "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "state_modes": list(state_modes),
+        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+        "event_detection_method": str(event_detection_method),
+        "coincidence_family_schema_version": 1,
+        "family_result_stage": "coincidence",
+    }
+    pairwise_family_cache: Dict[str, Any] | None = None
+    pairwise_family_rows: Dict[str, List[Dict[str, Any]]] | None = None
+    if not bool(config.get("rebuild")):
+        pairwise_family_cache, pairwise_family_status = load_family_results_cache(
+            pairwise_family_cache_file,
+            expected_meta=pairwise_family_meta,
+            rebuild=bool(config.get("analysis_results_rebuild")),
+        )
+        if pairwise_family_status == "ok" and isinstance(pairwise_family_cache, dict):
+            pairwise_family_rows = dict(pairwise_family_cache.get("analysis_results", {}))
+            correlation_rows = list(pairwise_family_rows.get("correlation_rows", []))
+            soma_pairwise_rows = list(pairwise_family_rows.get("soma_pairwise_rows", []))
+            bouton_pairwise_rows = list(pairwise_family_rows.get("bouton_pairwise_rows", []))
     if not bool(config.get("rebuild")):
         cached_results, cached_status = load_analysis_results_cache(
             analysis_results_cache_file,
@@ -558,7 +960,19 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if bool(config.get("poster_ready_only")):
                 config = dict(config)
                 config["plots_only"] = True
-            if not bool(config.get("plots_only")):
+            if not bool(config.get("plots_only")) and pairwise_family_rows is None:
+                pairwise_family_rows = _load_pairwise_family_rows_from_csv(result_root)
+                if pairwise_family_rows is not None:
+                    correlation_rows = list(pairwise_family_rows.get("correlation_rows", []))
+                    soma_pairwise_rows = list(pairwise_family_rows.get("soma_pairwise_rows", []))
+                    bouton_pairwise_rows = list(pairwise_family_rows.get("bouton_pairwise_rows", []))
+                    save_family_results_cache(
+                        pairwise_family_cache_file,
+                        "pairwise_correlation",
+                        pairwise_family_rows,
+                        base_meta=pairwise_family_meta,
+                    )
+            if not bool(config.get("plots_only")) and pairwise_family_rows is not None:
                 return manifest
 
     for mode in state_modes:
@@ -575,14 +989,27 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             experiment_rows.append(experiment_summary_row(ctx))
             if config.get("plots_only"):
                 continue
-            activity_rows.extend(activity_rows_for_context(ctx, selected_states))
-            correlation_rows.extend(bouton_soma_correlation_rows(ctx, selected_states))
+            state_masks = state_masks_for_context(ctx, selected_states)
+            activity_rows.extend(activity_rows_for_context(ctx, selected_states, state_masks=state_masks))
+            coincidence_rows.extend(
+                _build_coincidence_rows_for_context(
+                    ctx,
+                    selected_states,
+                    state_masks,
+                    event_detection_method=event_detection_method,
+                )
+            )
+            if pairwise_family_rows is None:
+                correlation_rows.extend(bouton_soma_correlation_rows(ctx, selected_states, state_masks=state_masks))
+                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
+                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
             lag_rows.extend(
                 lag_scan_rows(
                     ctx,
                     selected_states,
                     lag_window_s=float(config.get("lag_window_s", 2.0)),
                     lag_step_s=float(config.get("lag_step_s", 0.1)),
+                    state_masks=state_masks,
                 )
             )
             if mode == "movie":
@@ -608,21 +1035,29 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
         _stage(
             "mode complete",
-            f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
+            f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
 
-    activity_rows, correlation_rows, lag_rows, visual_response_rows = _reload_plot_rows_from_csv(
+    activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows = _reload_plot_rows_from_csv(
         result_root,
         plots_only=bool(config.get("plots_only")),
         activity_rows=activity_rows,
         correlation_rows=correlation_rows,
+        soma_pairwise_rows=soma_pairwise_rows,
+        bouton_pairwise_rows=bouton_pairwise_rows,
         lag_rows=lag_rows,
         visual_response_rows=visual_response_rows,
+        coincidence_rows=coincidence_rows,
     )
     activity_rows = _normalize_scoped_unit_ids(activity_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     correlation_rows = _normalize_scoped_unit_ids(correlation_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    soma_pairwise_rows = _normalize_scoped_unit_ids(soma_pairwise_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    bouton_pairwise_rows = _normalize_scoped_unit_ids(bouton_pairwise_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     lag_rows = _normalize_scoped_unit_ids(lag_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     visual_response_rows = _normalize_scoped_unit_ids(visual_response_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+
+    coincidence_family_results = run_coincidence_family(coincidence_rows)
+    coincidence_summary_rows = list(coincidence_family_results.get("summary_rows", []))
 
     visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
     visual_response_family = run_visual_response_family(
@@ -631,35 +1066,69 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         response_metric=visual_response_metric,
     )
 
+    movie_activity_rows = [row for row in activity_rows if str(row.get("mode") or "") == "movie"]
+    sleep_activity_rows = [row for row in activity_rows if str(row.get("mode") or "") == "sleep"]
+    movie_state_groups = build_state_comparison_row_groups(movie_activity_rows, selected_states_by_mode.get("movie", []))
+    sleep_state_groups = build_state_comparison_row_groups(sleep_activity_rows, selected_states_by_mode.get("sleep", []))
     activity_summary_rows = state_summary_rows(activity_rows)
     state_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
+        movie_activity_rows,
         selected_states_by_mode.get("movie", []),
         shuffle_n,
+        grouped_rows=movie_state_groups,
     )
     sleep_state_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
+        sleep_activity_rows,
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
+        grouped_rows=sleep_state_groups,
     )
     state_event_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "movie"],
+        movie_activity_rows,
         selected_states_by_mode.get("movie", []),
         shuffle_n,
         metric_col="event_frequency_per_min",
+        grouped_rows=movie_state_groups,
     )
     sleep_state_event_comparison_summary_rows = state_comparison_rows(
-        [row for row in activity_rows if str(row.get("mode") or "") == "sleep"],
+        sleep_activity_rows,
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
         metric_col="event_frequency_per_min",
+        grouped_rows=sleep_state_groups,
     )
     correlation_summary = correlation_summary_rows(correlation_rows)
+    soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows)
+    bouton_pairwise_summary = pairwise_correlation_summary_rows(bouton_pairwise_rows)
     lag_summary = lag_summary_rows(lag_rows)
+    coincidence_counts = dict(coincidence_family_results.get("counts", {}))
+    save_family_results_cache(
+        coincidence_family_cache_file,
+        "coincidence",
+        coincidence_family_results,
+        base_meta=coincidence_family_meta,
+    )
+    if pairwise_family_rows is None:
+        save_family_results_cache(
+            pairwise_family_cache_file,
+            "pairwise_correlation",
+            {
+                "correlation_rows": correlation_rows,
+                "soma_pairwise_rows": soma_pairwise_rows,
+                "bouton_pairwise_rows": bouton_pairwise_rows,
+                "correlation_summary_rows": correlation_summary,
+                "soma_pairwise_summary_rows": soma_pairwise_summary,
+                "bouton_pairwise_summary_rows": bouton_pairwise_summary,
+            },
+            base_meta=pairwise_family_meta,
+        )
 
     activity_rows_with_cohort = _assign_visual_response_cohorts(activity_rows, visual_response_rows)
     correlation_rows_with_cohort = _assign_visual_response_cohorts(correlation_rows, visual_response_rows)
     lag_rows_with_cohort = _assign_visual_response_cohorts(lag_rows, visual_response_rows)
+    soma_pairwise_rows_with_cohort = assign_pairwise_visual_response_cohorts(soma_pairwise_rows, visual_response_rows)
+    bouton_pairwise_rows_with_cohort = assign_pairwise_visual_response_cohorts(bouton_pairwise_rows, visual_response_rows)
+    coincidence_rows_with_cohort = assign_pairwise_visual_response_cohorts(coincidence_rows, visual_response_rows)
     analysis_state_order: List[str] = []
     seen_analysis_states: set[str] = set()
     for mode in state_modes:
@@ -669,41 +1138,84 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 analysis_state_order.append(state_key)
                 seen_analysis_states.add(state_key)
 
-    cohort_activity_rows = {
-        "all": activity_rows_with_cohort,
-        "responsive": [row for row in activity_rows_with_cohort if str(row.get("cohort") or "nonresponsive") == "responsive"],
-        "nonresponsive": [row for row in activity_rows_with_cohort if str(row.get("cohort") or "nonresponsive") != "responsive"],
+    roi_split_bundles: List[Dict[str, Any]] = []
+    for roi_type, compartment, subject_key in (("soma", "soma", "global_soma_id"), ("bouton", "bouton", "global_bouton_id")):
+        compartment_rows = [row for row in activity_rows if str(row.get("compartment") or "") == compartment]
+        if not compartment_rows:
+            continue
+        for split_name, score_column in (("activity", "mean"), ("event_frequency", "event_frequency_per_min")):
+            bundle = build_roi_split_results(
+                compartment_rows,
+                roi_type=roi_type,
+                split_name=split_name,
+                score_column=score_column,
+                response_columns=("mean", "event_frequency_per_min"),
+                subject_key=subject_key,
+                compartment=compartment,
+                selected_states=analysis_state_order,
+                state_order=analysis_state_order,
+                shuffle_n=shuffle_n,
+            )
+            if bundle.get("counts", {}).get("n_subject_state_rows", 0):
+                roi_split_bundles.append(bundle)
+    roi_split_subject_state_rows: List[Dict[str, Any]] = []
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str]] = set()
+    for bundle in roi_split_bundles:
+        for row in bundle.get("subject_state_rows", []):
+            key = (str(row.get("roi_type") or ""), str(row.get("compartment") or ""), str(row.get("subject_id") or ""), str(row.get("state") or ""))
+            if key in seen_roi_split_subject_state_keys:
+                continue
+            seen_roi_split_subject_state_keys.add(key)
+            roi_split_subject_state_rows.append(dict(row))
+    roi_split_results = {
+        "bundles": roi_split_bundles,
+        "subject_state_rows": roi_split_subject_state_rows,
+        "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
+        "comparison_rows": [row for bundle in roi_split_bundles for row in bundle.get("comparison_rows", [])],
+        "summary_rows": [row for bundle in roi_split_bundles for row in bundle.get("summary_rows", [])],
+        "counts": {
+            "subject_state_rows": int(len(roi_split_subject_state_rows)),
+            "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
+            "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
+            "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+        },
     }
-    cohort_correlation_rows = {
-        "all": correlation_rows_with_cohort,
-        "responsive": [row for row in correlation_rows_with_cohort if str(row.get("cohort") or "nonresponsive") == "responsive"],
-        "nonresponsive": [row for row in correlation_rows_with_cohort if str(row.get("cohort") or "nonresponsive") != "responsive"],
-    }
-    cohort_lag_rows = {
-        "all": lag_rows_with_cohort,
-        "responsive": [row for row in lag_rows_with_cohort if str(row.get("cohort") or "nonresponsive") == "responsive"],
-        "nonresponsive": [row for row in lag_rows_with_cohort if str(row.get("cohort") or "nonresponsive") != "responsive"],
-    }
+
+    cohort_activity_rows = split_rows_by_cohort(activity_rows_with_cohort)
+    cohort_correlation_rows = split_rows_by_cohort(correlation_rows_with_cohort)
+    cohort_soma_pairwise_rows = split_rows_by_cohort(soma_pairwise_rows_with_cohort)
+    cohort_bouton_pairwise_rows = split_rows_by_cohort(bouton_pairwise_rows_with_cohort)
+    cohort_coincidence_rows = split_rows_by_cohort(coincidence_rows_with_cohort)
+    cohort_lag_rows = split_rows_by_cohort(lag_rows_with_cohort)
     cohort_state_comparison_rows: Dict[str, List[Dict[str, Any]]] = {}
     cohort_state_event_comparison_rows: Dict[str, List[Dict[str, Any]]] = {}
     cohort_correlation_summary: Dict[str, List[Dict[str, Any]]] = {}
+    cohort_soma_pairwise_summary: Dict[str, List[Dict[str, Any]]] = {}
+    cohort_bouton_pairwise_summary: Dict[str, List[Dict[str, Any]]] = {}
+    cohort_coincidence_summary: Dict[str, List[Dict[str, Any]]] = {}
     mixed_model_results: Dict[str, Any] = {}
     for cohort_name in ("all", "responsive", "nonresponsive"):
         cohort_rows = cohort_activity_rows.get(cohort_name, [])
         if not cohort_rows:
             continue
+        cohort_state_groups = build_state_comparison_row_groups(cohort_rows, analysis_state_order)
         cohort_state_comparison_rows[cohort_name] = state_comparison_rows(
             cohort_rows,
             analysis_state_order,
             shuffle_n,
+            grouped_rows=cohort_state_groups,
         )
         cohort_state_event_comparison_rows[cohort_name] = state_comparison_rows(
             cohort_rows,
             analysis_state_order,
             shuffle_n,
             metric_col="event_frequency_per_min",
+            grouped_rows=cohort_state_groups,
         )
         cohort_correlation_summary[cohort_name] = correlation_summary_rows(cohort_correlation_rows.get(cohort_name, []))
+        cohort_soma_pairwise_summary[cohort_name] = correlation_summary_rows(cohort_soma_pairwise_rows.get(cohort_name, []))
+        cohort_bouton_pairwise_summary[cohort_name] = correlation_summary_rows(cohort_bouton_pairwise_rows.get(cohort_name, []))
+        cohort_coincidence_summary[cohort_name] = list(run_coincidence_family(cohort_coincidence_rows.get(cohort_name, [])).get("summary_rows", []))
         cohort_state_order = list(analysis_state_order)
         mixed_model_results[cohort_name] = run_mixed_model_family(
             cohort_rows,
@@ -723,7 +1235,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     ) if isinstance(mixed_model_results, dict) else 0
     _stage(
         "summary counts",
-        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, correlation={len(correlation_summary)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
+        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, roi_split={len(roi_split_results.get('comparison_rows', []))}, correlation={len(correlation_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
     )
 
     poster_ready_only = bool(config.get("poster_ready_only"))
@@ -732,10 +1244,16 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     write_csv_rows(result_root / "csv" / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
     if activity_rows:
         _stage("writing csv", "state_activity_by_experiment")
-        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
+        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
     if correlation_rows:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
+    if soma_pairwise_rows:
+        _stage("writing csv", "soma_pairwise_correlation_by_roi")
+        write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_roi.csv", soma_pairwise_rows, list(soma_pairwise_rows[0].keys()))
+    if bouton_pairwise_rows:
+        _stage("writing csv", "bouton_pairwise_correlation_by_roi")
+        write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_roi.csv", bouton_pairwise_rows, list(bouton_pairwise_rows[0].keys()))
     if lag_rows:
         _stage("writing csv", "bouton_soma_lag_scan_by_roi")
         write_csv_rows(result_root / "csv" / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
@@ -754,6 +1272,18 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if sleep_state_event_comparison_summary_rows:
         _stage("writing csv", "state_event_comparisons_sleep")
         write_csv_rows(result_root / "csv" / "state_event_comparisons_sleep.csv", sleep_state_event_comparison_summary_rows, list(sleep_state_event_comparison_summary_rows[0].keys()))
+    if roi_split_results.get("subject_state_rows"):
+        _stage("writing csv", "roi_split_subject_state")
+        write_csv_rows(result_root / "csv" / "roi_split_subject_state.csv", roi_split_results["subject_state_rows"], list(roi_split_results["subject_state_rows"][0].keys()))
+    if roi_split_results.get("membership_rows"):
+        _stage("writing csv", "roi_split_membership")
+        write_csv_rows(result_root / "csv" / "roi_split_membership.csv", roi_split_results["membership_rows"], list(roi_split_results["membership_rows"][0].keys()))
+    if roi_split_results.get("comparison_rows"):
+        _stage("writing csv", "roi_split_comparisons")
+        write_csv_rows(result_root / "csv" / "roi_split_comparisons.csv", roi_split_results["comparison_rows"], list(roi_split_results["comparison_rows"][0].keys()))
+    if roi_split_results.get("summary_rows"):
+        _stage("writing csv", "roi_split_summary")
+        write_csv_rows(result_root / "csv" / "roi_split_summary.csv", roi_split_results["summary_rows"], list(roi_split_results["summary_rows"][0].keys()))
     if correlation_summary:
         _stage("writing csv", "bouton_soma_correlation_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_day.csv", correlation_summary, list(correlation_summary[0].keys()))
@@ -763,6 +1293,24 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
             write_csv_rows(cohort_csv_dir / "bouton_soma_correlation_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
+    if soma_pairwise_summary:
+        _stage("writing csv", "soma_pairwise_correlation_by_day")
+        write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_day.csv", soma_pairwise_summary, list(soma_pairwise_summary[0].keys()))
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_soma_pairwise_summary.get(cohort_name, [])
+            if not cohort_rows:
+                continue
+            cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
+            write_csv_rows(cohort_csv_dir / "soma_pairwise_correlation_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
+    if bouton_pairwise_summary:
+        _stage("writing csv", "bouton_pairwise_correlation_by_day")
+        write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_day.csv", bouton_pairwise_summary, list(bouton_pairwise_summary[0].keys()))
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_bouton_pairwise_summary.get(cohort_name, [])
+            if not cohort_rows:
+                continue
+            cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
+            write_csv_rows(cohort_csv_dir / "bouton_pairwise_correlation_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
     if lag_summary:
         _stage("writing csv", "bouton_soma_lag_summary_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", lag_summary, list(lag_summary[0].keys()))
@@ -775,6 +1323,18 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort_lag_summary_rows = lag_summary_rows(cohort_rows)
             if cohort_lag_summary_rows:
                 write_csv_rows(cohort_csv_dir / "bouton_soma_lag_summary_by_day.csv", cohort_lag_summary_rows, list(cohort_lag_summary_rows[0].keys()))
+    if coincidence_rows:
+        _stage("writing csv", "soma_bouton_coincidence_by_roi")
+        write_csv_rows(result_root / "csv" / "soma_bouton_coincidence_by_roi.csv", coincidence_rows, list(coincidence_rows[0].keys()))
+    if coincidence_summary_rows:
+        _stage("writing csv", "soma_bouton_coincidence_by_day")
+        write_csv_rows(result_root / "csv" / "soma_bouton_coincidence_by_day.csv", coincidence_summary_rows, list(coincidence_summary_rows[0].keys()))
+        for cohort_name in ("all", "responsive", "nonresponsive"):
+            cohort_rows = cohort_coincidence_summary.get(cohort_name, [])
+            if not cohort_rows:
+                continue
+            cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
+            write_csv_rows(cohort_csv_dir / "soma_bouton_coincidence_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
     if visual_response_rows:
         _stage("writing csv", "visual_response_by_roi")
         write_csv_rows(result_root / "csv" / "visual_response_by_roi.csv", visual_response_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "response_metric", "event_detection_method", "source_label", "source_path", "available", "comparison", "statistic", "raw_pvalue", "adjusted_pvalue", "n_visual_values", "n_blank_values", "mean_visual", "mean_blank", "delta", "paired_stimulus_values", "blank_reference_values", "visual_trial_labels", "blank_trial_labels", "significant", "star", "responsive", "cohort", "cohort_requested"])
@@ -801,12 +1361,30 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
             )
-            _stage("plotting", f"correlation - {cohort_name}")
+            _stage("plotting", f"axon-soma correlation - {cohort_name}")
             plot_state_correlation(
                 cohort_correlation_summary.get(cohort_name, []),
                 result_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
+                title="Axon-soma correlation",
+                output_stem="axon_soma_state_summary_boxplots_correlation",
+            )
+            _stage("plotting", f"soma-soma correlation - {cohort_name}")
+            plot_state_correlation(
+                cohort_soma_pairwise_summary.get(cohort_name, []),
+                result_root,
+                cohort_label=cohort_name,
+                title="Soma-soma correlation",
+                output_stem="soma_pairwise_state_summary_boxplots_correlation",
+            )
+            _stage("plotting", f"axon-axon correlation - {cohort_name}")
+            plot_state_correlation(
+                cohort_bouton_pairwise_summary.get(cohort_name, []),
+                result_root,
+                cohort_label=cohort_name,
+                title="Axon-axon correlation",
+                output_stem="axon_axon_state_summary_boxplots_correlation",
             )
         for cohort_name in ("all", "responsive", "nonresponsive"):
             cohort_rows = cohort_lag_rows.get(cohort_name, [])
@@ -814,6 +1392,34 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             _stage("plotting", f"lag heatmap - {cohort_name}")
             plot_lag_heatmap(cohort_rows, result_root, cohort_label=cohort_name)
+        from analysis.shared.plots.roi_split import plot_roi_split_bundle_figure
+
+        roi_split_bundles = roi_split_results.get("bundles", []) if isinstance(roi_split_results, dict) else []
+        for plot_idx, bundle in enumerate(roi_split_bundles, start=1):
+            if not isinstance(bundle, dict) or not bundle:
+                continue
+            roi_type = str(bundle.get("roi_type") or "roi").strip().lower() or "roi"
+            split_name = str(bundle.get("split_name") or "split").strip().lower() or "split"
+            compartment = str(bundle.get("compartment") or "").strip().lower() or "all"
+            _stage("plotting", f"roi split figures - {roi_type} - {compartment} - {split_name}")
+            try:
+                figure_bundle = dict(bundle)
+                figure_bundle["compartment"] = ""
+                plot_roi_split_bundle_figure(figure_bundle, result_root)
+            except Exception as exc:
+                logger.exception("Failed to create roi split figure %s/%s/%s", roi_type, compartment, split_name)
+                continue
+        if coincidence_rows:
+            _stage("plotting", "soma-bouton coincidence examples")
+            coincidence_example_figures = _generate_coincidence_example_figures(
+                coincidence_rows,
+                result_root=result_root,
+                repo_root=repo_root,
+                coincidence_example_top_n=coincidence_example_top_n,
+                soma_channel=int(config["soma_channel"]),
+                bouton_channel=int(config["bouton_channel"]),
+                default_event_detection_method=event_detection_method,
+            )
         if visual_response_rows:
             visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
             for compartment in ("soma", "bouton"):
@@ -850,7 +1456,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     if not isinstance(compartment_results, dict) or not compartment_results:
                         continue
                     compartment_dir = ensure_dir(cohort_dir / compartment_key)
-                    for scope_key in ("all_state", "selected_state"):
+                    for scope_key in ("selected_state",):
                         branch = compartment_results.get(scope_key, {})
                         scope_label = scope_key.replace("_", " ")
                         if not isinstance(branch, dict) or not branch:
@@ -888,267 +1494,212 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     poster_ready_figures: List[str] = []
     poster_ready_errors: List[str] = []
-    poster_output_dir = ensure_dir(REPO_ROOT / "results" / "poster_ready")
+    blank_preset_activity_rows: List[Dict[str, Any]] = []
+    movie_preset_activity_rows: List[Dict[str, Any]] = []
+    blank_preset_comparison_rows: List[Dict[str, Any]] = []
+    movie_preset_comparison_rows: List[Dict[str, Any]] = []
+    if bool(config.get("generate_poster_ready_figures", True)):
+        poster_output_dir = ensure_dir(REPO_ROOT / "results" / "poster_ready")
 
-    def _state_values_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[float]]:
-        grouped: Dict[str, Dict[str, List[float]]] = {}
-        for row in rows:
-            state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
-            if not state:
-                continue
-            value = row.get("mean")
-            try:
-                value_f = float(value)
-            except Exception:
-                continue
-            if not np.isfinite(value_f):
-                continue
-            compartment = str(row.get("compartment") or "").strip().lower()
-            if compartment == "soma":
-                unit_id = str(row.get("global_soma_id") or "").strip()
-            elif compartment == "bouton":
-                unit_id = str(row.get("global_bouton_id") or "").strip()
-            else:
-                unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
-            if not unit_id:
-                continue
-            grouped.setdefault(state, {}).setdefault(unit_id, []).append(value_f)
-        return {state: [float(np.nanmean(values)) for values in unit_map.values() if values] for state, unit_map in grouped.items()}
+        def _state_values_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[float]]:
+            grouped: Dict[str, Dict[str, List[float]]] = {}
+            for row in rows:
+                state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
+                if not state:
+                    continue
+                value = row.get("mean")
+                try:
+                    value_f = float(value)
+                except Exception:
+                    continue
+                if not np.isfinite(value_f):
+                    continue
+                compartment = str(row.get("compartment") or "").strip().lower()
+                if compartment == "soma":
+                    unit_id = str(row.get("global_soma_id") or "").strip()
+                elif compartment == "bouton":
+                    unit_id = str(row.get("global_bouton_id") or "").strip()
+                else:
+                    unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
+                if not unit_id:
+                    continue
+                grouped.setdefault(state, {}).setdefault(unit_id, []).append(value_f)
+            return {state: [float(np.nanmean(values)) for values in unit_map.values() if values] for state, unit_map in grouped.items()}
 
-    def _state_sample_sizes_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
-        grouped: Dict[str, set[str]] = {}
-        for row in rows:
-            state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
-            if not state:
+        def _state_sample_sizes_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+            grouped: Dict[str, set[str]] = {}
+            for row in rows:
+                state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
+                if not state:
+                    continue
+                compartment = str(row.get("compartment") or "").strip().lower()
+                if compartment == "soma":
+                    unit_id = str(row.get("global_soma_id") or "").strip()
+                elif compartment == "bouton":
+                    unit_id = str(row.get("global_bouton_id") or "").strip()
+                else:
+                    unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
+                if not unit_id:
+                    continue
+                grouped.setdefault(state, set()).add(unit_id)
+            return {state: len(roi_ids) for state, roi_ids in grouped.items()}
+
+        def _state_row_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+            unit_keys = []
+            state_keys = []
+            cohort_keys = []
+            raw_count = 0
+            non_nan_count = 0
+            for row in rows:
+                raw_count += 1
+                state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
+                if state:
+                    state_keys.append(state)
+                cohort = str(row.get("cohort") or "").strip().lower()
+                if cohort:
+                    cohort_keys.append(cohort)
+                compartment = str(row.get("compartment") or "").strip().lower()
+                if compartment == "soma":
+                    unit_id = str(row.get("global_soma_id") or "").strip()
+                elif compartment == "bouton":
+                    unit_id = str(row.get("global_bouton_id") or "").strip()
+                else:
+                    unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
+                if unit_id:
+                    unit_keys.append(unit_id)
+                try:
+                    value = float(row.get("mean"))
+                except Exception:
+                    continue
+                if np.isfinite(value):
+                    non_nan_count += 1
+            return {
+                "raw_count": raw_count,
+                "non_nan_count": non_nan_count,
+                "unique_roi_count": len(set(unit_keys)),
+                "states": list(dict.fromkeys(state_keys)),
+                "cohorts": list(dict.fromkeys(cohort_keys)),
+            }
+        poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+        blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
+        movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
+        mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
+        preset_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+        if not preset_result_root.is_absolute():
+            preset_result_root = REPO_ROOT / preset_result_root
+        if preset_result_root.name != "all_requested_comparisons" and not (preset_result_root / "blank_state_comparisons").exists() and (preset_result_root.parent / "blank_state_comparisons").exists():
+            preset_result_root = preset_result_root.parent
+
+        def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
+            candidate_paths = []
+            for root in (preset_result_root, preset_result_root.parent):
+                candidate_paths.append(root / preset_name / "csv" / csv_name)
+                if root.name == "all_requested_comparisons":
+                    candidate_paths.append(root / "csv" / csv_name)
+            for csv_path in candidate_paths:
+                if csv_path.exists():
+                    return read_csv_rows(csv_path)
+            logger.warning("Missing preset CSV %s; tried %s", csv_name, ", ".join(str(path) for path in candidate_paths))
+            return []
+
+        def _load_all_requested_comparison_rows(csv_name: str) -> List[Dict[str, Any]]:
+            candidate_paths = []
+            for root in (preset_result_root, preset_result_root.parent):
+                if root.name == "all_requested_comparisons":
+                    candidate_paths.append(root / "csv" / csv_name)
+                candidate_paths.append(root / "all_requested_comparisons" / "csv" / csv_name)
+            for csv_path in candidate_paths:
+                if csv_path.exists():
+                    return read_csv_rows(csv_path)
+            logger.warning("Missing all_requested_comparisons CSV %s; tried %s", csv_name, ", ".join(str(path) for path in candidate_paths))
+            return []
+
+        blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
+        movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
+        blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
+        movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
+
+        for compartment in ("soma", "bouton"):
+            compartment_root = ensure_dir(poster_output_dir / compartment)
+            visual_dir = ensure_dir(compartment_root / "visual_response")
+            mixed_dir = ensure_dir(compartment_root / "mixed_model")
+            blank_dir = ensure_dir(compartment_root / "blank_movie_states")
+            compartment_visual_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
+            if not compartment_visual_rows:
                 continue
-            compartment = str(row.get("compartment") or "").strip().lower()
-            if compartment == "soma":
-                unit_id = str(row.get("global_soma_id") or "").strip()
-            elif compartment == "bouton":
-                unit_id = str(row.get("global_bouton_id") or "").strip()
-            else:
-                unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
-            if not unit_id:
-                continue
-            grouped.setdefault(state, set()).add(unit_id)
-        return {state: len(roi_ids) for state, roi_ids in grouped.items()}
-
-    def _state_row_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-        unit_keys = []
-        state_keys = []
-        cohort_keys = []
-        raw_count = 0
-        non_nan_count = 0
-        for row in rows:
-            raw_count += 1
-            state = canonical_state_label(row.get("state") or row.get("state_label") or row.get("state_display") or "")
-            if state:
-                state_keys.append(state)
-            cohort = str(row.get("cohort") or "").strip().lower()
-            if cohort:
-                cohort_keys.append(cohort)
-            compartment = str(row.get("compartment") or "").strip().lower()
-            if compartment == "soma":
-                unit_id = str(row.get("global_soma_id") or "").strip()
-            elif compartment == "bouton":
-                unit_id = str(row.get("global_bouton_id") or "").strip()
-            else:
-                unit_id = str(row.get("global_soma_id") or row.get("global_bouton_id") or "").strip()
-            if unit_id:
-                unit_keys.append(unit_id)
-            try:
-                value = float(row.get("mean"))
-            except Exception:
-                continue
-            if np.isfinite(value):
-                non_nan_count += 1
-        return {
-            "raw_count": raw_count,
-            "non_nan_count": non_nan_count,
-            "unique_roi_count": len(set(unit_keys)),
-            "states": list(dict.fromkeys(state_keys)),
-            "cohorts": list(dict.fromkeys(cohort_keys)),
-        }
-    poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
-    blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
-    movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
-    mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
-    preset_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
-    if not preset_result_root.is_absolute():
-        preset_result_root = REPO_ROOT / preset_result_root
-    if preset_result_root.name != "all_requested_comparisons" and not (preset_result_root / "blank_state_comparisons").exists() and (preset_result_root.parent / "blank_state_comparisons").exists():
-        preset_result_root = preset_result_root.parent
-
-    def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
-        csv_path = preset_result_root / preset_name / "csv" / csv_name
-        if not csv_path.exists() and preset_result_root.name == "all_requested_comparisons":
-            csv_path = preset_result_root / "csv" / csv_name
-        if not csv_path.exists():
-            raise SystemExit(f"Missing preset CSV: {csv_path}")
-        return read_csv_rows(csv_path)
-
-    def _load_all_requested_comparison_rows(csv_name: str) -> List[Dict[str, Any]]:
-        csv_path = preset_result_root / "csv" / csv_name if preset_result_root.name == "all_requested_comparisons" else preset_result_root / "all_requested_comparisons" / "csv" / csv_name
-        if not csv_path.exists():
-            raise SystemExit(f"Missing all_requested_comparisons CSV: {csv_path}")
-        return read_csv_rows(csv_path)
-
-    blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
-    movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
-    blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
-    movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
-
-    for compartment in ("soma", "bouton"):
-        compartment_root = ensure_dir(poster_output_dir / compartment)
-        visual_dir = ensure_dir(compartment_root / "visual_response")
-        mixed_dir = ensure_dir(compartment_root / "mixed_model")
-        blank_dir = ensure_dir(compartment_root / "blank_movie_states")
-        compartment_visual_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
-        if not compartment_visual_rows:
-            continue
-        visual_path = write_visual_response_poster_figure(
-            output_dir=visual_dir,
-            entity_label=compartment,
-            visual_response_rows=compartment_visual_rows,
-            output_stem=f"{compartment}_visual_response_poster_ready",
-        )
-        if visual_path:
-            poster_ready_figures.append(str(visual_path))
-        responsive_rows = [row for row in cohort_activity_rows.get("responsive", []) if str(row.get("compartment") or "") == compartment]
-        nonresponsive_rows = [row for row in cohort_activity_rows.get("nonresponsive", []) if str(row.get("compartment") or "") == compartment]
-        responsive_values = _state_values_from_rows(responsive_rows)
-        nonresponsive_values = _state_values_from_rows(nonresponsive_rows)
-        responsive_sample_sizes = _state_sample_sizes_from_rows(responsive_rows)
-        nonresponsive_sample_sizes = _state_sample_sizes_from_rows(nonresponsive_rows)
-        blank_responsive_values = {state: values for state, values in responsive_values.items() if state in blank_state_order}
-        blank_nonresponsive_values = {state: values for state, values in nonresponsive_values.items() if state in blank_state_order}
-        movie_responsive_values = {state: values for state, values in responsive_values.items() if state in movie_state_order}
-        movie_nonresponsive_values = {state: values for state, values in nonresponsive_values.items() if state in movie_state_order}
-        blank_responsive_sample_sizes = {state: count for state, count in responsive_sample_sizes.items() if state in blank_state_order}
-        blank_nonresponsive_sample_sizes = {state: count for state, count in nonresponsive_sample_sizes.items() if state in blank_state_order}
-        movie_responsive_sample_sizes = {state: count for state, count in responsive_sample_sizes.items() if state in movie_state_order}
-        movie_nonresponsive_sample_sizes = {state: count for state, count in nonresponsive_sample_sizes.items() if state in movie_state_order}
-        if responsive_values or nonresponsive_values:
-            print(f"[poster] {compartment} responsive blank/movie n summary = {_state_row_summary([row for row in responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') in blank_state_order + movie_state_order])}", file=sys.stderr)
-            print(f"[poster] {compartment} nonresponsive blank/movie n summary = {_state_row_summary([row for row in nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') in blank_state_order + movie_state_order])}", file=sys.stderr)
-            mixed_path = write_state_mixed_model_poster_figure(
-                output_dir=mixed_dir,
+            visual_path = write_visual_response_poster_figure(
+                output_dir=visual_dir,
                 entity_label=compartment,
-                responsive_state_values=responsive_values,
-                nonresponsive_state_values=nonresponsive_values,
-                mixed_model_rows={
-                    "responsive": mixed_model_results.get("responsive", {}).get(compartment, {}).get("all_state", {})
-                    or mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}),
-                    "nonresponsive": mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("all_state", {})
-                    or mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}),
-                },
-                state_order=poster_state_order,
-                output_stem=f"{compartment}_state_mixed_model_poster_ready",
-                title="Quiet blank vs sleep states",
-                preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
-                mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                visual_response_rows=compartment_visual_rows,
+                output_stem=f"{compartment}_visual_response_poster_ready",
             )
-            if mixed_path:
-                poster_ready_figures.append(str(mixed_path))
-        responsive_significant_states = set()
-        nonresponsive_significant_states = set()
-        for cohort_label, source, target in (
-            ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("all_state", {})
-            or mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
-            ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("all_state", {})
-            or mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
-        ):
-            selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"))
-            target.update(_poster_mixed_model_significant_states(selected_rows))
-        responsive_comparison_rows = [
-            row for row in cohort_state_comparison_rows.get("responsive", [])
-            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-        ]
-        nonresponsive_comparison_rows = [
-            row for row in cohort_state_comparison_rows.get("nonresponsive", [])
-            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-        ]
-        blank_comparison_rows = [
-            row for row in blank_preset_comparison_rows
-            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-        ]
-        movie_comparison_rows = [
-            row for row in movie_preset_comparison_rows
-            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-        ]
-        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
-        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
-        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))
-        responsive_significant_states.update(_significant_state_labels_from_comparison_rows(movie_comparison_rows))
-        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))
-        nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(movie_comparison_rows))
-        blank_path = write_blank_movie_state_boxplot_figure(
-            output_dir=blank_dir,
-            entity_label=compartment,
-            responsive_blank_values=blank_responsive_values,
-            responsive_movie_values=movie_responsive_values,
-            nonresponsive_blank_values=blank_nonresponsive_values,
-            nonresponsive_movie_values=movie_nonresponsive_values,
-            blank_state_order=blank_state_order,
-            movie_state_order=movie_state_order,
-            responsive_blank_sample_sizes=blank_responsive_sample_sizes,
-            responsive_movie_sample_sizes=movie_responsive_sample_sizes,
-            nonresponsive_blank_sample_sizes=blank_nonresponsive_sample_sizes,
-            nonresponsive_movie_sample_sizes=movie_nonresponsive_sample_sizes,
-            responsive_significant_states=sorted(responsive_significant_states),
-            nonresponsive_significant_states=sorted(nonresponsive_significant_states),
-            responsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
-            nonresponsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
-            output_stem=f"{compartment}_blank_movie_states_poster_ready",
-            title="Blank vs movie states",
-        )
-        if blank_path:
-            poster_ready_figures.append(str(blank_path))
-        blank_expected_states = [state for state in blank_state_order if "rem" not in state]
-        movie_expected_states = [state for state in movie_state_order if "rem" not in state]
-        blank_missing_states = [state for state in blank_expected_states if state not in blank_responsive_values and state not in blank_nonresponsive_values]
-        movie_missing_states = [state for state in movie_expected_states if state not in movie_responsive_values and state not in movie_nonresponsive_values]
-        if blank_missing_states or movie_missing_states:
-            poster_ready_errors.append(
-                f"[ERROR] {compartment} blank/movie poster missing states: blank_missing={blank_missing_states or '[]'}; movie_missing={movie_missing_states or '[]'}"
-            )
-
-        correlation_dir = ensure_dir(compartment_root / "correlation")
-        all_correlation_path: str | None = None
-        for cohort_name in ("all", "responsive", "nonresponsive"):
-            if cohort_name == "all":
-                cohort_rows = [
-                    row for row in _load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv")
-                    if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-                ]
-            else:
-                cohort_rows = [
-                    row for row in cohort_correlation_rows.get(cohort_name, [])
-                    if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-                ]
-            if not cohort_rows:
-                continue
-            cohort_summary_rows = cohort_rows if cohort_name == "all" else correlation_summary_rows(cohort_rows)
-            if not cohort_summary_rows:
-                continue
-            comparison_rows = [
-                row for row in cohort_state_comparison_rows.get(cohort_name, [])
+            if visual_path:
+                poster_ready_figures.append(str(visual_path))
+            responsive_rows = [row for row in cohort_activity_rows.get("responsive", []) if str(row.get("compartment") or "") == compartment]
+            nonresponsive_rows = [row for row in cohort_activity_rows.get("nonresponsive", []) if str(row.get("compartment") or "") == compartment]
+            responsive_values = _state_values_from_rows(responsive_rows)
+            nonresponsive_values = _state_values_from_rows(nonresponsive_rows)
+            responsive_sample_sizes = _state_sample_sizes_from_rows(responsive_rows)
+            nonresponsive_sample_sizes = _state_sample_sizes_from_rows(nonresponsive_rows)
+            blank_responsive_values = {state: values for state, values in responsive_values.items() if state in blank_state_order}
+            blank_nonresponsive_values = {state: values for state, values in nonresponsive_values.items() if state in blank_state_order}
+            movie_responsive_values = {state: values for state, values in responsive_values.items() if state in movie_state_order}
+            movie_nonresponsive_values = {state: values for state, values in nonresponsive_values.items() if state in movie_state_order}
+            blank_responsive_sample_sizes = {state: count for state, count in responsive_sample_sizes.items() if state in blank_state_order}
+            blank_nonresponsive_sample_sizes = {state: count for state, count in nonresponsive_sample_sizes.items() if state in blank_state_order}
+            movie_responsive_sample_sizes = {state: count for state, count in responsive_sample_sizes.items() if state in movie_state_order}
+            movie_nonresponsive_sample_sizes = {state: count for state, count in nonresponsive_sample_sizes.items() if state in movie_state_order}
+            if responsive_values or nonresponsive_values:
+                print(f"[poster] {compartment} responsive blank/movie n summary = {_state_row_summary([row for row in responsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') in blank_state_order + movie_state_order])}", file=sys.stderr)
+                print(f"[poster] {compartment} nonresponsive blank/movie n summary = {_state_row_summary([row for row in nonresponsive_rows if canonical_state_label(row.get('state') or row.get('state_label') or row.get('state_display') or '') in blank_state_order + movie_state_order])}", file=sys.stderr)
+                mixed_path = write_state_mixed_model_poster_figure(
+                    output_dir=mixed_dir,
+                    entity_label=compartment,
+                    responsive_state_values=responsive_values,
+                    nonresponsive_state_values=nonresponsive_values,
+                    mixed_model_rows={
+                        "responsive": mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}),
+                        "nonresponsive": mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}),
+                    },
+                    state_order=poster_state_order,
+                    output_stem=f"{compartment}_state_mixed_model_poster_ready",
+                    title="Quiet blank vs sleep states",
+                    preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
+                    mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                )
+                if mixed_path:
+                    poster_ready_figures.append(str(mixed_path))
+            responsive_significant_states = set()
+            nonresponsive_significant_states = set()
+            for cohort_label, source, target in (
+                ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
+                ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
+            ):
+                selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"))
+                target.update(_poster_mixed_model_significant_states(selected_rows))
+            responsive_comparison_rows = [
+                row for row in cohort_state_comparison_rows.get("responsive", [])
                 if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
             ]
-            correlation_path = write_correlation_poster_figure(
-                output_dir=ensure_dir(correlation_dir / cohort_name),
-                entity_label=compartment,
-                correlation_rows=cohort_summary_rows,
-                comparison_rows=comparison_rows,
-                output_stem=f"{compartment}_state_summary_boxplots_correlation_poster_ready",
-                title="State correlation summaries",
-            )
-            if correlation_path:
-                poster_ready_figures.append(str(correlation_path))
-                if cohort_name == "all":
-                    all_correlation_path = str(correlation_path)
-        if compartment == "bouton":
-            combined_path = write_blank_movie_and_correlation_poster_figure(
+            nonresponsive_comparison_rows = [
+                row for row in cohort_state_comparison_rows.get("nonresponsive", [])
+                if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+            ]
+            blank_comparison_rows = [
+                row for row in blank_preset_comparison_rows
+                if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+            ]
+            movie_comparison_rows = [
+                row for row in movie_preset_comparison_rows
+                if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+            ]
+            responsive_significant_states.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
+            nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
+            responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))
+            responsive_significant_states.update(_significant_state_labels_from_comparison_rows(movie_comparison_rows))
+            nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))
+            nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(movie_comparison_rows))
+            blank_path = write_blank_movie_state_boxplot_figure(
                 output_dir=blank_dir,
                 entity_label=compartment,
                 responsive_blank_values=blank_responsive_values,
@@ -1165,19 +1716,104 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 nonresponsive_significant_states=sorted(nonresponsive_significant_states),
                 responsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
                 nonresponsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
-                responsive_compartment_significant_states=sorted(responsive_significant_states),
-                nonresponsive_compartment_significant_states=sorted(nonresponsive_significant_states),
-                correlation_rows=_load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"),
-                correlation_comparison_rows=[
-                    row for row in cohort_state_comparison_rows.get("all", [])
-                    if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
-                ],
-                output_stem=f"{compartment}_blank_movie_states_with_correlation_poster_ready",
+                output_stem=f"{compartment}_blank_movie_states_poster_ready",
                 title="Blank vs movie states",
-                correlation_title="State correlation summaries",
             )
-            if combined_path:
-                poster_ready_figures.append(str(combined_path))
+            if blank_path:
+                poster_ready_figures.append(str(blank_path))
+            blank_expected_states = [state for state in blank_state_order if "rem" not in state]
+            movie_expected_states = [state for state in movie_state_order if "rem" not in state]
+            blank_missing_states = [state for state in blank_expected_states if state not in blank_responsive_values and state not in blank_nonresponsive_values]
+            movie_missing_states = [state for state in movie_expected_states if state not in movie_responsive_values and state not in movie_nonresponsive_values]
+            if blank_missing_states or movie_missing_states:
+                poster_ready_errors.append(
+                    f"[ERROR] {compartment} blank/movie poster missing states: blank_missing={blank_missing_states or '[]'}; movie_missing={movie_missing_states or '[]'}"
+                )
+
+            correlation_dir = ensure_dir(compartment_root / "correlation")
+            all_correlation_path: str | None = None
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                if cohort_name == "all":
+                    cohort_rows = list(_load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"))
+                    cohort_soma_pairwise_rows = list(_load_all_requested_comparison_rows("cohort/all/soma_pairwise_correlation_by_day.csv"))
+                    cohort_bouton_pairwise_rows = list(_load_all_requested_comparison_rows("cohort/all/bouton_pairwise_correlation_by_day.csv"))
+                else:
+                    cohort_rows = list(cohort_correlation_rows.get(cohort_name, []))
+                    cohort_soma_pairwise_rows = list(cohort_soma_pairwise_summary.get(cohort_name, []))
+                    cohort_bouton_pairwise_rows = list(cohort_bouton_pairwise_summary.get(cohort_name, []))
+                if cohort_rows:
+                    cohort_summary_rows = cohort_rows if cohort_name == "all" else correlation_summary_rows(cohort_rows)
+                    if cohort_summary_rows:
+                        comparison_rows = [
+                            row for row in cohort_state_comparison_rows.get(cohort_name, [])
+                            if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+                        ]
+                        correlation_path = write_correlation_poster_figure(
+                            output_dir=ensure_dir(correlation_dir / cohort_name),
+                            entity_label=compartment,
+                            correlation_rows=cohort_summary_rows,
+                            comparison_rows=comparison_rows,
+                            output_stem=f"{compartment}_state_summary_boxplots_correlation_poster_ready",
+                            title="Correlation summaries",
+                            figure_label="Axon-soma",
+                        )
+                        if correlation_path:
+                            poster_ready_figures.append(str(correlation_path))
+                            if cohort_name == "all":
+                                all_correlation_path = str(correlation_path)
+                if cohort_soma_pairwise_rows:
+                    soma_pairwise_path = write_correlation_poster_figure(
+                        output_dir=ensure_dir(correlation_dir / cohort_name / "soma_pairwise"),
+                        entity_label="soma",
+                        correlation_rows=cohort_soma_pairwise_rows,
+                        output_stem="soma_pairwise_state_summary_boxplots_correlation_poster_ready",
+                        title="Correlation summaries",
+                        figure_label="Soma-soma",
+                    )
+                    if soma_pairwise_path:
+                        poster_ready_figures.append(str(soma_pairwise_path))
+                if cohort_bouton_pairwise_rows:
+                    bouton_pairwise_path = write_correlation_poster_figure(
+                        output_dir=ensure_dir(correlation_dir / cohort_name / "bouton_pairwise"),
+                        entity_label="bouton",
+                        correlation_rows=cohort_bouton_pairwise_rows,
+                        output_stem="axon_axon_state_summary_boxplots_correlation_poster_ready",
+                        title="Correlation summaries",
+                        figure_label="Axon-axon",
+                    )
+                    if bouton_pairwise_path:
+                        poster_ready_figures.append(str(bouton_pairwise_path))
+            if compartment == "bouton":
+                combined_path = write_blank_movie_and_correlation_poster_figure(
+                    output_dir=blank_dir,
+                    entity_label=compartment,
+                    responsive_blank_values=blank_responsive_values,
+                    responsive_movie_values=movie_responsive_values,
+                    nonresponsive_blank_values=blank_nonresponsive_values,
+                    nonresponsive_movie_values=movie_nonresponsive_values,
+                    blank_state_order=blank_state_order,
+                    movie_state_order=movie_state_order,
+                    responsive_blank_sample_sizes=blank_responsive_sample_sizes,
+                    responsive_movie_sample_sizes=movie_responsive_sample_sizes,
+                    nonresponsive_blank_sample_sizes=blank_nonresponsive_sample_sizes,
+                    nonresponsive_movie_sample_sizes=movie_nonresponsive_sample_sizes,
+                    responsive_significant_states=sorted(responsive_significant_states),
+                    nonresponsive_significant_states=sorted(nonresponsive_significant_states),
+                    responsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
+                    nonresponsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
+                    responsive_compartment_significant_states=sorted(responsive_significant_states),
+                    nonresponsive_compartment_significant_states=sorted(nonresponsive_significant_states),
+                    correlation_rows=_load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"),
+                    correlation_comparison_rows=[
+                        row for row in cohort_state_comparison_rows.get("all", [])
+                        if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
+                    ],
+                    output_stem=f"{compartment}_blank_movie_states_with_correlation_poster_ready",
+                    title="Blank vs movie states",
+                    correlation_title="Axon-soma correlation summaries",
+                )
+                if combined_path:
+                    poster_ready_figures.append(str(combined_path))
 
     canonical_visual_response_lookup = _canonical_visual_response_cohort_map(visual_response_rows)
     missing_visual_response_global_ids = [
@@ -1276,6 +1912,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "state_comparison_rows_movie": len(state_comparison_summary_rows),
             "state_comparison_rows_sleep": len(sleep_state_comparison_summary_rows),
             "correlation_rows": len(correlation_rows),
+            "soma_pairwise_correlation_rows": len(soma_pairwise_rows),
+            "bouton_pairwise_correlation_rows": len(bouton_pairwise_rows),
+            "coincidence_rows": len(coincidence_rows),
+            "coincidence_summary_rows": len(coincidence_summary_rows),
+            "coincidence_example_figures": len(coincidence_example_figures),
             "lag_rows": len(lag_rows),
             "visual_response_rows": len(visual_response_rows),
             "visual_response_responsive_rows": visual_response_counts["responsive"],
@@ -1289,9 +1930,18 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "cohort_state_event_comparison_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_state_event_comparison_rows.items()
             },
+            "roi_split_subject_state_rows": len(roi_split_results.get("subject_state_rows", [])),
+            "roi_split_membership_rows": len(roi_split_results.get("membership_rows", [])),
+            "roi_split_comparison_rows": len(roi_split_results.get("comparison_rows", [])),
+            "roi_split_summary_rows": len(roi_split_results.get("summary_rows", [])),
             "cohort_correlation_summary_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_correlation_summary.items()
             },
+            "cohort_coincidence_summary_rows": {
+                cohort_name: len(rows) for cohort_name, rows in cohort_coincidence_summary.items()
+            },
+            "soma_pairwise_summary_rows": len(soma_pairwise_summary),
+            "bouton_pairwise_summary_rows": len(bouton_pairwise_summary),
             "cohort_lag_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_lag_rows.items()
             },
@@ -1325,12 +1975,15 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         },
         "mixed_model": mixed_model_results,
         "poster_ready_figures": list(poster_ready_figures),
+        "coincidence_example_figures": list(coincidence_example_figures),
         "cache_summary": {
             "analysis_run_cache_path": str(analysis_run_cache_file),
             "analysis_results_cache_path": str(analysis_results_cache_file),
             "analysis_results_cache_reused": False,
             "analysis_tables_cache_path": str(analysis_tables_cache_file),
             "analysis_tables_cache_reused": False,
+            "coincidence_family_cache_path": str(coincidence_family_cache_file),
+            "coincidence_family_cache_reused": False,
             "source_cache_path": str(source_cache_file),
         },
         "output_root": str(result_root),
@@ -1346,13 +1999,22 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "correlation_rows": correlation_rows,
             "lag_rows": lag_rows,
             "visual_response_rows": visual_response_rows,
+            "coincidence_rows": coincidence_rows,
+            "coincidence_summary_rows": coincidence_summary_rows,
             "activity_summary_rows": activity_summary_rows,
             "state_comparison_summary_rows": state_comparison_summary_rows,
             "sleep_state_comparison_summary_rows": sleep_state_comparison_summary_rows,
+            "roi_split_results": roi_split_results,
+            "roi_split_subject_state_rows": roi_split_results.get("subject_state_rows", []),
+            "roi_split_membership_rows": roi_split_results.get("membership_rows", []),
+            "roi_split_comparison_rows": roi_split_results.get("comparison_rows", []),
+            "roi_split_summary_rows": roi_split_results.get("summary_rows", []),
             "correlation_summary": correlation_summary,
             "lag_summary": lag_summary,
             "visual_response_day_rows": visual_response_day_rows,
             "visual_response_counts": visual_response_counts,
+            "coincidence_counts": coincidence_counts,
+            "cohort_coincidence_summary_rows": cohort_coincidence_summary,
             "selected_states_by_mode": selected_states_by_mode,
             "state_modes": state_modes,
             "day_groups": day_groups,

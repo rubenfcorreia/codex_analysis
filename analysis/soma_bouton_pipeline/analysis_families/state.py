@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
+from analysis.dendrites_pipeline.dendrites_pipeline import (
     apply_bonferroni_correction,
     build_state_masks_movie,
     build_state_masks_sleep,
@@ -15,6 +15,7 @@ from analysis.main_pipeline.sleep_dendrite_spine_pipeline import (
     paired_comparison,
 )
 
+from analysis.shared.roi_split import summarize_mask_duration
 from ...compartment_common import canonical_state_label, read_pickle, state_display_color, state_display_label
 from .core import ExperimentContext, summarize_activity
 
@@ -132,13 +133,18 @@ def state_masks_for_context(ctx: ExperimentContext, selected_states: Sequence[st
 
     return ordered
 
-def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[str]) -> List[Dict[str, Any]]:
-    masks = state_masks_for_context(ctx, selected_states)
+def activity_rows_for_context(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+) -> List[Dict[str, Any]]:
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = ctx.soma.matrix()
     bouton_matrix = ctx.bouton.matrix()
     rows: List[Dict[str, Any]] = []
     for state, mask in masks.items():
         mask = np.asarray(mask, dtype=bool)
+        state_n_frames, state_duration_s = summarize_mask_duration(time, mask)
         soma_summary = summarize_activity(soma_matrix, mask)
         bouton_summary = summarize_activity(bouton_matrix, mask)
         for compartment, summary in (("soma", soma_summary), ("bouton", bouton_summary)):
@@ -151,6 +157,8 @@ def activity_rows_for_context(ctx: ExperimentContext, selected_states: Sequence[
                 "state": canonical_state_label(state),
                 "state_display": state_display_label(state),
                 "state_color": state_display_color(state),
+                "state_n_frames": int(state_n_frames),
+                "state_duration_s": float(state_duration_s),
                 "compartment": compartment,
                 "n": summary["n"],
                 "mean": summary["mean"],
