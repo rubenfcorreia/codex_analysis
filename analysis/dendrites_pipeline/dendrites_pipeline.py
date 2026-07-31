@@ -11676,6 +11676,7 @@ def process_mixed_model_only(
                     selected_states=state_comparison_states,
                     state_order=state_comparison_states,
                     shuffle_n=shuffle_n,
+                    sleep_expids=cache.get("config", {}).get("sleep_expids"),
                 )
                 if bundle.get("counts", {}).get("n_subject_state_rows", 0):
                     roi_split_bundles.append(bundle)

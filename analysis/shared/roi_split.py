@@ -132,6 +132,17 @@ def _state_matches_window(state: str, window: str) -> bool:
     return _window_family_label(state_key) == window_key
 
 
+def _row_session_id(row: Mapping[str, Any]) -> str:
+    for key in ('expid', 'day_id'):
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ''
+
+
 def _ordered_unique_states(states: Sequence[str], state_order: Sequence[str] | None = None) -> List[str]:
     ordered = [canonical_state_label(state) for state in states if canonical_state_label(state)]
     deduped = list(dict.fromkeys(ordered))
@@ -362,11 +373,17 @@ def build_roi_split_results(
     n_frames_column: str = 'state_n_frames',
     shuffle_n: int = 1000,
     windows: Sequence[str] = WINDOW_LABELS,
+    sleep_expids: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     selected_state_set = {
         canonical_state_label(state)
         for state in (selected_states or [])
         if canonical_state_label(state)
+    }
+    sleep_expid_set = {
+        str(expid).strip()
+        for expid in (sleep_expids or [])
+        if str(expid).strip()
     }
     compartment_label = str(compartment or '').strip().lower() or None
     filtered_rows: List[Mapping[str, Any]] = []
@@ -391,13 +408,6 @@ def build_roi_split_results(
         duration_column=duration_column,
         n_frames_column=n_frames_column,
     )
-    subject_state_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {
-        (str(row['subject_id']), str(row['state'])): dict(row)
-        for row in subject_state_rows
-    }
-    available_states = [str(row['state']) for row in subject_state_rows]
-    subject_ids = sorted({str(row['subject_id']) for row in subject_state_rows if str(row.get('subject_id') or '').strip()})
-
 
     membership_rows: List[Dict[str, Any]] = []
     comparison_rows: List[Dict[str, Any]] = []
@@ -407,12 +417,31 @@ def build_roi_split_results(
 
     for window in windows:
         window_key = canonical_state_label(window)
-        window_states = _window_state_labels(available_states, window_key, state_order=state_order)
+        window_rows = filtered_rows
+        if window_key in {'nrem', 'rem'} and sleep_expid_set:
+            window_rows = [row for row in filtered_rows if _row_session_id(row) in sleep_expid_set]
+        window_subject_state_rows = _aggregate_subject_state_rows(
+            window_rows,
+            subject_key=subject_key,
+            roi_type=roi_type,
+            compartment=compartment_label,
+            score_column=score_column,
+            response_columns=response_columns,
+            state_column=state_column,
+            duration_column=duration_column,
+            n_frames_column=n_frames_column,
+        )
+        window_subject_state_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {
+            (str(row['subject_id']), str(row['state'])): dict(row)
+            for row in window_subject_state_rows
+        }
+        window_subject_ids = sorted({str(row['subject_id']) for row in window_subject_state_rows if str(row.get('subject_id') or '').strip()})
+        window_states = _window_state_labels([str(row['state']) for row in window_subject_state_rows], window_key, state_order=state_order)
         if not window_states:
             continue
         ranked_subjects: List[Dict[str, Any]] = []
-        for subject_id in subject_ids:
-            state_rows = [subject_state_lookup.get((subject_id, state)) for state in window_states]
+        for subject_id in window_subject_ids:
+            state_rows = [window_subject_state_lookup.get((subject_id, state)) for state in window_states]
             state_rows = [row for row in state_rows if row is not None]
             if not state_rows:
                 continue
@@ -483,7 +512,7 @@ def build_roi_split_results(
                 'n_subjects': int(n_ranked),
                 'n_more_active': int(more_count),
                 'n_less_active': int(less_count),
-                'n_state_rows': int(sum(len([1 for state in window_states if (subject_id, state) in subject_state_lookup]) for subject_id in subject_ids)),
+                'n_state_rows': int(sum(len([1 for state in window_states if (subject_id, state) in window_subject_state_lookup]) for subject_id in window_subject_ids)),
                 'n_states': int(len(window_states)),
                 'window_states': ','.join(window_states),
                 'mean_score': float(np.nanmean(ranked_scores)) if ranked_scores else float('nan'),
@@ -497,7 +526,7 @@ def build_roi_split_results(
         window_subject_rows: List[Dict[str, Any]] = []
         for rank, row in enumerate(ranked_subjects, start=1):
             subject_id = str(row.get('subject_id'))
-            state_rows = [subject_state_lookup.get((subject_id, state)) for state in window_states]
+            state_rows = [window_subject_state_lookup.get((subject_id, state)) for state in window_states]
             state_rows = [item for item in state_rows if item is not None]
             if not state_rows:
                 continue
@@ -581,8 +610,8 @@ def build_roi_split_results(
             for state in window_states:
                 more_values: List[float] = []
                 less_values: List[float] = []
-                for subject_id in subject_ids:
-                    row = subject_state_lookup.get((subject_id, state))
+                for subject_id in window_subject_ids:
+                    row = window_subject_state_lookup.get((subject_id, state))
                     if row is None:
                         continue
                     value = _as_float(row.get(response_column))

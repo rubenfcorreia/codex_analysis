@@ -1155,6 +1155,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 selected_states=analysis_state_order,
                 state_order=analysis_state_order,
                 shuffle_n=shuffle_n,
+                sleep_expids=config.get("sleep_expids"),
             )
             if bundle.get("counts", {}).get("n_subject_state_rows", 0):
                 roi_split_bundles.append(bundle)
