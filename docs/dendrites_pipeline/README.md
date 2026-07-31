@@ -41,8 +41,8 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 
 ## Visual Response
 
-- The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/figures/visual_response/`.
-- ROI split figures are written under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png`.
+- The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/<branch>/<basis>/figures/visual_response/`, where `branch` is one of `pooled`, `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
+- ROI split figures are written under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
 - The shared renderer lives in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 - Dendrite responsiveness is computed from dendrite cut activity only.
 - Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
@@ -206,7 +206,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 - Computes spine-specific activity with robust regression.
 - Splits movie data into quiet and active states.
 - Fits the mixed-model summaries when the design is well-behaved, and falls back to a fixed-effect least-squares approximation when the mixed-model design is singular or the optimizer cannot converge cleanly.
-- Builds global more-active vs less-active ROI split comparisons from the pooled day-level observations, using both activity-derived and event-frequency-derived rankings.
+- Builds branch-aware ROI split comparisons from the pooled day-level observations, using both activity-derived and event-frequency-derived rankings plus the exploratory activity×frequency quadrant split.
 - Uses `sleep_state.pickle` for sleep analysis and never uses `sleep_state_sim.pickle`.
 - Alerts and skips sleep-state analysis if `sleep_state.pickle` is missing.
 - Saves a reloadable source cache, analysis-table cache, analysis-results cache, and shared shuffle cache.
@@ -311,7 +311,7 @@ Typical outputs are:
 The checkpoint gallery is written to `results/dendrites_pipeline/checkpoint_examples/` and gives you one representative image for each major stage of the pipeline.
 The gallery is generated for both demo and real runs whenever the relevant data exist, and the basal/apical variants are picked from the observation-level compartment labels so a dendrite can still contribute the correct anatomy even if it appears in multiple experiments.
 The spine-spine coefficient distribution figure prefers basal/apical panels when those labels are present; if a dataset only has other compartment labels, it falls back to those labels so the figure still renders.
-The per-dendrite spine-spine matrix heatmaps are written under `results/dendrites_pipeline/figures/<animal_id>/<compartment>/<date>/` instead of the checkpoint folder, so they stay grouped the same way as the day figures and are easier to browse alongside the other figures.
+The per-dendrite spine-spine matrix heatmaps are written under `results/dendrites_pipeline/<branch>/<basis>/figures/<animal_id>/<compartment>/<date>/` instead of the checkpoint folder, so they stay grouped the same way as the day figures and are easier to browse alongside the other figures.
 
 The gallery includes:
 

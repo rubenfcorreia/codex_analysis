@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.roi_split import build_roi_split_results
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
@@ -6846,7 +6847,7 @@ def generate_analysis_figures(
     mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = DEFAULT_RESULTS_DIR
+        base_root = fig_dir
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
     for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
@@ -7283,7 +7284,7 @@ def generate_review_figures(
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = DEFAULT_RESULTS_DIR
+        base_root = review_dir
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     with step_scope("review family: mixed model figures"):
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
@@ -8204,7 +8205,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = DEFAULT_RESULTS_DIR
+        base_root = gallery_dir
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_gallery_dir = figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
@@ -11654,42 +11655,68 @@ def process_mixed_model_only(
     results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
+
+
     roi_split_bundles: List[Dict[str, Any]] = []
     mixed_model_table_rows = list(mixed_model_results.get("table_rows", []))
+    sleep_expids = cache.get("config", {}).get("sleep_expids")
+    split_basis_names = ("all", "nrem", "rem")
+    split_specs = (
+        ("activity_split", "activity", "binary"),
+        ("frequency_split", "frequency", "binary"),
+        ("activity_frequency_split", "activity_frequency", "quadrant"),
+    )
     for compartment in ["basal", "apical"]:
         compartment_rows = [row for row in mixed_model_table_rows if str(row.get("compartment") or "") == compartment]
         if not compartment_rows:
             continue
-        for roi_type, subject_key, response_columns, split_specs in (
-            ("dendrite", "global_dendrite_id", ("mean_dendrite_activity", "dendrite_event_frequency_per_min"), (("activity", "mean_dendrite_activity"), ("event_frequency", "dendrite_event_frequency_per_min"))),
-            ("spine", "global_dendrite_id", ("mean_spine_activity_per_dendrite", "spine_event_frequency_per_min"), (("activity", "mean_spine_activity_per_dendrite"), ("event_frequency", "spine_event_frequency_per_min"))),
+        for roi_type, subject_key, response_columns in (
+            ("dendrite", "global_dendrite_id", ("mean_dendrite_activity", "dendrite_event_frequency_per_min")),
+            ("spine", "global_dendrite_id", ("mean_spine_activity_per_dendrite", "spine_event_frequency_per_min")),
         ):
-            for split_name, score_column in split_specs:
-                bundle = build_roi_split_results(
-                    compartment_rows,
-                    roi_type=roi_type,
-                    split_name=split_name,
-                    score_column=score_column,
-                    response_columns=response_columns,
-                    subject_key=subject_key,
-                    compartment=compartment,
-                    selected_states=state_comparison_states,
-                    state_order=state_comparison_states,
-                    shuffle_n=shuffle_n,
-                    sleep_expids=cache.get("config", {}).get("sleep_expids"),
-                )
-                if bundle.get("counts", {}).get("n_subject_state_rows", 0):
-                    roi_split_bundles.append(bundle)
+            primary_score_column = response_columns[0]
+            secondary_score_column = response_columns[1]
+            for branch_name, split_name, split_mode in split_specs:
+                score_column = secondary_score_column if branch_name == "frequency_split" else primary_score_column
+                split_secondary_score = secondary_score_column if branch_name == "activity_frequency_split" else None
+                for basis_name in split_basis_names:
+                    bundle = build_roi_split_results(
+                        compartment_rows,
+                        roi_type=roi_type,
+                        split_name=split_name,
+                        branch_name=branch_name,
+                        basis_name=basis_name,
+                        score_column=score_column,
+                        secondary_score_column=split_secondary_score,
+                        response_columns=response_columns,
+                        subject_key=subject_key,
+                        compartment=compartment,
+                        selected_states=state_comparison_states,
+                        state_order=state_comparison_states,
+                        shuffle_n=shuffle_n,
+                        split_mode=split_mode,
+                        sleep_expids=sleep_expids,
+                    )
+                    if bundle.get("counts", {}).get("n_membership_rows", 0):
+                        roi_split_bundles.append(bundle)
     roi_split_subject_state_rows: List[Dict[str, Any]] = []
-    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str]] = set()
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str, str, str]] = set()
     for bundle in roi_split_bundles:
         for row in bundle.get("subject_state_rows", []):
-            key = (str(row.get("roi_type") or ""), str(row.get("compartment") or ""), str(row.get("subject_id") or ""), str(row.get("state") or ""))
+            key = (
+                str(row.get("branch_name") or ""),
+                str(row.get("basis_name") or ""),
+                str(row.get("roi_type") or ""),
+                str(row.get("compartment") or ""),
+                str(row.get("subject_id") or ""),
+                str(row.get("state") or ""),
+            )
             if key in seen_roi_split_subject_state_keys:
                 continue
             seen_roi_split_subject_state_keys.add(key)
             roi_split_subject_state_rows.append(dict(row))
     roi_split_results = {
+        "branches": {},
         "bundles": roi_split_bundles,
         "subject_state_rows": roi_split_subject_state_rows,
         "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
@@ -11700,18 +11727,15 @@ def process_mixed_model_only(
             "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
             "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
             "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+            "bundles": int(len(roi_split_bundles)),
+            "branches": int(len({str(bundle.get("branch_name") or "") for bundle in roi_split_bundles if str(bundle.get("branch_name") or "")})),
+            "basis_leaves": int(len({(str(bundle.get("branch_name") or ""), str(bundle.get("basis_name") or "")) for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") and str(bundle.get("basis_name") or "")})),
         },
     }
-    results["roi_split"] = roi_split_results
-    analysis_tables = cache.get("analysis_tables")
-    if not isinstance(analysis_tables, dict):
-        analysis_tables = {}
-        cache["analysis_tables"] = analysis_tables
-    analysis_tables["roi_split_results"] = roi_split_results
-    analysis_tables["roi_split_subject_state_rows"] = roi_split_results["subject_state_rows"]
-    analysis_tables["roi_split_membership_rows"] = roi_split_results["membership_rows"]
-    analysis_tables["roi_split_comparison_rows"] = roi_split_results["comparison_rows"]
-    analysis_tables["roi_split_summary_rows"] = roi_split_results["summary_rows"]
+    for bundle in roi_split_bundles:
+        branch_key = str(bundle.get("branch_name") or bundle.get("split_name") or "").strip() or "split"
+        basis_key = str(bundle.get("basis_name") or "all").strip() or "all"
+        roi_split_results["branches"].setdefault(branch_key, {})[basis_key] = bundle
     if output_dir is not None:
         with step_scope("figure generation: mixed_model"):
             render_analysis_family_figures(output_dir, results, cache, "mixed_model", figure_root=figure_root)
@@ -13539,7 +13563,7 @@ def write_analysis_report(
         )
     def format_roi_split_row(row: Dict[str, Any]) -> str:
         return (
-            f"{row.get('roi_type')} | {row.get('compartment')} | {row.get('split_name')} | {row.get('window')} | "
+            f"{row.get('branch_name') or row.get('split_name')} | {row.get('basis_name')} | {row.get('roi_type')} | {row.get('compartment')} | {row.get('split_name')} | {row.get('window')} | "
             f"{row.get('response_column')} | {row.get('state')} | "
             f"effect={format_report_number(row.get('effect_size'))} | "
             f"shuffle_p={format_report_pvalue(row.get('shuffle_p'))} | "
@@ -14341,15 +14365,17 @@ def write_analysis_report(
         append_kv("tested comparisons", len(roi_split_rows))
         append_kv("tested subject-state rows", len(roi_split.get("subject_state_rows", [])))
         append_kv("tested split bundles", len(roi_split.get("bundles", [])))
+        append_kv("branches", format_report_list(sorted({str(row.get("branch_name") or "") for row in roi_split_rows if str(row.get("branch_name") or "")})))
+        append_kv("bases", format_report_list(sorted({str(row.get("basis_name") or "") for row in roi_split_rows if str(row.get("basis_name") or "")})))
         append_kv("roi types", format_report_list(sorted({str(row.get("roi_type") or "") for row in roi_split_rows if str(row.get("roi_type") or "")})))
-        append_kv("split bases", format_report_list(sorted({str(row.get("split_name") or "") for row in roi_split_rows if str(row.get("split_name") or "")})))
+        append_kv("split names", format_report_list(sorted({str(row.get("split_name") or "") for row in roi_split_rows if str(row.get("split_name") or "")})))
         append_kv("compartments", format_report_list(sorted({str(row.get("compartment") or "") for row in roi_split_rows if str(row.get("compartment") or "")})))
         append_kv("significant comparisons", sum(1 for row in roi_split_rows if is_significant_row(row, p_key="shuffle_p")))
         render_state_section(
-            "More-active vs less-active comparisons",
+            "ROI split group comparisons",
             roi_split_rows,
             format_roi_split_row,
-            group_key_fn=lambda row: f"{row.get('roi_type', 'unknown')} | {row.get('compartment', 'unknown')} | {row.get('split_name', 'unknown')} | {row.get('window', 'unknown')}",
+            group_key_fn=lambda row: f"{row.get('branch_name', 'unknown')} | {row.get('basis_name', 'unknown')} | {row.get('roi_type', 'unknown')} | {row.get('compartment', 'unknown')} | {row.get('split_name', 'unknown')} | {row.get('window', 'unknown')}",
             p_key="shuffle_p",
             tested_label="tested comparisons",
         )
@@ -14426,6 +14452,7 @@ def write_analysis_outputs(
     figure_root: Optional[Path] = None,
     plots_only: bool = False,
     include_supporting_figures: bool = True,
+    branch_first_figures: bool = False,
 ) -> List[str]:
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
@@ -14450,7 +14477,7 @@ def write_analysis_outputs(
         generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
         shared_general_root = None
         if generate_shared_general_figures:
-            base_root = DEFAULT_RESULTS_DIR
+            base_root = Path(figure_root) if figure_root is not None else (output_dir / "figures")
             shared_general_root = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME)
         if source_cache is not None and shared_general_root is not None:
             step_message("visual response figure generation starting")
@@ -14485,6 +14512,27 @@ def write_analysis_outputs(
         for path in checkpoint_gallery.get("files", []):
             written_artifacts.append(report_relative_path(path, output_dir))
         step_message("checkpoint gallery complete: %d file(s)" % len(checkpoint_gallery.get("files", [])))
+        if branch_first_figures:
+            sleep_expids = results.get("analysis_sleep_expids", []) if isinstance(results.get("analysis_sleep_expids"), list) else []
+            for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
+                leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=sleep_expids)
+                leaf_output_dir = branch_leaf_root(output_dir, branch_name, basis_name)
+                leaf_figure_root = branch_leaf_figure_root(output_dir, branch_name, basis_name)
+                step_message(f"branch-first figure generation: {branch_name}/{basis_name}")
+                with step_scope(f"branch-first figure generation: {branch_name}/{basis_name}"):
+                    leaf_written = write_analysis_outputs(
+                        leaf_output_dir,
+                        leaf_results,
+                        cache,
+                        source_cache=source_cache,
+                        figure_root=leaf_figure_root,
+                        plots_only=True,
+                        include_supporting_figures=include_supporting_figures,
+                        branch_first_figures=False,
+                    )
+                for path in leaf_written:
+                    leaf_path = Path(leaf_output_dir) / str(path)
+                    written_artifacts.append(report_relative_path(leaf_path, output_dir))
     else:
         results["figure_files"] = []
         results["review_figure_files"] = []
@@ -16592,6 +16640,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             figure_root=figure_output_dir,
             plots_only=plots_only,
             include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)) and not bool(config.get("poster_ready_only")),
+            branch_first_figures=True,
         )
     if bool(config.get("generate_poster_ready_figures", True)):
         with step_scope("poster figure generation"):

@@ -36,7 +36,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 
 ## Visual Response
 
-- The dendrites pipeline now writes dendrite and spine visual-response summaries and boxplots under `results/dendrites_pipeline/figures/visual_response/`.
+- The dendrites pipeline now writes dendrite and spine visual-response summaries and boxplots under `results/dendrites_pipeline/<branch>/<basis>/figures/visual_response/` for the branch-first leaf trees.
 - Dendrite responsiveness is computed from dendrite cut activity only.
 - Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.
 - The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.
@@ -45,7 +45,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 
 ## ROI Split Figures
 
-- The main pipeline writes ROI split figures under `results/dendrites_pipeline/figures/roi_split/<roi_type>/<compartment>/<split_name>/roi_split_<roi_type>_<compartment>_<split_name>.svg|png`.
+- The main pipeline writes ROI split figures under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
 - The shared renderer is implemented in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 
 ## Config Files

@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,10 +16,17 @@ from analysis.shared.roi_split import WINDOW_DISPLAY_LABELS, WINDOW_LABELS
 from analysis.shared.state_utils import canonical_state_label, ensure_dir, safe_filename_component
 
 
-GROUP_LABELS = ("More active", "Less active")
-GROUP_SERIES = ("more_active", "less_active")
-GROUP_COLORS = ("#4c78a8", "#f58518")
-
+DEFAULT_BINARY_GROUPS = (
+    ("more_active", "More active", "#4c78a8"),
+    ("less_active", "Less active", "#f58518"),
+)
+DEFAULT_QUADRANT_GROUPS = (
+    ("high_activity_high_frequency", "High activity / high frequency", "#4c78a8"),
+    ("high_activity_low_frequency", "High activity / low frequency", "#72b7b2"),
+    ("low_activity_high_frequency", "Low activity / high frequency", "#f58518"),
+    ("low_activity_low_frequency", "Low activity / low frequency", "#e45756"),
+)
+DEFAULT_GROUP_COLORS = ("#4c78a8", "#f58518", "#72b7b2", "#e45756", "#8b5cf6", "#10b981")
 RESPONSE_LABELS = {
     "mean": "Mean activity",
     "corr": "Correlation",
@@ -44,15 +52,63 @@ def _response_label(column: Any) -> str:
     return text[:1].upper() + text[1:] if text else key
 
 
+def _group_specs_from_bundle(bundle: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    group_series = [str(value).strip().lower() for value in bundle.get("group_series", []) if str(value).strip()]
+    group_labels = [str(value).strip() for value in bundle.get("group_labels", []) if str(value).strip()]
+    group_colors = [str(value).strip() for value in bundle.get("group_colors", []) if str(value).strip()]
+    if not group_series:
+        seen: list[str] = []
+        for row in rows:
+            group = str(row.get("group") or "").strip().lower()
+            if group and group not in seen:
+                seen.append(group)
+        group_series = seen
+    if not group_series:
+        split_mode = canonical_state_label(bundle.get("split_mode"))
+        default_groups = DEFAULT_QUADRANT_GROUPS if split_mode in {"activity_frequency", "quadrant"} else DEFAULT_BINARY_GROUPS
+        return [
+            {"group": group, "label": label, "color": color}
+            for group, label, color in default_groups
+        ]
+    if not group_labels:
+        group_labels = [group.replace("_", " ").title() for group in group_series]
+    if len(group_colors) < len(group_series):
+        palette = list(DEFAULT_GROUP_COLORS)
+        for index in range(len(group_series) - len(group_colors)):
+            group_colors.append(palette[index % len(palette)])
+    return [
+        {
+            "group": group,
+            "label": group_labels[index] if index < len(group_labels) else group.replace("_", " ").title(),
+            "color": group_colors[index] if index < len(group_colors) else DEFAULT_GROUP_COLORS[index % len(DEFAULT_GROUP_COLORS)],
+        }
+        for index, group in enumerate(group_series)
+    ]
+
+
 def roi_split_figure_output_dir(
     result_root: Path | str,
     *,
     roi_type: Any,
     split_name: Any,
     compartment: Any | None = None,
+    branch_name: Any | None = None,
+    basis_name: Any | None = None,
 ) -> Path:
-    parts = ["figures", "roi_split", safe_filename_component(roi_type)]
+    branch_text = str(branch_name or "").strip().lower()
+    basis_text = canonical_state_label(basis_name)
     compartment_text = str(compartment or "").strip().lower()
+    root_path = Path(result_root)
+    branch_component = safe_filename_component(branch_text)
+    basis_component = safe_filename_component(basis_text)
+    root_parts = [safe_filename_component(part) for part in root_path.parts[-2:]]
+    already_leaf_scoped = branch_text and basis_text and len(root_parts) >= 2 and root_parts[-2] == branch_component and root_parts[-1] == basis_component
+    if branch_text and basis_text and not already_leaf_scoped:
+        parts = ["figures", branch_component, basis_component, "roi_split", safe_filename_component(roi_type)]
+        if compartment_text:
+            parts.append(safe_filename_component(compartment_text))
+        return ensure_dir(root_path.joinpath(*parts))
+    parts = ["figures", "roi_split", safe_filename_component(roi_type)]
     if compartment_text:
         parts.append(safe_filename_component(compartment_text))
     parts.append(safe_filename_component(split_name))
@@ -103,6 +159,8 @@ def plot_roi_split_bundle_figure(
 
     roi_type = str(bundle.get("roi_type") or "roi").strip().lower() or "roi"
     split_name = str(bundle.get("split_name") or "split").strip().lower() or "split"
+    branch_name = str(bundle.get("branch_name") or "").strip().lower() or None
+    basis_name = str(bundle.get("basis_name") or "").strip().lower() or None
     compartment = str(bundle.get("compartment") or "").strip().lower() or None
     response_columns = [str(column).strip() for column in bundle.get("response_columns", []) if str(column).strip()]
     window_rows = [row for row in bundle.get("window_response_rows", []) if isinstance(row, Mapping)]
@@ -110,11 +168,28 @@ def plot_roi_split_bundle_figure(
     if not response_columns or not window_rows:
         return []
 
-    output_dir = roi_split_figure_output_dir(result_root, roi_type=roi_type, split_name=split_name, compartment=compartment)
+    group_specs = _group_specs_from_bundle(bundle, window_rows)
+    group_series = [str(spec["group"]).strip().lower() for spec in group_specs if str(spec.get("group") or "").strip()]
+    group_labels = [str(spec["label"]) for spec in group_specs if str(spec.get("group") or "").strip()]
+    group_colors = [str(spec["color"]) for spec in group_specs if str(spec.get("group") or "").strip()]
+    if not group_series:
+        return []
+    group_color_map = {series: color for series, color in zip(group_series, group_colors)}
+
+    output_dir = roi_split_figure_output_dir(
+        result_root,
+        roi_type=roi_type,
+        split_name=split_name,
+        compartment=compartment,
+        branch_name=branch_name,
+        basis_name=basis_name,
+    )
     stem_parts = ["roi_split", safe_filename_component(roi_type)]
     if compartment:
         stem_parts.append(safe_filename_component(compartment))
     stem_parts.append(safe_filename_component(split_name))
+    if basis_name:
+        stem_parts.append(safe_filename_component(basis_name))
     stem = "_".join(stem_parts)
 
     windows = list(WINDOW_LABELS)
@@ -144,30 +219,29 @@ def plot_roi_split_bundle_figure(
                 if not np.isfinite(value_f):
                     continue
                 response_rows.append((row, value_f))
-            more_values: list[float] = []
-            less_values: list[float] = []
+            values_by_group: list[list[float]] = [[] for _ in group_series]
             for row, value_f in response_rows:
                 group = str(row.get("group") or "").strip().lower()
-                if group == "more_active":
-                    more_values.append(value_f)
-                elif group == "less_active":
-                    less_values.append(value_f)
-            if not more_values or not less_values:
+                if group not in group_series:
+                    continue
+                values_by_group[group_series.index(group)].append(value_f)
+            if sum(bool(values) for values in values_by_group) < 2:
                 ax.set_axis_off()
                 continue
 
             panel_comparisons = _comparison_rows_for_panel(comparison_rows, window=window, response_column=response_column)
             plotted = draw_boxplot_series(
                 ax,
-                [more_values, less_values],
-                GROUP_LABELS,
-                GROUP_SERIES,
-                GROUP_COLORS,
+                values_by_group,
+                group_labels,
+                group_series,
+                group_colors,
                 title="",
                 ylabel="",
                 xlabel="",
                 comparison_rows=panel_comparisons,
-                top_labels=[f"n={len(more_values)}", f"n={len(less_values)}"],
+                top_labels=[f"n={len(values)}" for values in values_by_group],
+                label_color_fn=lambda series: group_color_map.get(str(series).strip().lower(), "#1f2937"),
             )
             if not plotted:
                 ax.set_axis_off()
@@ -191,11 +265,14 @@ def plot_roi_split_bundle_figure(
         return []
 
     title_bits = ["ROI split"]
+    if branch_name:
+        title_bits.append(branch_name.replace("_", " ").title())
+    if basis_name:
+        title_bits.append(basis_name.replace("_", " ").title())
     if roi_type:
         title_bits.append(roi_type.replace("_", " ").title())
     if compartment:
         title_bits.append(compartment.title())
-    title_bits.append(split_name.replace("_", " ").title())
     fig.suptitle(" - ".join(title_bits), fontsize=14, fontweight="bold", y=0.985)
     return _save_figure(fig, output_dir, stem)
 

@@ -27,6 +27,7 @@ from analysis.shared.comparison_preset_flow import (
     POSTER_REQUIRED_COMPARISON_PRESETS,
     build_comparison_preset_batch_plan,
 )
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
 from analysis.shared.roi_split import build_roi_split_results
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
@@ -1138,37 +1139,64 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 analysis_state_order.append(state_key)
                 seen_analysis_states.add(state_key)
 
+
     roi_split_bundles: List[Dict[str, Any]] = []
-    for roi_type, compartment, subject_key in (("soma", "soma", "global_soma_id"), ("bouton", "bouton", "global_bouton_id")):
+    split_basis_names = ("all", "nrem", "rem")
+    split_specs = (
+        ("activity_split", "activity", "binary"),
+        ("frequency_split", "frequency", "binary"),
+        ("activity_frequency_split", "activity_frequency", "quadrant"),
+    )
+    for roi_type, compartment, subject_key, response_columns in (
+        ("soma", "soma", "global_soma_id", ("mean", "event_frequency_per_min")),
+        ("bouton", "bouton", "global_bouton_id", ("mean", "event_frequency_per_min")),
+    ):
         compartment_rows = [row for row in activity_rows if str(row.get("compartment") or "") == compartment]
         if not compartment_rows:
             continue
-        for split_name, score_column in (("activity", "mean"), ("event_frequency", "event_frequency_per_min")):
-            bundle = build_roi_split_results(
-                compartment_rows,
-                roi_type=roi_type,
-                split_name=split_name,
-                score_column=score_column,
-                response_columns=("mean", "event_frequency_per_min"),
-                subject_key=subject_key,
-                compartment=compartment,
-                selected_states=analysis_state_order,
-                state_order=analysis_state_order,
-                shuffle_n=shuffle_n,
-                sleep_expids=config.get("sleep_expids"),
-            )
-            if bundle.get("counts", {}).get("n_subject_state_rows", 0):
-                roi_split_bundles.append(bundle)
+        primary_score_column = response_columns[0]
+        secondary_score_column = response_columns[1]
+        for branch_name, split_name, split_mode in split_specs:
+            score_column = secondary_score_column if branch_name == "frequency_split" else primary_score_column
+            split_secondary_score = secondary_score_column if branch_name == "activity_frequency_split" else None
+            for basis_name in split_basis_names:
+                bundle = build_roi_split_results(
+                    compartment_rows,
+                    roi_type=roi_type,
+                    split_name=split_name,
+                    branch_name=branch_name,
+                    basis_name=basis_name,
+                    score_column=score_column,
+                    secondary_score_column=split_secondary_score,
+                    response_columns=response_columns,
+                    subject_key=subject_key,
+                    compartment=compartment,
+                    selected_states=analysis_state_order,
+                    state_order=analysis_state_order,
+                    shuffle_n=shuffle_n,
+                    split_mode=split_mode,
+                    sleep_expids=config.get("sleep_expids"),
+                )
+                if bundle.get("counts", {}).get("n_membership_rows", 0):
+                    roi_split_bundles.append(bundle)
     roi_split_subject_state_rows: List[Dict[str, Any]] = []
-    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str]] = set()
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str, str, str]] = set()
     for bundle in roi_split_bundles:
         for row in bundle.get("subject_state_rows", []):
-            key = (str(row.get("roi_type") or ""), str(row.get("compartment") or ""), str(row.get("subject_id") or ""), str(row.get("state") or ""))
+            key = (
+                str(row.get("branch_name") or ""),
+                str(row.get("basis_name") or ""),
+                str(row.get("roi_type") or ""),
+                str(row.get("compartment") or ""),
+                str(row.get("subject_id") or ""),
+                str(row.get("state") or ""),
+            )
             if key in seen_roi_split_subject_state_keys:
                 continue
             seen_roi_split_subject_state_keys.add(key)
             roi_split_subject_state_rows.append(dict(row))
     roi_split_results = {
+        "branches": {},
         "bundles": roi_split_bundles,
         "subject_state_rows": roi_split_subject_state_rows,
         "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
@@ -1179,8 +1207,15 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
             "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
             "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+            "bundles": int(len(roi_split_bundles)),
+            "branches": int(len({str(bundle.get("branch_name") or "") for bundle in roi_split_bundles if str(bundle.get("branch_name") or "")})),
+            "basis_leaves": int(len({(str(bundle.get("branch_name") or ""), str(bundle.get("basis_name") or "")) for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") and str(bundle.get("basis_name") or "")})),
         },
     }
+    for bundle in roi_split_bundles:
+        branch_key = str(bundle.get("branch_name") or bundle.get("split_name") or "").strip() or "split"
+        basis_key = str(bundle.get("basis_name") or "all").strip() or "all"
+        roi_split_results["branches"].setdefault(branch_key, {})[basis_key] = bundle
 
     cohort_activity_rows = split_rows_by_cohort(activity_rows_with_cohort)
     cohort_correlation_rows = split_rows_by_cohort(correlation_rows_with_cohort)
@@ -1816,6 +1851,153 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 if combined_path:
                     poster_ready_figures.append(str(combined_path))
 
+    if not poster_ready_only:
+        def render_branch_first_leaf_figures(branch_name: str, basis_name: str) -> None:
+            leaf_root = branch_leaf_root(result_root, branch_name, basis_name)
+            leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=config.get("sleep_expids"))
+            basis_sleep_expids = config.get("sleep_expids")
+            basis_activity_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_activity_rows.items()}
+            basis_state_comparison_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_state_comparison_rows.items()}
+            basis_state_event_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_state_event_comparison_rows.items()}
+            basis_correlation_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_correlation_summary.items()}
+            basis_soma_pairwise_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_soma_pairwise_summary.items()}
+            basis_bouton_pairwise_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_bouton_pairwise_summary.items()}
+            basis_lag_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_lag_rows.items()}
+            basis_visual_rows = scope_rows_for_basis(visual_response_rows, basis_name, sleep_expids=basis_sleep_expids)
+
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                cohort_rows = basis_activity_rows.get(cohort_name, [])
+                if not cohort_rows:
+                    continue
+                plot_state_activity(
+                    cohort_rows,
+                    leaf_root,
+                    comparison_rows=basis_state_comparison_rows.get(cohort_name, []),
+                    cohort_label=cohort_name,
+                )
+                plot_state_event_frequency(
+                    cohort_rows,
+                    leaf_root,
+                    comparison_rows=basis_state_event_rows.get(cohort_name, []),
+                    cohort_label=cohort_name,
+                )
+                plot_state_correlation(
+                    basis_correlation_rows.get(cohort_name, []),
+                    leaf_root,
+                    comparison_rows=basis_state_comparison_rows.get(cohort_name, []),
+                    cohort_label=cohort_name,
+                    title="Axon-soma correlation",
+                    output_stem="axon_soma_state_summary_boxplots_correlation",
+                )
+                plot_state_correlation(
+                    basis_soma_pairwise_rows.get(cohort_name, []),
+                    leaf_root,
+                    cohort_label=cohort_name,
+                    title="Soma-soma correlation",
+                    output_stem="soma_pairwise_state_summary_boxplots_correlation",
+                )
+                plot_state_correlation(
+                    basis_bouton_pairwise_rows.get(cohort_name, []),
+                    leaf_root,
+                    cohort_label=cohort_name,
+                    title="Axon-axon correlation",
+                    output_stem="axon_axon_state_summary_boxplots_correlation",
+                )
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                cohort_rows = basis_lag_rows.get(cohort_name, [])
+                if not cohort_rows:
+                    continue
+                plot_lag_heatmap(cohort_rows, leaf_root, cohort_label=cohort_name)
+
+            roi_split_bundles = leaf_results.get("roi_split", {}).get("bundles", []) if isinstance(leaf_results.get("roi_split", {}), dict) else []
+            for bundle in roi_split_bundles:
+                if not isinstance(bundle, dict) or not bundle:
+                    continue
+                roi_type = str(bundle.get("roi_type") or "roi").strip().lower() or "roi"
+                split_name = str(bundle.get("split_name") or "split").strip().lower() or "split"
+                compartment = str(bundle.get("compartment") or "").strip().lower() or "all"
+                _stage("plotting", f"branch-first roi split figures - {branch_name} - {basis_name} - {roi_type} - {compartment} - {split_name}")
+                try:
+                    figure_bundle = dict(bundle)
+                    figure_bundle["compartment"] = ""
+                    plot_roi_split_bundle_figure(figure_bundle, leaf_root)
+                except Exception as exc:
+                    logger.exception("Failed to create branch-first roi split figure %s/%s/%s/%s/%s", branch_name, basis_name, roi_type, compartment, split_name)
+                    continue
+
+            if basis_visual_rows:
+                visual_response_fig_dir = ensure_dir(leaf_root / "figures" / "visual_response")
+                for compartment in ("soma", "bouton"):
+                    compartment_rows = [row for row in basis_visual_rows if str(row.get("compartment") or "") == compartment]
+                    if not compartment_rows:
+                        continue
+                    compartment_dir = ensure_dir(visual_response_fig_dir / compartment)
+                    for cohort in ("all", "responsive", "nonresponsive"):
+                        cohort_rows = compartment_rows if cohort == "all" else [row for row in compartment_rows if str(row.get("cohort") or "nonresponsive") == cohort]
+                        if not cohort_rows:
+                            continue
+                        cohort_dir = ensure_dir(compartment_dir / cohort)
+                        plot_visual_response_boxplot_figure(
+                            {"rows": cohort_rows},
+                            cohort_dir,
+                            output_name="visual_response_movie_vs_blank.svg",
+                            title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
+                            cohort_label=cohort,
+                            kind=compartment,
+                        )
+                        render_visual_response_entity_figures(
+                            cohort_rows,
+                            cohort_dir / "entities",
+                            cohort_label=cohort,
+                            kind=compartment,
+                        )
+
+            if mixed_model_results:
+                mixed_model_fig_dir = ensure_dir(leaf_root / "figures" / "mixed_model")
+                for cohort_name, cohort_results in mixed_model_results.items():
+                    if not isinstance(cohort_results, dict) or not cohort_results:
+                        continue
+                    cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
+                    for compartment_key, compartment_results in cohort_results.items():
+                        if not isinstance(compartment_results, dict) or not compartment_results:
+                            continue
+                        compartment_dir = ensure_dir(cohort_dir / compartment_key)
+                        for scope_key in ("selected_state",):
+                            branch = compartment_results.get(scope_key, {})
+                            scope_label = scope_key.replace("_", " ")
+                            if not isinstance(branch, dict) or not branch:
+                                continue
+                            mixed_model_payload = {
+                                "analysis_state_selection": dict(leaf_results.get("analysis_state_selection", {})),
+                                "analysis_compartment": compartment_key,
+                                "mixed_model": branch,
+                            }
+                            plot_mixed_model_forest_figure(
+                                mixed_model_payload,
+                                compartment_dir,
+                                output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_forest.svg",
+                                title=f"Mixed-model fixed effects - {cohort_name} - {compartment_key} - {scope_label}",
+                                model_key="mixed_model",
+                            )
+                            plot_mixed_model_predicted_means_figure(
+                                mixed_model_payload,
+                                compartment_dir,
+                                output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_predicted_means.svg",
+                                title=f"Mixed-model predicted means - {cohort_name} - {compartment_key} - {scope_label}",
+                                model_key="mixed_model",
+                            )
+                            plot_mixed_model_contrasts_checkpoint(
+                                mixed_model_payload,
+                                compartment_dir,
+                                scope=scope_key,
+                                output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_contrasts.svg",
+                                title=f"Mixed-model contrasts - {cohort_name} - {compartment_key} - {scope_label}",
+                                model_key="mixed_model",
+                            )
+
+        for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
+            render_branch_first_leaf_figures(branch_name, basis_name)
+
     canonical_visual_response_lookup = _canonical_visual_response_cohort_map(visual_response_rows)
     missing_visual_response_global_ids = [
         row for row in visual_response_rows
@@ -1935,6 +2117,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "roi_split_membership_rows": len(roi_split_results.get("membership_rows", [])),
             "roi_split_comparison_rows": len(roi_split_results.get("comparison_rows", [])),
             "roi_split_summary_rows": len(roi_split_results.get("summary_rows", [])),
+            "roi_split_bundles": len(roi_split_results.get("bundles", [])),
+            "roi_split_branches": len(roi_split_results.get("branches", {})),
             "cohort_correlation_summary_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_correlation_summary.items()
             },
