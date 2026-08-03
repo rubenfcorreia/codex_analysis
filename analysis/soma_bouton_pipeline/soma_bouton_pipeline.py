@@ -1852,9 +1852,21 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     poster_ready_figures.append(str(combined_path))
 
     if not poster_ready_only:
+        branch_results_source = {
+            "analysis_state_selection": {
+                "state_comparison_states": list(analysis_state_order),
+                "basal_apical_states": list(analysis_state_order),
+                "compartment_states": list(analysis_state_order),
+                "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+                "state_modes": list(state_modes),
+                "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
+            },
+            "roi_split": roi_split_results,
+        }
+
         def render_branch_first_leaf_figures(branch_name: str, basis_name: str) -> None:
             leaf_root = branch_leaf_root(result_root, branch_name, basis_name)
-            leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=config.get("sleep_expids"))
+            leaf_results = scoped_branch_results(branch_results_source, branch_name=branch_name, basis_name=basis_name, sleep_expids=config.get("sleep_expids"))
             basis_sleep_expids = config.get("sleep_expids")
             basis_activity_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_activity_rows.items()}
             basis_state_comparison_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_state_comparison_rows.items()}
