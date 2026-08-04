@@ -1,7 +1,7 @@
 # Analysis Methods
 
 This page explains how the main analysis metrics are computed in `codex_analysis` and how the statistical tests are applied.
-It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository.
+It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository. It also describes the branch-first ROI split analysis and the split-aware mixed-model leaves.
 
 See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md), [../visual_response/README.md](../visual_response/README.md), [../sleep_state_across_days/README.md](../sleep_state_across_days/README.md).
 
@@ -44,7 +44,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 ### Summary Metrics
 
 - `state_comparisons.csv` and the paired state summary figures report mean activity by requested state.
-- `roi_split_subject_state.csv`, `roi_split_membership.csv`, `roi_split_comparisons.csv`, and `roi_split_summary.csv` report branch-aware ROI split groups ranked globally across pooled eligible ROIs with duration-weighted scores. The helper runs activity-derived, event-frequency-derived, and exploratory activity×frequency branches, and repeats each branch for `all`, `NREM`, and `REM` bases, with `NREM`/`REM` restricted to sleep-session rows. Matching figures are written under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png` and `results/soma_bouton_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/roi_split_<roi_type>_<split_name>_<basis_name>.svg|png`.
+- `roi_split_subject_state.csv`, `roi_split_membership.csv`, `roi_split_comparisons.csv`, and `roi_split_summary.csv` report the branch-first ROI split analysis. The helper ranks pooled eligible ROIs globally with duration-weighted scores, then builds the `all`, `NREM`, and `REM` split scopes, with `NREM`/`REM` restricted to sleep-session rows only. `activity_split` uses `more_active` / `less_active`, `frequency_split` uses `higher_frequency` / `lower_frequency`, and `activity_frequency_split` uses the four activity-by-frequency quadrants. The same split membership is then passed into the mixed models as a `split_group` factor. Matching figures are written under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png` and `results/soma_bouton_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/roi_split_<roi_type>_<split_name>_<basis_name>.svg|png`.
 - `basal_apical_comparisons.csv` and the basal/apical figures compare the same metric between basal and apical compartments.
 - Correlation analyses report Pearson `r` for:
   - dendrite activity vs wheel motion
@@ -65,7 +65,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - Unpaired comparisons use:
   - Welch's t-test when the data look approximately normal
   - Mann-Whitney U otherwise
-- ROI split comparisons use independent-group tests on the more-active and less-active ROI groups: Welch's t-test when both groups look approximately normal, Mann-Whitney U otherwise, plus a shuffle null from permuting the group labels.
+- ROI split comparisons use independent-group tests on the branch-specific binary ROI groups: Welch's t-test when both groups look approximately normal, Mann-Whitney U otherwise, plus a shuffle null from permuting the group labels. The 4-way activity-by-frequency branch keeps the same comparison machinery but uses the quadrant groups instead of a binary pair.
 - Correlation analyses use Pearson `r` plus:
   - the classical `pearsonr` p-value
   - a shuffle p-value from circular-shift or permutation nulls
@@ -80,6 +80,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - The main mixed model is split into two branches:
   - `all_state`, which uses the full requested-state table
   - `selected_state`, which re-fits the same model on the `state_comparison_states` subset
+- The split-first leaf models add the split-group factor on top of that same design, so the split membership can be tested inside the model instead of only in the summary tables.
 - The `state_comparison_states` list is now built primarily from `state_mode` and `movie_trial_types`, with `compare_states` kept only as a compatibility shortcut.
 - Fixed effects include:
   - state
@@ -91,6 +92,13 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - Fixed-effect rows in `mixed_model_summary_*.csv` and `mixed_model_selected_state_summary_*.csv` report the estimate, standard error, z score, and classical p-value.
 - Contrast rows in `mixed_model_contrasts.csv` and `mixed_model_contrasts_selected_state.csv` use the classical p-value as the primary test and add a shuffle p-value as robustness check. When the coactivity mixed model is disabled, those contrast files are simply not written.
 - The mixed-model shuffle procedure permutes state labels within animal × day blocks before refitting the same model. The same state-label shuffle is used for both the `all_state` and `selected_state` branches.
+
+### ROI Split And Split-First Mixed Models
+
+- The split-first branches reuse the same pooled eligible ROIs, but they re-fit the models inside each branch/basis leaf rather than only reporting post-hoc summary tables.
+- Binary branches include a `split_group` fixed effect and a `state × split_group` interaction so the model can compare the two split categories within each state.
+- `activity_split` and `frequency_split` are binary split models; `activity_frequency_split` uses the same machinery with a four-level activity-by-frequency factor and is treated as exploratory.
+- The unsplit baseline remains `pooled`, which keeps the original analysis families intact alongside the split branches.
 
 ### Main Pipeline Outputs
 

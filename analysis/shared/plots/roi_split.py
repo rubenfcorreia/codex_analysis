@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from analysis.shared.plots.boxplots import draw_boxplot_series
-from analysis.shared.roi_split import WINDOW_DISPLAY_LABELS, WINDOW_LABELS
+from analysis.shared.roi_split import WINDOW_DISPLAY_LABELS, WINDOW_LABELS, split_group_specs_for_branch
 from analysis.shared.state_utils import canonical_state_label, ensure_dir, safe_filename_component
 
 
@@ -64,12 +64,7 @@ def _group_specs_from_bundle(bundle: Mapping[str, Any], rows: Sequence[Mapping[s
                 seen.append(group)
         group_series = seen
     if not group_series:
-        split_mode = canonical_state_label(bundle.get("split_mode"))
-        default_groups = DEFAULT_QUADRANT_GROUPS if split_mode in {"activity_frequency", "quadrant"} else DEFAULT_BINARY_GROUPS
-        return [
-            {"group": group, "label": label, "color": color}
-            for group, label, color in default_groups
-        ]
+        return split_group_specs_for_branch(bundle.get("split_name"), bundle.get("split_mode"))
     if not group_labels:
         group_labels = [group.replace("_", " ").title() for group in group_series]
     if len(group_colors) < len(group_series):
@@ -101,8 +96,14 @@ def roi_split_figure_output_dir(
     root_path = Path(result_root)
     branch_component = safe_filename_component(branch_text)
     basis_component = safe_filename_component(basis_text)
-    root_parts = [safe_filename_component(part) for part in root_path.parts[-2:]]
-    already_leaf_scoped = branch_text and basis_text and len(root_parts) >= 2 and root_parts[-2] == branch_component and root_parts[-1] == basis_component
+    root_parts = [safe_filename_component(part) for part in root_path.parts if part != root_path.anchor]
+    already_leaf_scoped = False
+    if branch_text and basis_text:
+        already_leaf_scoped = (
+            len(root_parts) >= 3 and root_parts[-3] == branch_component and root_parts[-1] == basis_component
+        ) or (
+            len(root_parts) >= 2 and root_parts[-2] == branch_component and root_parts[-1] == basis_component
+        )
     if branch_text and basis_text and not already_leaf_scoped:
         parts = ["figures", branch_component, basis_component, "roi_split", safe_filename_component(roi_type)]
         if compartment_text:

@@ -1,7 +1,7 @@
 # Main Dendrite/Spine Pipeline
 
 Use `analysis/dendrites_pipeline/dendrites_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
-The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces. The workflow keeps its caches under the dendrites results tree, so reruns with unchanged inputs can reuse the same pipeline-local intermediates.
+The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces. The workflow keeps its caches under the dendrites results tree, so reruns with unchanged inputs can reuse the same pipeline-local intermediates. The split-first analysis now carries the ROI split membership into the mixed-model leaves, instead of using it only for separate summary tables.
 
 See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../visual_response/README.md](../visual_response/README.md), [../methods/README.md](../methods/README.md), [../sleep_state_across_days/README.md](../sleep_state_across_days/README.md), [../deprecated/main_pipeline/README.md](../deprecated/main_pipeline/README.md).
 
@@ -49,6 +49,13 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 - The spine-specific signal is the residual after subtracting the fitted dendritic component from the spine trace, then restricting to the cut stimulus-period data.
 - Those metrics use the stimulus-period cut activity from `cut_intertrials/` when available, with `cut_with_intertrials/` as a fallback.
 - If both `cut_intertrials/` and `cut_with_intertrials/` are missing, the loader prints an alert and skips the visual-response metric for that experiment.
+
+## ROI Split And Mixed Models
+
+- The branch-first split helper ranks pooled eligible ROIs globally with duration-weighted scores, then builds three split scopes: `all`, `NREM`, and `REM`.
+- `activity_split` uses `more_active` / `less_active`; `frequency_split` uses `higher_frequency` / `lower_frequency`; `activity_frequency_split` uses the four activity-by-frequency quadrants.
+- `NREM` and `REM` splits are computed from sleep-session rows only, so sleep and movie data are not mixed when the split is derived.
+- The same split membership is then passed into the branch-first mixed-model leaves as a `split_group` factor, which lets the model compare the split categories within each state.
 
 ## Preprocessing
 
@@ -258,7 +265,7 @@ The generated `analysis_report.txt` is summary-first.
 2. Check `Results at a glance`
    - gives the tested vs significant counts and percentages for each analysis family
 3. Read `ROI split comparisons`
-   - shows the global more-active vs less-active split for overall, NREM, and REM, with both activity-derived and event-frequency-derived rankings
+   - shows the branch-first ROI split analysis across `all`, `NREM`, and `REM`; activity branches use `more_active` / `less_active`, frequency branches use `higher_frequency` / `lower_frequency`, and the exploratory branch uses the activity-by-frequency quadrants
 4. Read `Spine-spine matrix similarity`
    - shows the basal/apical split and the positive-significant / negative-significant / non-significant counts for each selected state pair
 5. Read `Model diagnostics`

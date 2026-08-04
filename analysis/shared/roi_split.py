@@ -24,10 +24,15 @@ ROI_SPLIT_BRANCHES: Tuple[str, ...] = (
     'activity_frequency_split',
 )
 ROI_SPLIT_BASES: Tuple[str, ...] = ('all', 'nrem', 'rem')
-ROI_SPLIT_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = (
+ROI_SPLIT_ACTIVITY_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = (
     ('more_active', 'More active', '#4c78a8'),
     ('less_active', 'Less active', '#f58518'),
 )
+ROI_SPLIT_FREQUENCY_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = (
+    ('higher_frequency', 'Higher frequency', '#4c78a8'),
+    ('lower_frequency', 'Lower frequency', '#f58518'),
+)
+ROI_SPLIT_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = ROI_SPLIT_ACTIVITY_BINARY_GROUPS
 ROI_SPLIT_QUADRANT_GROUPS: Tuple[Tuple[str, str, str], ...] = (
     ('high_activity_high_frequency', 'High activity / high frequency', '#4c78a8'),
     ('high_activity_low_frequency', 'High activity / low frequency', '#72b7b2'),
@@ -387,16 +392,22 @@ def _basis_label(basis_name: Any) -> str:
     return basis_key or 'all'
 
 
-def _split_group_specs(split_mode: Any) -> List[Dict[str, str]]:
+def split_group_specs_for_branch(split_name: Any, split_mode: Any) -> List[Dict[str, str]]:
     split_key = canonical_state_label(split_mode)
     if split_key in {'activity_frequency', 'activity_frequency_split', 'quadrant'}:
         return [
             {'group': group, 'label': label, 'color': color}
             for group, label, color in ROI_SPLIT_QUADRANT_GROUPS
         ]
+    split_name_key = canonical_state_label(split_name)
+    if split_name_key in {'frequency', 'frequency_split', 'event_frequency', 'event_frequency_split', 'firing_rate'}:
+        return [
+            {'group': group, 'label': label, 'color': color}
+            for group, label, color in ROI_SPLIT_FREQUENCY_BINARY_GROUPS
+        ]
     return [
         {'group': group, 'label': label, 'color': color}
-        for group, label, color in ROI_SPLIT_BINARY_GROUPS
+        for group, label, color in ROI_SPLIT_ACTIVITY_BINARY_GROUPS
     ]
 
 
@@ -419,6 +430,56 @@ def _group_summary_string(group_specs: Sequence[Mapping[str, Any]], group_counts
             continue
         parts.append(f"{group}:{int(group_counts.get(group, 0))}")
     return ';'.join(parts)
+
+
+def annotate_rows_with_split_group(
+    rows: Sequence[Mapping[str, Any]],
+    membership_rows: Sequence[Mapping[str, Any]],
+    *,
+    group_column: str = 'split_group',
+) -> List[Dict[str, Any]]:
+    membership_lookup: Dict[str, Dict[str, Any]] = {}
+    for row in membership_rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        subject_id = str(row.get('subject_id') or '').strip()
+        group = str(row.get('group') or '').strip()
+        if not subject_id or not group:
+            continue
+        membership_lookup[subject_id] = {
+            'group': group,
+            'group_display': str(row.get('group_display') or group).strip(),
+            'group_color': str(row.get('group_color') or '').strip(),
+            'group_rank': row.get('rank'),
+        }
+
+    annotated: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        payload = dict(row)
+        subject_id = str(
+            row.get('subject_id')
+            or row.get('unit_id')
+            or row.get('global_soma_id')
+            or row.get('global_bouton_id')
+            or row.get('global_dendrite_id')
+            or row.get('global_spine_id')
+            or row.get('roi_id')
+            or row.get('roi_key')
+            or ''
+        ).strip()
+        group_info = membership_lookup.get(subject_id)
+        if group_info:
+            payload[group_column] = group_info['group']
+            payload[f'{group_column}_display'] = group_info['group_display']
+            if group_info['group_color']:
+                payload[f'{group_column}_color'] = group_info['group_color']
+            group_rank = group_info.get('group_rank')
+            if group_rank is not None:
+                payload[f'{group_column}_rank'] = group_rank
+        annotated.append(payload)
+    return annotated
 
 
 def build_roi_split_results(
@@ -458,7 +519,7 @@ def build_roi_split_results(
     basis_key = _basis_label(basis_name)
     split_key = canonical_state_label(split_name) or 'split'
     split_mode_key = canonical_state_label(split_mode) or 'binary'
-    group_specs = _split_group_specs(split_mode_key)
+    group_specs = split_group_specs_for_branch(split_key, split_mode_key)
     group_meta = _group_display_map(group_specs)
     primary_response_columns = [str(column).strip() for column in response_columns if str(column).strip()]
     aggregation_columns = list(dict.fromkeys(primary_response_columns + [column for column in [secondary_score_column] if column]))
@@ -837,6 +898,7 @@ def build_roi_split_results(
             group_name = str(spec['group'])
             summary_row[f'n_{group_name}'] = int(group_counts.get(group_name, 0))
         summary_rows.append(summary_row)
+    subject_state_rows = annotate_rows_with_split_group(subject_state_rows, membership_rows)
 
     sort_key = lambda row: (
         row.get('branch_name', ''),
@@ -896,5 +958,6 @@ __all__ = [
     'WINDOW_DISPLAY_LABELS',
     'build_roi_split_results',
     'estimate_frame_duration_seconds',
+    'split_group_specs_for_branch',
     'summarize_mask_duration',
 ]

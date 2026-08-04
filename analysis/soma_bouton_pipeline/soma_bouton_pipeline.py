@@ -32,7 +32,7 @@ from analysis.shared.state_utils import canonical_state_label, resolve_analysis_
 from analysis.shared.roi_split import build_roi_split_results
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
-from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
+from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family, run_split_family
 from analysis.shared.analysis_families.state import (
     activity_rows_for_context,
     build_state_comparison_row_groups,
@@ -236,6 +236,8 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
+        preset_config["branch_first_output_root"] = str(base_output_dir)
+        preset_config["branch_first_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
@@ -1851,13 +1853,15 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 if combined_path:
                     poster_ready_figures.append(str(combined_path))
 
-    if not poster_ready_only:
+    comparison_preset_name = str(config.get("comparison_preset_name") or "default")
+    if not poster_ready_only and bool(config.get("branch_first_figures", True)):
+        branch_root = Path(config.get("branch_first_output_root") or result_root)
         branch_results_source = {
             "analysis_state_selection": {
                 "state_comparison_states": list(analysis_state_order),
                 "basal_apical_states": list(analysis_state_order),
                 "compartment_states": list(analysis_state_order),
-                "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+                "comparison_preset_name": comparison_preset_name,
                 "state_modes": list(state_modes),
                 "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
             },
@@ -1865,7 +1869,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
         def render_branch_first_leaf_figures(branch_name: str, basis_name: str) -> None:
-            leaf_root = branch_leaf_root(result_root, branch_name, basis_name)
+            leaf_root = branch_leaf_root(branch_root, branch_name, basis_name, preset_name=comparison_preset_name)
             leaf_results = scoped_branch_results(branch_results_source, branch_name=branch_name, basis_name=basis_name, sleep_expids=config.get("sleep_expids"))
             basis_sleep_expids = config.get("sleep_expids")
             basis_activity_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_activity_rows.items()}
@@ -1876,6 +1880,31 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             basis_bouton_pairwise_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_bouton_pairwise_summary.items()}
             basis_lag_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_lag_rows.items()}
             basis_visual_rows = scope_rows_for_basis(visual_response_rows, basis_name, sleep_expids=basis_sleep_expids)
+            branch_first_mixed_model_results: Dict[str, Any] = {}
+            roi_split_membership_rows = leaf_results.get("roi_split", {}).get("membership_rows", []) if isinstance(leaf_results.get("roi_split", {}), dict) else []
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                cohort_rows = basis_activity_rows.get(cohort_name, [])
+                if not cohort_rows:
+                    continue
+                cohort_results: Dict[str, Any] = {}
+                for compartment_key in ("soma", "bouton"):
+                    compartment_rows = [row for row in cohort_rows if str(row.get("compartment") or "") == compartment_key]
+                    if not compartment_rows:
+                        continue
+                    split_result = run_split_family(
+                        compartment_rows,
+                        roi_split_membership_rows,
+                        response_columns=("mean_activity", "event_frequency_per_min"),
+                        state_comparison_states=list(analysis_state_order),
+                        shuffle_n=shuffle_n,
+                        mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                        state_filter=list(analysis_state_order),
+                        vc_level_keys=("unit_id",),
+                    )
+                    if split_result.get("available"):
+                        cohort_results[compartment_key] = {"selected_state": split_result}
+                if cohort_results:
+                    branch_first_mixed_model_results[cohort_name] = cohort_results
 
             for cohort_name in ("all", "responsive", "nonresponsive"):
                 cohort_rows = basis_activity_rows.get(cohort_name, [])
@@ -1964,9 +1993,9 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                             kind=compartment,
                         )
 
-            if mixed_model_results:
+            if branch_first_mixed_model_results:
                 mixed_model_fig_dir = ensure_dir(leaf_root / "figures" / "mixed_model")
-                for cohort_name, cohort_results in mixed_model_results.items():
+                for cohort_name, cohort_results in branch_first_mixed_model_results.items():
                     if not isinstance(cohort_results, dict) or not cohort_results:
                         continue
                     cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)

@@ -3293,6 +3293,8 @@ def _mixed_model_term_kind(term: str) -> str:
         return "state"
     if term.startswith("compartment["):
         return "compartment"
+    if term.startswith("split_group["):
+        return "split_group"
     if term.startswith("visual_response_cohort["):
         return "cohort"
     return "covariate"
@@ -3302,7 +3304,7 @@ def _mixed_model_term_component_label(term: str) -> str:
     if "[" in term and term.endswith("]"):
         prefix, value = term.split("[", 1)
         value = value[:-1]
-        if prefix.strip() in {"state", "compartment", "visual_response_cohort"}:
+        if prefix.strip() in {"state", "compartment", "split_group", "visual_response_cohort"}:
             return _poster_state_display_label(value.strip())
         return f"{prefix.strip()}: {_poster_state_display_label(value.strip())}"
     return _poster_state_display_label(term)
@@ -3353,14 +3355,21 @@ def _mixed_model_observed_mean_payload(
     if not isinstance(rows, list):
         return {}
     include_compartment = bool(design.get("include_compartment", False))
+    include_split_group = bool(design.get("include_split_group", False))
     payload: Dict[Tuple[Optional[str], str], List[float]] = defaultdict(list)
     for row in rows:
         value = as_float(row.get(response))
         if value is None or not np.isfinite(value):
             continue
         state = canonical_state_label(row.get("state"))
-        compartment = str(row.get("compartment")) if include_compartment else None
-        payload[(compartment, state)].append(float(value))
+        if include_split_group:
+            split_group = str(row.get("split_group") or "").strip() or None
+            payload[(split_group, state)].append(float(value))
+        elif include_compartment:
+            compartment = str(row.get("compartment")) if include_compartment else None
+            payload[(compartment, state)].append(float(value))
+        else:
+            payload[(None, state)].append(float(value))
     summary: Dict[Tuple[Optional[str], str], Dict[str, float]] = {}
     for key, values in payload.items():
         arr = np.asarray(values, dtype=float)
@@ -3371,16 +3380,55 @@ def _mixed_model_observed_mean_payload(
         sem = float(np.nanstd(arr, ddof=1) / math.sqrt(arr.size)) if arr.size > 1 else float("nan")
         summary[key] = {"mean": mean, "sem": sem, "n": float(arr.size)}
     return summary
-def _mixed_model_series_specs(design: Dict[str, Any]) -> List[Tuple[Optional[str], str]]:
+
+def _mixed_model_series_specs(design: Dict[str, Any]) -> List[Dict[str, Any]]:
+    fallback_palette = ["#1f77b4", "#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2", "#CCB974", "#64B5CD"]
+    if design.get("include_split_group"):
+        split_group_reference = design.get("split_group_reference")
+        split_group_levels = list(dict.fromkeys([split_group_reference] + [group for group in design.get("split_group_levels", []) if group != split_group_reference])) if split_group_reference is not None else list(design.get("split_group_levels", []))
+        split_group_labels = {str(key): str(value) for key, value in (design.get("split_group_labels") or {}).items()}
+        split_group_colors = {str(key): str(value) for key, value in (design.get("split_group_colors") or {}).items()}
+        series_specs: List[Dict[str, Any]] = []
+        for index, split_group in enumerate(split_group_levels):
+            if split_group is None:
+                continue
+            split_group_text = str(split_group)
+            if not split_group_text:
+                continue
+            series_specs.append(
+                {
+                    "compartment": design.get("compartment_reference") if design.get("include_compartment") else None,
+                    "split_group": split_group_text,
+                    "label": split_group_labels.get(split_group_text, _poster_state_display_label(split_group_text)),
+                    "color": split_group_colors.get(split_group_text, fallback_palette[index % len(fallback_palette)]),
+                }
+            )
+        if series_specs:
+            return series_specs
     if design.get("include_compartment"):
         compartment_reference = design.get("compartment_reference")
-        series_specs: List[Tuple[Optional[str], str]] = [(compartment_reference, str(compartment_reference or "reference"))]
-        for compartment in design.get("interaction_compartments", []):
+        series_specs = [
+            {
+                "compartment": compartment_reference,
+                "split_group": None,
+                "label": str(compartment_reference or "reference"),
+                "color": "#1f77b4",
+            }
+        ]
+        for index, compartment in enumerate(design.get("interaction_compartments", []), start=1):
             compartment_text = str(compartment)
-            if compartment_text not in {str(item[0]) for item in series_specs}:
-                series_specs.append((compartment_text, compartment_text))
+            if compartment_text not in {str(item["compartment"]) for item in series_specs}:
+                series_specs.append(
+                    {
+                        "compartment": compartment_text,
+                        "split_group": None,
+                        "label": compartment_text,
+                        "color": fallback_palette[index % len(fallback_palette)],
+                    }
+                )
         return series_specs
-    return [(None, "predicted mean")]
+    return [{"compartment": None, "split_group": None, "label": "predicted mean", "color": "#1f77b4"}]
+
 def _mixed_model_contrast_sort_key(row: Dict[str, Any]) -> Tuple[int, int, int, int, str]:
     contrast_type = str(row.get("contrast_type"))
     if contrast_type == "state_pair":
@@ -3402,15 +3450,25 @@ def _mixed_model_contrast_sort_key(row: Dict[str, Any]) -> Tuple[int, int, int, 
             0,
             str(row.get("contrast_name")),
         )
-    if contrast_type == "visual_response_cohort":
+    if contrast_type == "split_group_pair":
+        state = str(row.get("state"))
         return (
             2,
+            ALL_REQUESTED_STATES.index(state) if state in ALL_REQUESTED_STATES else len(ALL_REQUESTED_STATES),
+            0,
+            0,
+            str(row.get("contrast_name")),
+        )
+    if contrast_type == "visual_response_cohort":
+        return (
+            3,
             0,
             0,
             0,
             str(row.get("contrast_name")),
         )
-    return (3, 0, 0, 0, str(row.get("contrast_name")))
+    return (4, 0, 0, 0, str(row.get("contrast_name")))
+
 def normalize_mixed_model_contrast_p_source(value: Any) -> str:
     text = str(value).strip().lower() if value is not None else "classical"
     return text if text in {"classical", "shuffle"} else "classical"
@@ -4461,6 +4519,7 @@ def plot_mixed_model_forest_figure(
         "intercept": "#7f7f7f",
         "state": "#1f77b4",
         "compartment": "#2ca02c",
+        "split_group": "#9467bd",
         "interaction": "#ff7f0e",
         "cohort": "#17a2b8",
         "covariate": "#9467bd",
@@ -4483,6 +4542,7 @@ def plot_mixed_model_forest_figure(
             ("compartment", term_colors["compartment"]),
             ("interaction", term_colors["interaction"]),
             ("cohort", term_colors["cohort"]),
+            ("split_group", term_colors["split_group"]),
             ("covariate", term_colors["covariate"]),
         ]
     ]
@@ -4501,7 +4561,7 @@ def plot_mixed_model_forest_figure(
 
     figure_title = title or "Mixed-model fixed effects"
     figure_subtitle = (
-        "Colors: intercept, state, compartment, interaction, covariate; "
+        "Colors: intercept, state, compartment, split group, interaction, covariate; "
         "stars indicate p < 0.05."
     )
 
@@ -4676,15 +4736,21 @@ def plot_mixed_model_predicted_means_figure(
         series_specs = _mixed_model_series_specs(design)
         observed_lookup = _mixed_model_observed_mean_payload(mixed_model, response, design)
         series_data: List[Dict[str, Any]] = []
-        for compartment, label in series_specs:
+        include_split_group = bool(design.get("include_split_group"))
+        for series_spec in series_specs:
+            compartment = series_spec.get("compartment")
+            split_group = series_spec.get("split_group")
+            label = str(series_spec.get("label") or "predicted mean")
+            color = str(series_spec.get("color") or "#1f77b4")
             predicted: List[float] = []
             observed: List[float] = []
             observed_sem: List[float] = []
             for state in state_levels:
-                predicted_value = float(np.dot(mixed_model_design_row(design, state, compartment), beta))
+                predicted_value = float(np.dot(mixed_model_design_row(design, state, compartment, split_group=split_group), beta))
                 predicted.append(predicted_value)
                 all_values.append(predicted_value)
-                obs = observed_lookup.get((compartment, state))
+                lookup_key = (str(split_group) if include_split_group else str(compartment) if compartment is not None else None, state)
+                obs = observed_lookup.get(lookup_key)
                 if obs is None:
                     observed.append(float("nan"))
                     observed_sem.append(float("nan"))
@@ -4696,7 +4762,9 @@ def plot_mixed_model_predicted_means_figure(
             series_data.append(
                 {
                     "compartment": compartment,
+                    "split_group": split_group,
                     "label": label,
+                    "color": color,
                     "predicted": predicted,
                     "observed": observed,
                     "observed_sem": observed_sem,
@@ -4728,15 +4796,10 @@ def plot_mixed_model_predicted_means_figure(
         fig_height = min(max(1.25 * max(len(series_data), 1) + 0.55, 3.6), 5.8)
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         x_positions = np.arange(len(state_levels))
-        compartment_colors = {
-            "reference": "#1f77b4",
-            "basal": "#4C72B0",
-            "apical": "#DD8452",
-        }
         for series_index, series in enumerate(series_data):
             compartment = series["compartment"]
             label = str(series["label"])
-            color = compartment_colors.get(str(compartment), plt.get_cmap("tab10")(series_index % 10))
+            color = series.get("color") or plt.get_cmap("tab10")(series_index % 10)
             predicted = np.asarray(series["predicted"], dtype=float)
             observed = np.asarray(series["observed"], dtype=float)
             observed_sem = np.asarray(series["observed_sem"], dtype=float)
@@ -4843,17 +4906,28 @@ def plot_mixed_model_contrasts_checkpoint(
                 0,
                 str(row.get("contrast_name")),
             )
-        return (2, 0, 0, 0, str(row.get("contrast_name")))
+        if contrast_type == "split_group_pair":
+            state = canonical_state_label(row.get("state"))
+            return (
+                2,
+                state_order_lookup.get(state, len(state_order_lookup)),
+                0,
+                0,
+                str(row.get("contrast_name")),
+            )
+        return (3, 0, 0, 0, str(row.get("contrast_name")))
     ordered_rows = sorted(rows, key=contrast_sort_key)
     contrast_labels = [_mixed_model_contrast_label(row) for row in ordered_rows]
     type_colors = {
         "state_pair": "#1f77b4",
         "basal_apical": "#d95f02",
+        "split_group_pair": "#9467bd",
         "visual_response_cohort": "#17a2b8",
     }
     legend_handles = [
         Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["state_pair"], markeredgecolor="white", markersize=8, label="state pair"),
         Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["basal_apical"], markeredgecolor="white", markersize=8, label="basal/apical"),
+        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["split_group_pair"], markeredgecolor="white", markersize=8, label="split group"),
         Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=type_colors["visual_response_cohort"], markeredgecolor="white", markersize=8, label="visual response cohort"),
         Line2D([0], [0], marker="*", linestyle="none", markerfacecolor="#111111", markeredgecolor="#111111", markersize=10, label="p < 0.05"),
     ]
@@ -12251,6 +12325,40 @@ def build_mixed_model_design(
     include_visual_response = len(visual_response_levels) >= 2
     if include_visual_response:
         visual_response_reference = "nonresponsive" if "nonresponsive" in visual_response_levels else visual_response_levels[0]
+
+    split_group_levels = [str(value) for value in dict.fromkeys(str(row.get("split_group") or "") for row in working_rows) if str(value).strip()]
+    split_group_reference: Optional[str] = None
+    include_split_group = len(split_group_levels) >= 2
+    interaction_split_groups: List[str] = []
+    split_group_labels: Dict[str, str] = {}
+    split_group_colors: Dict[str, str] = {}
+    if include_split_group:
+        split_group_rank: Dict[str, float] = {}
+        for row in working_rows:
+            split_group = str(row.get("split_group") or "").strip()
+            if not split_group:
+                continue
+            label = str(row.get("split_group_display") or row.get("group_display") or split_group).strip()
+            if label and split_group not in split_group_labels:
+                split_group_labels[split_group] = label
+            color = str(row.get("split_group_color") or row.get("group_color") or "").strip()
+            if color and split_group not in split_group_colors:
+                split_group_colors[split_group] = color
+            rank_value = row.get("split_group_rank")
+            try:
+                rank_float = float(rank_value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(rank_float):
+                continue
+            current = split_group_rank.get(split_group)
+            if current is None or rank_float < current:
+                split_group_rank[split_group] = rank_float
+        if split_group_rank:
+            split_group_levels = sorted(split_group_levels, key=lambda group: (split_group_rank.get(group, float("inf")), group))
+        split_group_reference = split_group_levels[0] if split_group_levels else None
+        interaction_split_groups = [group for group in split_group_levels if group != split_group_reference]
+
     covariate_specs: List[Dict[str, Any]] = []
     if response == "mean_spine_activity_per_dendrite":
         raw = np.asarray([math.log1p(float(row.get("n_spines", 0) or 0.0)) for row in working_rows], dtype=float)
@@ -12267,6 +12375,10 @@ def build_mixed_model_design(
         fixed_effect_names.extend([f"compartment[{compartment}]" for compartment in interaction_compartments])
         for state in state_levels[1:]:
             fixed_effect_names.extend([f"state[{state}]:compartment[{compartment}]" for compartment in interaction_compartments])
+    if include_split_group:
+        fixed_effect_names.extend([f"split_group[{split_group}]" for split_group in interaction_split_groups])
+        for state in state_levels[1:]:
+            fixed_effect_names.extend([f"state[{state}]:split_group[{split_group}]" for split_group in interaction_split_groups])
     if include_visual_response:
         fixed_effect_names.extend([f"visual_response_cohort[{cohort}]" for cohort in visual_response_levels if cohort != visual_response_reference])
     fixed_effect_names.extend([spec["name"] for spec in covariate_specs])
@@ -12290,6 +12402,17 @@ def build_mixed_model_design(
                 state_dummy = 1.0 if row.get("state") == state else 0.0
                 for compartment in interaction_compartments:
                     row_values.append(state_dummy * compartment_dummies[compartment])
+        if include_split_group:
+            split_group_value = str(row.get("split_group") or "").strip()
+            split_group_dummies: Dict[str, float] = {}
+            for split_group in interaction_split_groups:
+                split_group_dummy = 1.0 if split_group_value == split_group else 0.0
+                split_group_dummies[split_group] = split_group_dummy
+                row_values.append(split_group_dummy)
+            for state in state_levels[1:]:
+                state_dummy = 1.0 if row.get("state") == state else 0.0
+                for split_group in interaction_split_groups:
+                    row_values.append(state_dummy * split_group_dummies[split_group])
         if include_visual_response:
             cohort_value = str(row.get("visual_response_cohort") or "nonresponsive")
             for cohort in visual_response_levels:
@@ -12319,6 +12442,12 @@ def build_mixed_model_design(
         "compartment_reference": compartment_reference,
         "interaction_compartments": interaction_compartments,
         "include_compartment": include_compartment,
+        "split_group_levels": split_group_levels,
+        "split_group_reference": split_group_reference,
+        "interaction_split_groups": interaction_split_groups,
+        "split_group_labels": split_group_labels,
+        "split_group_colors": split_group_colors,
+        "include_split_group": include_split_group,
         "visual_response_levels": visual_response_levels,
         "visual_response_reference": visual_response_reference,
         "include_visual_response": include_visual_response,
@@ -12331,6 +12460,7 @@ def build_mixed_model_design(
         "n_dendrites": int(len({str(row.get("global_dendrite_id")) for row in working_rows if as_float(row.get(response)) is not None and np.isfinite(as_float(row.get(response)))})),
     }
     return design
+
 def make_variance_component_dict(rows: List[Dict[str, Any]], level_key: str, group_key: str = "animal_id") -> Dict[str, np.ndarray]:
     component: Dict[str, np.ndarray] = {}
     grouped_rows: Dict[str, List[int]] = defaultdict(list)
@@ -12538,7 +12668,7 @@ def fit_mixedlm_with_fallback(
         design,
         f"all mixed-model attempts failed: {last_exception}" if last_exception is not None else "all mixed-model attempts failed",
     )
-def mixed_model_design_row(design: Dict[str, Any], state: str, compartment: Optional[str] = None) -> np.ndarray:
+def mixed_model_design_row(design: Dict[str, Any], state: str, compartment: Optional[str] = None, split_group: Optional[str] = None) -> np.ndarray:
     row = np.zeros(len(design["fixed_effect_names"]), dtype=float)
     row[0] = 1.0
     index = 1
@@ -12558,6 +12688,20 @@ def mixed_model_design_row(design: Dict[str, Any], state: str, compartment: Opti
             for compartment_name in interaction_compartments:
                 row[index] = state_dummy * compartment_dummies[compartment_name]
                 index += 1
+    if design.get("include_split_group"):
+        interaction_split_groups = list(design.get("interaction_split_groups", []))
+        split_group_value = str(split_group if split_group is not None else design.get("split_group_reference") or "").strip()
+        split_group_dummies: Dict[str, float] = {}
+        for split_group_name in interaction_split_groups:
+            split_group_dummy = 1.0 if split_group_value == split_group_name else 0.0
+            split_group_dummies[split_group_name] = split_group_dummy
+            row[index] = split_group_dummy
+            index += 1
+        for state_name in design["state_levels"][1:]:
+            state_dummy = 1.0 if state == state_name else 0.0
+            for split_group_name in interaction_split_groups:
+                row[index] = state_dummy * split_group_dummies[split_group_name]
+                index += 1
     if design.get("include_visual_response"):
         visual_response_reference = str(design.get("visual_response_reference") or "nonresponsive")
         for cohort in design.get("visual_response_levels", []):
@@ -12569,10 +12713,13 @@ def mixed_model_design_row(design: Dict[str, Any], state: str, compartment: Opti
         row[index] = 0.0
         index += 1
     return row
+
 def mixed_model_equation_string(design: Dict[str, Any], fit_info: Dict[str, Any]) -> str:
     fixed_terms = ["state"]
     if design.get("include_compartment"):
         fixed_terms.extend(["compartment", "state:compartment"])
+    if design.get("include_split_group"):
+        fixed_terms.extend(["split_group", "state:split_group"])
     if design.get("include_visual_response"):
         fixed_terms.append("visual_response_cohort")
     fixed_terms.extend([spec["name"] for spec in design.get("covariate_specs", [])])
@@ -12599,8 +12746,11 @@ def mixed_model_equation_string(design: Dict[str, Any], fit_info: Dict[str, Any]
         reference_desc.append(f"state_ref={design.get('state_reference')}")
     if design.get("compartment_reference") is not None:
         reference_desc.append(f"compartment_ref={design.get('compartment_reference')}")
+    if design.get("split_group_reference") is not None:
+        reference_desc.append(f"split_group_ref={design.get('split_group_reference')}")
     reference_text = f" ({', '.join(reference_desc)})" if reference_desc else ""
     return f"{response} ~ {fixed_desc} | {random_desc}{reference_text}"
+
 def contrast_from_result(result: Any, design: Dict[str, Any], contrast_spec: Dict[str, Any]) -> Dict[str, Any]:
     beta = np.asarray(result.fe_params, dtype=float).ravel()
     cov = np.asarray(result.cov_params(), dtype=float)
@@ -12611,6 +12761,19 @@ def contrast_from_result(result: Any, design: Dict[str, Any], contrast_spec: Dic
         row_b = mixed_model_design_row(design, str(contrast_spec["state_b"]), compartment_reference)
         contrast_row = row_a - row_b
         contrast_name = f"{contrast_spec['state_a']} - {contrast_spec['state_b']}"
+    elif contrast_spec["kind"] == "split_group_pair":
+        if not design.get("include_split_group"):
+            raise ValueError("split_group_pair contrast requested without split-group factor")
+        state = str(contrast_spec.get("state") or design.get("state_reference") or design.get("state_levels", [""])[0])
+        compartment_reference = design.get("compartment_reference") if design.get("include_compartment") else None
+        group_a = str(contrast_spec.get("group_a") or contrast_spec.get("split_group_a") or "")
+        group_b = str(contrast_spec.get("group_b") or contrast_spec.get("split_group_b") or "")
+        if not group_a or not group_b:
+            raise ValueError("split_group_pair contrast requested without both group levels")
+        row_a = mixed_model_design_row(design, state, compartment_reference, split_group=group_a)
+        row_b = mixed_model_design_row(design, state, compartment_reference, split_group=group_b)
+        contrast_row = row_a - row_b
+        contrast_name = f"{group_a} - {group_b} @ {state}"
     elif contrast_spec["kind"] == "basal_apical":
         row_apical = mixed_model_design_row(design, str(contrast_spec["state"]), "apical")
         row_basal = mixed_model_design_row(design, str(contrast_spec["state"]), "basal")
@@ -12765,6 +12928,30 @@ def run_mixed_model_family(
                     )
                 continue
             valid_contrast_specs.append(contrast_spec)
+        elif contrast_spec["kind"] == "split_group_pair":
+            if not design.get("include_split_group"):
+                if alerts is not None:
+                    alerts.append(
+                        f"[ALERT] Skipping mixed-model split-group contrast for {response} ({scope}) because the model does not contain a split-group factor."
+                    )
+                continue
+            group_a = str(contrast_spec.get("group_a") or contrast_spec.get("split_group_a") or "")
+            group_b = str(contrast_spec.get("group_b") or contrast_spec.get("split_group_b") or "")
+            missing_groups = [group for group in [group_a, group_b] if group and group not in design.get("split_group_levels", [])]
+            if missing_groups:
+                if alerts is not None:
+                    alerts.append(
+                        f"[ALERT] Skipping mixed-model split-group contrast for {response} ({scope}) because the model does not contain: {', '.join(missing_groups)}"
+                    )
+                continue
+            state = str(contrast_spec.get("state") or "")
+            if state and state not in design["state_levels"]:
+                if alerts is not None:
+                    alerts.append(
+                        f"[ALERT] Skipping mixed-model split-group contrast for {response} ({scope}) because the model does not contain state {state}."
+                    )
+                continue
+            valid_contrast_specs.append(contrast_spec)
         elif contrast_spec["kind"] == "visual_response_cohort":
             if not design.get("include_visual_response"):
                 continue
@@ -12864,6 +13051,8 @@ def run_mixed_model_family(
                 if contrast_spec["kind"] == "basal_apical"
                 else "visual_response_cohort:responsive_vs_nonresponsive"
                 if contrast_spec["kind"] == "visual_response_cohort"
+                else f"split_group_pair:{contrast_spec.get('state')}:{contrast_spec.get('group_a')}:{contrast_spec.get('group_b')}"
+                if contrast_spec["kind"] == "split_group_pair"
                 else contrast_spec["kind"]
             )
             for contrast_spec in valid_contrast_specs
@@ -14453,6 +14642,7 @@ def write_analysis_outputs(
     plots_only: bool = False,
     include_supporting_figures: bool = True,
     branch_first_figures: bool = False,
+    branch_first_output_root: Optional[Path] = None,
 ) -> List[str]:
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
@@ -14513,11 +14703,33 @@ def write_analysis_outputs(
             written_artifacts.append(report_relative_path(path, output_dir))
         step_message("checkpoint gallery complete: %d file(s)" % len(checkpoint_gallery.get("files", [])))
         if branch_first_figures:
+            from analysis.shared.analysis_families.mixed_model import run_split_family
+
+            branch_root = Path(branch_first_output_root) if branch_first_output_root is not None else output_dir
             sleep_expids = results.get("analysis_sleep_expids", []) if isinstance(results.get("analysis_sleep_expids"), list) else []
+            split_response_columns = list((mixed_model_results.get("summary_rows") or {}).keys()) if isinstance(mixed_model_results, dict) else []
             for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
                 leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=sleep_expids)
-                leaf_output_dir = branch_leaf_root(output_dir, branch_name, basis_name)
-                leaf_figure_root = branch_leaf_figure_root(output_dir, branch_name, basis_name)
+                leaf_split_mixed_model = {}
+                try:
+                    leaf_split_mixed_model = run_split_family(
+                        mixed_model_results.get("table_rows", []) if isinstance(mixed_model_results, dict) else [],
+                        leaf_results.get("roi_split", {}).get("membership_rows", []) if isinstance(leaf_results.get("roi_split", {}), dict) else [],
+                        response_columns=split_response_columns,
+                        state_comparison_states=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", state_comparison_states)),
+                        shuffle_n=shuffle_n,
+                        mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                        state_filter=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", state_comparison_states)),
+                        vc_level_keys=None,
+                    )
+                except Exception:
+                    logger.exception("Failed to build split mixed-model leaf results for %s/%s", branch_name, basis_name)
+                    leaf_split_mixed_model = {}
+                if leaf_split_mixed_model.get("available"):
+                    leaf_results["mixed_model"] = leaf_split_mixed_model
+                    leaf_results["mixed_model_selected_state"] = leaf_split_mixed_model
+                leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name, preset_name=comparison_preset_name)
+                leaf_figure_root = branch_leaf_figure_root(branch_root, branch_name, basis_name, preset_name=comparison_preset_name)
                 step_message(f"branch-first figure generation: {branch_name}/{basis_name}")
                 with step_scope(f"branch-first figure generation: {branch_name}/{basis_name}"):
                     leaf_written = write_analysis_outputs(
@@ -14529,6 +14741,7 @@ def write_analysis_outputs(
                         plots_only=True,
                         include_supporting_figures=include_supporting_figures,
                         branch_first_figures=False,
+                        branch_first_output_root=branch_root,
                     )
                 for path in leaf_written:
                     leaf_path = Path(leaf_output_dir) / str(path)
@@ -16027,6 +16240,8 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
+        preset_config["branch_first_output_root"] = str(base_result_root)
+        preset_config["branch_first_figures"] = True
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
             preset_family_stage = family_results_cache_stage_for_selection(preset_config.get("analysis_families"))
@@ -16301,15 +16516,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
         figure_output_dir = resolve_repo_path(config.get("figure_output_dir"), REPO_ROOT) if config.get("figure_output_dir") else None
         plots_only = bool(config.get("plots_only"))
-        step_message(
-            f"RUN FLAGS: rebuild={rebuild}, plots_only={plots_only}, "
-            f"analysis_results_rebuild={analysis_results_rebuild}"
-        )
         if plots_only:
             source_cache_rebuild = False
             analysis_tables_rebuild = False
             analysis_results_rebuild = False
             shared_shuffle_cache_rebuild = False
+        step_message(
+            f"RUN FLAGS: rebuild={rebuild}, plots_only={plots_only}, "
+            f"analysis_results_rebuild={analysis_results_rebuild}"
+        )
         ensure_dir(output_dir)
     
     
@@ -16640,7 +16855,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             figure_root=figure_output_dir,
             plots_only=plots_only,
             include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)) and not bool(config.get("poster_ready_only")),
-            branch_first_figures=True,
+            branch_first_figures=bool(config.get("branch_first_figures", True)),
+            branch_first_output_root=resolve_repo_path(config.get("branch_first_output_root"), repo_root) if config.get("branch_first_output_root") else None,
         )
     if bool(config.get("generate_poster_ready_figures", True)):
         with step_scope("poster figure generation"):

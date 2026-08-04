@@ -1,7 +1,7 @@
 # Soma/Bouton Pipeline
 
 This workflow compares soma activity from `ch2` data against axonal bouton
-activity from `ch1` data. The shared preset flow lives in `analysis/shared/`, and the more-active vs less-active ROI split helper is shared through `analysis/shared/roi_split.py`.
+activity from `ch1` data. The shared preset flow lives in `analysis/shared/`, and the branch-aware ROI split helper is shared through `analysis/shared/roi_split.py`.
 
 See also: [../README.md](../README.md), [../dendrites_pipeline/README.md](../dendrites_pipeline/README.md).
 
@@ -42,8 +42,8 @@ Coincidence uses the shared exact-onset event-run match that is also used by the
 The soma/bouton pipeline also writes:
 
 - `csv/roi_split_subject_state.csv` for the pooled per-ROI, per-state rows used to build the split
-- `csv/roi_split_membership.csv` for the more_active / less_active assignments
+- `csv/roi_split_membership.csv` for the split assignments, using `more_active` / `less_active` for activity splits and `higher_frequency` / `lower_frequency` for frequency splits
 - `csv/roi_split_comparisons.csv` for the split comparison rows
 - `csv/roi_split_summary.csv` for the per-window split summaries
 
-The split is global across pooled eligible soma and bouton ROIs, so recordings with only one ROI still contribute. The shared helper in `analysis/shared/roi_split.py` ranks the pooled ROIs by duration-weighted activity or event-frequency scores, then compares the response metrics within `overall`, `NREM`, and `REM`. The matching figures are written under `results/soma_bouton_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/roi_split_<roi_type>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
+The split is global across pooled eligible soma and bouton ROIs, so recordings with only one ROI still contribute. The shared helper in `analysis/shared/roi_split.py` ranks the pooled ROIs by duration-weighted activity or event-frequency scores, uses `more_active` / `less_active` for activity splits and `higher_frequency` / `lower_frequency` for frequency splits, repeats each branch for `overall`, `NREM`, and `REM`, and uses sleep-session rows only for the `NREM` and `REM` bases. The same split membership is then passed into the mixed-model leaves. The matching figures are written under `results/soma_bouton_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/roi_split_<roi_type>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.

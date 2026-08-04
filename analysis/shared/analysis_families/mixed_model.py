@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 import numpy as np
 
 from analysis.dendrites_pipeline.dendrites_pipeline import run_mixed_model_family
+from analysis.shared.roi_split import annotate_rows_with_split_group
+from analysis.shared.state_utils import canonical_state_label
 
 
 
@@ -171,4 +173,119 @@ def run_family(
     return results
 
 
-__all__ = ["run_family"]
+def run_split_family(
+    table_rows: Sequence[Mapping[str, Any]],
+    membership_rows: Sequence[Mapping[str, Any]],
+    *,
+    response_columns: Sequence[str],
+    state_comparison_states: Sequence[str],
+    shuffle_n: int,
+    mixed_model_contrast_p_source: str = "classical",
+    scope: str = "selected_state",
+    state_filter: Sequence[str] | None = None,
+    vc_level_keys: Sequence[str] | None = ("unit_id",),
+    split_group_column: str = "split_group",
+) -> Dict[str, Any]:
+    annotated_rows = annotate_rows_with_split_group(table_rows, membership_rows, group_column=split_group_column)
+    working_rows = [row for row in annotated_rows if str(row.get(split_group_column) or "").strip()]
+    if state_filter is not None:
+        state_filter_set = {str(state).strip() for state in state_filter if state is not None and str(state).strip()}
+        working_rows = [row for row in working_rows if str(row.get("state")) in state_filter_set]
+    response_names = [str(column).strip() for column in response_columns if str(column).strip()]
+    p_value_source = str(mixed_model_contrast_p_source or "classical").strip().lower()
+    if p_value_source not in {"classical", "shuffle"}:
+        p_value_source = "classical"
+    branch: Dict[str, Any] = {
+        "available": bool(working_rows) and bool(response_names),
+        "p_value_source": p_value_source,
+        "p_value_source_requested": p_value_source,
+        "summary_rows": {},
+        "contrast_rows": [],
+        "designs": {},
+        "model_equations": {},
+        "tested_terms": {},
+        "tested_contrasts": {},
+        "selection": {
+            "state_comparison_states": [canonical_state_label(state) for state in state_comparison_states if canonical_state_label(state)],
+            "split_group_column": split_group_column,
+            "split_group_levels": [],
+            "split_group_reference": None,
+        },
+        "validation_rows": [],
+        "alerts": [],
+        "table_rows": working_rows,
+    }
+    alerts: List[str] = branch["alerts"]
+    if not working_rows or not response_names:
+        return branch
+    state_order = [canonical_state_label(state) for state in state_comparison_states if canonical_state_label(state)]
+    if not state_order:
+        state_order = [canonical_state_label(row.get("state")) for row in working_rows if canonical_state_label(row.get("state"))]
+    state_order = list(dict.fromkeys(state_order))
+    if not state_order:
+        state_order = sorted({str(row.get("state") or "") for row in working_rows if row.get("state")})
+    valid_state_order = [state for state in state_order if any(str(row.get("state")) == state for row in working_rows)]
+    branch_state_order = valid_state_order or list(state_order)
+
+    split_group_rank: Dict[str, float] = {}
+    split_group_levels: List[str] = []
+    for row in working_rows:
+        group = str(row.get(split_group_column) or "").strip()
+        if not group:
+            continue
+        if group not in split_group_levels:
+            split_group_levels.append(group)
+        rank_value = row.get(f"{split_group_column}_rank")
+        try:
+            rank_float = float(rank_value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(rank_float):
+            continue
+        current = split_group_rank.get(group)
+        if current is None or rank_float < current:
+            split_group_rank[group] = rank_float
+    if split_group_rank:
+        split_group_levels = sorted(split_group_levels, key=lambda group: (split_group_rank.get(group, float("inf")), group))
+    branch["selection"]["split_group_levels"] = list(split_group_levels)
+    branch["selection"]["split_group_reference"] = split_group_levels[0] if split_group_levels else None
+
+    include_visual_response = any(str(row.get("visual_response_cohort") or "nonresponsive") == "responsive" for row in working_rows) and any(str(row.get("visual_response_cohort") or "nonresponsive") == "nonresponsive" for row in working_rows)
+    contrast_specs = _contrast_specs(branch_state_order, include_visual_response)
+    if len(split_group_levels) == 2:
+        reference_group = split_group_levels[0]
+        comparison_group = split_group_levels[1]
+        for state in branch_state_order:
+            contrast_specs.append({
+                "kind": "split_group_pair",
+                "state": state,
+                "group_a": comparison_group,
+                "group_b": reference_group,
+            })
+
+    for response in response_names:
+        result = run_mixed_model_family(
+            list(working_rows),
+            response,
+            scope,
+            contrast_specs,
+            shuffle_n,
+            alerts=alerts,
+            vc_level_keys=vc_level_keys,
+            state_order=branch_state_order,
+            p_value_source=p_value_source,
+        )
+        branch["summary_rows"][response] = list(result.get("summary_rows", []))
+        branch["contrast_rows"].extend(result.get("contrast_rows", []))
+        if result.get("design") is not None:
+            branch["designs"][response] = result.get("design")
+        branch["model_equations"][response] = result.get("equation")
+        branch["tested_terms"][response] = list(result.get("tested_terms", []))
+        branch["tested_contrasts"][response] = list(result.get("tested_contrasts", []))
+        branch["p_value_source"] = result.get("p_value_source", p_value_source)
+        branch["p_value_source_requested"] = result.get("p_value_source_requested", p_value_source)
+        branch["validation_rows"].extend(result.get("validation_rows", []))
+    return branch
+
+
+__all__ = ["run_family", "run_split_family"]

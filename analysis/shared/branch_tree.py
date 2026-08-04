@@ -22,12 +22,16 @@ def iter_branch_basis_leaves(
             yield branch_name, basis_name
 
 
-def branch_leaf_root(result_root: Path | str, branch_name: Any, basis_name: Any) -> Path:
-    return Path(result_root) / safe_filename_component(branch_name) / safe_filename_component(basis_name)
+def branch_leaf_root(result_root: Path | str, branch_name: Any, basis_name: Any, preset_name: Any | None = None) -> Path:
+    root = Path(result_root) / safe_filename_component(branch_name)
+    preset_text = str(preset_name or "").strip()
+    if preset_text:
+        root /= safe_filename_component(preset_text)
+    return root / safe_filename_component(basis_name)
 
 
-def branch_leaf_figure_root(result_root: Path | str, branch_name: Any, basis_name: Any) -> Path:
-    return branch_leaf_root(result_root, branch_name, basis_name) / "figures"
+def branch_leaf_figure_root(result_root: Path | str, branch_name: Any, basis_name: Any, preset_name: Any | None = None) -> Path:
+    return branch_leaf_root(result_root, branch_name, basis_name, preset_name=preset_name) / "figures"
 
 
 def basis_state_labels(basis_name: Any) -> List[str]:
