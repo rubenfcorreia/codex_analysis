@@ -236,7 +236,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
-        preset_config["branch_first_output_root"] = str(base_output_dir)
+        preset_config["branch_first_output_root"] = str(base_result_root)
         preset_config["branch_first_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
