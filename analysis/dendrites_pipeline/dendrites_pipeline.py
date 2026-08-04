@@ -16240,7 +16240,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
-        preset_config["branch_first_output_root"] = str(base_result_root)
+        preset_config["branch_first_output_root"] = str(base_output_dir)
         preset_config["branch_first_figures"] = True
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
