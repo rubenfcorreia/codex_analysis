@@ -1703,7 +1703,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     output_stem=f"{compartment}_state_mixed_model_poster_ready",
                     title="Quiet blank vs sleep states",
                     preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
-                    mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                    mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 )
                 if mixed_path:
                     poster_ready_figures.append(str(mixed_path))
@@ -1897,7 +1897,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         response_columns=("mean_activity", "event_frequency_per_min"),
                         state_comparison_states=list(analysis_state_order),
                         shuffle_n=shuffle_n,
-                        mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                        mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                         state_filter=list(analysis_state_order),
                         vc_level_keys=("unit_id",),
                     )

@@ -16856,7 +16856,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             plots_only=plots_only,
             include_supporting_figures=bool(config.get("plots_only_include_supporting_figures", not plots_only)) and not bool(config.get("poster_ready_only")),
             branch_first_figures=bool(config.get("branch_first_figures", True)),
-            branch_first_output_root=resolve_repo_path(config.get("branch_first_output_root"), repo_root) if config.get("branch_first_output_root") else None,
+            branch_first_output_root=resolve_repo_path(config.get("branch_first_output_root"), REPO_ROOT) if config.get("branch_first_output_root") else None,
         )
     if bool(config.get("generate_poster_ready_figures", True)):
         with step_scope("poster figure generation"):
