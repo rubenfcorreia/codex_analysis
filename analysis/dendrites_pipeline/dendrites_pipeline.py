@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import copy
+import logging
 import csv
 import hashlib
 import json
@@ -69,6 +70,8 @@ warnings.filterwarnings(
     message="Using deprecated variance components format",
     module="statsmodels.regression.mixed_linear_model",
 )
+
+logger = logging.getLogger(__name__)
 
 STATE_SUMMARY_PAYLOAD_CACHE_KEY = "state_summary_payload_cache"
 _STATE_SUMMARY_VALUES_CACHE: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
@@ -14711,6 +14714,8 @@ def write_analysis_outputs(
             branch_root = Path(branch_first_output_root) if branch_first_output_root is not None else output_dir
             mixed_model_results = results.get("mixed_model_selected_state") or results.get("mixed_model") or {}
             sleep_expids = results.get("analysis_sleep_expids", []) if isinstance(results.get("analysis_sleep_expids"), list) else []
+            analysis_state_selection = results.get("analysis_state_selection", {}) if isinstance(results.get("analysis_state_selection", {}), dict) else {}
+            analysis_state_comparison_states = list(analysis_state_selection.get("state_comparison_states") or [])
             split_response_columns = list((mixed_model_results.get("summary_rows") or {}).keys()) if isinstance(mixed_model_results, dict) else []
             for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
                 leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=sleep_expids)
@@ -14720,10 +14725,10 @@ def write_analysis_outputs(
                         mixed_model_results.get("table_rows", []) if isinstance(mixed_model_results, dict) else [],
                         leaf_results.get("roi_split", {}).get("membership_rows", []) if isinstance(leaf_results.get("roi_split", {}), dict) else [],
                         response_columns=split_response_columns,
-                        state_comparison_states=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", state_comparison_states)),
+                        state_comparison_states=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", analysis_state_comparison_states)),
                         shuffle_n=shuffle_n,
                         mixed_model_contrast_p_source=mixed_model_contrast_p_source,
-                        state_filter=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", state_comparison_states)),
+                        state_filter=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", analysis_state_comparison_states)),
                         vc_level_keys=None,
                     )
                 except Exception:
