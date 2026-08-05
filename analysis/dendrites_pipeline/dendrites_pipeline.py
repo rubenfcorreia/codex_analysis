@@ -12301,8 +12301,11 @@ def build_mixed_model_design(
 ) -> Optional[Dict[str, Any]]:
     if scope not in {"all_state", "selected_state"}:
         raise ValueError(f"Unknown mixed-model scope: {scope}")
+    def _is_finite_numeric(value: Any) -> bool:
+        coerced = as_float(value)
+        return coerced is not None and bool(np.isfinite(coerced))
     working_rows = list(rows)
-    working_rows = [row for row in working_rows if np.isfinite(as_float(row.get(response)))]
+    working_rows = [row for row in working_rows if _is_finite_numeric(row.get(response))]
     if not working_rows:
         return None
     ordered_states = [canonical_state_label(state) for state in (state_order if state_order is not None else ALL_REQUESTED_STATES)]
@@ -12432,7 +12435,7 @@ def build_mixed_model_design(
     design = {
         "response": response,
         "scope": scope,
-        "rows": [working_rows[idx] for idx in range(len(working_rows)) if as_float(working_rows[idx].get(response)) is not None and np.isfinite(as_float(working_rows[idx].get(response)))],
+        "rows": [working_rows[idx] for idx in range(len(working_rows)) if _is_finite_numeric(working_rows[idx].get(response))],
         "y": y_arr,
         "X": X,
         "fixed_effect_names": fixed_effect_names,
@@ -12457,7 +12460,7 @@ def build_mixed_model_design(
         "n_obs": int(y_arr.size),
         "n_animals": int(len({row[0] for row in blocks})),
         "n_sessions": int(len({row[1] for row in blocks})),
-        "n_dendrites": int(len({str(row.get("global_dendrite_id")) for row in working_rows if as_float(row.get(response)) is not None and np.isfinite(as_float(row.get(response)))})),
+        "n_dendrites": int(len({str(row.get("global_dendrite_id")) for row in working_rows if _is_finite_numeric(row.get(response))})),
     }
     return design
 
@@ -14706,6 +14709,7 @@ def write_analysis_outputs(
             from analysis.shared.analysis_families.mixed_model import run_split_family
 
             branch_root = Path(branch_first_output_root) if branch_first_output_root is not None else output_dir
+            mixed_model_results = results.get("mixed_model_selected_state") or results.get("mixed_model") or {}
             sleep_expids = results.get("analysis_sleep_expids", []) if isinstance(results.get("analysis_sleep_expids"), list) else []
             split_response_columns = list((mixed_model_results.get("summary_rows") or {}).keys()) if isinstance(mixed_model_results, dict) else []
             for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
