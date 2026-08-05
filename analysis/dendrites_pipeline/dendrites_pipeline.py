@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from itertools import combinations
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -14716,6 +14716,8 @@ def write_analysis_outputs(
             sleep_expids = results.get("analysis_sleep_expids", []) if isinstance(results.get("analysis_sleep_expids"), list) else []
             analysis_state_selection = results.get("analysis_state_selection", {}) if isinstance(results.get("analysis_state_selection", {}), dict) else {}
             analysis_state_comparison_states = list(analysis_state_selection.get("state_comparison_states") or [])
+            shuffle_n = int(run_params.get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
+            mixed_model_contrast_p_source = str(results.get("mixed_model_contrast_p_source") or run_params.get("mixed_model_contrast_p_source") or "classical")
             split_response_columns = list((mixed_model_results.get("summary_rows") or {}).keys()) if isinstance(mixed_model_results, dict) else []
             for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
                 leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=sleep_expids)

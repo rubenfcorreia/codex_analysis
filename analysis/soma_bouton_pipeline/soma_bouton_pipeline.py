@@ -963,6 +963,23 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if bool(config.get("poster_ready_only")):
                 config = dict(config)
                 config["plots_only"] = True
+            def _load_pairwise_family_rows_from_csv(root: Path) -> Dict[str, List[Dict[str, Any]]] | None:
+                csv_root = root / "csv"
+                sources = {
+                    "correlation_rows": csv_root / "bouton_soma_correlation_by_roi.csv",
+                    "soma_pairwise_rows": csv_root / "soma_pairwise_correlation_by_roi.csv",
+                    "bouton_pairwise_rows": csv_root / "bouton_pairwise_correlation_by_roi.csv",
+                }
+                loaded: Dict[str, List[Dict[str, Any]]] = {}
+                found_any = False
+                for key, csv_path in sources.items():
+                    if csv_path.exists():
+                        loaded[key] = read_csv_rows(csv_path)
+                        found_any = True
+                    else:
+                        loaded[key] = []
+                return loaded if found_any else None
+
             if not bool(config.get("plots_only")) and pairwise_family_rows is None:
                 pairwise_family_rows = _load_pairwise_family_rows_from_csv(result_root)
                 if pairwise_family_rows is not None:
