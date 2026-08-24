@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from analysis.dendrites_pipeline.dendrites_pipeline import is_significant_row
-from analysis.shared.shared_boxplots import plot_boxplot_series
+from analysis.shared.shared_boxplots import plot_boxplot_series, plot_grouped_boxplot_series
 
 try:  # Keep the state palette aligned with the main dendrite pipeline.
     from analysis.dendrites_pipeline.dendrites_pipeline import (  # type: ignore
@@ -357,6 +357,7 @@ def _plot_state_metric(
     stem_prefix: str,
     comparison_rows: list[Mapping[str, Any]] | None = None,
     cohort_label: str = "all",
+    state_order: list[str] | tuple[str, ...] | None = None,
 ) -> list[Path]:
     if output_root is None:
         raise ValueError("state metric plot needs an output root")
@@ -371,6 +372,8 @@ def _plot_state_metric(
         frame = frame.copy()
         frame["compartment"] = frame["channel"].map({0: "bouton", 1: "soma", "0": "bouton", "1": "soma"})
     generated: list[Path] = []
+    output_dir = Path(output_root) / "figures" / "state_activity" / cohort_label
+    group_col = "split_group" if "split_group" in frame.columns else ("group" if "group" in frame.columns else None)
     if "compartment" in frame.columns:
         frame = frame.copy()
         frame["compartment"] = frame["compartment"].astype(str).str.strip().str.lower()
@@ -379,27 +382,72 @@ def _plot_state_metric(
             if subset.empty:
                 continue
             rows_for_plot = _state_comparison_rows_for_plot(comparison_rows, compartment=compartment)
-            generated.extend(
-                _plot_boxplot(
-                    subset,
-                    state_col=state_col,
-                    label_col=label_col,
-                    value_col=value_col,
-                    output_dir=Path(output_root) / "figures" / "state_activity" / cohort_label,
-                    stem=f"{compartment.title()}_{stem_prefix}",
-                    title=f"{compartment.title()} {title_prefix.lower()} by state",
-                    ylabel=ylabel,
-                    accent_color=COMPARTMENT_ACCENTS[compartment],
-                    comparison_rows=rows_for_plot,
+            if group_col is not None:
+                generated.extend(
+                    plot_grouped_boxplot_series(
+                        subset.to_dict("records"),
+                        output_dir,
+                        state_col=state_col,
+                        value_col=value_col,
+                        state_order=list(state_order or []),
+                        stem=f"{compartment.title()}_{stem_prefix}",
+                        title=f"{compartment.title()} {title_prefix.lower()} by state",
+                        ylabel=ylabel,
+                        xlabel="State",
+                        title_color=COMPARTMENT_ACCENTS[compartment],
+                        edge_color=COMPARTMENT_ACCENTS[compartment],
+                        group_col=group_col,
+                        state_label_col=label_col,
+                        state_color_col="state_color" if "state_color" in subset.columns else None,
+                        group_label_col=f"{group_col}_display" if f"{group_col}_display" in subset.columns else None,
+                        group_color_col=f"{group_col}_color" if f"{group_col}_color" in subset.columns else None,
+                        group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in subset.columns else None,
+                        comparison_rows=rows_for_plot,
+                    )
                 )
-            )
+            else:
+                generated.extend(
+                    _plot_boxplot(
+                        subset,
+                        state_col=state_col,
+                        label_col=label_col,
+                        value_col=value_col,
+                        output_dir=output_dir,
+                        stem=f"{compartment.title()}_{stem_prefix}",
+                        title=f"{compartment.title()} {title_prefix.lower()} by state",
+                        ylabel=ylabel,
+                        accent_color=COMPARTMENT_ACCENTS[compartment],
+                        comparison_rows=rows_for_plot,
+                    )
+                )
         return generated
+    if group_col is not None:
+        return plot_grouped_boxplot_series(
+            frame.to_dict("records"),
+            output_dir,
+            state_col=state_col,
+            value_col=value_col,
+            state_order=list(state_order or []),
+            stem=stem_prefix,
+            title=f"{title_prefix} by state",
+            ylabel=ylabel,
+            xlabel="State",
+            title_color="#334155",
+            edge_color="#334155",
+            group_col=group_col,
+            state_label_col=label_col,
+            state_color_col="state_color" if "state_color" in frame.columns else None,
+            group_label_col=f"{group_col}_display" if f"{group_col}_display" in frame.columns else None,
+            group_color_col=f"{group_col}_color" if f"{group_col}_color" in frame.columns else None,
+            group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in frame.columns else None,
+            comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        )
     return _plot_boxplot(
         frame,
         state_col=state_col,
         label_col=label_col,
         value_col=value_col,
-        output_dir=Path(output_root) / "figures" / "state_activity" / cohort_label,
+        output_dir=output_dir,
         stem=stem_prefix,
         title=f"{title_prefix} by state",
         ylabel=ylabel,
@@ -413,6 +461,7 @@ def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
     comparison_rows = kwargs.get("comparison_rows")
     cohort_label = kwargs.get("cohort_label", "all")
+    state_order = kwargs.get("state_order")
     return _plot_state_metric(
         rows,
         output_root,
@@ -422,6 +471,7 @@ def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
         stem_prefix="state_summary_boxplots_mean",
         comparison_rows=comparison_rows,
         cohort_label=cohort_label,
+        state_order=state_order,
     )
 
 
@@ -430,6 +480,7 @@ def plot_state_event_frequency(*args: Any, **kwargs: Any) -> list[Path]:
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
     comparison_rows = kwargs.get("comparison_rows")
     cohort_label = kwargs.get("cohort_label", "all")
+    state_order = kwargs.get("state_order")
     return _plot_state_metric(
         rows,
         output_root,
@@ -439,6 +490,7 @@ def plot_state_event_frequency(*args: Any, **kwargs: Any) -> list[Path]:
         stem_prefix="state_summary_boxplots_event_frequency",
         comparison_rows=comparison_rows,
         cohort_label=cohort_label,
+        state_order=state_order,
     )
 
 
@@ -447,6 +499,7 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
     comparison_rows = kwargs.get("comparison_rows")
     cohort_label = kwargs.get("cohort_label", "all")
+    state_order = kwargs.get("state_order")
     title = kwargs.get("title", "state_summary_boxplots_correlation")
     output_stem = kwargs.get("output_stem", "state_summary_boxplots_correlation")
     if output_root is None:
@@ -459,6 +512,28 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
     value_col = "mean_corr" if "mean_corr" in frame.columns else "corr"
     if value_col not in frame.columns:
         raise ValueError("plot_state_correlation could not find a correlation column")
+    group_col = "split_group" if "split_group" in frame.columns else ("group" if "group" in frame.columns else None)
+    if group_col is not None:
+        return plot_grouped_boxplot_series(
+            frame.to_dict("records"),
+            Path(output_root) / "figures" / "correlation" / cohort_label,
+            state_col=state_col,
+            value_col=value_col,
+            state_order=list(state_order or []),
+            stem=output_stem,
+            title=title,
+            ylabel="Correlation",
+            xlabel="State",
+            title_color="#334155",
+            edge_color="#334155",
+            group_col=group_col,
+            state_label_col=label_col,
+            state_color_col="state_color" if "state_color" in frame.columns else None,
+            group_label_col=f"{group_col}_display" if f"{group_col}_display" in frame.columns else None,
+            group_color_col=f"{group_col}_color" if f"{group_col}_color" in frame.columns else None,
+            group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in frame.columns else None,
+            comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        )
     return _plot_boxplot(
         frame,
         state_col=state_col,
@@ -470,8 +545,6 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
         ylabel="Correlation",
         accent_color="#334155",
         comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
-        sample_size_column="day_id",
-        horizontal=True,
     )
 
 
@@ -479,6 +552,7 @@ def plot_lag_heatmap(*args: Any, **kwargs: Any) -> list[Path]:
     rows = args[0] if args else kwargs.get("rows")
     output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
     cohort_label = kwargs.get("cohort_label", "all")
+    output_stem = kwargs.get("output_stem", "state_summary_lag_heatmap")
     if output_root is None:
         raise ValueError("plot_lag_heatmap needs an output root")
     frame = _read_frame(rows)
@@ -492,66 +566,93 @@ def plot_lag_heatmap(*args: Any, **kwargs: Any) -> list[Path]:
     if value_col not in frame.columns:
         raise ValueError("plot_lag_heatmap could not find a correlation column")
 
-    frame = frame.copy()
-    frame[state_col] = frame[state_col].astype(str).str.strip().str.lower()
-    frame[label_col] = frame[label_col].astype(str)
-    frame["lag_s"] = pd.to_numeric(frame["lag_s"], errors="coerce")
-    frame[value_col] = pd.to_numeric(frame[value_col], errors="coerce")
-    frame = frame.dropna(subset=["lag_s", value_col])
-    grouped = frame.groupby([state_col, "lag_s"], as_index=False)[value_col].mean()
-    if grouped.empty:
-        return []
+    def render_heatmap(frame: pd.DataFrame, *, output_stem_name: str, title: str) -> list[Path]:
+        frame = frame.copy()
+        frame[state_col] = frame[state_col].astype(str).str.strip().str.lower()
+        frame[label_col] = frame[label_col].astype(str)
+        frame["lag_s"] = pd.to_numeric(frame["lag_s"], errors="coerce")
+        frame[value_col] = pd.to_numeric(frame[value_col], errors="coerce")
+        frame = frame.dropna(subset=["lag_s", value_col])
+        grouped = frame.groupby([state_col, "lag_s"], as_index=False)[value_col].mean()
+        if grouped.empty:
+            return []
 
-    states = _ordered_unique(grouped[state_col])
-    label_map = _display_label_map(frame, state_col, label_col)
-    labels = [label_map.get(state, state) for state in states]
-    lags = sorted(float(lag) for lag in grouped["lag_s"].dropna().unique().tolist())
-    matrix = grouped.pivot(index=state_col, columns="lag_s", values=value_col).reindex(index=states, columns=lags)
-    data = matrix.to_numpy(dtype=float)
-    finite = data[np.isfinite(data)]
-    bound = float(np.nanmax(np.abs(finite))) if finite.size else 1.0
-    if bound == 0.0:
-        bound = 1.0
+        states = _ordered_unique(grouped[state_col])
+        label_map = _display_label_map(frame, state_col, label_col)
+        labels = [label_map.get(state, state) for state in states]
+        lags = sorted(float(lag) for lag in grouped["lag_s"].dropna().unique().tolist())
+        matrix = grouped.pivot(index=state_col, columns="lag_s", values=value_col).reindex(index=states, columns=lags)
+        data = matrix.to_numpy(dtype=float)
+        finite = data[np.isfinite(data)]
+        bound = float(np.nanmax(np.abs(finite))) if finite.size else 1.0
+        if bound == 0.0:
+            bound = 1.0
 
-    fig_width = max(14.0, 0.22 * len(lags) + 4.0)
-    fig_height = max(6.0, 0.45 * len(states) + 2.0)
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
-    im = ax.imshow(
-        data,
-        aspect="auto",
-        origin="lower",
-        cmap="coolwarm",
-        norm=mcolors.TwoSlopeNorm(vcenter=0.0, vmin=-bound, vmax=bound),
-    )
-    ax.set_title("Axon-soma correlation by state and lag", fontsize=20, fontweight="bold", color="#334155", pad=12)
-    ax.set_xlabel("Lag (s)", fontsize=18)
-    ax.set_ylabel("State", fontsize=18)
-    ax.set_yticks(np.arange(len(labels)))
-    ax.set_yticklabels(labels, fontsize=13)
-    for tick, state in zip(ax.get_yticklabels(), states):
-        tick.set_color(state_display_color(state))
-        tick.set_fontweight("bold")
+        fig_width = max(14.0, 0.22 * len(lags) + 4.0)
+        fig_height = max(6.0, 0.45 * len(states) + 2.0)
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
+        im = ax.imshow(
+            data,
+            aspect="auto",
+            origin="lower",
+            cmap="coolwarm",
+            norm=mcolors.TwoSlopeNorm(vcenter=0.0, vmin=-bound, vmax=bound),
+        )
+        ax.set_title(title, fontsize=20, fontweight="bold", color="#334155", pad=12)
+        ax.set_xlabel("Lag (s)", fontsize=18)
+        ax.set_ylabel("State", fontsize=18)
+        ax.set_yticks(np.arange(len(labels)))
+        ax.set_yticklabels(labels, fontsize=13)
+        for tick, state in zip(ax.get_yticklabels(), states):
+            tick.set_color(state_display_color(state))
+            tick.set_fontweight("bold")
 
-    if lags:
-        tick_positions = list(range(0, len(lags), max(1, len(lags) // 8)))
-        if (len(lags) - 1) not in tick_positions:
-            tick_positions.append(len(lags) - 1)
-        zero_index = None
-        for idx, lag in enumerate(lags):
-            if abs(lag) < 1e-12:
-                zero_index = idx
-                break
-        if zero_index is not None and zero_index not in tick_positions:
-            tick_positions.append(zero_index)
-        tick_positions = sorted(set(tick_positions))
-        ax.set_xticks(tick_positions)
-        ax.set_xticklabels([f"{lags[index]:g}" for index in tick_positions], fontsize=12)
-        if zero_index is not None:
-            ax.axvline(zero_index, color="#111827", linestyle="--", linewidth=1.4, alpha=0.65)
+        if lags:
+            tick_positions = list(range(0, len(lags), max(1, len(lags) // 8)))
+            if (len(lags) - 1) not in tick_positions:
+                tick_positions.append(len(lags) - 1)
+            zero_index = None
+            for idx, lag in enumerate(lags):
+                if abs(lag) < 1e-12:
+                    zero_index = idx
+                    break
+            if zero_index is not None and zero_index not in tick_positions:
+                tick_positions.append(zero_index)
+            tick_positions = sorted(set(tick_positions))
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels([f"{lags[index]:g}" for index in tick_positions], fontsize=12)
+            if zero_index is not None:
+                ax.axvline(zero_index, color="#111827", linestyle="--", linewidth=1.4, alpha=0.65)
 
-    cbar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02)
-    cbar.set_label("Mean correlation", fontsize=16)
-    cbar.ax.tick_params(labelsize=12)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    return _save_figure(fig, Path(output_root) / "figures" / "lag" / cohort_label, "state_summary_lag_heatmap")
+        cbar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02)
+        cbar.set_label("Mean correlation", fontsize=16)
+        cbar.ax.tick_params(labelsize=12)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+        output_dir = Path(output_root) / "figures" / "lag" / cohort_label
+        return _save_figure(fig, output_dir, output_stem_name)
+
+    group_col = "split_group" if "split_group" in frame.columns else ("group" if "group" in frame.columns else None)
+    if group_col is not None:
+        group_series = frame[group_col].astype(str).str.strip().str.lower().str.replace(" ", "_", regex=False).str.replace("-", "_", regex=False)
+        group_values: list[str] = []
+        group_display: dict[str, str] = {}
+        for raw, slug in zip(frame[group_col].astype(str).tolist(), group_series.tolist()):
+            if not slug:
+                continue
+            if slug not in group_values:
+                group_values.append(slug)
+                display = raw.strip().replace("_", " ").replace("-", " ").strip().title()
+                group_display[slug] = display or slug
+        if len(group_values) > 1:
+            generated: list[Path] = []
+            for group in group_values:
+                subset = frame.loc[group_series == group].copy()
+                if subset.empty:
+                    continue
+                title = f"Axon-soma correlation by state and lag - {group_display.get(group, group)}"
+                generated.extend(render_heatmap(subset, output_stem_name=f"{output_stem}_{group}", title=title))
+            return generated
+
+    return render_heatmap(frame, output_stem_name=output_stem, title="Axon-soma correlation by state and lag")
+

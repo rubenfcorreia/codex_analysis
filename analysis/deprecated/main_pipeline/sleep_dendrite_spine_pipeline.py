@@ -14904,8 +14904,6 @@ def write_poster_ready_figures(
 
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
-    if not (poster_result_root / "blank_state_comparisons").exists() and (poster_result_root.parent / "blank_state_comparisons").exists():
-        poster_result_root = poster_result_root.parent
 
     def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
         csv_path = poster_result_root / preset_name / "csv" / csv_name

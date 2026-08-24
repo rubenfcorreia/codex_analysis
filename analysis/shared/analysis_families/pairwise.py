@@ -257,17 +257,20 @@ def pairwise_correlation_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List
         return []
     grouped: Dict[tuple, List[float]] = {}
     meta: Dict[tuple, Dict[str, Any]] = {}
+    has_split_group = any(str(row.get("split_group") or "").strip() for row in rows)
     for row in rows:
         comparison_name = str(row.get("comparison_name") or "pairwise_correlation")
+        split_group = str(row.get("split_group") or "").strip() if has_split_group else ""
         key = (
             str(row.get("day_id") or ""),
             str(row.get("mode") or ""),
             comparison_name,
             str(row.get("pair_mode") or "within_compartment"),
             str(row.get("state") or ""),
+            split_group,
         )
         grouped.setdefault(key, []).append(float(row.get("corr", float("nan"))))
-        meta[key] = {
+        payload: Dict[str, Any] = {
             "day_id": row.get("day_id"),
             "mode": row.get("mode"),
             "comparison_name": comparison_name,
@@ -277,6 +280,16 @@ def pairwise_correlation_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List
             "state_display": row.get("state_display"),
             "state_color": row.get("state_color"),
         }
+        if has_split_group:
+            payload.update(
+                {
+                    "split_group": split_group or None,
+                    "split_group_display": str(row.get("split_group_display") or split_group).strip() or None,
+                    "split_group_color": str(row.get("split_group_color") or "").strip() or None,
+                    "split_group_rank": row.get("split_group_rank"),
+                }
+            )
+        meta[key] = payload
     summary_rows: List[Dict[str, Any]] = []
     for key, values in grouped.items():
         arr = np.asarray(values, dtype=float)

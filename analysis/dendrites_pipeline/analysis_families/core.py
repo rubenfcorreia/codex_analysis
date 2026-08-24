@@ -375,14 +375,15 @@ def run_direct_trial_type_family(
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
 ) -> None:
+    roi_split = results.get("roi_split", {})
+    split_membership_rows = roi_split.get("membership_rows", []) if isinstance(roi_split, dict) else []
     with step_scope("direct trial-type comparison"):
-        direct_trial_type_results = run_direct_trial_type_comparison(cache, state_comparison_states, shuffle_n)
+        direct_trial_type_results = run_direct_trial_type_comparison(cache, state_comparison_states, shuffle_n, split_membership_rows)
     results["direct_trial_type_comparison"] = direct_trial_type_results
     results["alerts"].extend(direct_trial_type_results.get("alerts", []))
     if output_dir is not None:
         with step_scope("figure generation: direct_trial_type_comparison"):
             render_analysis_family_figures(output_dir, results, cache, "direct_trial_type_comparison", figure_root=figure_root)
-
 
 def run_mixed_model_family_block(
     cache: Dict[str, Any],
@@ -691,14 +692,14 @@ def run_cached_analysis(
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
-    if "direct_trial_type_comparison" in selected_families:
-        run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
-        if cache_path is not None and analysis_results_meta is not None:
-            save_family_results_cache(cache_path, "direct_trial_type_comparison", results, base_meta=analysis_results_meta)
     if "mixed_model" in selected_families:
         run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "mixed_model", results, base_meta=analysis_results_meta)
+    if "direct_trial_type_comparison" in selected_families:
+        run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "direct_trial_type_comparison", results, base_meta=analysis_results_meta)
     if "spine_coactivity" in selected_families:
         run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:

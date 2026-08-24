@@ -83,9 +83,11 @@ def lag_scan_rows(
 def lag_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     if not rows:
         return []
+    has_split_group = any(str(row.get("split_group") or "").strip() for row in rows)
     grouped: Dict[tuple, List[Mapping[str, Any]]] = {}
     for row in rows:
-        key = (row["day_id"], row["mode"], row["state"])
+        split_group = str(row.get("split_group") or "").strip() if has_split_group else ""
+        key = (row["day_id"], row["mode"], row["state"], split_group)
         grouped.setdefault(key, []).append(row)
     summary_rows: List[Dict[str, Any]] = []
     for key, members in grouped.items():
@@ -94,20 +96,29 @@ def lag_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
         best_values = np.asarray([float(row["best_corr"]) for row in members], dtype=float)
         lag_values = np.asarray([float(row["best_lag_s"]) for row in members], dtype=float)
         first = members[0]
-        summary_rows.append(
-            {
-                "day_id": first["day_id"],
-                "mode": first["mode"],
-                "state": first["state"],
-                "state_display": first["state_display"],
-                "state_color": first["state_color"],
-                "n_boutons": int(len(members)),
-                "mean_corr": float(np.nanmean(corr_values)),
-                "zero_lag_corr": float(np.nanmean(zero_values)),
-                "best_corr": float(np.nanmean(best_values)),
-                "best_lag_s": float(np.nanmean(lag_values)),
-                "corr_std": float(np.nanstd(corr_values, ddof=1)) if corr_values.size > 1 else 0.0,
-            }
-        )
+        payload: Dict[str, Any] = {
+            "day_id": first["day_id"],
+            "mode": first["mode"],
+            "state": first["state"],
+            "state_display": first["state_display"],
+            "state_color": first["state_color"],
+            "n_boutons": int(len(members)),
+            "mean_corr": float(np.nanmean(corr_values)),
+            "zero_lag_corr": float(np.nanmean(zero_values)),
+            "best_corr": float(np.nanmean(best_values)),
+            "best_lag_s": float(np.nanmean(lag_values)),
+            "corr_std": float(np.nanstd(corr_values, ddof=1)) if corr_values.size > 1 else 0.0,
+        }
+        if has_split_group:
+            split_group = key[3]
+            payload.update(
+                {
+                    "split_group": split_group or None,
+                    "split_group_display": str(first.get("split_group_display") or split_group).strip() or None,
+                    "split_group_color": str(first.get("split_group_color") or "").strip() or None,
+                    "split_group_rank": first.get("split_group_rank"),
+                }
+            )
+        summary_rows.append(payload)
     return summary_rows
 

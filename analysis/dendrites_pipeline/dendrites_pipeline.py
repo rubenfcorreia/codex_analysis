@@ -32,10 +32,12 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 from analysis.compartment_common import normalize_comparison_presets
-from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan
+from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results
+from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.state_utils import resolve_repo_path
-from analysis.shared.roi_split import build_roi_split_results
+from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
+from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
@@ -3045,135 +3047,178 @@ def plot_matrix_similarity_distribution(
         rows = filter_rows_by_matrix_similarity(rows, compartment_filter=compartment_filter)
     if not rows:
         return None
-    state_labels = selected_matrix_plot_state_labels(results, rows)
-    pair_order = list(combinations(state_labels, 2))
-    if not pair_order:
-        return None
-    compartments = matrix_similarity_output_compartments(rows)
-    if compartment_filter is None:
-        if len(compartments) != 1:
-            return None
-        compartment = compartments[0]
-    else:
-        compartment = compartment_filter
-    pair_labels = [f"{format_requested_state_label(state_a)} vs {format_requested_state_label(state_b)}" for state_a, state_b in pair_order]
-    class_styles = {
-        "positive significant": {"color": "#2a9d8f"},
-        "negative significant": {"color": "#e76f51"},
-        "non-significant": {"color": "#7f7f7f"},
-    }
-    try:
-        from matplotlib.lines import Line2D
-    except Exception:
-        Line2D = None
-    fig, ax = plt.subplots(
-        1,
-        1,
-        figsize=(min(max(8.4, POSTER_DENSE_FIGSIZE[0] - 0.2), 10.6), min(max(4.6, 0.48 * len(pair_labels) + 2.6), 10.8)),
-        squeeze=False,
-    )
-    ax = ax.ravel()[0]
-    palette = plt.get_cmap("Dark2")
-    y_positions = np.arange(1, len(pair_order) + 1)
-    legend_handles = []
-    if Line2D is not None:
-        legend_handles = [
-            Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=style["color"], markeredgecolor="none", markersize=6, label=label)
-            for label, style in class_styles.items()
-        ]
-    plotted_values: List[np.ndarray] = []
-    plotted_positions: List[int] = []
-    plotted_class_data: List[Dict[str, np.ndarray]] = []
-    panel_class_counts = {label: 0 for label in class_styles}
-    for position, (state_a, state_b) in zip(y_positions, pair_order):
-        pair_key = frozenset((state_a, state_b))
-        matched_rows = [row for row in rows if frozenset((str(row.get("state_a")), str(row.get("state_b")))) == pair_key]
-        coeffs = np.asarray([value for value in (as_float(row.get("matrix_similarity_r")) for row in matched_rows) if value is not None], dtype=float)
-        coeffs = coeffs[np.isfinite(coeffs)]
-        if coeffs.size == 0:
-            continue
-        class_data = {label: [] for label in class_styles}
-        for row in matched_rows:
-            r_value = as_float(row.get("matrix_similarity_r"))
-            p_value = as_float(row.get("shuffle_p"))
-            if r_value is None or not np.isfinite(r_value):
-                continue
-            if p_value is None or not np.isfinite(p_value):
-                label = "non-significant"
-            elif p_value < REPORT_SIGNIFICANCE_ALPHA and r_value > 0:
-                label = "positive significant"
-            elif p_value < REPORT_SIGNIFICANCE_ALPHA and r_value < 0:
-                label = "negative significant"
-            else:
-                label = "non-significant"
-            class_data[label].append(float(r_value))
-            panel_class_counts[label] += 1
-        plotted_values.append(coeffs)
-        plotted_positions.append(position)
-        plotted_class_data.append({label: np.asarray(values, dtype=float) for label, values in class_data.items()})
-    if not plotted_values:
-        return None
-    bp = ax.boxplot(plotted_values, positions=plotted_positions, widths=0.6, patch_artist=True, showfliers=False, vert=False)
-    _set_boxplot_colors(bp, [palette((position - 1) % palette.N) for position in plotted_positions])
-    for position, coeffs, class_data in zip(plotted_positions, plotted_values, plotted_class_data):
-        for label, style in class_styles.items():
-            values = class_data[label]
-            values = values[np.isfinite(values)]
-            if values.size == 0:
-                continue
-            jitter = np.random.default_rng(50 + position).uniform(-0.12, 0.12, size=values.size)
-            ax.scatter(
-                values,
-                np.full(values.size, position) + jitter,
-                s=16,
-                alpha=0.65,
-                color=style["color"],
-                edgecolor="none",
-                zorder=3,
-            )
-        ax.text(0.98, position, f"n={coeffs.size}", transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=POSTER_NOTE_SIZE, clip_on=False)
-    ax.axvline(0.0, color="#333333", linewidth=1)
-    ax.set_title(title, fontsize=POSTER_TITLE_SIZE)
-    ax.set_xlabel("Pearson r", fontsize=POSTER_LABEL_SIZE)
-    ax.set_ylabel("State pair", fontsize=POSTER_LABEL_SIZE)
-    ax.set_yticks(y_positions[: len(pair_labels)])
-    ax.set_yticklabels(pair_labels)
-    ax.invert_yaxis()
-    ax.tick_params(axis="y", labelsize=max(11, POSTER_FONT_SIZE - 3))
-    ax.tick_params(axis="x", labelsize=POSTER_FONT_SIZE)
-    ax.grid(axis="x", alpha=0.25)
-    set_sparse_numeric_ticks(ax, axis="x", nbins=5)
-    ax.text(
-        0.02,
-        0.98,
-        (
-            f"+sig {panel_class_counts['positive significant']} | "
-            f"-sig {panel_class_counts['negative significant']} | "
-            f"ns {panel_class_counts['non-significant']}"
-        ),
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=POSTER_NOTE_SIZE,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
-    )
-    if legend_handles:
-        fig.legend(
-            handles=legend_handles,
-            frameon=False,
-            fontsize=POSTER_LEGEND_SIZE,
-            loc="upper center",
-            bbox_to_anchor=(0.5, 1.02),
-            ncol=len(legend_handles),
-            columnspacing=1.0,
-            handletextpad=0.5,
-        )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.93), pad=0.95)
-    output_path = fig_dir / output_name
-    save_figure(fig, output_path, extra_formats=())
-    return str(output_path)
 
-def mixed_model_branch_render_specs(results: Dict[str, Any], review: bool = False) -> List[Dict[str, Any]]:
+    def _render_distribution(plot_rows: List[Dict[str, Any]], *, output_stem_name: str, plot_title: str) -> Optional[str]:
+        state_labels = selected_matrix_plot_state_labels(results, plot_rows)
+        pair_order = list(combinations(state_labels, 2))
+        if not pair_order:
+            return None
+        compartments = matrix_similarity_output_compartments(plot_rows)
+        if compartment_filter is None:
+            if len(compartments) != 1:
+                return None
+            compartment = compartments[0]
+        else:
+            compartment = compartment_filter
+        pair_labels = [f"{format_requested_state_label(state_a)} vs {format_requested_state_label(state_b)}" for state_a, state_b in pair_order]
+        class_styles = {
+            "positive significant": {"color": "#2a9d8f"},
+            "negative significant": {"color": "#e76f51"},
+            "non-significant": {"color": "#7f7f7f"},
+        }
+        try:
+            from matplotlib.lines import Line2D
+        except Exception:
+            Line2D = None
+        fig, ax = plt.subplots(
+            1,
+            1,
+            figsize=(min(max(8.4, POSTER_DENSE_FIGSIZE[0] - 0.2), 10.6), min(max(4.6, 0.48 * len(pair_labels) + 2.6), 10.8)),
+            squeeze=False,
+        )
+        ax = ax.ravel()[0]
+        palette = plt.get_cmap("Dark2")
+        y_positions = np.arange(1, len(pair_order) + 1)
+        legend_handles = []
+        if Line2D is not None:
+            legend_handles = [
+                Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=style["color"], markeredgecolor="none", markersize=6, label=label)
+                for label, style in class_styles.items()
+            ]
+        plotted_values: List[np.ndarray] = []
+        plotted_positions: List[int] = []
+        plotted_class_data: List[Dict[str, np.ndarray]] = []
+        panel_class_counts = {label: 0 for label in class_styles}
+        for position, (state_a, state_b) in zip(y_positions, pair_order):
+            pair_key = frozenset((state_a, state_b))
+            matched_rows = [row for row in plot_rows if frozenset((str(row.get("state_a")), str(row.get("state_b")))) == pair_key]
+            coeffs = np.asarray([value for value in (as_float(row.get("matrix_similarity_r")) for row in matched_rows) if value is not None], dtype=float)
+            coeffs = coeffs[np.isfinite(coeffs)]
+            if coeffs.size == 0:
+                continue
+            class_data = {label: [] for label in class_styles}
+            for row in matched_rows:
+                r_value = as_float(row.get("matrix_similarity_r"))
+                p_value = as_float(row.get("shuffle_p"))
+                if r_value is None or not np.isfinite(r_value):
+                    continue
+                if p_value is None or not np.isfinite(p_value):
+                    label = "non-significant"
+                elif p_value < REPORT_SIGNIFICANCE_ALPHA and r_value > 0:
+                    label = "positive significant"
+                elif p_value < REPORT_SIGNIFICANCE_ALPHA and r_value < 0:
+                    label = "negative significant"
+                else:
+                    label = "non-significant"
+                class_data[label].append(float(r_value))
+                panel_class_counts[label] += 1
+            plotted_values.append(coeffs)
+            plotted_positions.append(position)
+            plotted_class_data.append({label: np.asarray(values, dtype=float) for label, values in class_data.items()})
+        if not plotted_values:
+            return None
+        bp = ax.boxplot(plotted_values, positions=plotted_positions, widths=0.6, patch_artist=True, showfliers=False, vert=False)
+        _set_boxplot_colors(bp, [palette((position - 1) % palette.N) for position in plotted_positions])
+        for position, coeffs, class_data in zip(plotted_positions, plotted_values, plotted_class_data):
+            for label, style in class_styles.items():
+                values = class_data[label]
+                values = values[np.isfinite(values)]
+                if values.size == 0:
+                    continue
+                jitter = np.random.default_rng(50 + position).uniform(-0.12, 0.12, size=values.size)
+                ax.scatter(
+                    values,
+                    np.full(values.size, position) + jitter,
+                    s=16,
+                    alpha=0.65,
+                    color=style["color"],
+                    edgecolor="none",
+                    zorder=3,
+                )
+            ax.text(0.98, position, f"n={coeffs.size}", transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=POSTER_NOTE_SIZE, clip_on=False)
+        ax.axvline(0.0, color="#333333", linewidth=1)
+        ax.set_title(plot_title, fontsize=POSTER_TITLE_SIZE)
+        ax.set_xlabel("Pearson r", fontsize=POSTER_LABEL_SIZE)
+        ax.set_ylabel("State pair", fontsize=POSTER_LABEL_SIZE)
+        ax.set_yticks(y_positions[: len(pair_labels)])
+        ax.set_yticklabels(pair_labels)
+        ax.invert_yaxis()
+        ax.tick_params(axis="y", labelsize=max(11, POSTER_FONT_SIZE - 3))
+        ax.tick_params(axis="x", labelsize=POSTER_FONT_SIZE)
+        ax.grid(axis="x", alpha=0.25)
+        set_sparse_numeric_ticks(ax, axis="x", nbins=5)
+        ax.text(
+            0.02,
+            0.98,
+            (
+                f"+sig {panel_class_counts['positive significant']} | "
+                f"-sig {panel_class_counts['negative significant']} | "
+                f"ns {panel_class_counts['non-significant']}"
+            ),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=POSTER_NOTE_SIZE,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+        )
+        if legend_handles:
+            fig.legend(
+                handles=legend_handles,
+                frameon=False,
+                fontsize=POSTER_LEGEND_SIZE,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 1.02),
+                ncol=len(legend_handles),
+                columnspacing=1.0,
+                handletextpad=0.5,
+            )
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.93), pad=0.95)
+        output_path = fig_dir / output_stem_name
+        save_figure(fig, output_path, extra_formats=())
+        return str(output_path)
+
+    group_col = "split_group" if any(str(row.get("split_group") or "").strip() for row in rows) else None
+    if group_col is not None:
+        group_rows: Dict[str, List[Dict[str, Any]]] = {}
+        group_display: Dict[str, str] = {}
+        group_order: List[str] = []
+        unassigned_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            group_value = str(row.get(group_col) or "").strip()
+            if not group_value:
+                unassigned_rows.append(dict(row))
+                continue
+            group_key = group_value.lower().replace(" ", "_").replace("-", "_")
+            while "__" in group_key:
+                group_key = group_key.replace("__", "_")
+            if group_key not in group_rows:
+                group_order.append(group_key)
+            group_rows.setdefault(group_key, []).append(dict(row))
+            group_display.setdefault(group_key, str(row.get("split_group_display") or group_value).strip() or group_key)
+        if unassigned_rows:
+            group_rows["unassigned"] = unassigned_rows
+            group_display.setdefault("unassigned", "Unassigned")
+            group_order.append("unassigned")
+        if len(group_order) > 1:
+            generated: List[str] = []
+            base_stem = Path(output_name).stem
+            for group_key in group_order:
+                subset = group_rows.get(group_key, [])
+                if not subset:
+                    continue
+                rendered = _render_distribution(
+                    subset,
+                    output_stem_name=f"{base_stem}_{group_key}.svg",
+                    plot_title=f"{title} - {group_display.get(group_key, group_key)}",
+                )
+                if rendered:
+                    generated.append(rendered)
+            return generated or None
+    return _render_distribution(rows, output_stem_name=output_name, plot_title=title)
+
+
+def mixed_model_branch_render_specs(
+results: Dict[str, Any], review: bool = False) -> List[Dict[str, Any]]:
     branch_configs = [
         {
             "key": "mixed_model_selected_state",
@@ -4237,6 +4282,42 @@ def plot_direct_trial_type_distribution_figure(
     state_labels = [state for state in selected_direct_trial_state_labels(results) if any(canonical_state_label(row.get("state")) == state for row in rows)]
     if not state_labels:
         return None
+    has_split_groups = any(_direct_trial_type_split_group_value(row) is not None for row in rows)
+    state_position_lookup = {state: position for position, state in enumerate(state_labels, start=1)}
+    comparison_rows = [
+        {
+            "x1": float(state_position_lookup[canonical_state_label(row.get("state_a"))]),
+            "x2": float(state_position_lookup[canonical_state_label(row.get("state_b"))]),
+            "shuffle_p": row.get("shuffle_p"),
+        }
+        for row in direct.get("state_pair_rows", [])
+        if is_significant_row(row)
+        and canonical_state_label(row.get("state_a")) in state_position_lookup
+        and canonical_state_label(row.get("state_b")) in state_position_lookup
+    ]
+    if has_split_groups:
+        generated = plot_grouped_boxplot_series(
+            rows,
+            fig_dir,
+            state_col="state",
+            value_col="mean_response",
+            state_order=state_labels,
+            stem=Path(output_name).stem,
+            title=title,
+            ylabel="Mean trial response",
+            xlabel="State",
+            title_color="#334155",
+            edge_color="#334155",
+            group_col="split_group",
+            state_label_col="state_display" if any("state_display" in row for row in rows) else None,
+            state_color_col="state_color" if any("state_color" in row for row in rows) else None,
+            group_label_col="split_group_display" if any("split_group_display" in row for row in rows) else None,
+            group_color_col="split_group_color" if any("split_group_color" in row for row in rows) else None,
+            group_rank_col="split_group_rank" if any("split_group_rank" in row for row in rows) else None,
+            comparison_rows=None if len([split_group for split_group in _direct_trial_type_split_group_order(rows) if split_group is not None]) > 1 else comparison_rows,
+            horizontal=True,
+        )
+        return str(generated[-1]) if generated else None
     state_data: List[np.ndarray] = []
     state_positions: List[int] = []
     state_labels_present: List[str] = []
@@ -4270,17 +4351,6 @@ def plot_direct_trial_type_distribution_figure(
             zorder=3,
         )
         ax.text(0.98, position, f"n={values.size}", transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=POSTER_NOTE_SIZE, clip_on=False)
-    comparison_rows = [
-        {
-            "x1": float(state_position_lookup[canonical_state_label(row.get("state_a"))]),
-            "x2": float(state_position_lookup[canonical_state_label(row.get("state_b"))]),
-            "shuffle_p": row.get("shuffle_p"),
-        }
-        for row in direct.get("state_pair_rows", [])
-        if is_significant_row(row)
-        and canonical_state_label(row.get("state_a")) in state_position_lookup
-        and canonical_state_label(row.get("state_b")) in state_position_lookup
-    ]
     _draw_boxplot_significance_annotations(ax, comparison_rows, orientation="horizontal")
     ax.axvline(0.0, color="#333333", linewidth=1)
     ax.set_title(title, fontsize=POSTER_TITLE_SIZE)
@@ -4321,6 +4391,7 @@ def plot_direct_trial_type_distribution_figure(
     save_figure(fig, output_path, extra_formats=())
     return str(output_path)
 
+
 def plot_direct_trial_type_state_comparison_figure(
     results: Dict[str, Any],
     fig_dir: Path,
@@ -4333,99 +4404,135 @@ def plot_direct_trial_type_state_comparison_figure(
     direct = results.get(model_key, {})
     if not isinstance(direct, dict):
         return None
-    pair_rows = list(direct.get("state_pair_rows", []))
-    if not pair_rows:
+    video_state_rows_all = [row for row in direct.get("video_state_rows", []) if as_float(row.get("mean_response")) is not None]
+    if not video_state_rows_all:
         return None
-    state_labels = [state for state in selected_direct_trial_state_labels(results) if any(canonical_state_label(row.get("state_a")) == state or canonical_state_label(row.get("state_b")) == state for row in pair_rows)]
-    pair_order = [pair for pair in combinations(state_labels, 2)]
-    if not pair_order:
-        return None
-    video_state_rows = list(direct.get("video_state_rows", []))
-    by_state_video: Dict[str, Dict[str, float]] = defaultdict(dict)
-    for row in video_state_rows:
-        state = str(row.get("state"))
-        video_id = str(row.get("video_id"))
-        mean_response = as_float(row.get("mean_response"))
-        if not state or not video_id or mean_response is None or not np.isfinite(mean_response):
-            continue
-        by_state_video[state][video_id] = float(mean_response)
-    pair_lookup = {(str(row.get("state_a")), str(row.get("state_b"))): dict(row) for row in pair_rows}
-
-    all_values: List[float] = []
-    for state_a, state_b in pair_order:
-        all_values.extend(list(by_state_video.get(state_a, {}).values()))
-        all_values.extend(list(by_state_video.get(state_b, {}).values()))
-    x_limits = padded_value_limits(all_values + [0.0])
-
+    split_group_order = _direct_trial_type_split_group_order(video_state_rows_all)
+    has_split_groups = any(split_group is not None for split_group in split_group_order)
     component_dir = ensure_dir(Path(fig_dir) / f"{Path(output_name).stem}_components")
     panel_paths: List[Path] = []
 
-    def render_pair_panel(state_a: str, state_b: str, pair_row: Dict[str, Any], index: int) -> Optional[Path]:
-        common_videos = sorted(set(by_state_video.get(state_a, {})).intersection(by_state_video.get(state_b, {})))
-        if len(common_videos) < 1:
-            return None
-        x = np.asarray([by_state_video[state_a][video_id] for video_id in common_videos], dtype=float)
-        y = np.asarray([by_state_video[state_b][video_id] for video_id in common_videos], dtype=float)
-        mask = np.isfinite(x) & np.isfinite(y)
-        x = x[mask]
-        y = y[mask]
-        if x.size == 0:
-            return None
-        fig, ax = plt.subplots(figsize=(4.0, 3.25))
-        palette = plt.get_cmap("tab10")
-        ax.scatter(
-            x,
-            y,
-            s=34,
-            alpha=0.82,
-            color=palette(0),
-            edgecolor="white",
-            linewidth=0.55,
-            zorder=3,
-        )
-        ax.axline((0.0, 0.0), slope=1.0, color="#666666", linestyle="--", linewidth=1.0, zorder=1)
-        ax.set_xlim(x_limits)
-        ax.set_ylim(x_limits)
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("")
-        ax.set_ylabel("")
-        ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-        ax.grid(alpha=0.2)
-        set_sparse_numeric_ticks(ax, axis="x", nbins=4)
-        set_sparse_numeric_ticks(ax, axis="y", nbins=4)
-        pair_label = f"{format_requested_state_label(state_a)} vs {format_requested_state_label(state_b)}"
-        metrics = [f"n={x.size}"]
-        effect_size = as_float(pair_row.get("effect_size"))
-        shuffle_p = as_float(pair_row.get("shuffle_p"))
-        agreement_r = as_float(pair_row.get("agreement_r"))
-        if effect_size is not None:
-            metrics.append(f"Δ={format_report_number(effect_size)}")
-        if shuffle_p is not None:
-            metrics.append(f"p={format_report_pvalue(shuffle_p)}")
-        if agreement_r is not None:
-            metrics.append(f"r={format_report_number(agreement_r)}")
-        ax.set_title(pair_label, fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=3)
-        ax.text(
-            0.02,
-            0.98,
-            " | ".join(metrics),
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=POSTER_NOTE_SIZE,
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#dddddd", alpha=0.85),
-        )
-        panel_path = component_dir / f"{Path(output_name).stem}_{index:02d}_{state_a}_vs_{state_b}.svg"
-        save_figure(fig, panel_path, extra_formats=())
-        return panel_path
+    def _safe_suffix(split_group: str | None) -> str:
+        if split_group is None:
+            return ""
+        text = str(split_group).strip()
+        if not text:
+            return ""
+        return "_" + "".join(ch if ch.isalnum() else "_" for ch in text).strip("_")
 
-    for index, (state_a, state_b) in enumerate(pair_order, start=1):
-        panel_path = render_pair_panel(state_a, state_b, pair_lookup.get((state_a, state_b), {}), index)
-        if panel_path is not None:
-            panel_paths.append(panel_path)
+    def render_subset(split_group: str | None, rows_subset: Sequence[Mapping[str, Any]]) -> List[Path]:
+        if not rows_subset:
+            return []
+        state_labels = [
+            state
+            for state in selected_direct_trial_state_labels(results)
+            if any(canonical_state_label(row.get("state")) == state for row in rows_subset)
+        ]
+        if not state_labels:
+            return []
+        pair_order = [pair for pair in combinations(state_labels, 2)]
+        if not pair_order:
+            return []
+        by_state_video: Dict[str, Dict[str, float]] = defaultdict(dict)
+        for row in rows_subset:
+            state = str(row.get("state"))
+            video_id = str(row.get("video_id"))
+            mean_response = as_float(row.get("mean_response"))
+            if not state or not video_id or mean_response is None or not np.isfinite(mean_response):
+                continue
+            by_state_video[state][video_id] = float(mean_response)
+        if not by_state_video:
+            return []
+        all_values: List[float] = []
+        for state_a, state_b in pair_order:
+            all_values.extend(list(by_state_video.get(state_a, {}).values()))
+            all_values.extend(list(by_state_video.get(state_b, {}).values()))
+        x_limits = padded_value_limits(all_values + [0.0])
+        pair_rows = list(direct.get("state_pair_rows", []))
+        if has_split_groups:
+            pair_rows = [row for row in pair_rows if _direct_trial_type_split_group_value(row) == split_group]
+        pair_lookup = {(str(row.get("state_a")), str(row.get("state_b"))): dict(row) for row in pair_rows}
+        split_label = None
+        if split_group is not None:
+            split_label = str(rows_subset[0].get("split_group_display") or split_group).strip() or str(split_group)
+        elif has_split_groups:
+            split_label = "Unassigned"
+        suffix = _safe_suffix(split_group if split_group is not None else split_label)
+        local_paths: List[Path] = []
+
+        def render_pair_panel(state_a: str, state_b: str, pair_row: Dict[str, Any], index: int) -> Optional[Path]:
+            common_videos = sorted(set(by_state_video.get(state_a, {})).intersection(by_state_video.get(state_b, {})))
+            if len(common_videos) < 1:
+                return None
+            x = np.asarray([by_state_video[state_a][video_id] for video_id in common_videos], dtype=float)
+            y = np.asarray([by_state_video[state_b][video_id] for video_id in common_videos], dtype=float)
+            mask = np.isfinite(x) & np.isfinite(y)
+            x = x[mask]
+            y = y[mask]
+            if x.size == 0:
+                return None
+            fig, ax = plt.subplots(figsize=(4.0, 3.25))
+            palette = plt.get_cmap("tab10")
+            ax.scatter(
+                x,
+                y,
+                s=34,
+                alpha=0.82,
+                color=palette(0),
+                edgecolor="white",
+                linewidth=0.55,
+                zorder=3,
+            )
+            ax.axline((0.0, 0.0), slope=1.0, color="#666666", linestyle="--", linewidth=1.0, zorder=1)
+            ax.set_xlim(x_limits)
+            ax.set_ylim(x_limits)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+            ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
+            ax.grid(alpha=0.2)
+            set_sparse_numeric_ticks(ax, axis="x", nbins=4)
+            set_sparse_numeric_ticks(ax, axis="y", nbins=4)
+            pair_label = f"{format_requested_state_label(state_a)} vs {format_requested_state_label(state_b)}"
+            metrics = [f"n={x.size}"]
+            effect_size = as_float(pair_row.get("effect_size"))
+            shuffle_p = as_float(pair_row.get("shuffle_p"))
+            agreement_r = as_float(pair_row.get("agreement_r"))
+            if effect_size is not None:
+                metrics.append(f"Δ={format_report_number(effect_size)}")
+            if shuffle_p is not None:
+                metrics.append(f"p={format_report_pvalue(shuffle_p)}")
+            if agreement_r is not None:
+                metrics.append(f"r={format_report_number(agreement_r)}")
+            title_suffix = f" ({split_label})" if split_label else ""
+            ax.set_title(f"{pair_label}{title_suffix}", fontsize=max(14, POSTER_TITLE_SIZE - 8), pad=3)
+            ax.text(
+                0.02,
+                0.98,
+                " | ".join(metrics),
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=POSTER_NOTE_SIZE,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+            )
+            panel_path = component_dir / f"{Path(output_name).stem}_{index:02d}_{state_a}_vs_{state_b}{suffix}.svg"
+            save_figure(fig, panel_path, extra_formats=())
+            return panel_path
+
+        for index, (state_a, state_b) in enumerate(pair_order, start=1):
+            panel_path = render_pair_panel(state_a, state_b, pair_lookup.get((state_a, state_b), {}), index)
+            if panel_path is not None:
+                local_paths.append(panel_path)
+        return local_paths
+
+    for split_group in split_group_order:
+        rows_subset = [row for row in video_state_rows_all if _direct_trial_type_split_group_value(row) == split_group] if has_split_groups else list(video_state_rows_all)
+        panel_paths.extend(render_subset(split_group, rows_subset))
     if not panel_paths:
         return None
     return str(panel_paths[0])
+
 
 def plot_mixed_model_forest_figure(
     results: Dict[str, Any],
@@ -5056,6 +5163,69 @@ def plot_state_summary_figure(
     **_compat_kwargs,
 ):
     """Backward-compatible public wrapper for the old state-summary API."""
+    if isinstance(results, dict) and results.get("analysis_branch_name") and results.get("analysis_basis_name"):
+        roi_split_results = results.get("roi_split", {})
+        split_rows = roi_split_results.get("subject_state_rows", []) if isinstance(roi_split_results, dict) else []
+        split_rows = [dict(row) for row in split_rows if isinstance(row, Mapping)]
+        if split_rows and isinstance(roi_split_results, dict):
+            split_rows = annotate_rows_with_split_group(split_rows, roi_split_results.get("membership_rows", []))
+        if split_rows:
+            state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
+            output_paths: List[Path] = []
+            metric_specs = {
+                "dendrite_mean": "Dendrite mean dF/F",
+                "spine_specific_mean": "Spine-specific mean dF/F",
+                "dendrite_event_frequency_per_min": "Dendrite calcium event frequency (per min)",
+                "spine_event_frequency_per_min": "Spine calcium event frequency (per min)",
+                "coincident_event_frequency_per_min": "Coincident spine event frequency (per min)",
+                "noncoincident_event_frequency_per_min": "Noncoincident spine event frequency (per min)",
+            }
+            for metric_name, metric_title in metric_specs.items():
+                metric_rows = [
+                    dict(row)
+                    for row in split_rows
+                    if np.isfinite(as_float(row.get(metric_name)))
+                    and canonical_state_label(row.get("state")) in {canonical_state_label(state) for state in state_order}
+                ]
+                if not metric_rows:
+                    continue
+                metric_comparison_rows = comparison_rows
+                if metric_comparison_rows is None:
+                    metric_comparison_rows = _state_summary_significant_pair_rows(
+                        results.get("state_comparisons", []),
+                        metric_name=metric_name,
+                        state_order=state_order,
+                        comparison_name="state_comparison",
+                    )
+                metric_output_path = state_summary_metric_output_dir(
+                    output_dir,
+                    metric_name,
+                    cohort_label,
+                    state_group,
+                ) / f"{Path(output_name).stem}_{metric_name}.svg"
+                plotted = plot_grouped_boxplot_series(
+                    metric_rows,
+                    metric_output_path.parent,
+                    state_col="state",
+                    value_col=metric_name,
+                    state_order=state_order,
+                    stem=metric_output_path.stem,
+                    title=metric_title,
+                    ylabel="Dendrite dF/F",
+                    xlabel="State",
+                    title_color="#334155",
+                    edge_color="#334155",
+                    group_col="split_group",
+                    state_label_col="state_display",
+                    state_color_col="state_color",
+                    group_label_col="split_group_display",
+                    group_color_col="split_group_color",
+                    group_rank_col="split_group_rank",
+                    comparison_rows=metric_comparison_rows,
+                )
+                if plotted:
+                    output_paths.append(metric_output_path)
+            return str(output_paths[0]) if output_paths else None
     if isinstance(results, dict) and isinstance(results.get("state_summaries"), dict) and not isinstance(results.get("apical_results"), dict):
         state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
         output_paths: List[Path] = []
@@ -6418,11 +6588,35 @@ def plot_correlation_summary(
         "spine_dendrite_raw": "spine-specific activity vs dendrite activity (raw)",
         "spine_dendrite_specific": "spine-specific activity vs dendrite activity (specific)",
     }
+    has_split_groups = any(str(row.get("split_group") or "").strip() for row in rows)
     r_values: List[np.ndarray] = []
     p_values: List[np.ndarray] = []
     labels: List[str] = []
     for analysis in analysis_order:
         analysis_rows = [row for row in rows if row.get("analysis") == analysis]
+        if has_split_groups:
+            split_groups: List[str] = []
+            split_display: Dict[str, str] = {}
+            for row in analysis_rows:
+                split_group = str(row.get("split_group") or "").strip()
+                if not split_group:
+                    continue
+                if split_group not in split_groups:
+                    split_groups.append(split_group)
+                split_display.setdefault(split_group, str(row.get("split_group_display") or split_group).strip())
+            if split_groups:
+                for split_group in split_groups:
+                    subset = [row for row in analysis_rows if str(row.get("split_group") or "").strip() == split_group]
+                    r_arr = np.asarray([float(row.get("r", float("nan"))) for row in subset], dtype=float)
+                    p_arr = np.asarray([float(row.get("shuffle_p", float("nan"))) for row in subset], dtype=float)
+                    r_arr = r_arr[np.isfinite(r_arr)]
+                    p_arr = p_arr[np.isfinite(p_arr)]
+                    if r_arr.size == 0 and p_arr.size == 0:
+                        continue
+                    labels.append(f"{label_lookup.get(analysis, analysis.replace('_', ' '))} | {split_display.get(split_group, split_group)}")
+                    r_values.append(r_arr if r_arr.size else np.asarray([np.nan], dtype=float))
+                    p_values.append(p_arr if p_arr.size else np.asarray([np.nan], dtype=float))
+                continue
         r_arr = np.asarray([float(row.get("r", float("nan"))) for row in analysis_rows], dtype=float)
         p_arr = np.asarray([float(row.get("shuffle_p", float("nan"))) for row in analysis_rows], dtype=float)
         r_arr = r_arr[np.isfinite(r_arr)]
@@ -6479,7 +6673,6 @@ def plot_correlation_summary(
     save_figure(fig, output_path, extra_formats=())
     return str(output_path)
 
-
 def plot_matrix_similarity_heatmap(
     results: Dict[str, Any],
     fig_dir: Path,
@@ -6497,111 +6690,153 @@ def plot_matrix_similarity_heatmap(
     ).get("matrix_similarity", [])
     if not rows:
         return None
-    state_labels = selected_matrix_plot_state_labels(results, rows)
-    if not state_labels:
-        return None
-    pair_values: Dict[Tuple[str, str], List[float]] = defaultdict(list)
-    pair_sig_counts: Dict[Tuple[str, str], int] = defaultdict(int)
-    pair_obs_counts: Dict[Tuple[str, str], int] = defaultdict(int)
-    sig_rows = 0
-    for row in rows:
-        state_a = canonical_state_label(row.get("state_a"))
-        state_b = canonical_state_label(row.get("state_b"))
-        if not state_a or not state_b or state_a == state_b:
-            continue
-        value = float(row.get("matrix_similarity_r", float("nan")))
-        if np.isfinite(value):
-            pair_values[(state_a, state_b)].append(value)
-            pair_values[(state_b, state_a)].append(value)
-        p_value = float(row.get("shuffle_p", float("nan")))
-        if np.isfinite(p_value):
-            pair_obs_counts[(state_a, state_b)] += 1
-            pair_obs_counts[(state_b, state_a)] += 1
-            if p_value < REPORT_SIGNIFICANCE_ALPHA:
-                sig_rows += 1
-                pair_sig_counts[(state_a, state_b)] += 1
-                pair_sig_counts[(state_b, state_a)] += 1
-    matrix = np.full((len(state_labels), len(state_labels)), np.nan, dtype=float)
-    for i, state_a in enumerate(state_labels):
-        for j, state_b in enumerate(state_labels):
-            if state_a == state_b:
+
+    def _render_heatmap(plot_rows: List[Dict[str, Any]], *, output_stem_name: str, plot_title: str) -> Optional[str]:
+        state_labels = selected_matrix_plot_state_labels(results, plot_rows)
+        if not state_labels:
+            return None
+        pair_values: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+        pair_sig_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+        pair_obs_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+        sig_rows = 0
+        for row in plot_rows:
+            state_a = canonical_state_label(row.get("state_a"))
+            state_b = canonical_state_label(row.get("state_b"))
+            if not state_a or not state_b or state_a == state_b:
                 continue
-            values = pair_values.get((state_a, state_b), [])
-            if values:
-                matrix[i, j] = float(np.nanmean(values))
-    if not np.isfinite(matrix).any():
-        return None
-    side = min(max(6.2, 0.64 * len(state_labels) + 2.6), 9.6)
-    fig = plt.figure(figsize=(side + 0.2, max(5.6, side * 0.88)))
-    gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 0.065], wspace=0.28)
-    ax = fig.add_subplot(gs[0, 0])
-    cax = fig.add_subplot(gs[0, 1])
-    cmap = plt.get_cmap("coolwarm")
-    norm = Normalize(vmin=-1.0, vmax=1.0)
-    _configure_square_heatmap_axes(ax, state_labels, "State B", "State A")
-    ax.set_xticklabels([])
-    ax.tick_params(axis="x", labelbottom=False, bottom=False)
-    ax.set_xlabel("State B", fontsize=max(POSTER_LABEL_SIZE - 6, 12))
-    ax.set_title(title, fontsize=POSTER_TITLE_SIZE, pad=12)
-    ax.set_xticks(np.arange(-0.5, len(state_labels), 1), minor=True)
-    ax.set_yticks(np.arange(-0.5, len(state_labels), 1), minor=True)
-    ax.grid(which="minor", color="white", linestyle="-", linewidth=0.8)
-    ax.tick_params(which="minor", bottom=False, left=False)
-    ax.set_xlim(-0.5, len(state_labels) - 0.5)
-    ax.set_ylim(len(state_labels) - 0.5, -0.5)
-    ax.set_aspect("equal")
-    ax.set_facecolor("white")
-    try:
-        from matplotlib.patches import Rectangle
-    except Exception:
-        Rectangle = None
-    if Rectangle is not None:
+            value = float(row.get("matrix_similarity_r", float("nan")))
+            if np.isfinite(value):
+                pair_values[(state_a, state_b)].append(value)
+                pair_values[(state_b, state_a)].append(value)
+            p_value = float(row.get("shuffle_p", float("nan")))
+            if np.isfinite(p_value):
+                pair_obs_counts[(state_a, state_b)] += 1
+                pair_obs_counts[(state_b, state_a)] += 1
+                if p_value < REPORT_SIGNIFICANCE_ALPHA:
+                    sig_rows += 1
+                    pair_sig_counts[(state_a, state_b)] += 1
+                    pair_sig_counts[(state_b, state_a)] += 1
+        matrix = np.full((len(state_labels), len(state_labels)), np.nan, dtype=float)
         for i, state_a in enumerate(state_labels):
             for j, state_b in enumerate(state_labels):
                 if state_a == state_b:
                     continue
-                value = matrix[i, j]
-                if not np.isfinite(value):
-                    continue
-                obs_count = pair_obs_counts.get((state_a, state_b), 0)
-                if obs_count <= 0:
-                    continue
-                sig_count = pair_sig_counts.get((state_a, state_b), 0)
-                sig_fraction = (sig_count / obs_count) if obs_count else 0.0
-                square_size = 0.82 if sig_fraction >= 0.5 and sig_count > 0 else 0.48
-                ax.add_patch(
-                    Rectangle(
-                        (j - square_size / 2.0, i - square_size / 2.0),
-                        square_size,
-                        square_size,
-                        facecolor=cmap(norm(value)),
-                        edgecolor="#1f1f1f",
-                        linewidth=0.8,
-                        zorder=3,
+                values = pair_values.get((state_a, state_b), [])
+                if values:
+                    matrix[i, j] = float(np.nanmean(values))
+        if not np.isfinite(matrix).any():
+            return None
+        side = min(max(6.2, 0.64 * len(state_labels) + 2.6), 9.6)
+        fig = plt.figure(figsize=(side + 0.2, max(5.6, side * 0.88)))
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 0.065], wspace=0.28)
+        ax = fig.add_subplot(gs[0, 0])
+        cax = fig.add_subplot(gs[0, 1])
+        cmap = plt.get_cmap("coolwarm")
+        norm = Normalize(vmin=-1.0, vmax=1.0)
+        _configure_square_heatmap_axes(ax, state_labels, "State B", "State A")
+        ax.set_xticklabels([])
+        ax.tick_params(axis="x", labelbottom=False, bottom=False)
+        ax.set_xlabel("State B", fontsize=max(POSTER_LABEL_SIZE - 6, 12))
+        ax.set_title(plot_title, fontsize=POSTER_TITLE_SIZE, pad=12)
+        ax.set_xticks(np.arange(-0.5, len(state_labels), 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, len(state_labels), 1), minor=True)
+        ax.grid(which="minor", color="white", linestyle="-", linewidth=0.8)
+        ax.tick_params(which="minor", bottom=False, left=False)
+        ax.set_xlim(-0.5, len(state_labels) - 0.5)
+        ax.set_ylim(len(state_labels) - 0.5, -0.5)
+        ax.set_aspect("equal")
+        ax.set_facecolor("white")
+        try:
+            from matplotlib.patches import Rectangle
+        except Exception:
+            Rectangle = None
+        if Rectangle is not None:
+            for i, state_a in enumerate(state_labels):
+                for j, state_b in enumerate(state_labels):
+                    if state_a == state_b:
+                        continue
+                    value = matrix[i, j]
+                    if not np.isfinite(value):
+                        continue
+                    obs_count = pair_obs_counts.get((state_a, state_b), 0)
+                    if obs_count <= 0:
+                        continue
+                    sig_count = pair_sig_counts.get((state_a, state_b), 0)
+                    sig_fraction = (sig_count / obs_count) if obs_count else 0.0
+                    square_size = 0.82 if sig_fraction >= 0.5 and sig_count > 0 else 0.48
+                    ax.add_patch(
+                        Rectangle(
+                            (j - square_size / 2.0, i - square_size / 2.0),
+                            square_size,
+                            square_size,
+                            facecolor=cmap(norm(value)),
+                            edgecolor="#1f1f1f",
+                            linewidth=0.8,
+                            zorder=3,
+                        )
                     )
+        ax.text(
+            0.02,
+            0.98,
+            f"n={len(plot_rows)} | sig={sig_rows}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=POSTER_NOTE_SIZE,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
+        )
+        mappable = ScalarMappable(norm=norm, cmap=cmap)
+        mappable.set_array([])
+        cbar = fig.colorbar(mappable, cax=cax)
+        cbar.set_label("Pearson r", fontsize=POSTER_LABEL_SIZE)
+        cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
+        set_sparse_colorbar_ticks(cbar, nbins=5)
+        output_path = fig_dir / output_stem_name
+        save_figure(fig, output_path, extra_formats=())
+        return str(output_path)
+
+    group_col = "split_group" if any(str(row.get("split_group") or "").strip() for row in rows) else None
+    if group_col is not None:
+        group_rows: Dict[str, List[Dict[str, Any]]] = {}
+        group_display: Dict[str, str] = {}
+        group_order: List[str] = []
+        unassigned_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            group_value = str(row.get(group_col) or "").strip()
+            if not group_value:
+                unassigned_rows.append(dict(row))
+                continue
+            group_key = group_value.lower().replace(" ", "_").replace("-", "_")
+            while "__" in group_key:
+                group_key = group_key.replace("__", "_")
+            if group_key not in group_rows:
+                group_order.append(group_key)
+            group_rows.setdefault(group_key, []).append(dict(row))
+            group_display.setdefault(group_key, str(row.get("split_group_display") or group_value).strip() or group_key)
+        if unassigned_rows:
+            group_rows["unassigned"] = unassigned_rows
+            group_display.setdefault("unassigned", "Unassigned")
+            group_order.append("unassigned")
+        if len(group_order) > 1:
+            generated: List[str] = []
+            base_stem = Path(output_name).stem
+            for group_key in group_order:
+                subset = group_rows.get(group_key, [])
+                if not subset:
+                    continue
+                rendered = _render_heatmap(
+                    subset,
+                    output_stem_name=f"{base_stem}_{group_key}.svg",
+                    plot_title=f"{title} - {group_display.get(group_key, group_key)}",
                 )
-    ax.text(
-        0.02,
-        0.98,
-        f"n={len(rows)} | sig={sig_rows}",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=POSTER_NOTE_SIZE,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
-    )
-    mappable = ScalarMappable(norm=norm, cmap=cmap)
-    mappable.set_array([])
-    cbar = fig.colorbar(mappable, cax=cax)
-    cbar.set_label("Pearson r", fontsize=POSTER_LABEL_SIZE)
-    cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
-    set_sparse_colorbar_ticks(cbar, nbins=5)
-    output_path = fig_dir / output_name
-    save_figure(fig, output_path, extra_formats=())
-    return str(output_path)
+                if rendered:
+                    generated.append(rendered)
+            return generated or None
+    return _render_heatmap(rows, output_stem_name=output_name, plot_title=title)
 
 
-def plot_demo_validation_figure(results: Dict[str, Any], fig_dir: Path) -> Optional[str]:
+def plot_demo_validation_figure(
+results: Dict[str, Any], fig_dir: Path) -> Optional[str]:
     if plt is None:
         return None
     rows = results.get("demo_validation", [])
@@ -6707,8 +6942,14 @@ def generate_analysis_figures(
             y_limits = state_summary_y_limits(cache, state_labels)
     with step_scope("figure prep: state summary comparison y-limits"):
         comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
+    roi_split_results = results.get("roi_split", {})
     with step_scope("figure prep: state summary overview results"):
         overview_results = results
+        if isinstance(roi_split_results, dict) and roi_split_results.get("subject_state_rows"):
+            overview_results = dict(results)
+            overview_results["analysis_branch_name"] = "roi_split"
+            overview_results["analysis_basis_name"] = "all"
+            overview_results["roi_split"] = roi_split_results
     with step_scope("figure prep: state summary basal results"):
         basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
     with step_scope("figure prep: state summary apical results"):
@@ -6881,6 +7122,29 @@ def generate_analysis_figures(
             else:
                 step_message(f"plotter returned no output: roi_split[{roi_type}|{compartment}|{split_name}]")
 
+    spine_coactivity_property_split = results.get("spine_coactivity", {}).get("property_split", {})
+    property_split_bundles = spine_coactivity_property_split.get("bundles", []) if isinstance(spine_coactivity_property_split, dict) else []
+    for plot_idx, bundle in enumerate(property_split_bundles, start=1):
+        if not isinstance(bundle, dict) or not bundle:
+            continue
+        roi_type = str(bundle.get("roi_type") or "roi").strip().lower() or "roi"
+        compartment = str(bundle.get("compartment") or "").strip().lower() or "all"
+        split_name = str(bundle.get("split_name") or "split").strip().lower() or "split"
+        basis_name = str(bundle.get("basis_name") or "all").strip().lower() or "all"
+        with step_scope(
+            f"figure plotter: spine_coactivity_property_split[{roi_type}|{compartment}|{split_name}|{basis_name}]",
+            index=plot_idx,
+            total=len(property_split_bundles),
+        ):
+            try:
+                output_paths = plot_roi_split_bundle_figure(bundle, output_dir)
+            except Exception as exc:
+                eprint(f"[ALERT] Failed to create figure with spine_coactivity_property_split[{roi_type}|{compartment}|{split_name}|{basis_name}]: {exc}")
+                continue
+            if output_paths:
+                saved.extend(str(path) for path in output_paths)
+            else:
+                step_message(f"plotter returned no output: spine_coactivity_property_split[{roi_type}|{compartment}|{split_name}|{basis_name}]")
     plotters = [
         plot_basal_apical_summary,
         plot_correlation_summary,
@@ -7581,9 +7845,14 @@ def render_analysis_family_figures(
         return []
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     saved: List[str] = []
-    def record(path: Optional[str], plot_name: Optional[str] = None) -> None:
+    def record(path: Optional[str] | Sequence[str], plot_name: Optional[str] = None) -> None:
         if path:
-            saved.append(path)
+            if isinstance(path, (list, tuple, set)):
+                for item in path:
+                    if item:
+                        saved.append(str(item))
+            else:
+                saved.append(str(path))
             return
         resolved_plot_name = plot_name or "unknown plot"
         try:
@@ -10994,6 +11263,112 @@ def basal_apical_comparison(
     comparison["comparison"] = "basal_vs_apical"
     comparison["state"] = state_label
     return comparison
+
+
+def _split_group_metadata_from_membership_rows(membership_rows: Sequence[Mapping[str, Any]]) -> tuple[List[str], Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+    split_group_order: List[str] = []
+    subject_ids_by_group: Dict[str, List[str]] = defaultdict(list)
+    split_group_meta: Dict[str, Dict[str, Any]] = {}
+    for row in membership_rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        split_group = str(row.get("group") or "").strip()
+        subject_id = str(row.get("subject_id") or "").strip()
+        if not split_group or not subject_id:
+            continue
+        if split_group not in split_group_order:
+            split_group_order.append(split_group)
+        subject_ids_by_group[split_group].append(subject_id)
+        meta = split_group_meta.setdefault(split_group, {"split_group": split_group})
+        display = str(row.get("group_display") or split_group).strip() or split_group
+        if display and "split_group_display" not in meta:
+            meta["split_group_display"] = display
+        color = str(row.get("group_color") or "").strip()
+        if color and "split_group_color" not in meta:
+            meta["split_group_color"] = color
+        rank_value = row.get("rank")
+        try:
+            rank_float = float(rank_value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(rank_float):
+            continue
+        current_rank = meta.get("split_group_rank")
+        if current_rank is None or rank_float < float(current_rank):
+            meta["split_group_rank"] = rank_float
+    for split_group in split_group_order:
+        split_group_meta.setdefault(split_group, {"split_group": split_group, "split_group_display": split_group})
+    return split_group_order, subject_ids_by_group, split_group_meta
+
+
+def _with_split_group_metadata(row: Mapping[str, Any], split_group: str, split_group_meta: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]:
+    payload = dict(row)
+    payload["split_group"] = split_group
+    meta = split_group_meta.get(split_group, {})
+    display = meta.get("split_group_display")
+    if display is not None:
+        payload["split_group_display"] = display
+    color = meta.get("split_group_color")
+    if color is not None:
+        payload["split_group_color"] = color
+    rank = meta.get("split_group_rank")
+    if rank is not None:
+        payload["split_group_rank"] = rank
+    return payload
+
+
+def _split_aware_state_comparison_rows(
+    cache: Dict[str, Any],
+    state_comparison_states: Sequence[str] | None,
+    basal_apical_states: Sequence[str] | None,
+    shuffle_n: int,
+    membership_rows: Sequence[Mapping[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    split_group_order, subject_ids_by_group, split_group_meta = _split_group_metadata_from_membership_rows(membership_rows)
+    if not split_group_order:
+        return [], []
+    state_rows: List[Dict[str, Any]] = []
+    basal_apical_rows: List[Dict[str, Any]] = []
+    metrics = [
+        "dendrite_mean",
+        "spine_specific_mean",
+        "dendrite_event_frequency_per_min",
+        "spine_event_frequency_per_min",
+        "coincident_event_frequency_per_min",
+        "noncoincident_event_frequency_per_min",
+    ]
+    state_labels = list(state_comparison_states or [])
+    basal_apical_labels = list(basal_apical_states or [])
+    for split_group in split_group_order:
+        subject_ids = list(dict.fromkeys(subject_ids_by_group.get(split_group, [])))
+        if not subject_ids:
+            continue
+        for metric in metrics:
+            for row in pairwise_state_comparisons(
+                cache,
+                metric,
+                state_labels,
+                shuffle_n,
+                dendrite_ids_filter=subject_ids,
+            ):
+                state_rows.append(_with_split_group_metadata(row, split_group, split_group_meta))
+        for state in basal_apical_labels:
+            for metric in metrics:
+                basal_apical_rows.append(
+                    _with_split_group_metadata(
+                        basal_apical_comparison(
+                            cache,
+                            metric,
+                            state,
+                            shuffle_n,
+                            dendrite_ids_filter_by_compartment={"basal": subject_ids, "apical": subject_ids},
+                        ),
+                        split_group,
+                        split_group_meta,
+                    )
+                )
+    return state_rows, basal_apical_rows
+
 def collect_state_vectors_for_dendrite(
     cache: Dict[str, Any],
     dendrite_record: Dict[str, Any],
@@ -11486,6 +11861,177 @@ def summarize_spine_coactivity_table(rows: Sequence[Dict[str, Any]], state_label
         "compartment_summary_rows": compartment_summary_rows,
         "overall_summary_rows": overall_summary_rows,
     }
+
+
+def _spine_coactivity_pair_property_row(cache: Dict[str, Any], row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    state = canonical_state_label(row.get("state"))
+    animal_id = str(row.get("animal_id") or "").strip()
+    day_id = str(row.get("day_id") or row.get("exp_id") or "").strip()
+    global_dendrite_id = str(row.get("global_dendrite_id") or "").strip()
+    global_pair_id = str(row.get("global_pair_id") or "").strip()
+    if not state or not animal_id or not day_id or not global_dendrite_id or not global_pair_id:
+        return None
+
+    experiments = cache.get("experiments", {})
+    exp_meta = experiments.get(day_id)
+    if exp_meta is None:
+        return None
+    time = np.asarray(exp_meta.get("time"), dtype=float)
+    state_mask = np.asarray(exp_meta.get("state_masks", {}).get(state), dtype=bool)
+    if state_mask.shape != time.shape or not np.any(state_mask):
+        return None
+
+    animals = cache.get("animals", {})
+    animal_entry = animals.get(animal_id)
+    if not isinstance(animal_entry, dict):
+        return None
+    dendrite_record = animal_entry.get("dendrites", {}).get(global_dendrite_id)
+    if not isinstance(dendrite_record, dict):
+        return None
+    spines_by_id = dendrite_record.get("spines", {})
+    if not isinstance(spines_by_id, dict):
+        return None
+
+    activity_values: List[float] = []
+    frequency_values: List[float] = []
+    for spine_id in (str(row.get("global_spine_id_1") or "").strip(), str(row.get("global_spine_id_2") or "").strip()):
+        if not spine_id:
+            return None
+        spine_entry = spines_by_id.get(spine_id, {})
+        if not isinstance(spine_entry, dict):
+            return None
+        s_obs = spine_entry.get("observations", {}).get(day_id)
+        if s_obs is None:
+            return None
+        cut_means = s_obs.get("cut_state_means")
+        activity_value = as_float(cut_means.get(state)) if isinstance(cut_means, dict) else None
+        if activity_value is None or not np.isfinite(activity_value):
+            activity_trace = values_from_observation(s_obs.get("spine_specific"), state_mask)
+            activity_trace = activity_trace[np.isfinite(activity_trace)]
+            activity_value = float(np.nanmean(activity_trace)) if activity_trace.size else float("nan")
+        if activity_value is not None and np.isfinite(activity_value):
+            activity_values.append(float(activity_value))
+        spine_event_info = build_state_masked_event_info(
+            s_obs.get("trace"),
+            s_obs.get("time"),
+            state_mask,
+            s_obs.get("event_info") or {},
+        )
+        frequency_value = as_float(spine_event_info.get("spine_event_frequency_per_min", spine_event_info.get("event_frequency_per_min")))
+        if frequency_value is not None and np.isfinite(frequency_value):
+            frequency_values.append(float(frequency_value))
+
+    if len(activity_values) < 2 or len(frequency_values) < 2:
+        return None
+
+    coactivity_r = as_float(row.get("coactivity_r"))
+    if coactivity_r is None or not np.isfinite(coactivity_r):
+        return None
+
+    n_frames = as_float(row.get("n_frames"))
+    payload = dict(row)
+    payload.update(
+        {
+            "subject_id": global_pair_id,
+            "state_duration_s": float(n_frames) if n_frames is not None and np.isfinite(n_frames) else float("nan"),
+            "state_n_frames": int(n_frames) if n_frames is not None and np.isfinite(n_frames) else 0,
+            "mean_spine_specific_mean": float(np.nanmean(activity_values)),
+            "mean_spine_event_frequency_per_min": float(np.nanmean(frequency_values)),
+        }
+    )
+    return payload
+
+
+
+def build_spine_coactivity_property_split_results(
+    cache: Dict[str, Any],
+    spine_coactivity_results: Mapping[str, Any],
+    state_labels: Sequence[str],
+    shuffle_n: int,
+) -> Dict[str, Any]:
+    table_rows: List[Dict[str, Any]] = []
+    for row in spine_coactivity_results.get("table_rows", []):
+        if str(row.get("status")) != "ok":
+            continue
+        coactivity_value = as_float(row.get("coactivity_r"))
+        if coactivity_value is None or not np.isfinite(coactivity_value):
+            continue
+        table_rows.append(dict(row))
+    enriched_rows: List[Dict[str, Any]] = []
+    for row in table_rows:
+        enriched_row = _spine_coactivity_pair_property_row(cache, row)
+        if enriched_row is not None:
+            enriched_rows.append(enriched_row)
+
+    sleep_expids = cache.get("config", {}).get("sleep_expids")
+    compartments = spine_coactivity_output_compartments(enriched_rows)
+    bundles: List[Dict[str, Any]] = []
+    for compartment in compartments:
+        compartment_rows = [row for row in enriched_rows if str(row.get("compartment") or "") == compartment]
+        if not compartment_rows:
+            continue
+        for basis_name in ("all", "nrem", "rem"):
+            bundle = build_roi_split_results(
+                compartment_rows,
+                roi_type="spine_coactivity_property",
+                split_name="activity_frequency",
+                score_column="mean_spine_specific_mean",
+                secondary_score_column="mean_spine_event_frequency_per_min",
+                response_columns=("coactivity_r",),
+                subject_key="global_pair_id",
+                compartment=compartment,
+                selected_states=state_labels,
+                state_order=state_labels,
+                shuffle_n=shuffle_n,
+                sleep_expids=sleep_expids,
+                branch_name="spine_coactivity_property_split",
+                basis_name=basis_name,
+                split_mode="quadrant",
+            )
+            if bundle.get("counts", {}).get("n_membership_rows", 0):
+                bundles.append(bundle)
+
+    subject_state_rows: List[Dict[str, Any]] = []
+    seen_subject_state_keys: set[tuple[str, str, str, str, str, str]] = set()
+    for bundle in bundles:
+        for row in bundle.get("subject_state_rows", []):
+            key = (
+                str(row.get("branch_name") or ""),
+                str(row.get("basis_name") or ""),
+                str(row.get("roi_type") or ""),
+                str(row.get("compartment") or ""),
+                str(row.get("subject_id") or ""),
+                str(row.get("state") or ""),
+            )
+            if key in seen_subject_state_keys:
+                continue
+            seen_subject_state_keys.add(key)
+            subject_state_rows.append(dict(row))
+
+    result = {
+        "branches": {},
+        "bundles": bundles,
+        "subject_state_rows": subject_state_rows,
+        "membership_rows": [row for bundle in bundles for row in bundle.get("membership_rows", [])],
+        "comparison_rows": [row for bundle in bundles for row in bundle.get("comparison_rows", [])],
+        "summary_rows": [row for bundle in bundles for row in bundle.get("summary_rows", [])],
+        "counts": {
+            "subject_state_rows": int(len(subject_state_rows)),
+            "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in bundles)),
+            "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in bundles)),
+            "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in bundles)),
+            "bundles": int(len(bundles)),
+            "branches": int(len({str(bundle.get("branch_name") or "") for bundle in bundles if str(bundle.get("branch_name") or "")})),
+            "basis_leaves": int(len({(str(bundle.get("branch_name") or ""), str(bundle.get("basis_name") or "")) for bundle in bundles if str(bundle.get("branch_name") or "") and str(bundle.get("basis_name") or "")})),
+        },
+    }
+    for bundle in bundles:
+        branch_key = str(bundle.get("branch_name") or bundle.get("split_name") or "").strip() or "split"
+        basis_key = str(bundle.get("basis_name") or "all").strip() or "all"
+        result["branches"].setdefault(branch_key, {})[basis_key] = bundle
+    return result
+
+
 def run_spine_coactivity_analysis(
     cache: Dict[str, Any],
     shuffle_n: int,
@@ -11549,7 +12095,11 @@ def run_spine_coactivity_analysis(
         "alerts": [],
         "table_checks": table_checks,
         "table_rows": table_rows,
-        "pair_state_rows": [row for row in table_rows if str(row.get("status")) == "ok" and np.isfinite(as_float(row.get("coactivity_r")))],
+        "pair_state_rows": [
+            row
+            for row in table_rows
+            if str(row.get("status")) == "ok" and (lambda value: value is not None and np.isfinite(value))(as_float(row.get("coactivity_r")))
+        ],
         "rows": table_rows,
         "state_summary_rows": summary["state_summary_rows"],
         "pair_summary_rows": summary["pair_summary_rows"],
@@ -11573,6 +12123,13 @@ def run_spine_coactivity_analysis(
             "spine_coactivity_selection_field": SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD,
         },
     }
+    with step_scope("spine coactivity property split assembly"):
+        outputs["property_split"] = build_spine_coactivity_property_split_results(
+            cache,
+            outputs,
+            analysis_states,
+            shuffle_n,
+        )
     if not fit_spine_coactivity_mixed_model:
         outputs["model"] = {}
         return outputs
@@ -11685,6 +12242,95 @@ def process_spine_coactivity_only(
             render_analysis_family_figures(output_dir, results, cache, "spine_coactivity", figure_root=figure_root)
     results["analysis_mode"] = "spine_coactivity_only"
     return results
+
+def build_mixed_model_roi_split_results(
+    cache: Dict[str, Any],
+    mixed_model_results: Mapping[str, Any],
+    state_comparison_states: Sequence[str] | None,
+    shuffle_n: int,
+) -> Dict[str, Any]:
+    roi_split_bundles: List[Dict[str, Any]] = []
+    mixed_model_table_rows = list(mixed_model_results.get("table_rows", []))
+    sleep_expids = cache.get("config", {}).get("sleep_expids")
+    comparison_states = list(state_comparison_states or mixed_model_results.get("selection", {}).get("state_comparison_states", []) or [])
+    split_basis_names = ("all", "nrem", "rem")
+    split_specs = (
+        ("activity_split", "activity", "binary"),
+        ("frequency_split", "frequency", "binary"),
+        ("activity_frequency_split", "activity_frequency", "quadrant"),
+    )
+    for compartment in ["basal", "apical"]:
+        compartment_rows = [row for row in mixed_model_table_rows if str(row.get("compartment") or "") == compartment]
+        if not compartment_rows:
+            continue
+        for roi_type, subject_key, response_columns in (
+            ("dendrite", "global_dendrite_id", ("mean_dendrite_activity", "dendrite_event_frequency_per_min")),
+            ("spine", "global_dendrite_id", ("mean_spine_activity_per_dendrite", "spine_event_frequency_per_min")),
+        ):
+            primary_score_column = response_columns[0]
+            secondary_score_column = response_columns[1]
+            for branch_name, split_name, split_mode in split_specs:
+                score_column = secondary_score_column if branch_name == "frequency_split" else primary_score_column
+                split_secondary_score = secondary_score_column if branch_name == "activity_frequency_split" else None
+                for basis_name in split_basis_names:
+                    bundle = build_roi_split_results(
+                        compartment_rows,
+                        roi_type=roi_type,
+                        split_name=split_name,
+                        branch_name=branch_name,
+                        basis_name=basis_name,
+                        score_column=score_column,
+                        secondary_score_column=split_secondary_score,
+                        response_columns=response_columns,
+                        subject_key=subject_key,
+                        compartment=compartment,
+                        selected_states=comparison_states,
+                        state_order=comparison_states,
+                        shuffle_n=shuffle_n,
+                        split_mode=split_mode,
+                        sleep_expids=sleep_expids,
+                    )
+                    if bundle.get("counts", {}).get("n_membership_rows", 0):
+                        roi_split_bundles.append(bundle)
+    roi_split_subject_state_rows: List[Dict[str, Any]] = []
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str, str, str]] = set()
+    for bundle in roi_split_bundles:
+        for row in bundle.get("subject_state_rows", []):
+            key = (
+                str(row.get("branch_name") or ""),
+                str(row.get("basis_name") or ""),
+                str(row.get("roi_type") or ""),
+                str(row.get("compartment") or ""),
+                str(row.get("subject_id") or ""),
+                str(row.get("state") or ""),
+            )
+            if key in seen_roi_split_subject_state_keys:
+                continue
+            seen_roi_split_subject_state_keys.add(key)
+            roi_split_subject_state_rows.append(dict(row))
+    roi_split_results = {
+        "branches": {},
+        "bundles": roi_split_bundles,
+        "subject_state_rows": roi_split_subject_state_rows,
+        "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
+        "comparison_rows": [row for bundle in roi_split_bundles for row in bundle.get("comparison_rows", [])],
+        "summary_rows": [row for bundle in roi_split_bundles for row in bundle.get("summary_rows", [])],
+        "counts": {
+            "subject_state_rows": int(len(roi_split_subject_state_rows)),
+            "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
+            "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
+            "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+            "bundles": int(len(roi_split_bundles)),
+            "branches": int(len({str(bundle.get("branch_name") or "") for bundle in roi_split_bundles if str(bundle.get("branch_name") or "")})),
+            "basis_leaves": int(len({(str(bundle.get("branch_name") or ""), str(bundle.get("basis_name") or "")) for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") and str(bundle.get("basis_name") or "")})),
+        },
+    }
+    for bundle in roi_split_bundles:
+        branch_key = str(bundle.get("branch_name") or bundle.get("split_name") or "").strip() or "split"
+        basis_key = str(bundle.get("basis_name") or "all").strip() or "all"
+        roi_split_results["branches"].setdefault(branch_key, {})[basis_key] = bundle
+    return roi_split_results
+
 def process_mixed_model_only(
     cache: Dict[str, Any],
     shuffle_n: int,
@@ -11732,87 +12378,25 @@ def process_mixed_model_only(
     results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
-
-
-    roi_split_bundles: List[Dict[str, Any]] = []
-    mixed_model_table_rows = list(mixed_model_results.get("table_rows", []))
-    sleep_expids = cache.get("config", {}).get("sleep_expids")
-    split_basis_names = ("all", "nrem", "rem")
-    split_specs = (
-        ("activity_split", "activity", "binary"),
-        ("frequency_split", "frequency", "binary"),
-        ("activity_frequency_split", "activity_frequency", "quadrant"),
+    results["roi_split"] = build_mixed_model_roi_split_results(
+        cache,
+        mixed_model_results,
+        state_comparison_states,
+        shuffle_n,
     )
-    for compartment in ["basal", "apical"]:
-        compartment_rows = [row for row in mixed_model_table_rows if str(row.get("compartment") or "") == compartment]
-        if not compartment_rows:
-            continue
-        for roi_type, subject_key, response_columns in (
-            ("dendrite", "global_dendrite_id", ("mean_dendrite_activity", "dendrite_event_frequency_per_min")),
-            ("spine", "global_dendrite_id", ("mean_spine_activity_per_dendrite", "spine_event_frequency_per_min")),
-        ):
-            primary_score_column = response_columns[0]
-            secondary_score_column = response_columns[1]
-            for branch_name, split_name, split_mode in split_specs:
-                score_column = secondary_score_column if branch_name == "frequency_split" else primary_score_column
-                split_secondary_score = secondary_score_column if branch_name == "activity_frequency_split" else None
-                for basis_name in split_basis_names:
-                    bundle = build_roi_split_results(
-                        compartment_rows,
-                        roi_type=roi_type,
-                        split_name=split_name,
-                        branch_name=branch_name,
-                        basis_name=basis_name,
-                        score_column=score_column,
-                        secondary_score_column=split_secondary_score,
-                        response_columns=response_columns,
-                        subject_key=subject_key,
-                        compartment=compartment,
-                        selected_states=state_comparison_states,
-                        state_order=state_comparison_states,
-                        shuffle_n=shuffle_n,
-                        split_mode=split_mode,
-                        sleep_expids=sleep_expids,
-                    )
-                    if bundle.get("counts", {}).get("n_membership_rows", 0):
-                        roi_split_bundles.append(bundle)
-    roi_split_subject_state_rows: List[Dict[str, Any]] = []
-    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str, str, str]] = set()
-    for bundle in roi_split_bundles:
-        for row in bundle.get("subject_state_rows", []):
-            key = (
-                str(row.get("branch_name") or ""),
-                str(row.get("basis_name") or ""),
-                str(row.get("roi_type") or ""),
-                str(row.get("compartment") or ""),
-                str(row.get("subject_id") or ""),
-                str(row.get("state") or ""),
-            )
-            if key in seen_roi_split_subject_state_keys:
-                continue
-            seen_roi_split_subject_state_keys.add(key)
-            roi_split_subject_state_rows.append(dict(row))
-    roi_split_results = {
-        "branches": {},
-        "bundles": roi_split_bundles,
-        "subject_state_rows": roi_split_subject_state_rows,
-        "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
-        "comparison_rows": [row for bundle in roi_split_bundles for row in bundle.get("comparison_rows", [])],
-        "summary_rows": [row for bundle in roi_split_bundles for row in bundle.get("summary_rows", [])],
-        "counts": {
-            "subject_state_rows": int(len(roi_split_subject_state_rows)),
-            "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
-            "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
-            "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
-            "bundles": int(len(roi_split_bundles)),
-            "branches": int(len({str(bundle.get("branch_name") or "") for bundle in roi_split_bundles if str(bundle.get("branch_name") or "")})),
-            "basis_leaves": int(len({(str(bundle.get("branch_name") or ""), str(bundle.get("basis_name") or "")) for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") and str(bundle.get("basis_name") or "")})),
-        },
-    }
-    for bundle in roi_split_bundles:
-        branch_key = str(bundle.get("branch_name") or bundle.get("split_name") or "").strip() or "split"
-        basis_key = str(bundle.get("basis_name") or "all").strip() or "all"
-        roi_split_results["branches"].setdefault(branch_key, {})[basis_key] = bundle
+    split_membership_rows = results["roi_split"].get("membership_rows", []) if isinstance(results.get("roi_split"), dict) else []
+    split_state_comparisons, split_basal_apical_comparisons = _split_aware_state_comparison_rows(
+        cache,
+        state_comparison_states,
+        basal_apical_states,
+        shuffle_n,
+        split_membership_rows,
+    )
+    if split_state_comparisons:
+        results["state_comparisons"] = split_state_comparisons
+    if split_basal_apical_comparisons:
+        results["basal_apical_comparisons"] = split_basal_apical_comparisons
+
     if output_dir is not None:
         with step_scope("figure generation: mixed_model"):
             render_analysis_family_figures(output_dir, results, cache, "mixed_model", figure_root=figure_root)
@@ -11982,16 +12566,73 @@ def build_direct_trial_type_comparison_table(cache: Dict[str, Any], state_labels
         "movie_trial_types": list(movie_trial_types),
     }
     return filtered_rows, table_checks
-def summarize_direct_trial_type_table(rows: Sequence[Dict[str, Any]], state_labels: Sequence[str], shuffle_n: int) -> Dict[str, Any]:
+def _direct_trial_type_split_group_value(row: Mapping[str, Any]) -> str | None:
+    split_group = str(row.get("split_group") or "").strip()
+    return split_group or None
+
+
+def _direct_trial_type_split_group_order(rows: Sequence[Mapping[str, Any]]) -> List[str | None]:
+    split_groups: List[str | None] = []
+    has_unassigned = False
+    for row in rows or []:
+        split_group = _direct_trial_type_split_group_value(row)
+        if split_group is None:
+            has_unassigned = True
+            continue
+        if split_group not in split_groups:
+            split_groups.append(split_group)
+    if not split_groups:
+        return [None]
+    if has_unassigned:
+        split_groups.append(None)
+    return split_groups
+
+
+def summarize_direct_trial_type_table(
+    rows: Sequence[Dict[str, Any]],
+    state_labels: Sequence[str],
+    shuffle_n: int,
+    split_group_order: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
     state_labels = [str(state) for state in state_labels if str(state)]
     state_order = {state: idx for idx, state in enumerate(state_labels)}
-    animal_video_state_groups: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+    has_split_groups = any(_direct_trial_type_split_group_value(row) is not None for row in rows)
+    split_group_order = list(split_group_order) if split_group_order else _direct_trial_type_split_group_order(rows)
+    if has_split_groups and any(_direct_trial_type_split_group_value(row) is None for row in rows) and None not in split_group_order:
+        split_group_order = list(split_group_order) + [None]
+    split_order_lookup = {split_group: idx for idx, split_group in enumerate(split_group_order)}
+    split_meta: Dict[str, Dict[str, Any]] = {}
+    if has_split_groups:
+        for row in rows:
+            split_group = _direct_trial_type_split_group_value(row)
+            if split_group is None:
+                continue
+            payload = split_meta.setdefault(split_group, {"split_group": split_group})
+            display = str(row.get("split_group_display") or split_group).strip() or split_group
+            if display and "split_group_display" not in payload:
+                payload["split_group_display"] = display
+            color = str(row.get("split_group_color") or "").strip()
+            if color and "split_group_color" not in payload:
+                payload["split_group_color"] = color
+            rank_value = row.get("split_group_rank")
+            try:
+                rank_float = float(rank_value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(rank_float):
+                continue
+            current_rank = payload.get("split_group_rank")
+            if current_rank is None or rank_float < float(current_rank):
+                payload["split_group_rank"] = rank_float
+    animal_video_state_groups: Dict[Tuple[str, str, str, str | None], List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        animal_video_state_groups[(str(row.get("animal_id")), str(row.get("video_id")), str(row.get("state")))].append(dict(row))
+        split_group = _direct_trial_type_split_group_value(row) if has_split_groups else None
+        animal_video_state_groups[(str(row.get("animal_id")), str(row.get("video_id")), str(row.get("state")), split_group)].append(dict(row))
     animal_video_state_rows: List[Dict[str, Any]] = []
-    for (animal_id, video_id, state), group_rows in sorted(
+    for (animal_id, video_id, state, split_group), group_rows in sorted(
         animal_video_state_groups.items(),
         key=lambda item: (
+            split_order_lookup.get(item[0][3], len(split_group_order)),
             item[0][0],
             item[0][1],
             state_order.get(item[0][2], 999),
@@ -12000,30 +12641,45 @@ def summarize_direct_trial_type_table(rows: Sequence[Dict[str, Any]], state_labe
         values = np.asarray([as_float(row.get("trial_mean_response")) for row in group_rows if np.isfinite(as_float(row.get("trial_mean_response")))], dtype=float)
         if values.size == 0:
             continue
-        animal_video_state_rows.append(
-            {
-                "animal_id": animal_id,
-                "video_id": video_id,
-                "state": state,
-                "mean_response": float(np.nanmean(values)),
-                "median_response": float(np.nanmedian(values)),
-                "sem_response": float(np.nanstd(values, ddof=1) / math.sqrt(values.size)) if values.size > 1 else float("nan"),
-                "n_rows": int(len(group_rows)),
-                "n_trials": int(len({(str(row.get("exp_id")), int(as_int(row.get("trial_index")) or -1)) for row in group_rows})),
-                "n_dendrite_observations": int(len({str(row.get("global_dendrite_id")) for row in group_rows})),
-                "n_days": int(len({str(row.get("day_id")) for row in group_rows})),
-                "video_name": str(group_rows[0].get("video_name") or ""),
-                "movie_trial_type": str(group_rows[0].get("movie_trial_type") or ""),
-                "compartment": str(group_rows[0].get("compartment") or "unknown"),
-            }
-        )
-    video_state_groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+        payload = {
+            "animal_id": animal_id,
+            "video_id": video_id,
+            "state": state,
+            "state_display": state_display_label(state),
+            "state_color": state_display_color(state),
+            "mean_response": float(np.nanmean(values)),
+            "median_response": float(np.nanmedian(values)),
+            "sem_response": float(np.nanstd(values, ddof=1) / math.sqrt(values.size)) if values.size > 1 else float("nan"),
+            "n_rows": int(len(group_rows)),
+            "n_trials": int(len({(str(row.get("exp_id")), int(as_int(row.get("trial_index")) or -1)) for row in group_rows})),
+            "n_dendrite_observations": int(len({str(row.get("global_dendrite_id")) for row in group_rows})),
+            "n_days": int(len({str(row.get("day_id")) for row in group_rows})),
+            "video_name": str(group_rows[0].get("video_name") or ""),
+            "movie_trial_type": str(group_rows[0].get("movie_trial_type") or ""),
+            "compartment": str(group_rows[0].get("compartment") or "unknown"),
+        }
+        if has_split_groups:
+            payload["split_group"] = split_group
+            payload["split_group_display"] = None
+            payload["split_group_color"] = None
+            payload["split_group_rank"] = None
+            if split_group is not None:
+                split_group_meta = split_meta.get(split_group, {})
+                if split_group_meta.get("split_group_display") is not None:
+                    payload["split_group_display"] = split_group_meta.get("split_group_display")
+                if split_group_meta.get("split_group_color") is not None:
+                    payload["split_group_color"] = split_group_meta.get("split_group_color")
+                if split_group_meta.get("split_group_rank") is not None:
+                    payload["split_group_rank"] = split_group_meta.get("split_group_rank")
+        animal_video_state_rows.append(payload)
+    video_state_groups: Dict[Tuple[str, str, str, str | None], List[Dict[str, Any]]] = defaultdict(list)
     for row in animal_video_state_rows:
-        video_state_groups[(str(row.get("video_id")), str(row.get("state")))].append(dict(row))
+        video_state_groups[(str(row.get("video_id")), str(row.get("state")), str(row.get("split_group")) if has_split_groups else None)].append(dict(row))
     video_state_rows: List[Dict[str, Any]] = []
-    for (video_id, state), group_rows in sorted(
+    for (video_id, state, split_group_key), group_rows in sorted(
         video_state_groups.items(),
         key=lambda item: (
+            split_order_lookup.get(item[0][2] if has_split_groups else None, len(split_group_order)),
             item[0][0],
             state_order.get(item[0][1], 999),
         ),
@@ -12031,28 +12687,48 @@ def summarize_direct_trial_type_table(rows: Sequence[Dict[str, Any]], state_labe
         values = np.asarray([value for value in (as_float(row.get("mean_response")) for row in group_rows) if value is not None], dtype=float)
         if values.size == 0:
             continue
-        video_state_rows.append(
-            {
-                "video_id": video_id,
-                "state": state,
-                "mean_response": float(np.nanmean(values)),
-                "median_response": float(np.nanmedian(values)),
-                "sem_response": float(np.nanstd(values, ddof=1) / math.sqrt(values.size)) if values.size > 1 else float("nan"),
-                "n_animals": int(len({str(row.get("animal_id")) for row in group_rows})),
-                "n_animal_video_rows": int(len(group_rows)),
-                "animal_ids": sorted({str(row.get("animal_id")) for row in group_rows}),
-                "movie_trial_type": str(group_rows[0].get("movie_trial_type") or ""),
-            }
-        )
+        payload = {
+            "video_id": video_id,
+            "state": state,
+            "state_display": state_display_label(state),
+            "state_color": state_display_color(state),
+            "mean_response": float(np.nanmean(values)),
+            "median_response": float(np.nanmedian(values)),
+            "sem_response": float(np.nanstd(values, ddof=1) / math.sqrt(values.size)) if values.size > 1 else float("nan"),
+            "n_animals": int(len({str(row.get("animal_id")) for row in group_rows})),
+            "n_animal_video_rows": int(len(group_rows)),
+            "animal_ids": sorted({str(row.get("animal_id")) for row in group_rows}),
+            "movie_trial_type": str(group_rows[0].get("movie_trial_type") or ""),
+        }
+        if has_split_groups:
+            payload["split_group"] = split_group_key if split_group_key not in {"None", "", None} else None
+            payload["split_group_display"] = None
+            payload["split_group_color"] = None
+            payload["split_group_rank"] = None
+            if payload["split_group"] is not None:
+                split_group_meta = split_meta.get(str(payload["split_group"]), {})
+                if split_group_meta.get("split_group_display") is not None:
+                    payload["split_group_display"] = split_group_meta.get("split_group_display")
+                if split_group_meta.get("split_group_color") is not None:
+                    payload["split_group_color"] = split_group_meta.get("split_group_color")
+                if split_group_meta.get("split_group_rank") is not None:
+                    payload["split_group_rank"] = split_group_meta.get("split_group_rank")
+        video_state_rows.append(payload)
     state_summary_rows: List[Dict[str, Any]] = []
-    for state in state_labels:
-        state_rows = [row for row in video_state_rows if str(row.get("state")) == state]
-        values = np.asarray([value for value in (as_float(row.get("mean_response")) for row in state_rows) if value is not None], dtype=float)
-        if values.size == 0:
+    state_summary_split_groups = split_group_order if has_split_groups else [None]
+    for split_group in state_summary_split_groups:
+        split_rows = [row for row in video_state_rows if (_direct_trial_type_split_group_value(row) if has_split_groups else None) == split_group] if has_split_groups else list(video_state_rows)
+        if not split_rows:
             continue
-        state_summary_rows.append(
-            {
+        for state in state_labels:
+            state_rows = [row for row in split_rows if str(row.get("state")) == state]
+            values = np.asarray([value for value in (as_float(row.get("mean_response")) for row in state_rows) if value is not None], dtype=float)
+            if values.size == 0:
+                continue
+            payload = {
                 "state": state,
+                "state_display": state_display_label(state),
+                "state_color": state_display_color(state),
                 "tested_videos": int(values.size),
                 "mean_response": float(np.nanmean(values)),
                 "median_response": float(np.nanmedian(values)),
@@ -12060,31 +12736,62 @@ def summarize_direct_trial_type_table(rows: Sequence[Dict[str, Any]], state_labe
                 "positive_fraction": float(np.mean(values > 0.0)),
                 "n_animals": int(len({animal_id for row in state_rows for animal_id in row.get("animal_ids", [])})),
             }
-        )
+            if has_split_groups:
+                payload["split_group"] = split_group
+                payload["split_group_display"] = None
+                payload["split_group_color"] = None
+                payload["split_group_rank"] = None
+                if split_group is not None:
+                    split_group_meta = split_meta.get(split_group, {})
+                    if split_group_meta.get("split_group_display") is not None:
+                        payload["split_group_display"] = split_group_meta.get("split_group_display")
+                    if split_group_meta.get("split_group_color") is not None:
+                        payload["split_group_color"] = split_group_meta.get("split_group_color")
+                    if split_group_meta.get("split_group_rank") is not None:
+                        payload["split_group_rank"] = split_group_meta.get("split_group_rank")
+            state_summary_rows.append(payload)
     pair_rows: List[Dict[str, Any]] = []
-    values_by_state: Dict[str, Dict[str, List[float]]] = {state: {} for state in state_labels}
-    for row in video_state_rows:
-        state = str(row.get("state"))
-        video_id = str(row.get("video_id"))
-        values_by_state.setdefault(state, {})[video_id] = [float(row.get("mean_response"))]
-    for state_a, state_b in combinations(state_labels, 2):
-        comparison = paired_comparison(values_by_state, state_a, state_b, "direct_trial_type", shuffle_n)
-        if comparison.get("subjects"):
-            a_values = np.asarray([values_by_state[state_a][subject][0] for subject in comparison["subjects"]], dtype=float)
-            b_values = np.asarray([values_by_state[state_b][subject][0] for subject in comparison["subjects"]], dtype=float)
-            if a_values.size >= 2 and np.nanstd(a_values) > 0 and np.nanstd(b_values) > 0:
-                agreement_r = float(stats.pearsonr(a_values, b_values).statistic)
-            else:
-                agreement_r = float("nan")
-            comparison["agreement_r"] = agreement_r
-            comparison["agreement_n"] = int(a_values.size)
-            comparison["agreement_p"] = float(stats.pearsonr(a_values, b_values).pvalue) if a_values.size >= 2 and np.nanstd(a_values) > 0 and np.nanstd(b_values) > 0 else float("nan")
-        comparison["analysis"] = "direct_trial_type_comparison"
-        comparison["comparison"] = "state_pair"
-        comparison["n_videos"] = int(comparison.get("n_subjects", 0))
-        comparison["video_ids"] = list(comparison.get("subjects", []))
-        pair_rows.append(comparison)
-    pairable_videos = sorted({str(row.get("video_id")) for row in video_state_rows if str(row.get("video_id"))})
+    pair_group_order = split_group_order if has_split_groups else [None]
+    for split_group in pair_group_order:
+        split_rows = [row for row in video_state_rows if (_direct_trial_type_split_group_value(row) if has_split_groups else None) == split_group] if has_split_groups else list(video_state_rows)
+        if not split_rows:
+            continue
+        values_by_state: Dict[str, Dict[str, List[float]]] = {state: {} for state in state_labels}
+        for row in split_rows:
+            state = str(row.get("state"))
+            video_id = str(row.get("video_id"))
+            values_by_state.setdefault(state, {})[video_id] = [float(row.get("mean_response"))]
+        for state_a, state_b in combinations(state_labels, 2):
+            comparison = paired_comparison(values_by_state, state_a, state_b, "direct_trial_type", shuffle_n)
+            if comparison.get("subjects"):
+                a_values = np.asarray([values_by_state[state_a][subject][0] for subject in comparison["subjects"]], dtype=float)
+                b_values = np.asarray([values_by_state[state_b][subject][0] for subject in comparison["subjects"]], dtype=float)
+                if a_values.size >= 2 and np.nanstd(a_values) > 0 and np.nanstd(b_values) > 0:
+                    agreement_r = float(stats.pearsonr(a_values, b_values).statistic)
+                else:
+                    agreement_r = float("nan")
+                comparison["agreement_r"] = agreement_r
+                comparison["agreement_n"] = int(a_values.size)
+                comparison["agreement_p"] = float(stats.pearsonr(a_values, b_values).pvalue) if a_values.size >= 2 and np.nanstd(a_values) > 0 and np.nanstd(b_values) > 0 else float("nan")
+            comparison["analysis"] = "direct_trial_type_comparison"
+            comparison["comparison"] = "state_pair"
+            comparison["n_videos"] = int(comparison.get("n_subjects", 0))
+            comparison["video_ids"] = list(comparison.get("subjects", []))
+            if has_split_groups:
+                comparison["split_group"] = split_group
+                comparison["split_group_display"] = None
+                comparison["split_group_color"] = None
+                comparison["split_group_rank"] = None
+                if split_group is not None:
+                    split_group_meta = split_meta.get(split_group, {})
+                    if split_group_meta.get("split_group_display") is not None:
+                        comparison["split_group_display"] = split_group_meta.get("split_group_display")
+                    if split_group_meta.get("split_group_color") is not None:
+                        comparison["split_group_color"] = split_group_meta.get("split_group_color")
+                    if split_group_meta.get("split_group_rank") is not None:
+                        comparison["split_group_rank"] = split_group_meta.get("split_group_rank")
+            pair_rows.append(comparison)
+    pairable_videos = sorted({(str(row.get("split_group")) if has_split_groups else "", str(row.get("video_id"))) for row in video_state_rows if str(row.get("video_id"))})
     tested_animals = sorted({str(row.get("animal_id")) for row in animal_video_state_rows if str(row.get("animal_id"))})
     state_pair_count = len(pair_rows)
     significant_pairs = sum(1 for row in pair_rows if is_significant_row(row, p_key="shuffle_p"))
@@ -12106,6 +12813,9 @@ def summarize_direct_trial_type_table(rows: Sequence[Dict[str, Any]], state_labe
             "state_labels": list(state_labels),
         }
     ]
+    if has_split_groups:
+        overall_summary_rows[0]["n_split_groups"] = int(len([split_group for split_group in split_group_order if split_group is not None]))
+        overall_summary_rows[0]["split_groups"] = [split_group for split_group in split_group_order if split_group is not None]
     return {
         "animal_video_state_rows": animal_video_state_rows,
         "video_state_rows": video_state_rows,
@@ -12113,10 +12823,13 @@ def summarize_direct_trial_type_table(rows: Sequence[Dict[str, Any]], state_labe
         "state_pair_rows": pair_rows,
         "overall_summary_rows": overall_summary_rows,
     }
+
+
 def run_direct_trial_type_comparison(
     cache: Dict[str, Any],
     state_comparison_states: Optional[Sequence[str]],
     shuffle_n: int,
+    split_membership_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     selection = cache.get("config", {}) if isinstance(cache.get("config", {}), dict) else {}
     selected_states = [str(state) for state in (state_comparison_states or []) if str(state) in MOVIE_STATE_LABELS]
@@ -12148,7 +12861,13 @@ def run_direct_trial_type_comparison(
     else:
         table_rows, table_checks = build_direct_trial_type_comparison_table(cache, selected_states)
         store_cached_analysis_table(cache, "direct_trial_type_table", table_rows, table_checks, meta=table_meta)
-    summary = summarize_direct_trial_type_table(table_rows, selected_states, shuffle_n)
+    split_group_order: List[str | None] = []
+    if split_membership_rows:
+        split_group_order, _, _ = _split_group_metadata_from_membership_rows(split_membership_rows)
+        table_rows = annotate_rows_with_split_group(table_rows, split_membership_rows)
+    if not split_group_order:
+        split_group_order = _direct_trial_type_split_group_order(table_rows)
+    summary = summarize_direct_trial_type_table(table_rows, selected_states, shuffle_n, split_group_order=split_group_order)
     state_pair_rows = list(summary.get("state_pair_rows", []))
     video_state_rows = list(summary.get("video_state_rows", []))
     animal_video_state_rows = list(summary.get("animal_video_state_rows", []))
@@ -12156,6 +12875,10 @@ def run_direct_trial_type_comparison(
     overall_summary_rows = list(summary.get("overall_summary_rows", []))
     direct_trial_type_states = list(table_checks.get("state_labels", selected_states))
     direct_movie_trial_types = infer_movie_trial_types_from_states(direct_trial_type_states)
+    if any(split_group is not None for split_group in split_group_order):
+        table_checks = dict(table_checks)
+        table_checks["split_groups"] = [split_group for split_group in split_group_order if split_group is not None]
+        table_checks["n_split_groups"] = int(len([split_group for split_group in split_group_order if split_group is not None]))
     return {
         "available": bool(table_rows) or bool(state_pair_rows),
         "alerts": [],
@@ -13417,13 +14140,6 @@ def process_cached_analysis(
     if output_dir is not None:
         with step_scope("figure generation: basal_apical"):
             render_analysis_family_figures(output_dir, results, cache, "basal_apical", figure_root=figure_root)
-    with step_scope("direct trial-type comparison"):
-        direct_trial_type_results = run_direct_trial_type_comparison(cache, state_comparison_states, shuffle_n)
-    results["direct_trial_type_comparison"] = direct_trial_type_results
-    results["alerts"].extend(direct_trial_type_results.get("alerts", []))
-    if output_dir is not None:
-        with step_scope("figure generation: direct_trial_type_comparison"):
-            render_analysis_family_figures(output_dir, results, cache, "direct_trial_type_comparison", figure_root=figure_root)
     # The mixed-model layer uses a long dendrite-by-state table and reports the fitted-test p-values directly.
     with step_scope("mixed model analysis"):
         mixed_model_results = run_mixed_model_analysis(
@@ -13442,6 +14158,24 @@ def process_cached_analysis(
     results["mixed_model_visual_response_nonresponsive_selected_state"] = mixed_model_results.get("mixed_model_visual_response_nonresponsive_selected_state", {}) or results.get("mixed_model_visual_response_nonresponsive", {})
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
+    results["roi_split"] = build_mixed_model_roi_split_results(
+        cache,
+        mixed_model_results,
+        state_comparison_states,
+        shuffle_n,
+    )
+    with step_scope("direct trial-type comparison"):
+        direct_trial_type_results = run_direct_trial_type_comparison(
+            cache,
+            state_comparison_states,
+            shuffle_n,
+            results["roi_split"].get("membership_rows", []) if isinstance(results.get("roi_split"), dict) else [],
+        )
+    results["direct_trial_type_comparison"] = direct_trial_type_results
+    results["alerts"].extend(direct_trial_type_results.get("alerts", []))
+    if output_dir is not None:
+        with step_scope("figure generation: direct_trial_type_comparison"):
+            render_analysis_family_figures(output_dir, results, cache, "direct_trial_type_comparison", figure_root=figure_root)
     if output_dir is not None:
         with step_scope("figure generation: mixed_model"):
             render_analysis_family_figures(output_dir, results, cache, "mixed_model", figure_root=figure_root)
@@ -13605,6 +14339,9 @@ def process_cached_analysis(
                         **corr_specific,
                     }
                 )
+    roi_split_membership_rows = list((results.get("roi_split", {}) if isinstance(results.get("roi_split", {}), dict) else {}).get("membership_rows", []))
+    if roi_split_membership_rows:
+        results["correlations"] = annotate_rows_with_split_group(results.get("correlations", []), roi_split_membership_rows)
     if output_dir is not None:
         with step_scope("figure generation: correlation"):
             render_analysis_family_figures(output_dir, results, cache, "correlation", figure_root=figure_root)
@@ -13653,6 +14390,8 @@ def process_cached_analysis(
                         "n_spines": int(len(state_vectors[state_a])),
                     }
                 )
+    if roi_split_membership_rows:
+        results["matrix_similarity"] = annotate_rows_with_split_group(results.get("matrix_similarity", []), roi_split_membership_rows)
     if output_dir is not None:
         with step_scope("figure generation: matrix_similarity"):
             render_analysis_family_figures(output_dir, results, cache, "matrix_similarity", figure_root=figure_root)
@@ -13803,27 +14542,39 @@ def write_analysis_report(
             "spine_dendrite_specific": "spine-specific activity vs dendrite activity (specific)",
         }.get(analysis_text, analysis_text.replace("_", " vs "))
     def summarize_correlation_rows(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+        grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+        has_split_group = any(str(row.get("split_group") or "").strip() for row in rows)
         for row in rows:
             analysis = str(row.get("analysis", "correlation"))
             compartment = str(row.get("compartment", "unknown"))
-            grouped[(analysis, compartment)].append(dict(row))
+            split_group = str(row.get("split_group") or "").strip() if has_split_group else ""
+            grouped[(analysis, compartment, split_group)].append(dict(row))
         summary_rows: List[Dict[str, Any]] = []
-        for (analysis, compartment), grouped_rows in sorted(grouped.items()):
+        for (analysis, compartment, split_group), grouped_rows in sorted(grouped.items()):
             tested = len(grouped_rows)
             significant_rows = [row for row in grouped_rows if is_significant_row(row)]
-            summary_rows.append(
-                {
-                    "analysis": analysis,
-                    "compartment": compartment,
-                    "tested_dendrite_observations": tested,
-                    "significant_dendrite_observations": len(significant_rows),
-                    "percent_significant": 100.0 * len(significant_rows) / tested if tested else float("nan"),
-                }
-            )
+            payload: Dict[str, Any] = {
+                "analysis": analysis,
+                "compartment": compartment,
+                "tested_dendrite_observations": tested,
+                "significant_dendrite_observations": len(significant_rows),
+                "percent_significant": 100.0 * len(significant_rows) / tested if tested else float("nan"),
+            }
+            if has_split_group:
+                first_row = grouped_rows[0]
+                payload.update(
+                    {
+                        "split_group": split_group or None,
+                        "split_group_display": str(first_row.get("split_group_display") or split_group).strip() or None,
+                        "split_group_color": str(first_row.get("split_group_color") or "").strip() or None,
+                        "split_group_rank": first_row.get("split_group_rank"),
+                    }
+                )
+            summary_rows.append(payload)
         return summary_rows
     def summarize_matrix_rows(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+        grouped: Dict[Tuple[str, str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+        has_split_group = any(str(row.get("split_group") or "").strip() for row in rows)
         for row in rows:
             compartment = str(row.get("compartment", "unknown"))
             if compartment not in {"basal", "apical"}:
@@ -13833,15 +14584,17 @@ def write_analysis_report(
             if not state_a or not state_b:
                 continue
             pair = tuple(sorted((state_a, state_b)))
-            grouped[(compartment, pair[0], pair[1])].append(dict(row))
+            split_group = str(row.get("split_group") or "").strip() if has_split_group else ""
+            grouped[(compartment, pair[0], pair[1], split_group)].append(dict(row))
         compartment_order = {"basal": 0, "apical": 1}
         summary_rows: List[Dict[str, Any]] = []
-        for (compartment, state_a, state_b), grouped_rows in sorted(
+        for (compartment, state_a, state_b, split_group), grouped_rows in sorted(
             grouped.items(),
             key=lambda item: (
                 compartment_order.get(item[0][0], 99),
                 item[0][1],
                 item[0][2],
+                item[0][3],
             ),
         ):
             tested_rows: List[Dict[str, Any]] = []
@@ -13864,19 +14617,28 @@ def write_analysis_report(
             if tested == 0:
                 continue
             significant = positive_significant + negative_significant
-            summary_rows.append(
-                {
-                    "compartment": compartment,
-                    "state_a": state_a,
-                    "state_b": state_b,
-                    "tested_observations": tested,
-                    "positive_significant": positive_significant,
-                    "negative_significant": negative_significant,
-                    "non_significant": non_significant,
-                    "significant_observations": significant,
-                    "percent_significant": 100.0 * significant / tested if tested else float("nan"),
-                }
-            )
+            payload: Dict[str, Any] = {
+                "compartment": compartment,
+                "state_a": state_a,
+                "state_b": state_b,
+                "tested_observations": tested,
+                "positive_significant": positive_significant,
+                "negative_significant": negative_significant,
+                "non_significant": non_significant,
+                "significant_observations": significant,
+                "percent_significant": 100.0 * significant / tested if tested else float("nan"),
+            }
+            if has_split_group:
+                first_row = grouped_rows[0]
+                payload.update(
+                    {
+                        "split_group": split_group or None,
+                        "split_group_display": str(first_row.get("split_group_display") or split_group).strip() or None,
+                        "split_group_color": str(first_row.get("split_group_color") or "").strip() or None,
+                        "split_group_rank": first_row.get("split_group_rank"),
+                    }
+                )
+            summary_rows.append(payload)
         return summary_rows
     def summarize_mixed_model_section(mixed_model_data: Dict[str, Any]) -> Dict[str, Any]:
         summary_rows = mixed_model_data.get("summary_rows", {})
@@ -13928,6 +14690,11 @@ def write_analysis_report(
         state_summary_rows = list(spine_coactivity_data.get("state_summary_rows", []))
         state_agreement_rows = list(spine_coactivity_data.get("state_agreement_rows", []))
         compartment_summary_rows = list(spine_coactivity_data.get("compartment_summary_rows", []))
+        property_split_data = spine_coactivity_data.get("property_split", {}) if isinstance(spine_coactivity_data.get("property_split", {}), dict) else {}
+        property_split_bundles = list(property_split_data.get("bundles", [])) if isinstance(property_split_data, dict) else []
+        property_split_subject_rows = list(property_split_data.get("subject_state_rows", [])) if isinstance(property_split_data, dict) else []
+        property_split_comparisons = list(property_split_data.get("comparison_rows", [])) if isinstance(property_split_data, dict) else []
+        property_split_summary_rows = list(property_split_data.get("summary_rows", [])) if isinstance(property_split_data, dict) else []
         model_summary_rows = list((spine_coactivity_model.get("summary_rows", {}) or {}).get("coactivity_r", []))
         contrast_rows = list(spine_coactivity_model.get("contrast_rows", []))
         return {
@@ -13939,6 +14706,10 @@ def write_analysis_report(
             "mean_state_agreement_r": float(np.nanmean([as_float(row.get("mean_state_agreement_r")) for row in compartment_summary_rows if np.isfinite(as_float(row.get("mean_state_agreement_r")))])) if any(np.isfinite(as_float(row.get("mean_state_agreement_r"))) for row in compartment_summary_rows) else float("nan"),
             "mean_positive_state_fraction": float(np.nanmean([as_float(row.get("mean_positive_state_fraction")) for row in compartment_summary_rows if np.isfinite(as_float(row.get("mean_positive_state_fraction")))])) if any(np.isfinite(as_float(row.get("mean_positive_state_fraction"))) for row in compartment_summary_rows) else float("nan"),
             "mean_profile_similarity_r": float(np.nanmean([as_float(row.get("mean_profile_similarity_r")) for row in compartment_summary_rows if np.isfinite(as_float(row.get("mean_profile_similarity_r")))])) if any(np.isfinite(as_float(row.get("mean_profile_similarity_r"))) for row in compartment_summary_rows) else float("nan"),
+            "property_split_bundles": len(property_split_bundles),
+            "property_split_subject_rows": len(property_split_subject_rows),
+            "property_split_comparisons": len(property_split_comparisons),
+            "property_split_summary_rows": len(property_split_summary_rows),
             "model_enabled": bool(spine_coactivity_model.get("enabled", False)),
             "model_equations": spine_coactivity_model.get("model_equations", {}),
             "designs": spine_coactivity_model.get("designs", {}),
@@ -13948,6 +14719,7 @@ def write_analysis_report(
             "compartment_summary_rows": compartment_summary_rows,
             "contrast_rows": contrast_rows,
             "model_summary_rows": model_summary_rows,
+            "property_split_comparison_rows": property_split_comparisons,
         }
     def collect_quality_summary(
             source_cache_obj: Dict[str, Any],
@@ -14117,6 +14889,13 @@ def write_analysis_report(
         if isinstance(coactivity_model, dict):
             for row in coactivity_model.get("contrast_rows", []):
                 add_candidate(row, "shuffle_p", f"spine coactivity {row.get('model_name')} {row.get('contrast_name')}", effect_key="estimate")
+        for row in spine_coactivity_summary.get("property_split_comparison_rows", []):
+            add_candidate(
+                row,
+                "shuffle_p",
+                f"spine coactivity property split {row.get('branch_name')} {row.get('basis_name')} {row.get('compartment')} {row.get('comparison')}",
+                effect_key="effect_size",
+            )
         if not candidates:
             return "none"
         _, label = min(candidates, key=lambda item: item[0])
@@ -14409,6 +15188,10 @@ def write_analysis_report(
     append_kv("mean state agreement", format_report_number(spine_coactivity_summary.get("mean_state_agreement_r")))
     append_kv("mean positive-state fraction", format_report_number(spine_coactivity_summary.get("mean_positive_state_fraction")))
     append_kv("mean profile similarity", format_report_number(spine_coactivity_summary.get("mean_profile_similarity_r")))
+    append_kv(
+        "spine coactivity property split",
+        f"{spine_coactivity_summary.get('property_split_bundles', 0)} bundles, {spine_coactivity_summary.get('property_split_subject_rows', 0)} pair-state rows, {spine_coactivity_summary.get('property_split_comparisons', 0)} comparisons",
+    )
     append_kv("quiet-anchor selection", f"shuffle_significant and abs(coactivity_r) >= {format_report_number(spine_coactivity_abs_threshold)}")
     for row in spine_coactivity_summary.get("compartment_summary_rows", []):
         lines.append(
@@ -14764,6 +15547,9 @@ def write_analysis_outputs(
         results["checkpoint_gallery"] = {}
         results["event_example_gallery"] = []
     if plots_only:
+        results["output_root"] = str(output_dir)
+        results["output_artifacts"] = list(dict.fromkeys(written_artifacts))
+        write_manifest(output_dir, jsonable(results))
         return list(dict.fromkeys(written_artifacts))
     json_path = output_dir / "analysis_results.json"
     with json_path.open("w") as handle:
@@ -14876,6 +15662,22 @@ def write_analysis_outputs(
             written_artifacts.append(report_relative_path(csv_path, output_dir))
     spine_coactivity = results.get("spine_coactivity", {})
     if isinstance(spine_coactivity, dict):
+        property_split = spine_coactivity.get("property_split", {})
+        if isinstance(property_split, dict):
+            for key, output_name in [
+                ("subject_state_rows", "spine_coactivity_property_split_subject_state.csv"),
+                ("membership_rows", "spine_coactivity_property_split_membership.csv"),
+                ("comparison_rows", "spine_coactivity_property_split_comparisons.csv"),
+                ("summary_rows", "spine_coactivity_property_split_summary.csv"),
+            ]:
+                rows = property_split.get(key, [])
+                if not rows:
+                    continue
+                fieldnames = sorted({field for row in rows for field in row.keys()})
+                csv_path = output_dir / output_name
+                write_csv_rows(csv_path, rows, fieldnames)
+                written_artifacts.append(report_relative_path(csv_path, output_dir))
+    if isinstance(spine_coactivity, dict):
         if spine_coactivity.get("table_rows"):
             fieldnames = sorted({key for row in spine_coactivity["table_rows"] for key in row.keys()})
             coactivity_table_csv = output_dir / "spine_coactivity_table.csv"
@@ -14949,21 +15751,9 @@ def write_poster_ready_figures(
 
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
-    if not (poster_result_root / "blank_state_comparisons").exists() and (poster_result_root.parent / "blank_state_comparisons").exists():
-        poster_result_root = poster_result_root.parent
 
     def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
-        csv_path = poster_result_root / preset_name / "csv" / csv_name
-        if csv_path.exists():
-            return read_csv_rows(csv_path)
-        fallback_path = poster_result_root / preset_name / csv_name
-        if fallback_path.exists():
-            return read_csv_rows(fallback_path)
-        if csv_name == "state_comparisons_movie.csv":
-            fallback_path = poster_result_root / preset_name / "state_comparisons.csv"
-            if fallback_path.exists():
-                return read_csv_rows(fallback_path)
-        return []
+        return load_comparison_preset_csv_rows(poster_result_root, preset_name, csv_name, logger=logger)
 
     written: List[str] = []
     selected_families = set(str(family) for family in (analysis_families or []) if str(family))
@@ -16230,7 +17020,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     preset_configs: Dict[str, Dict[str, Any]] = {}
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
-        preset_output_dir = base_output_dir / safe_name
+        preset_output_dir = base_output_dir / "_batches" / safe_name
         preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
         preset_config = copy.deepcopy(config)
         preset_config.pop("comparison_presets", None)
@@ -16264,7 +17054,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
                     file=sys.stderr,
                 )
                 preset_config["plots_only"] = False
-        preset_config["plots_only_include_supporting_figures"] = True if generate_once else False
+        preset_config["plots_only_include_supporting_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         preset_config["generate_shared_general_figures"] = True if generate_once else False
 
@@ -16801,6 +17591,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             results["analysis_mode"] = "full"
     results["config"] = source_cache.get("config", {})
+    results["job_spec"] = AnalysisJobSpec(
+        pipeline=str(config.get("analysis_name") or "dendrites_pipeline"),
+        split_type="batches",
+        state_basis="overall",
+        analysis_type=str(config.get("comparison_preset_name") or "default"),
+        cohort="all",
+    ).as_dict()
     results["run_parameters"] = {
         "channel": channel,
         "shuffle_n": shuffle_n,
@@ -16908,6 +17705,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         source_cache_payload.pop("analysis_tables", None)
         source_cache_payload.pop("analysis_results", None)
         save_npz_cache(cache_path, source_cache_payload)
+    results["output_artifacts"] = list(dict.fromkeys(list(results.get("output_artifacts", [])) + collect_output_artifacts(output_dir)))
+    write_manifest(output_dir, jsonable(results))
     poster_ready_outputs = [path for path in written_artifacts if "/poster_ready/" in str(path)]
     if poster_ready_outputs:
         step_message(f"poster-ready outputs ({len(poster_ready_outputs)}):")

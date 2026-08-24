@@ -262,6 +262,17 @@ def run_split_family(
                 "group_a": comparison_group,
                 "group_b": reference_group,
             })
+    compartment_levels = {
+        str(row.get("compartment") or "").strip().lower()
+        for row in working_rows
+        if str(row.get("compartment") or "").strip()
+    }
+    if {"basal", "apical"}.issubset(compartment_levels):
+        for state in branch_state_order:
+            contrast_specs.append({
+                "kind": "basal_apical",
+                "state": state,
+            })
 
     for response in response_names:
         result = run_mixed_model_family(

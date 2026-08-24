@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,17 +6,18 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from analysis.compartment_common import filter_comparison_presets, read_csv_rows
+from analysis.shared.result_manifest import load_manifest, manifest_artifact_path, manifest_path
 
 POSTER_REQUIRED_COMPARISON_PRESETS: Tuple[str, ...] = (
-    "blank_state_comparisons",
-    "movies_state_comparisons",
-    "all_requested_comparisons",
+    'blank_state_comparisons',
+    'movies_state_comparisons',
+    'all_requested_comparisons',
 )
 
 POSTER_REFERENCE_COMPARISON_PRESETS: Tuple[str, ...] = (
-    "all_requested_comparisons",
-    "movies_state_comparisons",
-    "blank_state_comparisons",
+    'all_requested_comparisons',
+    'movies_state_comparisons',
+    'blank_state_comparisons',
 )
 
 
@@ -58,19 +60,28 @@ def build_comparison_preset_batch_plan(
                 selected_presets.append((preset_name, dict(overrides)))
 
     if not selected_presets:
-        return ComparisonPresetBatchPlan([], "")
+        return ComparisonPresetBatchPlan([], '')
 
     plan_names = [preset_name for preset_name, _ in selected_presets]
     reference_name = next((name for name in poster_reference_names if name in plan_names), plan_names[-1])
     return ComparisonPresetBatchPlan(selected_presets, reference_name)
 
 
-def _candidate_preset_roots(batch_result_root: Path, preset_name: str) -> List[Path]:
-    batch_result_root = Path(batch_result_root)
-    roots = [batch_result_root]
-    if batch_result_root.name != preset_name:
-        roots.append(batch_result_root.parent)
-    return roots
+def _preset_name_from_manifest(manifest: Mapping[str, Any]) -> str:
+    run_parameters = manifest.get('run_parameters', {})
+    if isinstance(run_parameters, Mapping):
+        preset_name = str(run_parameters.get('comparison_preset_name') or '').strip()
+        if preset_name:
+            return preset_name
+    preset_name = str(manifest.get('comparison_preset_name') or '').strip()
+    return preset_name
+
+
+def _preset_csv_relative_candidates(csv_name: str) -> List[str]:
+    candidates = [f'csv/{csv_name}', csv_name]
+    if csv_name == 'state_comparisons_movie.csv':
+        candidates.extend(['csv/state_comparisons.csv', 'state_comparisons.csv'])
+    return list(dict.fromkeys(candidates))
 
 
 def load_comparison_preset_csv_rows(
@@ -80,18 +91,29 @@ def load_comparison_preset_csv_rows(
     *,
     logger: Any = None,
 ) -> List[Dict[str, Any]]:
+    batch_result_root = Path(batch_result_root)
+    manifest = load_manifest(batch_result_root)
+    if isinstance(manifest, Mapping):
+        manifest_preset_name = _preset_name_from_manifest(manifest)
+        if manifest_preset_name and manifest_preset_name != preset_name and logger is not None:
+            logger.warning(
+                'Preset manifest mismatch for %s: expected %s, found %s',
+                batch_result_root,
+                preset_name,
+                manifest_preset_name,
+            )
+        for relative_candidate in _preset_csv_relative_candidates(csv_name):
+            csv_path = manifest_artifact_path(manifest, batch_result_root, relative_candidate)
+            if csv_path is not None and csv_path.exists():
+                return read_csv_rows(csv_path)
     candidate_paths: List[Path] = []
-    for root in _candidate_preset_roots(Path(batch_result_root), preset_name):
-        preset_root = root if root.name == preset_name else root / preset_name
-        candidate_paths.append(preset_root / "csv" / csv_name)
-        candidate_paths.append(preset_root / csv_name)
-        if csv_name == "state_comparisons_movie.csv":
-            candidate_paths.append(preset_root / "state_comparisons.csv")
+    for relative_candidate in _preset_csv_relative_candidates(csv_name):
+        candidate_paths.append(batch_result_root / relative_candidate)
     for csv_path in dict.fromkeys(candidate_paths):
         if csv_path.exists():
             return read_csv_rows(csv_path)
     if logger is not None:
-        logger.warning("Missing preset CSV %s; tried %s", csv_name, ", ".join(str(path) for path in candidate_paths))
+        logger.warning('Missing preset CSV %s; tried %s', csv_name, ', '.join(str(path) for path in candidate_paths))
     return []
 
 
@@ -101,7 +123,7 @@ def load_all_requested_comparison_rows(
     *,
     logger: Any = None,
 ) -> List[Dict[str, Any]]:
-    return load_comparison_preset_csv_rows(batch_result_root, "all_requested_comparisons", csv_name, logger=logger)
+    return load_comparison_preset_csv_rows(batch_result_root, 'all_requested_comparisons', csv_name, logger=logger)
 
 
 def load_comparison_preset_manifest(
@@ -110,19 +132,22 @@ def load_comparison_preset_manifest(
     *,
     logger: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    candidate_paths: List[Path] = []
-    for root in _candidate_preset_roots(Path(batch_result_root), preset_name):
-        preset_root = root if root.name == preset_name else root / preset_name
-        candidate_paths.append(preset_root / "summary" / "manifest.json")
-        candidate_paths.append(preset_root / "manifest.json")
-    for manifest_path in dict.fromkeys(candidate_paths):
-        if manifest_path.exists():
-            import json
-
-            with manifest_path.open() as handle:
-                payload = json.load(handle)
-            if isinstance(payload, dict):
-                return payload
+    batch_result_root = Path(batch_result_root)
+    manifest = load_manifest(batch_result_root)
+    if isinstance(manifest, Mapping):
+        manifest_preset_name = _preset_name_from_manifest(manifest)
+        if manifest_preset_name and manifest_preset_name != preset_name and logger is not None:
+            logger.warning(
+                'Preset manifest mismatch for %s: expected %s, found %s',
+                batch_result_root,
+                preset_name,
+                manifest_preset_name,
+            )
+        return dict(manifest)
     if logger is not None:
-        logger.warning("Missing preset manifest for %s; tried %s", preset_name, ", ".join(str(path) for path in candidate_paths))
+        logger.warning(
+            'Missing preset manifest for %s; tried %s',
+            preset_name,
+            ', '.join(str(path) for path in [manifest_path(batch_result_root), batch_result_root / 'manifest.json']),
+        )
     return None
