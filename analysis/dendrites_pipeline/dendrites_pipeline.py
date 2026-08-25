@@ -15522,8 +15522,8 @@ def write_analysis_outputs(
                 if leaf_split_mixed_model.get("available"):
                     leaf_results["mixed_model"] = leaf_split_mixed_model
                     leaf_results["mixed_model_selected_state"] = leaf_split_mixed_model
-                leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name, preset_name=comparison_preset_name)
-                leaf_figure_root = branch_leaf_figure_root(branch_root, branch_name, basis_name, preset_name=comparison_preset_name)
+                leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name)
+                leaf_figure_root = branch_leaf_figure_root(branch_root, branch_name, basis_name)
                 step_message(f"branch-first figure generation: {branch_name}/{basis_name}")
                 with step_scope(f"branch-first figure generation: {branch_name}/{basis_name}"):
                     leaf_written = write_analysis_outputs(
@@ -17020,7 +17020,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     preset_configs: Dict[str, Dict[str, Any]] = {}
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
-        preset_output_dir = base_output_dir / "_batches" / safe_name
+        preset_output_dir = base_output_dir / safe_name
         preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
         preset_config = copy.deepcopy(config)
         preset_config.pop("comparison_presets", None)
@@ -17041,7 +17041,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
-        preset_config["branch_first_output_root"] = str(base_output_dir)
+        preset_config["branch_first_output_root"] = str(preset_output_dir)
         preset_config["branch_first_figures"] = True
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)

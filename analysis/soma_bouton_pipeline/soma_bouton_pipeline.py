@@ -222,9 +222,9 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config.pop("comparison_preset_name", None)
         preset_config.update(overrides)
         preset_config["comparison_preset_name"] = preset_name
-        preset_result_root = base_result_root / "_batches" / safe_name
+        preset_result_root = base_result_root / safe_name
         preset_config["result_root"] = str(preset_result_root)
-        preset_cache_root = base_cache_root / "_batches" / safe_name
+        preset_cache_root = base_cache_root / safe_name
         preset_run_cache_path = preset_cache_root / "analysis_run_cache.npz"
         preset_results_cache_path = preset_cache_root / "analysis_results_cache.npz"
         preset_tables_cache_path = preset_cache_root / "analysis_tables_cache.npz"
@@ -238,7 +238,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
-        preset_config["branch_first_output_root"] = str(base_result_root)
+        preset_config["branch_first_output_root"] = str(preset_result_root)
         preset_config["branch_first_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
@@ -1916,7 +1916,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
         def render_branch_first_leaf_figures(branch_name: str, basis_name: str) -> None:
-            leaf_root = branch_leaf_root(branch_root, branch_name, basis_name, preset_name=comparison_preset_name)
+            leaf_root = branch_leaf_root(branch_root, branch_name, basis_name)
             leaf_results = scoped_branch_results(branch_results_source, branch_name=branch_name, basis_name=basis_name, sleep_expids=config.get("sleep_expids"))
             basis_sleep_expids = config.get("sleep_expids")
             basis_activity_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_activity_rows.items()}
