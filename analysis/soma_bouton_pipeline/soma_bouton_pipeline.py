@@ -1685,7 +1685,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 "states": list(dict.fromkeys(state_keys)),
                 "cohorts": list(dict.fromkeys(cohort_keys)),
             }
-        poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+        poster_state_order = list(analysis_state_order)
         blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
         movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
         mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
@@ -1749,7 +1749,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     state_order=poster_state_order,
                     output_stem=f"{compartment}_state_mixed_model_poster_ready",
                     title="Quiet blank vs sleep states",
-                    preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
+                    preferred_response_keys=("mean_activity", "mean"),
                     mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 )
                 if mixed_path:
@@ -1760,7 +1760,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
                 ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
             ):
-                selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"))
+                selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_activity", "mean"))
                 target.update(_poster_mixed_model_significant_states(selected_rows))
             responsive_comparison_rows = [
                 row for row in cohort_state_comparison_rows.get("responsive", [])
@@ -1938,12 +1938,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 return annotate_rows_with_split_group(rows, roi_split_membership_rows)
 
             for cohort_name in ("all", "responsive", "nonresponsive"):
-                cohort_rows = basis_activity_rows.get(cohort_name, [])
-                if not cohort_rows:
+                mixed_model_rows = cohort_activity_rows.get(cohort_name, [])
+                if not mixed_model_rows:
                     continue
                 cohort_results: Dict[str, Any] = {}
                 for compartment_key in ("soma", "bouton"):
-                    compartment_rows = [row for row in cohort_rows if str(row.get("compartment") or "") == compartment_key]
+                    compartment_rows = [row for row in mixed_model_rows if str(row.get("compartment") or "") == compartment_key]
                     if not compartment_rows:
                         continue
                     split_result = run_split_family(

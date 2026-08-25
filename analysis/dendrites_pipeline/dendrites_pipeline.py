@@ -4553,6 +4553,7 @@ def plot_mixed_model_forest_figure(
         return None
 
     preferred_responses = [
+        "mean_activity",
         "mean_dendrite_activity",
         "mean_spine_activity_per_dendrite",
         "dendrite_event_frequency_per_min",
@@ -4819,7 +4820,7 @@ def plot_mixed_model_predicted_means_figure(
     summary_rows = mixed_model.get("summary_rows", {})
     if not isinstance(summary_rows, dict):
         return None
-    preferred_responses = ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min", "coactivity_r"]
+    preferred_responses = ["mean_activity", "mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min", "coactivity_r"]
     response_order = [response for response in preferred_responses if isinstance(summary_rows.get(response), list) and summary_rows.get(response)]
     for response in summary_rows:
         if response not in response_order and isinstance(summary_rows.get(response), list) and summary_rows.get(response):
@@ -4986,7 +4987,7 @@ def plot_mixed_model_contrasts_checkpoint(
     ]
     if not rows:
         return None
-    preferred_responses = ["mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min", "coactivity_r"]
+    preferred_responses = ["mean_activity", "mean_dendrite_activity", "mean_spine_activity_per_dendrite", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min", "coactivity_r"]
     response_order = [response for response in preferred_responses if any(row.get("response") == response for row in rows)]
     for response in sorted({str(row.get("response")) for row in rows}):
         if response not in response_order:
@@ -15908,7 +15909,7 @@ def write_poster_ready_figures(
                                 combined[cohort].setdefault(f"{compartment}_{canonical_state_label(state)}", []).extend([float(value) for value in arr])
                 return combined
 
-            poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+            poster_state_order = selected_mixed_model_state_labels(results) or ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
             blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
             movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
 
