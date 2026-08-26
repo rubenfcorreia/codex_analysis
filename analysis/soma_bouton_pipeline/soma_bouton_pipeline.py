@@ -825,14 +825,30 @@ def _analysis_results_cache_path(config: Mapping[str, Any], repo_root: Path, res
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
 
 
+def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
+    """Return the canonical figure root for comparison-preset runs.
+
+    Comparison presets already have a branch-first `pooled/all` leaf, so the
+    shared summary figures can live there instead of creating a separate
+    top-level `figures/` tree that mirrors the same content.
+    """
+
+    branch_root_value = config.get("branch_first_output_root")
+    if branch_root_value:
+        branch_root = resolve_repo_path(branch_root_value, repo_root)
+        return branch_leaf_root(branch_root, "pooled", "all")
+    return result_root
+
+
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
     result_root = resolve_repo_path(config["result_root"], repo_root)
     preset_name = str(config.get("comparison_preset_name") or "default")
+    figure_root = _comparison_figure_root(config, repo_root, result_root)
     _stage("run preset", f"{preset_name} -> {result_root}")
     ensure_dir(result_root)
     ensure_dir(result_root / "csv")
-    ensure_dir(result_root / "figures")
+    ensure_dir(figure_root / "figures")
     ensure_dir(result_root / "cache")
     ensure_dir(result_root / "summary")
 
@@ -1449,7 +1465,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             plot_state_activity(
                 cohort_rows,
-                result_root,
+                figure_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
@@ -1457,7 +1473,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             _stage("plotting", f"state event frequency - {cohort_name}")
             plot_state_event_frequency(
                 cohort_rows,
-                result_root,
+                figure_root,
                 comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
@@ -1465,7 +1481,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             _stage("plotting", f"axon-soma correlation - {cohort_name}")
             plot_state_correlation(
                 cohort_correlation_summary.get(cohort_name, []),
-                result_root,
+                figure_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
@@ -1475,7 +1491,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             _stage("plotting", f"soma-soma correlation - {cohort_name}")
             plot_state_correlation(
                 cohort_soma_pairwise_summary.get(cohort_name, []),
-                result_root,
+                figure_root,
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
                 title="Soma-soma correlation",
@@ -1484,7 +1500,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             _stage("plotting", f"axon-axon correlation - {cohort_name}")
             plot_state_correlation(
                 cohort_bouton_pairwise_summary.get(cohort_name, []),
-                result_root,
+                figure_root,
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
                 title="Axon-axon correlation",
@@ -1496,7 +1512,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             _stage("plotting", f"lag heatmap - {cohort_name}")
             lag_rows = annotate_rows_with_split_group(cohort_rows, roi_split_results.get("membership_rows", []))
-            plot_lag_heatmap(lag_rows, result_root, cohort_label=cohort_name)
+            plot_lag_heatmap(lag_rows, figure_root, cohort_label=cohort_name)
         from analysis.shared.plots.roi_split import plot_roi_split_bundle_figure
 
         roi_split_bundles = roi_split_results.get("bundles", []) if isinstance(roi_split_results, dict) else []
@@ -1510,7 +1526,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             try:
                 figure_bundle = dict(bundle)
                 figure_bundle["compartment"] = ""
-                plot_roi_split_bundle_figure(figure_bundle, result_root)
+                plot_roi_split_bundle_figure(figure_bundle, figure_root)
             except Exception as exc:
                 logger.exception("Failed to create roi split figure %s/%s/%s", roi_type, compartment, split_name)
                 continue
@@ -1518,7 +1534,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             _stage("plotting", "soma-bouton coincidence examples")
             coincidence_example_figures = _generate_coincidence_example_figures(
                 coincidence_rows,
-                result_root=result_root,
+                result_root=figure_root,
                 repo_root=repo_root,
                 coincidence_example_top_n=coincidence_example_top_n,
                 soma_channel=int(config["soma_channel"]),
@@ -1526,7 +1542,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 default_event_detection_method=event_detection_method,
             )
         if visual_response_rows:
-            visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
+            visual_response_fig_dir = ensure_dir(figure_root / "figures" / "visual_response")
             for compartment in ("soma", "bouton"):
                 compartment_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
                 if not compartment_rows:
@@ -1552,7 +1568,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         kind=compartment,
                     )
         if not poster_ready_only and mixed_model_results:
-            mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
+            mixed_model_fig_dir = ensure_dir(figure_root / "figures" / "mixed_model")
             for cohort_name, cohort_results in mixed_model_results.items():
                 if not isinstance(cohort_results, dict) or not cohort_results:
                     continue
@@ -2098,6 +2114,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                             )
 
         for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
+            if figure_root != result_root and branch_name == "pooled" and basis_name == "all":
+                continue
             render_branch_first_leaf_figures(branch_name, basis_name)
 
     canonical_visual_response_lookup = _canonical_visual_response_cohort_map(visual_response_rows)
