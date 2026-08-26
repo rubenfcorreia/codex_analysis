@@ -292,10 +292,19 @@ LEGACY_MOVIE_STATE_LABEL_ALIASES = {
 }
 
 STATE_FAMILY_COLORS = {
-    "active": "#1f77b4",
-    "quiet": "#ff7f0e",
-    "nrem": "#2ca02c",
-    "rem": "#d62728",
+    "active": "#4c78a8",
+    "quiet": "#f58518",
+    "nrem": "#54a24b",
+    "rem": "#e45756",
+    "neutral": "#555555",
+}
+
+STATE_FAMILY_APICAL_FILL_COLORS = {
+    "active": "#c6d4e3",
+    "quiet": "#fcd8b5",
+    "nrem": "#c8e1c5",
+    "rem": "#f6c9c9",
+    "neutral": "#e6e6e6",
 }
 
 def canonical_state_label(state_label: Any) -> str:
@@ -5164,69 +5173,50 @@ def plot_state_summary_figure(
     **_compat_kwargs,
 ):
     """Backward-compatible public wrapper for the old state-summary API."""
-    if isinstance(results, dict) and results.get("analysis_branch_name") and results.get("analysis_basis_name"):
-        roi_split_results = results.get("roi_split", {})
-        split_rows = roi_split_results.get("subject_state_rows", []) if isinstance(roi_split_results, dict) else []
-        split_rows = [dict(row) for row in split_rows if isinstance(row, Mapping)]
-        if split_rows and isinstance(roi_split_results, dict):
-            split_rows = annotate_rows_with_split_group(split_rows, roi_split_results.get("membership_rows", []))
-        if split_rows:
-            state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
-            output_paths: List[Path] = []
-            metric_specs = {
-                "dendrite_mean": "Dendrite mean dF/F",
-                "spine_specific_mean": "Spine-specific mean dF/F",
-                "dendrite_event_frequency_per_min": "Dendrite calcium event frequency (per min)",
-                "spine_event_frequency_per_min": "Spine calcium event frequency (per min)",
-                "coincident_event_frequency_per_min": "Coincident spine event frequency (per min)",
-                "noncoincident_event_frequency_per_min": "Noncoincident spine event frequency (per min)",
-            }
-            for metric_name, metric_title in metric_specs.items():
-                metric_rows = [
-                    dict(row)
-                    for row in split_rows
-                    if np.isfinite(as_float(row.get(metric_name)))
-                    and canonical_state_label(row.get("state")) in {canonical_state_label(state) for state in state_order}
-                ]
-                if not metric_rows:
-                    continue
-                metric_comparison_rows = comparison_rows
-                if metric_comparison_rows is None:
-                    metric_comparison_rows = _state_summary_significant_pair_rows(
-                        results.get("state_comparisons", []),
-                        metric_name=metric_name,
-                        state_order=state_order,
-                        comparison_name="state_comparison",
-                    )
-                metric_output_path = state_summary_metric_output_dir(
-                    output_dir,
-                    metric_name,
-                    cohort_label,
-                    state_group,
-                ) / f"{Path(output_name).stem}_{metric_name}.svg"
-                plotted = plot_grouped_boxplot_series(
-                    metric_rows,
-                    metric_output_path.parent,
-                    state_col="state",
-                    value_col=metric_name,
+    compartment_filter = str(_compat_kwargs.get("compartment_filter") or _compat_kwargs.get("compartment") or "").strip().lower() or None
+    grouped_results = state_summary_grouped_results(results, compartment_filter=compartment_filter)
+    if grouped_results is not None:
+        state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
+        output_paths: List[Path] = []
+        metric_specs = {
+            "dendrite_mean": "Dendrite mean dF/F",
+            "spine_specific_mean": "Spine-specific mean dF/F",
+            "dendrite_event_frequency_per_min": "Dendrite calcium event frequency (per min)",
+            "spine_event_frequency_per_min": "Spine calcium event frequency (per min)",
+            "coincident_event_frequency_per_min": "Coincident spine event frequency (per min)",
+            "noncoincident_event_frequency_per_min": "Noncoincident spine event frequency (per min)",
+        }
+        for metric_name, metric_title in metric_specs.items():
+            metric_rows = _state_summary_grouped_rows(grouped_results, metric_name, state_order)
+            if not metric_rows:
+                continue
+            metric_comparison_rows = comparison_rows
+            if metric_comparison_rows is None:
+                metric_comparison_rows = _state_summary_significant_pair_rows(
+                    results.get("state_comparisons", []),
+                    metric_name=metric_name,
                     state_order=state_order,
-                    stem=metric_output_path.stem,
-                    title=metric_title,
-                    ylabel="Dendrite dF/F",
-                    xlabel="State",
-                    title_color="#334155",
-                    edge_color="#334155",
-                    group_col="split_group",
-                    state_label_col="state_display",
-                    state_color_col="state_color",
-                    group_label_col="split_group_display",
-                    group_color_col="split_group_color",
-                    group_rank_col="split_group_rank",
-                    comparison_rows=metric_comparison_rows,
+                    comparison_name="state_comparison",
                 )
-                if plotted:
-                    output_paths.append(metric_output_path)
-            return str(output_paths[0]) if output_paths else None
+            panel_fig = _render_state_summary_grouped_panel_figure(
+                metric_name,
+                metric_title,
+                metric_rows,
+                state_order,
+                y_limits.get(metric_name) if y_limits else None,
+                comparison_rows=metric_comparison_rows,
+            )
+            if panel_fig is None:
+                continue
+            metric_output_path = state_summary_metric_output_dir(
+                output_dir,
+                metric_name,
+                cohort_label,
+                state_group,
+            ) / f"{Path(output_name).stem}_{metric_name}.svg"
+            save_figure(panel_fig, metric_output_path, extra_formats=())
+            output_paths.append(metric_output_path)
+        return str(output_paths[0]) if output_paths else None
     if isinstance(results, dict) and isinstance(results.get("state_summaries"), dict) and not isinstance(results.get("apical_results"), dict):
         state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
         output_paths: List[Path] = []
@@ -5278,17 +5268,6 @@ def plot_state_summary_figure(
         cohort_label=cohort_label,
         state_group=state_group,
     )
-   
-
-
-
-
-
-
-
-
-
-
 
 # Restored event-run helper dependencies from commit 64f20508a23d
 
@@ -6271,6 +6250,412 @@ def spine_coactivity_figure_dir(root: Path, figure_kind: str, *parts: Any) -> Pa
     )
 
 
+def _state_summary_comparison_display_label(row: Mapping[str, Any]) -> str:
+    def _clean(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return text.replace("_", " ").replace("-", " ").strip().title()
+
+    left = row.get("state_a_display") or row.get("state_a") or row.get("x1_label") or row.get("x1_state") or ""
+    right = row.get("state_b_display") or row.get("state_b") or row.get("x2_label") or row.get("x2_state") or ""
+    left_text = _clean(left)
+    right_text = _clean(right)
+    if left_text and right_text:
+        return f"{left_text} vs {right_text}"
+    if left_text or right_text:
+        return left_text or right_text
+    return ""
+
+
+def state_summary_grouped_results(
+    results: Mapping[str, Any],
+    compartment_filter: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(results, Mapping):
+        return None
+    roi_split_results = results.get("roi_split", {})
+    if not isinstance(roi_split_results, Mapping):
+        return None
+    split_rows = [dict(row) for row in roi_split_results.get("subject_state_rows", []) if isinstance(row, Mapping)]
+    if not split_rows:
+        return None
+    membership_rows = roi_split_results.get("membership_rows", [])
+    if isinstance(membership_rows, Sequence) and not isinstance(membership_rows, (str, bytes)):
+        split_rows = annotate_rows_with_split_group(split_rows, membership_rows)
+    compartment_key = str(compartment_filter or "").strip().lower() or None
+    if compartment_key is not None:
+        split_rows = [row for row in split_rows if str(row.get("compartment") or "").strip().lower() == compartment_key]
+        if not split_rows:
+            return None
+    if not any(str(row.get("split_group") or "").strip() for row in split_rows):
+        return None
+    grouped_results = dict(results)
+    grouped_results["roi_split"] = roi_split_results
+    grouped_results["analysis_branch_name"] = "roi_split"
+    grouped_results["analysis_basis_name"] = "all"
+    if compartment_key is not None:
+        grouped_results["compartment_filter"] = compartment_key
+    return grouped_results
+
+
+def _state_summary_grouped_rows(
+    results: Mapping[str, Any],
+    metric_name: str,
+    state_order: Sequence[str],
+    compartment_filter: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    grouped_results = state_summary_grouped_results(results, compartment_filter=compartment_filter)
+    if grouped_results is None:
+        return []
+    roi_split_results = grouped_results.get("roi_split", {})
+    if not isinstance(roi_split_results, Mapping):
+        return []
+    split_rows = [dict(row) for row in roi_split_results.get("subject_state_rows", []) if isinstance(row, Mapping)]
+    membership_rows = roi_split_results.get("membership_rows", [])
+    if isinstance(membership_rows, Sequence) and not isinstance(membership_rows, (str, bytes)):
+        split_rows = annotate_rows_with_split_group(split_rows, membership_rows)
+    compartment_key = str(grouped_results.get("compartment_filter") or "").strip().lower() or None
+    state_set = {canonical_state_label(state) for state in state_order if canonical_state_label(state)}
+    filtered: List[Dict[str, Any]] = []
+    for row in split_rows:
+        state = canonical_state_label(row.get("state"))
+        if state_set and state not in state_set:
+            continue
+        if compartment_key is not None and str(row.get("compartment") or "").strip().lower() != compartment_key:
+            continue
+        value = as_float(row.get(metric_name))
+        if not np.isfinite(value):
+            continue
+        payload = dict(row)
+        payload[metric_name] = float(value)
+        filtered.append(payload)
+    return filtered
+
+
+def _state_summary_split_group_order(rows: Sequence[Mapping[str, Any]]) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+    split_group_order: List[str] = []
+    split_group_meta: Dict[str, Dict[str, Any]] = {}
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        split_group = str(row.get("split_group") or "").strip()
+        if not split_group:
+            continue
+        if split_group not in split_group_order:
+            split_group_order.append(split_group)
+        meta = split_group_meta.setdefault(split_group, {"split_group": split_group})
+        display = str(row.get("split_group_display") or split_group).strip() or split_group
+        if display and "split_group_display" not in meta:
+            meta["split_group_display"] = display
+        color = str(row.get("split_group_color") or "").strip()
+        if color and "split_group_color" not in meta:
+            meta["split_group_color"] = color
+        rank_value = row.get("split_group_rank")
+        try:
+            rank_float = float(rank_value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(rank_float):
+            continue
+        current_rank = meta.get("split_group_rank")
+        if current_rank is None or rank_float < float(current_rank):
+            meta["split_group_rank"] = rank_float
+    split_group_order.sort(key=lambda group: (split_group_meta.get(group, {}).get("split_group_rank", float("inf")), group))
+    for split_group in split_group_order:
+        split_group_meta.setdefault(split_group, {"split_group": split_group, "split_group_display": split_group})
+    return split_group_order, split_group_meta
+
+
+def _state_summary_compartment_order(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    compartments: List[str] = []
+    for preferred in ("basal", "apical"):
+        if any(str(row.get("compartment") or "").strip().lower() == preferred for row in rows if isinstance(row, Mapping)):
+            compartments.append(preferred)
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        compartment = str(row.get("compartment") or "").strip().lower()
+        if compartment and compartment not in compartments:
+            compartments.append(compartment)
+    return compartments
+
+
+def _state_summary_box_style(state_label: Any, compartment: Any) -> Dict[str, Any]:
+    family = state_family_label(state_label)
+    edge_color = STATE_FAMILY_COLORS.get(family, "#444444")
+    if family == "neutral":
+        edge_color = "#555555"
+    if str(compartment or "").strip().lower() == "apical":
+        face_color = STATE_FAMILY_APICAL_FILL_COLORS.get(family, STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6"))
+        alpha = 1.0
+        hatch = "///"
+    else:
+        face_color = STATE_FAMILY_COLORS.get(family, "#444444")
+        if family == "neutral":
+            face_color = STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6")
+            alpha = 1.0
+        else:
+            alpha = 0.28
+        hatch = None
+    return {
+        "facecolor": face_color,
+        "edgecolor": edge_color,
+        "alpha": alpha,
+        "hatch": hatch,
+    }
+
+
+def _render_state_summary_grouped_panel_figure(
+    metric_key: str,
+    metric_title: str,
+    rows: Sequence[Mapping[str, Any]],
+    state_order: Sequence[str],
+    y_limit: Optional[Tuple[float, float]] = None,
+    comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Optional[Any]:
+    if plt is None:
+        return None
+    cleaned_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
+    if not cleaned_rows:
+        return None
+
+    state_keys = [canonical_state_label(state) for state in state_order if canonical_state_label(state)]
+    if not state_keys:
+        state_keys = []
+        for row in cleaned_rows:
+            state = canonical_state_label(row.get("state"))
+            if state and state not in state_keys:
+                state_keys.append(state)
+
+    split_group_order, split_group_meta = _state_summary_split_group_order(cleaned_rows)
+    if not split_group_order:
+        return None
+    compartments = _state_summary_compartment_order(cleaned_rows)
+    if not compartments:
+        compartments = [""]
+
+    series_lookup: Dict[Tuple[str, str, str], List[float]] = defaultdict(list)
+    state_display_lookup: Dict[str, str] = {}
+    compartment_display_lookup: Dict[str, str] = {}
+    group_display_lookup: Dict[str, str] = {}
+    for row in cleaned_rows:
+        state = canonical_state_label(row.get("state"))
+        if state_keys and state not in state_keys:
+            continue
+        compartment = str(row.get("compartment") or "").strip().lower()
+        group = str(row.get("split_group") or "").strip()
+        if not group:
+            continue
+        value = as_float(row.get(metric_key))
+        if not np.isfinite(value):
+            continue
+        series_lookup[(state, compartment, group)].append(float(value))
+        state_display_lookup.setdefault(state, str(row.get("state_display") or state_display_label(state)).strip() or state_display_label(state))
+        compartment_display_lookup.setdefault(compartment, str(row.get("compartment_display") or compartment.replace("_", " ").strip().title()).strip() or compartment)
+        group_display_lookup.setdefault(group, str(row.get("split_group_display") or group).strip() or group)
+
+    present_state_keys = [state for state in state_keys if any(key[0] == state for key in series_lookup)]
+    if not present_state_keys:
+        return None
+    present_compartments = [compartment for compartment in compartments if any(key[1] == compartment for key in series_lookup)]
+    if not present_compartments:
+        present_compartments = [compartment for _, compartment, _ in series_lookup]
+    present_compartments = list(dict.fromkeys(present_compartments))
+    present_group_keys = [group for group in split_group_order if any(key[2] == group for key in series_lookup)]
+    if not present_group_keys:
+        return None
+
+    if len(present_compartments) == 1:
+        compartment_offsets = {present_compartments[0]: 0.0}
+    else:
+        comp_span = 0.20 if len(present_compartments) == 2 else 0.24
+        compartment_offsets = {compartment: float(offset) for compartment, offset in zip(present_compartments, np.linspace(-comp_span, comp_span, len(present_compartments)))}
+    if len(present_group_keys) == 1:
+        group_offsets = {present_group_keys[0]: 0.0}
+    else:
+        group_offsets = {group: float(offset) for group, offset in zip(present_group_keys, np.linspace(-0.08, 0.08, len(present_group_keys)))}
+    box_width = max(0.08, min(0.22, 0.56 / max(len(present_compartments) * len(present_group_keys), 1)))
+
+    fig_width = min(max(6.9, 0.76 * len(present_state_keys) + 2.8), 9.0)
+    fig_height = min(max(4.2, POSTER_DOUBLE_FIGSIZE[1] - 0.7), 5.2)
+    fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
+    ax = ax.ravel()[0]
+
+    series_values: List[np.ndarray] = []
+    series_positions: List[float] = []
+    series_styles: List[Dict[str, Any]] = []
+    series_states: List[str] = []
+    series_compartments: List[str] = []
+    series_groups: List[str] = []
+    state_position_lookup = {state: float(index) for index, state in enumerate(present_state_keys, start=1)}
+    for state in present_state_keys:
+        for compartment in present_compartments:
+            for group in present_group_keys:
+                values = np.asarray(series_lookup.get((state, compartment, group), []), dtype=float)
+                values = values[np.isfinite(values)]
+                if values.size == 0:
+                    continue
+                series_values.append(values)
+                series_positions.append(state_position_lookup[state] + compartment_offsets.get(compartment, 0.0) + group_offsets.get(group, 0.0))
+                series_styles.append(_state_summary_box_style(state, compartment))
+                series_states.append(state)
+                series_compartments.append(compartment)
+                series_groups.append(group)
+
+    if not series_values:
+        plt.close(fig)
+        return None
+
+    bp = ax.boxplot(
+        series_values,
+        positions=series_positions,
+        widths=box_width,
+        patch_artist=True,
+        showfliers=False,
+        medianprops={"color": "#111827", "linewidth": 2.2},
+        whiskerprops={"color": "#555555", "linewidth": 1.8},
+        capprops={"color": "#555555", "linewidth": 1.8},
+        boxprops={"linewidth": 2.0},
+    )
+    for patch, style in zip(bp.get("boxes", []), series_styles):
+        patch.set_facecolor(style["facecolor"])
+        patch.set_edgecolor(style["edgecolor"])
+        patch.set_alpha(style["alpha"])
+        patch.set_hatch(style["hatch"] or "")
+
+    rng = np.random.default_rng(7)
+    for position, values, state in zip(series_positions, series_values, series_states):
+        jitter = rng.uniform(-0.08, 0.08, size=values.size)
+        ax.scatter(
+            np.full(values.size, position) + jitter,
+            values,
+            s=14,
+            alpha=0.48,
+            color=state_display_color(state),
+            edgecolor="none",
+            zorder=3,
+        )
+
+    set_requested_state_ticks(ax, present_state_keys, axis="x")
+    ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
+    ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
+    _pad_boxplot_ylim(ax, series_values)
+    if y_limit is not None and len(y_limit) == 2:
+        try:
+            ax.set_ylim(float(y_limit[0]), float(y_limit[1]))
+        except Exception:
+            pass
+    y0, y1 = ax.get_ylim()
+    y_range = max(float(y1 - y0), 1e-6)
+    for position, values, state in zip(series_positions, series_values, series_states):
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            continue
+        annotate_sample_size(
+            ax,
+            position,
+            min(float(np.nanmax(finite)) + 0.03 * y_range, float(y1) - 0.01 * y_range),
+            f"n={finite.size}",
+            fontsize=POSTER_NOTE_SIZE - 1,
+            color=state_display_color(state),
+        )
+    ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
+    ax.grid(axis="y", alpha=0.25)
+
+    state_center_lookup = {state: state_position_lookup[state] for state in present_state_keys}
+    compartment_center_lookup = {
+        state: {compartment: state_position_lookup[state] + compartment_offsets.get(compartment, 0.0) for compartment in present_compartments}
+        for state in present_state_keys
+    }
+    comparison_subset: List[Dict[str, Any]] = []
+    for row in comparison_rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        if not is_significant_row(row):
+            continue
+        x1 = row.get("x1")
+        x2 = row.get("x2")
+        if x1 is not None and x2 is not None:
+            try:
+                x1_value = float(x1)
+                x2_value = float(x2)
+            except (TypeError, ValueError):
+                x1_value = float("nan")
+                x2_value = float("nan")
+            if np.isfinite(x1_value) and np.isfinite(x2_value):
+                comparison_subset.append({"x1": x1_value, "x2": x2_value, "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
+                continue
+        comparison_name = str(row.get("comparison") or "")
+        if comparison_name == "basal_vs_apical":
+            state = canonical_state_label(row.get("state"))
+            if state not in state_center_lookup:
+                continue
+            split_group = str(row.get("split_group") or "").strip()
+            if split_group and split_group in present_group_keys:
+                basal_x = series_positions[[idx for idx, (series_state, series_compartment, series_group) in enumerate(zip(series_states, series_compartments, series_groups)) if series_state == state and series_compartment == "basal" and series_group == split_group][0]] if any(series_state == state and series_compartment == "basal" and series_group == split_group for series_state, series_compartment, series_group in zip(series_states, series_compartments, series_groups)) else compartment_center_lookup.get(state, {}).get("basal")
+                apical_x = series_positions[[idx for idx, (series_state, series_compartment, series_group) in enumerate(zip(series_states, series_compartments, series_groups)) if series_state == state and series_compartment == "apical" and series_group == split_group][0]] if any(series_state == state and series_compartment == "apical" and series_group == split_group for series_state, series_compartment, series_group in zip(series_states, series_compartments, series_groups)) else compartment_center_lookup.get(state, {}).get("apical")
+                if basal_x is None or apical_x is None:
+                    continue
+                comparison_subset.append({"x1": float(basal_x), "x2": float(apical_x), "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
+                continue
+            basal_x = compartment_center_lookup.get(state, {}).get("basal")
+            apical_x = compartment_center_lookup.get(state, {}).get("apical")
+            if basal_x is None or apical_x is None:
+                continue
+            comparison_subset.append({"x1": float(basal_x), "x2": float(apical_x), "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
+            continue
+        state_a = canonical_state_label(row.get("state_a"))
+        state_b = canonical_state_label(row.get("state_b"))
+        if state_a not in state_center_lookup or state_b not in state_center_lookup:
+            continue
+        comparison_subset.append({"x1": float(state_center_lookup[state_a]), "x2": float(state_center_lookup[state_b]), "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
+    _draw_boxplot_significance_annotations(ax, comparison_subset)
+
+    legend_handles = []
+    if len(present_compartments) > 1:
+        from matplotlib.patches import Patch
+        legend_handles.extend(
+            [
+                Patch(facecolor="#d1d5db", edgecolor="#555555", label="Basal"),
+                Patch(facecolor="#e5e7eb", edgecolor="#555555", hatch="///", label="Apical"),
+            ]
+        )
+        compartment_legend = ax.legend(
+            handles=legend_handles,
+            loc="upper right",
+            frameon=False,
+            fontsize=POSTER_LEGEND_SIZE,
+            bbox_to_anchor=(1.0, 1.18),
+            ncol=2,
+        )
+        ax.add_artist(compartment_legend)
+    if len(present_group_keys) > 1:
+        from matplotlib.patches import Patch
+        group_handles = [
+            Patch(
+                facecolor=str(split_group_meta.get(group, {}).get("split_group_color") or "#4c78a8"),
+                edgecolor="#334155",
+                alpha=0.30,
+                label=group_display_lookup.get(group, split_group_meta.get(group, {}).get("split_group_display", group)),
+            )
+            for group in present_group_keys
+        ]
+        ax.legend(
+            handles=group_handles,
+            loc="upper center",
+            frameon=False,
+            fontsize=POSTER_LEGEND_SIZE,
+            bbox_to_anchor=(0.5, 1.18),
+            ncol=min(len(group_handles), 4),
+            columnspacing=0.9,
+            handletextpad=0.4,
+        )
+
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
+    return fig
+
+
 def _render_state_summary_single_panel_figure(
     metric_key: str,
     metric_title: str,
@@ -6364,7 +6749,6 @@ def plot_state_summary_compartment_comparison_figure(
     if plt is None:
         return None
     state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
-    state_position_lookup = {state: position for position, state in enumerate(state_order, start=1)}
     metric_titles = {
         "dendrite_mean": "Dendrite mean dF/F",
         "spine_specific_mean": "Spine-specific mean dF/F",
@@ -6375,6 +6759,47 @@ def plot_state_summary_compartment_comparison_figure(
     }
     metric_specs = [(metric_name, metric_title) for metric_name, metric_title in metric_titles.items()]
     output_paths: List[Path] = []
+
+    grouped_basal_results = state_summary_grouped_results(basal_results, compartment_filter=str(basal_results.get("compartment_filter") or "").strip().lower() or None)
+    grouped_apical_results = state_summary_grouped_results(apical_results, compartment_filter=str(apical_results.get("compartment_filter") or "").strip().lower() or None)
+    if grouped_basal_results is not None and grouped_apical_results is not None:
+        for metric_name, metric_title in metric_specs:
+            combined_rows = _state_summary_grouped_rows(grouped_basal_results, metric_name, state_order)
+            combined_rows.extend(_state_summary_grouped_rows(grouped_apical_results, metric_name, state_order))
+            if not combined_rows:
+                continue
+            panel_comparisons = comparison_rows
+            if panel_comparisons is None:
+                panel_comparisons = [
+                    row
+                    for row in (basal_results.get("basal_apical_comparisons", []) if isinstance(basal_results, dict) else [])
+                    if str(row.get("comparison")) == "basal_vs_apical"
+                    and str(row.get("metric")) == metric_name
+                    and is_significant_row(row)
+                    and str(row.get("state")) in state_order
+                ]
+            panel_fig = _render_state_summary_grouped_panel_figure(
+                metric_name,
+                metric_title,
+                combined_rows,
+                state_order,
+                y_limits.get(metric_name) if y_limits else None,
+                comparison_rows=panel_comparisons,
+            )
+            if panel_fig is not None:
+                metric_output_path = state_summary_metric_output_dir(
+                    fig_dir,
+                    metric_name,
+                    cohort_label,
+                    state_group,
+                ) / f"{Path(output_name).stem}_{metric_name}.svg"
+                save_figure(panel_fig, metric_output_path, extra_formats=())
+                output_paths.append(metric_output_path)
+        return str(output_paths[0]) if output_paths else None
+
+    state_position_lookup = {state: position for position, state in enumerate(state_order, start=1)}
+    metric_specs = [(metric_name, metric_title) for metric_name, metric_title in metric_titles.items()]
+    output_paths = []
     for metric_name, metric_title in metric_specs:
         basal_summary = basal_results.get("state_summaries", {}).get(metric_name, {})
         apical_summary = apical_results.get("state_summaries", {}).get(metric_name, {})
@@ -6952,9 +7377,9 @@ def generate_analysis_figures(
             overview_results["analysis_basis_name"] = "all"
             overview_results["roi_split"] = roi_split_results
     with step_scope("figure prep: state summary basal results"):
-        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
+        basal_results = state_summary_grouped_results(results, compartment_filter="basal") or build_state_summary_gallery_results(cache, state_labels, "basal")
     with step_scope("figure prep: state summary apical results"):
-        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+        apical_results = state_summary_grouped_results(results, compartment_filter="apical") or build_state_summary_gallery_results(cache, state_labels, "apical")
     state_summary_specs = [
         {
             "kind": "overview",
@@ -7502,9 +7927,9 @@ def generate_review_figures(
     with step_scope("review figure prep: state summary overview results"):
         overview_results = results
     with step_scope("review figure prep: state summary basal results"):
-        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
+        basal_results = state_summary_grouped_results(results, compartment_filter="basal") or build_state_summary_gallery_results(cache, state_labels, "basal")
     with step_scope("review figure prep: state summary apical results"):
-        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+        apical_results = state_summary_grouped_results(results, compartment_filter="apical") or build_state_summary_gallery_results(cache, state_labels, "apical")
     review_specs = [
         {
             "kind": "overview",
@@ -7903,8 +8328,8 @@ def render_analysis_family_figures(
         y_limits = state_summary_y_limits(cache, state_labels)
         comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
         overview_results = results
-        basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
-        apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+        basal_results = state_summary_grouped_results(results, compartment_filter="basal") or build_state_summary_gallery_results(cache, state_labels, "basal")
+        apical_results = state_summary_grouped_results(results, compartment_filter="apical") or build_state_summary_gallery_results(cache, state_labels, "apical")
         state_summary_specs = [
             {
                 "kind": "overview",
@@ -8341,8 +8766,8 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
     y_limits = state_summary_y_limits(cache, state_labels)
     comparison_y_limits = state_summary_y_limits(cache, basal_apical_state_labels)
     overview_results = results
-    basal_results = build_state_summary_gallery_results(cache, state_labels, "basal")
-    apical_results = build_state_summary_gallery_results(cache, state_labels, "apical")
+    basal_results = state_summary_grouped_results(results, compartment_filter="basal") or build_state_summary_gallery_results(cache, state_labels, "basal")
+    apical_results = state_summary_grouped_results(results, compartment_filter="apical") or build_state_summary_gallery_results(cache, state_labels, "apical")
     summary_gallery_dir = state_summary_figure_dir(gallery_dir)
     path = plot_state_summary_figure(
         overview_results,
