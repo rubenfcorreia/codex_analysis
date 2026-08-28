@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Sequence, Tuple
 
 from analysis.shared.roi_split import ROI_SPLIT_BASES, ROI_SPLIT_BRANCHES
-from analysis.shared.state_utils import canonical_state_label, safe_filename_component
+from analysis.shared.state_utils import canonical_state_label, derive_animal_id, derive_date, make_day_id, safe_filename_component
 
 ANALYSIS_BRANCHES: Tuple[str, ...] = tuple(ROI_SPLIT_BRANCHES)
 ANALYSIS_BASES: Tuple[str, ...] = tuple(ROI_SPLIT_BASES)
@@ -33,6 +33,17 @@ def branch_leaf_root(result_root: Path | str, branch_name: Any, basis_name: Any,
 
 def branch_leaf_figure_root(result_root: Path | str, branch_name: Any, basis_name: Any, preset_name: Any | None = None) -> Path:
     return branch_leaf_root(result_root, branch_name, basis_name, preset_name=preset_name) / 'figures'
+
+
+def _normalize_basis_day_key(value: Any) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if '|' in text:
+        parts = [part for part in text.split('|') if part]
+        if len(parts) >= 2:
+            return make_day_id(parts[0], parts[1])
+    return make_day_id(derive_animal_id(text), derive_date(text))
 
 
 def basis_state_labels(basis_name: Any) -> List[str]:
@@ -81,14 +92,14 @@ def scope_rows_for_basis(
     basis = canonical_state_label(basis_name)
     if basis not in {'nrem', 'rem'}:
         return [dict(row) for row in rows if isinstance(row, Mapping)]
-    sleep_ids = {str(expid).strip() for expid in (sleep_expids or []) if str(expid).strip()}
+    sleep_ids = {key for expid in (sleep_expids or []) for key in [_normalize_basis_day_key(expid)] if key}
     scoped: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, Mapping):
             continue
         if sleep_ids:
-            expid = str(row.get('expid') or row.get('exp_id') or '').strip()
-            if expid and expid not in sleep_ids:
+            row_key = _normalize_basis_day_key(row.get('expid') or row.get('exp_id') or row.get('day_id'))
+            if row_key and row_key not in sleep_ids:
                 continue
         scoped.append(dict(row))
     return scoped
