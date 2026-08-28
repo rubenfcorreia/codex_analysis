@@ -12,6 +12,8 @@ from matplotlib import colors as mcolors
 from matplotlib.patches import Patch
 import numpy as np
 
+from analysis.shared.roi_split import split_group_hatch
+from analysis.shared.state_utils import state_display_color
 from analysis.shared.statistics import is_significant_row
 
 
@@ -21,6 +23,7 @@ FIGURE_TITLE_FS = 12
 FIGURE_LABEL_FS = 11
 FIGURE_TICK_FS = 9
 FIGURE_NOTE_FS = 9
+
 
 
 def _boxplot_significance_stars(p_value: Any) -> str:
@@ -129,29 +132,28 @@ def draw_boxplot_series(
         patch.set_edgecolor(edge_color)
 
     rng = np.random.default_rng(0)
-    for xpos, (series_name, values, color) in enumerate(zip(cleaned_series, cleaned_values, cleaned_colors), start=1):
-        jitter = rng.normal(0.0, 0.06, size=values.size)
+    for position, values, color in zip(range(1, len(cleaned_values) + 1), cleaned_values, cleaned_colors):
+        jitter = rng.normal(0.0, 0.12, size=values.size)
         if horizontal:
             ax.scatter(
                 values,
-                np.full(values.shape, xpos, dtype=float) + jitter,
+                np.full(values.shape, position, dtype=float) + jitter,
                 s=20,
                 alpha=0.55,
                 color=color,
-                edgecolors="none",
+                edgecolors='none',
                 zorder=3,
             )
         else:
             ax.scatter(
-                np.full(values.shape, xpos, dtype=float) + jitter,
+                np.full(values.shape, position, dtype=float) + jitter,
                 values,
                 s=20,
                 alpha=0.55,
                 color=color,
-                edgecolors="none",
+                edgecolors='none',
                 zorder=3,
             )
-
     if comparison_rows:
         annotation_rows: list[dict[str, Any]] = []
         position_lookup = {str(series_name).strip().lower(): idx for idx, series_name in enumerate(cleaned_series, start=1)}
@@ -376,7 +378,7 @@ def plot_grouped_boxplot_series(
     state_rows: dict[str, list[dict[str, Any]]] = {state: [] for state in state_keys}
     group_rows: dict[str, dict[str, list[float]]] = {state: {} for state in state_keys}
     group_labels: dict[str, str] = {}
-    group_colors: dict[str, str] = {}
+    group_hatches: dict[str, str] = {}
     group_ranks: dict[str, float] = {}
 
     for row in cleaned_rows:
@@ -388,7 +390,7 @@ def plot_grouped_boxplot_series(
             state_keys.append(state_key)
         state_rows[state_key].append(row)
         state_labels.setdefault(state_key, _boxplot_display_label(row, state_label_col, state_key))
-        state_colors.setdefault(state_key, _boxplot_color(row, state_color_col, '#1f2937'))
+        state_colors.setdefault(state_key, state_display_color(row.get(state_label_col) or row.get(state_col) or state_key))
         if not group_col:
             continue
         group_key = _canonical_boxplot_key(row.get(group_col))
@@ -402,7 +404,7 @@ def plot_grouped_boxplot_series(
             continue
         group_rows.setdefault(state_key, {}).setdefault(group_key, []).append(float(value))
         group_labels.setdefault(group_key, _boxplot_display_label(row, group_label_col, group_key))
-        group_colors.setdefault(group_key, _boxplot_color(row, group_color_col, '#4c78a8'))
+        group_hatches.setdefault(group_key, split_group_hatch(row.get(group_col) or group_key))
         if group_rank_col:
             try:
                 rank_value = float(row.get(group_rank_col))
@@ -464,7 +466,7 @@ def plot_grouped_boxplot_series(
             values_by_series.append(values)
             labels.append(state_labels.get(state_key, state_key.replace('_', ' ').title()))
             series_names.append(state_key)
-            series_colors.append(state_colors.get(state_key, '#1f2937'))
+            series_colors.append(state_colors.get(state_key, state_display_color(state_labels.get(state_key, state_key))))
         if not values_by_series:
             return []
         return plot_boxplot_series(
@@ -492,7 +494,8 @@ def plot_grouped_boxplot_series(
     series_values: list[np.ndarray] = []
     series_positions: list[float] = []
     series_colors: list[str] = []
-    state_position_lookup = {state_key: float(index) for index, state_key in enumerate(present_state_keys, start=1)}
+    series_hatches: list[str] = []
+    state_position_lookup = {state_key: float(index) for index, state_key in enumerate(state_keys, start=1)}
 
     for state_key in present_state_keys:
         group_map = group_rows.get(state_key, {})
@@ -503,7 +506,8 @@ def plot_grouped_boxplot_series(
                 continue
             series_values.append(values)
             series_positions.append(state_position_lookup[state_key] + float(offsets[group_index]))
-            series_colors.append(group_colors.get(group_key, '#4c78a8'))
+            series_colors.append(state_colors.get(state_key, state_display_color(state_labels.get(state_key, state_key))))
+            series_hatches.append(group_hatches.get(group_key, split_group_hatch(group_key)))
 
     if not series_values:
         plt.close(fig)
@@ -521,9 +525,10 @@ def plot_grouped_boxplot_series(
         capprops={'color': '#555555', 'linewidth': 1.8},
         boxprops={'linewidth': 2.0},
     )
-    for patch, color in zip(bp.get('boxes', []), series_colors):
-        patch.set_facecolor(mcolors.to_rgba(color, 0.28))
-        patch.set_edgecolor(edge_color)
+    for patch, color, hatch in zip(bp.get('boxes', []), series_colors, series_hatches):
+        patch.set_facecolor(mcolors.to_rgba(color, 0.26))
+        patch.set_edgecolor(color)
+        patch.set_hatch(hatch or '')
 
     rng = np.random.default_rng(0)
     for position, values, color in zip(series_positions, series_values, series_colors):
@@ -572,8 +577,8 @@ def plot_grouped_boxplot_series(
 
     if horizontal:
         ax.set_yticks(list(state_position_lookup.values()))
-        ax.set_yticklabels([state_labels.get(state_key, state_key.replace('_', ' ').title()) for state_key in present_state_keys])
-        for tick, state_key in zip(ax.get_yticklabels(), present_state_keys):
+        ax.set_yticklabels([state_labels.get(state_key, state_key.replace('_', ' ').title()) for state_key in state_keys])
+        for tick, state_key in zip(ax.get_yticklabels(), state_keys):
             tick.set_color(state_colors.get(state_key, '#1f2937'))
             tick.set_fontweight('bold')
         ax.set_ylabel(xlabel, fontsize=FIGURE_LABEL_FS)
@@ -589,10 +594,11 @@ def plot_grouped_boxplot_series(
                 x_max = float(np.nanmax(finite))
                 pad = max(0.06 * (x_max - x_min) if x_max > x_min else 0.1, 0.05)
                 ax.set_xlim(x_min - pad, x_max + pad)
+        ax.set_ylim(0.5, float(len(state_keys)) + 0.5)
     else:
         ax.set_xticks(list(state_position_lookup.values()))
-        ax.set_xticklabels([state_labels.get(state_key, state_key.replace('_', ' ').title()) for state_key in present_state_keys], rotation=30, ha='right')
-        for tick, state_key in zip(ax.get_xticklabels(), present_state_keys):
+        ax.set_xticklabels([state_labels.get(state_key, state_key.replace('_', ' ').title()) for state_key in state_keys], rotation=30, ha='right')
+        for tick, state_key in zip(ax.get_xticklabels(), state_keys):
             tick.set_color(state_colors.get(state_key, '#1f2937'))
             tick.set_fontweight('bold')
         ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
@@ -608,27 +614,36 @@ def plot_grouped_boxplot_series(
                 y_max = float(np.nanmax(finite))
                 pad = max(0.06 * (y_max - y_min) if y_max > y_min else 0.1, 0.05)
                 ax.set_ylim(y_min - pad, y_max + pad)
+        ax.set_xlim(0.5, float(len(state_keys)) + 0.5)
 
-    ax.set_title(title, fontsize=FIGURE_TITLE_FS, fontweight='bold', color=title_color, pad=8)
+    ax.set_title(title, fontsize=FIGURE_TITLE_FS, fontweight='bold', color=title_color, pad=10)
     if len(present_group_keys) > 1:
         legend_handles = [
-            Patch(facecolor=mcolors.to_rgba(group_colors.get(group_key, '#4c78a8'), 0.28), edgecolor=edge_color, label=group_key.replace('_', ' ').title())
+            Patch(
+                facecolor='#ffffff',
+                edgecolor='#334155',
+                linewidth=1.2,
+                hatch=group_hatches.get(group_key, split_group_hatch(group_key)),
+                label=group_labels.get(group_key, group_key.replace('_', ' ').title()),
+            )
             for group_key in present_group_keys
         ]
         ax.legend(
             handles=legend_handles,
             frameon=False,
-            fontsize=FIGURE_NOTE_FS,
+            fontsize=max(FIGURE_NOTE_FS - 1, 8),
             loc='upper center',
-            bbox_to_anchor=(0.5, 1.16),
-            ncol=min(len(legend_handles), 4),
-            columnspacing=0.9,
-            handletextpad=0.4,
+            bbox_to_anchor=(0.5, 1.18),
+            ncol=2 if len(legend_handles) > 2 else len(legend_handles),
+            columnspacing=0.8,
+            handletextpad=0.35,
+            handlelength=1.0,
+            borderaxespad=0.0,
         )
     for spine in ('top', 'right'):
         ax.spines[spine].set_visible(False)
 
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.84))
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     png = output_dir / f'{stem}.png'

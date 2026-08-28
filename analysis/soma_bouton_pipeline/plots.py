@@ -27,11 +27,13 @@ except Exception:  # pragma: no cover - fallback for import edge cases.
     _main_state_family_label = None
 
 STATE_FAMILY_COLORS = {
-    "active": "#1f77b4",
-    "quiet": "#ff7f0e",
-    "nrem": "#2ca02c",
-    "rem": "#d62728",
-    "all": "#7f7f7f",
+    "all": "#4c78a8",
+    "active_awake": "#4c78a8",
+    "active": "#4c78a8",
+    "quiet_awake": "#f58518",
+    "quiet": "#f58518",
+    "nrem": "#54a24b",
+    "rem": "#e45756",
 }
 
 COMPARTMENT_ACCENTS = {
@@ -120,10 +122,10 @@ def _state_family(state: Any) -> str:
             return str(_main_state_family_label(text))
         except Exception:
             pass
-    if text.startswith("active") or text in {"running", "moving"}:
-        return "active"
+    if text.startswith("active_awake") or text.startswith("active") or text in {"running", "moving"}:
+        return "active_awake"
     if text.startswith("quiet") or text in {"still", "wake", "rest"}:
-        return "quiet"
+        return "quiet_awake"
     if text.startswith("nrem"):
         return "nrem"
     if text.startswith("rem"):

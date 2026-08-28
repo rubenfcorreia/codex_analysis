@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 import numpy as np
 from scipy import stats
 
-from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
+from analysis.shared.state_utils import canonical_state_label, derive_animal_id, derive_date, make_day_id, state_display_color, state_display_label
 
 WINDOW_LABELS: Tuple[str, ...] = ('overall', 'nrem', 'rem')
 WINDOW_DISPLAY_LABELS = {
@@ -39,6 +39,21 @@ ROI_SPLIT_QUADRANT_GROUPS: Tuple[Tuple[str, str, str], ...] = (
     ('low_activity_high_frequency', 'Low activity / high frequency', '#f58518'),
     ('low_activity_low_frequency', 'Low activity / low frequency', '#e45756'),
 )
+ROI_SPLIT_GROUP_HATCHES: Dict[str, str] = {
+    'high_activity_high_frequency': '///',
+    'high_activity_low_frequency': '\\',
+    'low_activity_high_frequency': 'xxx',
+    'low_activity_low_frequency': '...',
+    'more_active': '///',
+    'less_active': '\\',
+    'higher_frequency': '///',
+    'lower_frequency': '\\',
+}
+
+
+def split_group_hatch(group_name: Any) -> str:
+    group_key = canonical_state_label(group_name)
+    return ROI_SPLIT_GROUP_HATCHES.get(group_key, '///')
 
 
 def _as_float(value: Any) -> float:
@@ -47,6 +62,17 @@ def _as_float(value: Any) -> float:
     except (TypeError, ValueError):
         return float('nan')
     return float(result) if np.isfinite(result) else float('nan')
+
+
+def _normalize_basis_day_key(value: Any) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if '|' in text:
+        parts = [part for part in text.split('|') if part]
+        if len(parts) >= 2:
+            return make_day_id(parts[0], parts[1])
+    return make_day_id(derive_animal_id(text), derive_date(text))
 
 
 def estimate_frame_duration_seconds(time: Sequence[Any]) -> float:
@@ -157,13 +183,10 @@ def _state_matches_window(state: str, window: str) -> bool:
 
 
 def _row_session_id(row: Mapping[str, Any]) -> str:
-    for key in ('expid', 'day_id'):
-        value = row.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
+    for key in ('expid', 'exp_id', 'day_id'):
+        normalized = _normalize_basis_day_key(row.get(key))
+        if normalized:
+            return normalized
     return ''
 
 
@@ -396,17 +419,17 @@ def split_group_specs_for_branch(split_name: Any, split_mode: Any) -> List[Dict[
     split_key = canonical_state_label(split_mode)
     if split_key in {'activity_frequency', 'activity_frequency_split', 'quadrant'}:
         return [
-            {'group': group, 'label': label, 'color': color}
+            {'group': group, 'label': label, 'color': color, 'hatch': split_group_hatch(group)}
             for group, label, color in ROI_SPLIT_QUADRANT_GROUPS
         ]
     split_name_key = canonical_state_label(split_name)
     if split_name_key in {'frequency', 'frequency_split', 'event_frequency', 'event_frequency_split', 'firing_rate'}:
         return [
-            {'group': group, 'label': label, 'color': color}
+            {'group': group, 'label': label, 'color': color, 'hatch': split_group_hatch(group)}
             for group, label, color in ROI_SPLIT_FREQUENCY_BINARY_GROUPS
         ]
     return [
-        {'group': group, 'label': label, 'color': color}
+        {'group': group, 'label': label, 'color': color, 'hatch': split_group_hatch(group)}
         for group, label, color in ROI_SPLIT_ACTIVITY_BINARY_GROUPS
     ]
 
@@ -416,6 +439,7 @@ def _group_display_map(group_specs: Sequence[Mapping[str, Any]]) -> Dict[str, Di
         str(spec.get('group') or '').strip().lower(): {
             'label': str(spec.get('label') or '').strip(),
             'color': str(spec.get('color') or '#4c78a8').strip(),
+            'hatch': str(spec.get('hatch') or split_group_hatch(spec.get('group'))).strip(),
         }
         for spec in group_specs
         if str(spec.get('group') or '').strip()
@@ -432,24 +456,34 @@ def _group_summary_string(group_specs: Sequence[Mapping[str, Any]], group_counts
     return ';'.join(parts)
 
 
+
+
+def _split_group_lookup_key(row: Mapping[str, Any]) -> Tuple[str, ...]:
+    return tuple(
+        str(row.get(field) or '').strip().lower()
+        for field in ('roi_type', 'compartment', 'branch_name', 'basis_name', 'split_name', 'split_mode', 'subject_id')
+    )
+
+
 def annotate_rows_with_split_group(
     rows: Sequence[Mapping[str, Any]],
     membership_rows: Sequence[Mapping[str, Any]],
     *,
     group_column: str = 'split_group',
 ) -> List[Dict[str, Any]]:
-    membership_lookup: Dict[str, Dict[str, Any]] = {}
+    membership_lookup: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     for row in membership_rows or []:
         if not isinstance(row, Mapping):
             continue
-        subject_id = str(row.get('subject_id') or '').strip()
         group = str(row.get('group') or '').strip()
-        if not subject_id or not group:
+        key = _split_group_lookup_key(row)
+        if not any(key) or not group:
             continue
-        membership_lookup[subject_id] = {
+        membership_lookup[key] = {
             'group': group,
             'group_display': str(row.get('group_display') or group).strip(),
             'group_color': str(row.get('group_color') or '').strip(),
+            'group_hatch': str(row.get('group_hatch') or '').strip(),
             'group_rank': row.get('rank'),
         }
 
@@ -458,29 +492,40 @@ def annotate_rows_with_split_group(
         if not isinstance(row, Mapping):
             continue
         payload = dict(row)
-        subject_id = str(
-            row.get('subject_id')
-            or row.get('unit_id')
-            or row.get('global_soma_id')
-            or row.get('global_bouton_id')
-            or row.get('global_dendrite_id')
-            or row.get('global_spine_id')
-            or row.get('roi_id')
-            or row.get('roi_key')
-            or ''
-        ).strip()
-        group_info = membership_lookup.get(subject_id)
+        key = _split_group_lookup_key(
+            {
+                'roi_type': row.get('roi_type'),
+                'compartment': row.get('compartment'),
+                'branch_name': row.get('branch_name'),
+                'basis_name': row.get('basis_name'),
+                'split_name': row.get('split_name'),
+                'split_mode': row.get('split_mode'),
+                'subject_id': (
+                    row.get('subject_id')
+                    or row.get('unit_id')
+                    or row.get('global_soma_id')
+                    or row.get('global_bouton_id')
+                    or row.get('global_dendrite_id')
+                    or row.get('global_spine_id')
+                    or row.get('roi_id')
+                    or row.get('roi_key')
+                    or ''
+                ),
+            }
+        )
+        group_info = membership_lookup.get(key)
         if group_info:
             payload[group_column] = group_info['group']
             payload[f'{group_column}_display'] = group_info['group_display']
             if group_info['group_color']:
                 payload[f'{group_column}_color'] = group_info['group_color']
+            if group_info.get('group_hatch'):
+                payload[f'{group_column}_hatch'] = group_info['group_hatch']
             group_rank = group_info.get('group_rank')
             if group_rank is not None:
                 payload[f'{group_column}_rank'] = group_rank
         annotated.append(payload)
     return annotated
-
 
 def build_roi_split_results(
     rows: Sequence[Mapping[str, Any]],
@@ -510,9 +555,10 @@ def build_roi_split_results(
         if canonical_state_label(state)
     }
     sleep_expid_set = {
-        str(expid).strip()
+        key
         for expid in (sleep_expids or [])
-        if str(expid).strip()
+        for key in [_normalize_basis_day_key(expid)]
+        if key
     }
     compartment_label = str(compartment or '').strip().lower() or None
     branch_label = canonical_state_label(branch_name)
@@ -676,6 +722,7 @@ def build_roi_split_results(
             'group': group,
             'group_display': group_meta.get(group, {}).get('label', group),
             'group_color': group_meta.get(group, {}).get('color', '#4c78a8'),
+            'group_hatch': group_meta.get(group, {}).get('hatch', split_group_hatch(group)),
             'rank': int(index),
             'score': float(row.get('score', float('nan'))),
             'state_duration_s': float(row.get('state_duration_s', float('nan'))),
@@ -959,5 +1006,6 @@ __all__ = [
     'build_roi_split_results',
     'estimate_frame_duration_seconds',
     'split_group_specs_for_branch',
+    'split_group_hatch',
     'summarize_mask_duration',
 ]

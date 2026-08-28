@@ -36,7 +36,7 @@ from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PR
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.state_utils import resolve_repo_path
-from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
+from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results, split_group_hatch
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
@@ -292,7 +292,10 @@ LEGACY_MOVIE_STATE_LABEL_ALIASES = {
 }
 
 STATE_FAMILY_COLORS = {
+    "all": "#4c78a8",
+    "active_awake": "#4c78a8",
     "active": "#4c78a8",
+    "quiet_awake": "#f58518",
     "quiet": "#f58518",
     "nrem": "#54a24b",
     "rem": "#e45756",
@@ -300,7 +303,10 @@ STATE_FAMILY_COLORS = {
 }
 
 STATE_FAMILY_APICAL_FILL_COLORS = {
+    "all": "#dfe7ef",
+    "active_awake": "#c6d4e3",
     "active": "#c6d4e3",
+    "quiet_awake": "#fcd8b5",
     "quiet": "#fcd8b5",
     "nrem": "#c8e1c5",
     "rem": "#f6c9c9",
@@ -314,10 +320,12 @@ def canonical_state_label(state_label: Any) -> str:
 
 def state_family_label(state_label: Any) -> str:
     canonical = canonical_state_label(state_label)
-    if canonical.startswith("active"):
-        return "active"
+    if canonical in {"all", "overall", "total"}:
+        return "all"
+    if canonical.startswith("active_awake") or canonical.startswith("active"):
+        return "active_awake"
     if canonical.startswith("quiet"):
-        return "quiet"
+        return "quiet_awake"
     if canonical.startswith("nrem"):
         return "nrem"
     if canonical.startswith("rem"):
@@ -336,6 +344,35 @@ def state_display_label(state_label: Any) -> str:
 
 def state_display_color(state_label: Any) -> str:
     return STATE_FAMILY_COLORS.get(state_family_label(state_label), "#444444")
+
+
+def _mix_state_family_color(color: Any, target: str, amount: float) -> str:
+    try:
+        from matplotlib import colors as mcolors
+
+        base_rgb = np.asarray(mcolors.to_rgb(str(color)), dtype=float)
+        target_rgb = np.asarray(mcolors.to_rgb(str(target)), dtype=float)
+        mix_amount = float(np.clip(amount, 0.0, 1.0))
+        mixed = (1.0 - mix_amount) * base_rgb + mix_amount * target_rgb
+        return mcolors.to_hex(mixed, keep_alpha=False)
+    except Exception:
+        return str(color)
+
+
+def state_family_basal_fill_color(state_label: Any) -> str:
+    family = state_family_label(state_label)
+    base_color = STATE_FAMILY_COLORS.get(family, "#444444")
+    if family == "neutral":
+        return STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6")
+    return base_color
+
+
+def state_family_apical_fill_color(state_label: Any) -> str:
+    family = state_family_label(state_label)
+    base_color = STATE_FAMILY_COLORS.get(family, "#444444")
+    if family == "neutral":
+        return STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6")
+    return _mix_state_family_color(base_color, "#ffffff", 0.55)
 
 MOVIE_STATE_LABELS = [
     combined_movie_state_label(sleep_label, trial_type)
@@ -5780,74 +5817,101 @@ def _render_state_summary_comparison_panel_figure(
 ) -> Optional[Any]:
     if plt is None:
         return None
+    from matplotlib import colors as mcolors
+    from matplotlib.patches import Patch
+
     fig_width = min(max(6.9, 0.76 * len(state_order) + 2.8), 8.5)
     fig_height = min(max(4.2, POSTER_DOUBLE_FIGSIZE[1] - 0.7), 4.9)
     fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
     ax = ax.ravel()[0]
     rng = np.random.default_rng(7)
     all_data: List[np.ndarray] = []
-    compartment_specs = [
-        ("basal", basal_summary, "#4C72B0", -0.18),
-        ("apical", apical_summary, "#DD8452", 0.18),
-    ]
-    for compartment, summary, color, offset in compartment_specs:
-        positions: List[float] = []
-        data: List[np.ndarray] = []
-        for idx, state in enumerate(state_order, start=1):
-            arr = flatten_state_summary_values(summary.get(state, {}))
-            if arr.size:
-                positions.append(idx + offset)
-                data.append(arr)
-        if not data:
-            continue
-        bp = ax.boxplot(data, positions=positions, widths=0.28, patch_artist=True, showfliers=False)
-        _set_boxplot_colors(bp, [color] * len(data))
-        for pos, arr in zip(positions, data):
-            jitter = rng.uniform(-0.08, 0.08, size=arr.size)
-            ax.scatter(np.full(arr.size, pos) + jitter, arr, s=14, alpha=0.48, color=color, edgecolor="none")
-        all_data.extend(data)
+    positions: List[float] = []
+    data: List[np.ndarray] = []
+    facecolors: List[Any] = []
+    edgecolors: List[str] = []
+    scatter_colors: List[str] = []
+    basal_offset = -0.18
+    apical_offset = 0.18
+
+    for idx, state in enumerate(state_order, start=1):
+        family = state_family_label(state)
+        edge_color = STATE_FAMILY_COLORS.get(family, "#444444")
+        basal_fill = state_family_basal_fill_color(state)
+        apical_fill = state_family_apical_fill_color(state)
+
+        basal_values = flatten_state_summary_values(basal_summary.get(state, {}))
+        if basal_values.size:
+            positions.append(idx + basal_offset)
+            data.append(basal_values)
+            facecolors.append(basal_fill)
+            edgecolors.append(edge_color)
+            scatter_colors.append(edge_color)
+            all_data.append(basal_values)
+
+        apical_values = flatten_state_summary_values(apical_summary.get(state, {}))
+        if apical_values.size:
+            positions.append(idx + apical_offset)
+            data.append(apical_values)
+            facecolors.append(apical_fill)
+            edgecolors.append(edge_color)
+            scatter_colors.append(edge_color)
+            all_data.append(apical_values)
+
+    if not data:
+        plt.close(fig)
+        return None
+
+    bp = ax.boxplot(data, positions=positions, widths=0.28, patch_artist=True, showfliers=False)
+    for patch, face_color, edge_color in zip(bp.get("boxes", []), facecolors, edgecolors):
+        patch.set_facecolor(face_color)
+        patch.set_edgecolor(edge_color)
+        patch.set_linewidth(2.0)
+
+    for position, values, scatter_color in zip(positions, data, scatter_colors):
+        jitter = rng.uniform(-0.08, 0.08, size=values.size)
+        ax.scatter(np.full(values.size, position) + jitter, values, s=14, alpha=0.48, color=scatter_color, edgecolor="none")
+
     set_requested_state_ticks(ax, state_order)
     ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
     ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
     _pad_boxplot_ylim(ax, all_data, y_limit=y_limit)
     y0, y1 = ax.get_ylim()
     y_range = max(float(y1 - y0), 1e-6)
-    for compartment, summary, color, offset in compartment_specs:
-        positions: List[float] = []
-        data: List[np.ndarray] = []
-        for idx, state in enumerate(state_order, start=1):
-            arr = flatten_state_summary_values(summary.get(state, {}))
-            if arr.size:
-                positions.append(idx + offset)
-                data.append(arr)
-        for pos, arr in zip(positions, data):
-            annotate_sample_size(
-                ax,
-                pos,
-                min(float(np.nanmax(arr)) + 0.03 * y_range, float(y1) - 0.01 * y_range),
-                f"n={arr.size}",
-                fontsize=POSTER_NOTE_SIZE - 1,
-                color=color,
-            )
+    for position, values, scatter_color in zip(positions, data, scatter_colors):
+        annotate_sample_size(
+            ax,
+            position,
+            min(float(np.nanmax(values)) + 0.03 * y_range, float(y1) - 0.01 * y_range),
+            f"n={values.size}",
+            fontsize=POSTER_NOTE_SIZE - 1,
+            color=scatter_color,
+        )
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
     ax.grid(axis="y", alpha=0.25)
-    comparison_subset = [
-        {
-            "x1": float(idx - 0.18),
-            "x2": float(idx + 0.18),
-            "shuffle_p": row.get("shuffle_p"),
-        }
-        for row in (comparison_rows or [])
-        if str(row.get("comparison")) == "basal_vs_apical"
-        and str(row.get("metric")) == metric_key
-        and is_significant_row(row)
-        and str(row.get("state")) in state_order
-        for idx in [state_order.index(str(row.get("state"))) + 1]
-    ]
+
+    comparison_subset: List[Dict[str, Any]] = []
+    for row in comparison_rows or []:
+        if str(row.get("comparison")) != "basal_vs_apical":
+            continue
+        if str(row.get("metric")) != metric_key:
+            continue
+        state = str(row.get("state"))
+        if state not in state_order:
+            continue
+        idx = state_order.index(state) + 1
+        comparison_subset.append(
+            {
+                "x1": float(idx + basal_offset),
+                "x2": float(idx + apical_offset),
+                "shuffle_p": row.get("shuffle_p"),
+            }
+        )
     _draw_boxplot_significance_annotations(ax, comparison_subset)
+
     legend_handles = [
-        Line2D([0], [0], color="#4C72B0", marker="s", linestyle="", markersize=8, label="Basal"),
-        Line2D([0], [0], color="#DD8452", marker="s", linestyle="", markersize=8, label="Apical"),
+        Patch(facecolor="#d1d5db", edgecolor="#555555", label="Basal"),
+        Patch(facecolor="#e5e7eb", edgecolor="#555555", label="Apical"),
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=False, fontsize=POSTER_LEGEND_SIZE)
     annotate_sample_size(
@@ -5862,6 +5926,7 @@ def _render_state_summary_comparison_panel_figure(
     )
     fig.tight_layout()
     return fig
+
 
 
 SPINE_COACTIVITY_FIGURE_SUBDIRS = {
@@ -6325,7 +6390,9 @@ def _state_summary_grouped_rows(
         if compartment_key is not None and str(row.get("compartment") or "").strip().lower() != compartment_key:
             continue
         value = as_float(row.get(metric_name))
-        if not np.isfinite(value):
+        if value is None:
+            continue
+        if not np.isfinite(float(value)):
             continue
         payload = dict(row)
         payload[metric_name] = float(value)
@@ -6351,6 +6418,9 @@ def _state_summary_split_group_order(rows: Sequence[Mapping[str, Any]]) -> Tuple
         color = str(row.get("split_group_color") or "").strip()
         if color and "split_group_color" not in meta:
             meta["split_group_color"] = color
+        hatch = str(row.get("split_group_hatch") or "").strip()
+        if hatch and "split_group_hatch" not in meta:
+            meta["split_group_hatch"] = hatch
         rank_value = row.get("split_group_rank")
         try:
             rank_float = float(rank_value)
@@ -6363,7 +6433,8 @@ def _state_summary_split_group_order(rows: Sequence[Mapping[str, Any]]) -> Tuple
             meta["split_group_rank"] = rank_float
     split_group_order.sort(key=lambda group: (split_group_meta.get(group, {}).get("split_group_rank", float("inf")), group))
     for split_group in split_group_order:
-        split_group_meta.setdefault(split_group, {"split_group": split_group, "split_group_display": split_group})
+        meta = split_group_meta.setdefault(split_group, {"split_group": split_group, "split_group_display": split_group})
+        meta.setdefault("split_group_hatch", split_group_hatch(split_group))
     return split_group_order, split_group_meta
 
 
@@ -6381,27 +6452,20 @@ def _state_summary_compartment_order(rows: Sequence[Mapping[str, Any]]) -> List[
     return compartments
 
 
-def _state_summary_box_style(state_label: Any, compartment: Any) -> Dict[str, Any]:
+def _state_summary_box_style(state_label: Any, compartment: Any, *, split_group: Any = None, use_group_hatches: bool = True) -> Dict[str, Any]:
     family = state_family_label(state_label)
     edge_color = STATE_FAMILY_COLORS.get(family, "#444444")
     if family == "neutral":
         edge_color = "#555555"
     if str(compartment or "").strip().lower() == "apical":
-        face_color = STATE_FAMILY_APICAL_FILL_COLORS.get(family, STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6"))
-        alpha = 1.0
-        hatch = "///"
+        face_color = state_family_apical_fill_color(state_label)
     else:
-        face_color = STATE_FAMILY_COLORS.get(family, "#444444")
-        if family == "neutral":
-            face_color = STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6")
-            alpha = 1.0
-        else:
-            alpha = 0.28
-        hatch = None
+        face_color = state_family_basal_fill_color(state_label)
+    hatch = split_group_hatch(split_group) if use_group_hatches and str(split_group or "").strip() else None
     return {
         "facecolor": face_color,
         "edgecolor": edge_color,
-        "alpha": alpha,
+        "alpha": 1.0,
         "hatch": hatch,
     }
 
@@ -6413,6 +6477,7 @@ def _render_state_summary_grouped_panel_figure(
     state_order: Sequence[str],
     y_limit: Optional[Tuple[float, float]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    use_group_hatches: bool = True,
 ) -> Optional[Any]:
     if plt is None:
         return None
@@ -6498,7 +6563,7 @@ def _render_state_summary_grouped_panel_figure(
                     continue
                 series_values.append(values)
                 series_positions.append(state_position_lookup[state] + compartment_offsets.get(compartment, 0.0) + group_offsets.get(group, 0.0))
-                series_styles.append(_state_summary_box_style(state, compartment))
+                series_styles.append(_state_summary_box_style(state, compartment, split_group=group, use_group_hatches=use_group_hatches))
                 series_states.append(state)
                 series_compartments.append(compartment)
                 series_groups.append(group)
@@ -6572,8 +6637,6 @@ def _render_state_summary_grouped_panel_figure(
     for row in comparison_rows or []:
         if not isinstance(row, Mapping):
             continue
-        if not is_significant_row(row):
-            continue
         x1 = row.get("x1")
         x2 = row.get("x2")
         if x1 is not None and x2 is not None:
@@ -6618,7 +6681,7 @@ def _render_state_summary_grouped_panel_figure(
         legend_handles.extend(
             [
                 Patch(facecolor="#d1d5db", edgecolor="#555555", label="Basal"),
-                Patch(facecolor="#e5e7eb", edgecolor="#555555", hatch="///", label="Apical"),
+                Patch(facecolor="#e5e7eb", edgecolor="#555555", label="Apical"),
             ]
         )
         compartment_legend = ax.legend(
@@ -6634,9 +6697,10 @@ def _render_state_summary_grouped_panel_figure(
         from matplotlib.patches import Patch
         group_handles = [
             Patch(
-                facecolor=str(split_group_meta.get(group, {}).get("split_group_color") or "#4c78a8"),
+                facecolor="#ffffff",
                 edgecolor="#334155",
-                alpha=0.30,
+                linewidth=1.2,
+                hatch=split_group_meta.get(group, {}).get("split_group_hatch") or split_group_hatch(group),
                 label=group_display_lookup.get(group, split_group_meta.get(group, {}).get("split_group_display", group)),
             )
             for group in present_group_keys
@@ -6775,7 +6839,6 @@ def plot_state_summary_compartment_comparison_figure(
                     for row in (basal_results.get("basal_apical_comparisons", []) if isinstance(basal_results, dict) else [])
                     if str(row.get("comparison")) == "basal_vs_apical"
                     and str(row.get("metric")) == metric_name
-                    and is_significant_row(row)
                     and str(row.get("state")) in state_order
                 ]
             panel_fig = _render_state_summary_grouped_panel_figure(
@@ -6785,6 +6848,7 @@ def plot_state_summary_compartment_comparison_figure(
                 state_order,
                 y_limits.get(metric_name) if y_limits else None,
                 comparison_rows=panel_comparisons,
+                use_group_hatches=False,
             )
             if panel_fig is not None:
                 metric_output_path = state_summary_metric_output_dir(
@@ -6808,7 +6872,6 @@ def plot_state_summary_compartment_comparison_figure(
             for row in (comparison_rows or [])
             if str(row.get("comparison")) == "basal_vs_apical"
             and str(row.get("metric")) == metric_name
-            and is_significant_row(row)
             and str(row.get("state")) in state_order
         ]
         panel_fig = _render_state_summary_comparison_panel_figure(
@@ -7986,13 +8049,7 @@ def generate_review_figures(
                         title=spec["title"],
                         state_labels=basal_apical_state_labels,
                         y_limits=comparison_y_limits,
-                        comparison_rows=[
-                            row
-                            for row in results.get("basal_apical_comparisons", [])
-                            if str(row.get("comparison")) == "basal_vs_apical"
-                            and is_significant_row(row)
-                            and str(row.get("state")) in set(basal_apical_state_labels)
-                        ],
+                        comparison_rows=results.get("basal_apical_comparisons", []),
                         cohort_label=str(spec.get("cohort_label") or "all"),
                     )
             except Exception as exc:
@@ -8394,13 +8451,7 @@ def render_analysis_family_figures(
                                 title=spec["title"],
                                 state_labels=basal_apical_state_labels,
                                 y_limits=comparison_y_limits,
-                                comparison_rows=[
-                                    row
-                                    for row in results.get("basal_apical_comparisons", [])
-                                    if str(row.get("comparison")) == "basal_vs_apical"
-                                    and is_significant_row(row)
-                                    and str(row.get("state")) in set(basal_apical_state_labels)
-                                ],
+                                comparison_rows=results.get("basal_apical_comparisons", []),
                             )
                         )
                 except Exception as exc:
@@ -8814,11 +8865,7 @@ def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results
         title="Selected-state summary distributions - Basal vs apical",
         state_labels=basal_apical_state_labels,
         y_limits=comparison_y_limits,
-        comparison_rows=_state_summary_significant_basal_apical_rows(
-            results.get("basal_apical_comparisons", []),
-            state_order=basal_apical_state_labels,
-            comparison_name="basal_vs_apical",
-        ),
+        comparison_rows=results.get("basal_apical_comparisons", []),
     )
     append_entry(
         "state_summary_comparison",

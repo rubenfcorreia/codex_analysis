@@ -30,7 +30,18 @@ def canonical_state_label(label: Any) -> str:
 
 
 def state_family_label(label: Any) -> str:
-    return canonical_state_label(label)
+    canonical = canonical_state_label(label)
+    if canonical in {"all", "overall", "total"}:
+        return "all"
+    if canonical.startswith("active_awake"):
+        return "active_awake"
+    if canonical.startswith("quiet"):
+        return "quiet_awake"
+    if canonical.startswith("nrem"):
+        return "nrem"
+    if canonical.startswith("rem"):
+        return "rem"
+    return canonical
 
 
 def state_display_label(label: Any) -> str:
@@ -40,17 +51,19 @@ def state_display_label(label: Any) -> str:
 def state_display_color(label: Any) -> str:
     palette = {
         "all": "#4c78a8",
+        "active_awake": "#4c78a8",
+        "quiet_awake": "#f58518",
         "run": "#f58518",
         "running": "#f58518",
         "still": "#54a24b",
-        "quiet": "#72b7b2",
-        "nrem": "#b279a2",
+        "quiet": "#f58518",
+        "nrem": "#54a24b",
         "rem": "#e45756",
         "wake": "#ff9da6",
         "active": "#9d755d",
         "inactive": "#bab0ab",
     }
-    return palette.get(canonical_state_label(label), "#4c78a8")
+    return palette.get(state_family_label(label), "#4c78a8")
 
 
 def combined_movie_state_label(sleep_label: Any, trial_type: Any) -> str:
