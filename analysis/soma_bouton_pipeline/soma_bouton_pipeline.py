@@ -1944,7 +1944,17 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             basis_lag_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_lag_rows.items()}
             basis_visual_rows = scope_rows_for_basis(visual_response_rows, basis_name, sleep_expids=basis_sleep_expids)
             branch_first_mixed_model_results: Dict[str, Any] = {}
-            roi_split_membership_rows = leaf_results.get("roi_split", {}).get("membership_rows", []) if isinstance(leaf_results.get("roi_split", {}), dict) else []
+            leaf_roi_split = leaf_results.get("roi_split", {})
+            if not isinstance(leaf_roi_split, dict):
+                leaf_roi_split = {}
+            roi_split_membership_rows = leaf_roi_split.get("membership_rows", [])
+            leaf_split_metadata = {
+                "roi_type": str(leaf_roi_split.get("roi_type") or "").strip(),
+                "branch_name": str(leaf_roi_split.get("branch_name") or branch_name).strip(),
+                "basis_name": str(leaf_roi_split.get("basis_name") or basis_name).strip(),
+                "split_name": str(leaf_roi_split.get("split_name") or "").strip(),
+                "split_mode": str(leaf_roi_split.get("split_mode") or "").strip(),
+            }
 
             def _leaf_state_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
                 if not rows:
@@ -1952,6 +1962,16 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 if not roi_split_membership_rows:
                     return [dict(row) for row in rows]
                 return annotate_rows_with_split_group(rows, roi_split_membership_rows)
+
+            def _leaf_split_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+                if not rows:
+                    return []
+                tagged_rows: List[Dict[str, Any]] = []
+                for row in rows:
+                    payload = dict(row)
+                    payload.update(leaf_split_metadata)
+                    tagged_rows.append(payload)
+                return tagged_rows
 
             for cohort_name in ("all", "responsive", "nonresponsive"):
                 mixed_model_rows = cohort_activity_rows.get(cohort_name, [])
@@ -1963,7 +1983,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     if not compartment_rows:
                         continue
                     split_result = run_split_family(
-                        compartment_rows,
+                        _leaf_split_rows(compartment_rows),
                         roi_split_membership_rows,
                         response_columns=("mean_activity", "event_frequency_per_min"),
                         state_comparison_states=list(analysis_state_order),
