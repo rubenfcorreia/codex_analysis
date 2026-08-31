@@ -33,7 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
-from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results, split_group_hatch
@@ -10203,6 +10203,69 @@ def analysis_results_cache_payload(results: Dict[str, Any]) -> Dict[str, Any]:
         payload.pop(key, None)
     return payload
 
+def _restore_roi_split_from_analysis_tables(results: Dict[str, Any], cache: Dict[str, Any]) -> None:
+    roi_split = results.get("roi_split", {})
+    if isinstance(roi_split, Mapping) and roi_split.get("subject_state_rows"):
+        return
+
+    run_parameters = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    analysis_tables_cache_path = run_parameters.get("analysis_tables_cache_path")
+    if not analysis_tables_cache_path:
+        return
+
+    analysis_tables_cache = load_analysis_tables_cache(Path(str(analysis_tables_cache_path)), rebuild=False)
+    if not isinstance(analysis_tables_cache, dict):
+        return
+    analysis_tables = analysis_tables_cache.get("analysis_tables", {})
+    if not isinstance(analysis_tables, dict):
+        return
+    mixed_model_table = analysis_tables.get("mixed_model_table", {})
+    if not isinstance(mixed_model_table, dict):
+        return
+
+    table_rows = [dict(row) for row in mixed_model_table.get("table_rows", []) if isinstance(row, Mapping)]
+    if not table_rows:
+        return
+
+    analysis_state_selection = results.get("analysis_state_selection", {}) if isinstance(results.get("analysis_state_selection"), dict) else {}
+    selected_states = [
+        str(state)
+        for state in analysis_state_selection.get("state_comparison_states", [])
+        if str(state).strip()
+    ]
+    if not selected_states:
+        selected_states = [
+            str(state)
+            for state in run_parameters.get("state_comparison_states", [])
+            if str(state).strip()
+        ]
+
+    rebuilt_roi_split = build_mixed_model_roi_split_results(
+        cache,
+        {
+            "table_rows": table_rows,
+            "selection": {"state_comparison_states": selected_states},
+        },
+        selected_states,
+        int(run_parameters.get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES),
+    )
+    if not isinstance(rebuilt_roi_split, dict) or not rebuilt_roi_split.get("subject_state_rows"):
+        return
+
+    branch_name = str(results.get("analysis_branch_name") or "").strip().lower()
+    basis_name = str(results.get("analysis_basis_name") or "").strip().lower()
+    if branch_name and basis_name:
+        scoped_roi_split = select_roi_split_leaf(
+            rebuilt_roi_split,
+            branch_name=branch_name,
+            basis_name=basis_name,
+        )
+        if scoped_roi_split.get("subject_state_rows"):
+            results["roi_split"] = scoped_roi_split
+            return
+
+    results["roi_split"] = rebuilt_roi_split
+
 
 def load_cached_analysis_table(
     cache: Dict[str, Any],
@@ -15908,6 +15971,7 @@ def write_analysis_outputs(
 ) -> List[str]:
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
+    _restore_roi_split_from_analysis_tables(results, cache)
     if include_supporting_figures:
         # Save figures first so the JSON report can include their exact file paths.
         step_message("figure generation starting; this may take a while")
@@ -15977,11 +16041,14 @@ def write_analysis_outputs(
             split_response_columns = list((mixed_model_results.get("summary_rows") or {}).keys()) if isinstance(mixed_model_results, dict) else []
             for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
                 leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=sleep_expids)
+                leaf_roi_split = leaf_results.get("roi_split", {})
+                if not isinstance(leaf_roi_split, dict):
+                    leaf_roi_split = {}
                 leaf_split_mixed_model = {}
                 try:
                     leaf_split_mixed_model = run_split_family(
-                        mixed_model_results.get("table_rows", []) if isinstance(mixed_model_results, dict) else [],
-                        leaf_results.get("roi_split", {}).get("membership_rows", []) if isinstance(leaf_results.get("roi_split", {}), dict) else [],
+                        leaf_roi_split.get("subject_state_rows", []),
+                        leaf_roi_split.get("membership_rows", []),
                         response_columns=split_response_columns,
                         state_comparison_states=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", analysis_state_comparison_states)),
                         shuffle_n=shuffle_n,
@@ -18118,6 +18185,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "alerts": list(selection_meta.get("alerts", [])),
     }
     results["family_result_cache_index"] = family_results_cache_index(analysis_run_cache_path)
+    _restore_roi_split_from_analysis_tables(results, analysis_cache)
     # Save the analysis-results cache before figure generation so `plots_only` can still reuse it
     # even if a later plot or poster step fails.
     early_analysis_results_payload = {
