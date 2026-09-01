@@ -1,4 +1,5 @@
 results/
 review_figures/
+.figure_viewer/
 __pycache__/
 *.pyc
