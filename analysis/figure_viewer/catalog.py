@@ -388,7 +388,26 @@ def discover_figure_records(
     if include_review_figures and review_root.exists():
         review_candidates = list(_review_candidates(review_root))
 
-    total_steps = len(summary_manifests) + len(checkpoint_manifests) + len(review_candidates)
+    # Manifests provide metadata, but some pipelines publish figures without one.
+    # The results tree itself is the authoritative fallback for those outputs.
+    direct_result_files: List[Path] = []
+    if results_root.exists():
+        direct_result_files = sorted(
+            path
+            for path in results_root.rglob("*")
+            if (
+                path.is_file()
+                and path.suffix.lower() in IMAGE_SUFFIXES
+                and not {part.lower() for part in path.parts} & {"cache", "entities"}
+            )
+        )
+
+    total_steps = (
+        len(summary_manifests)
+        + len(checkpoint_manifests)
+        + len(review_candidates)
+        + len(direct_result_files)
+    )
     processed_steps = 0
 
     if progress_callback is not None:
@@ -491,6 +510,30 @@ def discover_figure_records(
                     relative_text,
                 )
 
+        for source_path in direct_result_files:
+            context = _path_context(source_path, repo_root)
+            title = _figure_title_from_path(source_path)
+            key = source_path.with_suffix("").resolve().as_posix()
+            _merge_builder(
+                builders.setdefault(key, {}),
+                path=source_path,
+                preview_path=source_path,
+                source_kind="results_filesystem",
+                context=context,
+                title=title,
+                manifest_path=None,
+                metadata={"output_root": str(results_root)},
+            )
+            processed_steps += 1
+            if progress_callback is not None:
+                _emit_progress(
+                    progress_callback,
+                    "Indexing result files",
+                    processed_steps,
+                    total_steps,
+                    source_path.relative_to(repo_root).as_posix(),
+                )
+
     if include_review_figures and review_candidates:
         for source_path, preview_path, source_kind, context, metadata in review_candidates:
             title = _figure_title_from_path(source_path)
@@ -576,6 +619,8 @@ def filter_records(records: Sequence[FigureRecord], filters: FigureFilterState) 
         if normalized.basis and record.basis != normalized.basis:
             continue
         if normalized.family and record.family != normalized.family:
+            continue
+        if normalized.compartment and record.compartment != normalized.compartment:
             continue
         if normalized.cohort and record.cohort != normalized.cohort:
             continue

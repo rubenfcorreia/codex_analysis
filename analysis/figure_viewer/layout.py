@@ -13,6 +13,7 @@ HIERARCHY_FIELDS: Tuple[str, ...] = (
     "split",
     "basis",
     "family",
+    "compartment",
     "cohort",
     "scope",
 )
@@ -23,6 +24,7 @@ FIELD_LABELS: Mapping[str, str] = {
     "split": "Split",
     "basis": "Basis",
     "family": "Family",
+    "compartment": "Compartment",
     "cohort": "Cohort",
     "scope": "Scope",
 }
@@ -35,6 +37,7 @@ class SlotSelection:
     split: str = ""
     basis: str = ""
     family: str = ""
+    compartment: str = ""
     cohort: str = ""
     scope: str = ""
     figure_key: str = ""
@@ -47,6 +50,7 @@ class SlotSelection:
             split=str(self.split or "").strip(),
             basis=str(self.basis or "").strip(),
             family=str(self.family or "").strip(),
+            compartment=str(self.compartment or "").strip(),
             cohort=str(self.cohort or "").strip(),
             scope=str(self.scope or "").strip(),
             figure_key=str(self.figure_key or "").strip(),
@@ -142,6 +146,7 @@ def selection_from_record(record: FigureRecord) -> SlotSelection:
         split=record.split,
         basis=record.basis,
         family=record.family,
+        compartment=record.compartment,
         cohort=record.cohort,
         scope=record.scope,
         figure_key=record.figure_key,
@@ -163,6 +168,7 @@ def selection_with_field(selection: SlotSelection, field_name: str, value: str) 
         split=values["split"],
         basis=values["basis"],
         family=values["family"],
+        compartment=values["compartment"],
         cohort=values["cohort"],
         scope=values["scope"],
         figure_key="",

@@ -713,6 +713,7 @@ class SlotView:
                 split=prefix_values.get("split", ""),
                 basis=prefix_values.get("basis", ""),
                 family=prefix_values.get("family", ""),
+                compartment=prefix_values.get("compartment", ""),
                 cohort=prefix_values.get("cohort", ""),
                 scope=prefix_values.get("scope", ""),
                 initialized=bool(prefix_values),

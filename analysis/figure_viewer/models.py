@@ -12,6 +12,7 @@ class FigureFilterState:
     split: str = ""
     basis: str = ""
     family: str = ""
+    compartment: str = ""
     cohort: str = ""
     scope: str = ""
     search: str = ""
@@ -23,6 +24,7 @@ class FigureFilterState:
             split=str(self.split).strip(),
             basis=str(self.basis).strip(),
             family=str(self.family).strip(),
+            compartment=str(self.compartment).strip(),
             cohort=str(self.cohort).strip(),
             scope=str(self.scope).strip(),
             search=str(self.search).strip(),
