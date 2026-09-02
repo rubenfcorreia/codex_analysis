@@ -7386,6 +7386,7 @@ def generate_analysis_figures(
     if plt is None:
         eprint("[ALERT] matplotlib is unavailable; skipping figure generation.")
         return []
+    _restore_roi_split_from_analysis_tables(results, cache)
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     summary_fig_dir = state_summary_figure_dir(fig_dir)
     saved: List[str] = []
@@ -7511,7 +7512,10 @@ def generate_analysis_figures(
                         "compartment": compartment,
                         "output_name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}.svg",
                         "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
-                        "results": compartment_results,
+                        "results": {
+                            **compartment_results,
+                            "roi_split": _filter_roi_split_by_entity_ids(results.get("roi_split"), compartment_filter),
+                        },
                         "comparison_rows": cohort_metric_rows,
                         "cohort_label": cohort,
                     }
@@ -10265,6 +10269,51 @@ def _restore_roi_split_from_analysis_tables(results: Dict[str, Any], cache: Dict
             return
 
     results["roi_split"] = rebuilt_roi_split
+
+
+def _filter_roi_split_by_entity_ids(
+    roi_split_results: Mapping[str, Any] | None,
+    entity_ids: Sequence[str] | None,
+) -> Dict[str, Any]:
+    if not isinstance(roi_split_results, Mapping):
+        return {}
+    allowed_ids = {str(entity_id) for entity_id in (entity_ids or []) if str(entity_id).strip()}
+    if not allowed_ids:
+        return {}
+    filtered_bundles: List[Dict[str, Any]] = []
+    for bundle in roi_split_results.get("bundles", []):
+        if not isinstance(bundle, Mapping):
+            continue
+        filtered_bundle = dict(bundle)
+        for row_key in ("subject_state_rows", "membership_rows", "comparison_rows", "summary_rows"):
+            rows = bundle.get(row_key, [])
+            filtered_bundle[row_key] = [
+                dict(row) for row in rows
+                if isinstance(row, Mapping)
+                and str(row.get("global_dendrite_id") or row.get("subject_id") or row.get("entity_id") or "") in allowed_ids
+            ] if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)) else []
+        if filtered_bundle["membership_rows"]:
+            filtered_bundles.append(filtered_bundle)
+    subject_state_rows = [dict(row) for b in filtered_bundles for row in b["subject_state_rows"]]
+    membership_rows = [dict(row) for b in filtered_bundles for row in b["membership_rows"]]
+    comparison_rows = [dict(row) for b in filtered_bundles for row in b["comparison_rows"]]
+    summary_rows = [dict(row) for b in filtered_bundles for row in b["summary_rows"]]
+    branches: Dict[str, Dict[str, Any]] = {}
+    for bundle in filtered_bundles:
+        branch = str(bundle.get("branch_name") or bundle.get("split_name") or "split").strip() or "split"
+        basis = str(bundle.get("basis_name") or "all").strip() or "all"
+        branches.setdefault(branch, {})[basis] = bundle
+    return {
+        "branches": branches, "bundles": filtered_bundles,
+        "subject_state_rows": subject_state_rows, "membership_rows": membership_rows,
+        "comparison_rows": comparison_rows, "summary_rows": summary_rows,
+        "counts": {
+            "subject_state_rows": len(subject_state_rows), "membership_rows": len(membership_rows),
+            "comparison_rows": len(comparison_rows), "summary_rows": len(summary_rows),
+            "bundles": len(filtered_bundles), "branches": len(branches),
+            "basis_leaves": len({(str(b.get("branch_name") or ""), str(b.get("basis_name") or "")) for b in filtered_bundles}),
+        },
+    }
 
 
 def load_cached_analysis_table(
