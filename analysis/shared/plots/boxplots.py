@@ -18,7 +18,7 @@ from analysis.shared.statistics import is_significant_row
 
 
 FIGURE_WIDTH_MM = 170.0
-FIGURE_HEIGHT_MM = 75.0
+FIGURE_HEIGHT_MM = 105.0
 FIGURE_TITLE_FS = 12
 FIGURE_LABEL_FS = 11
 FIGURE_TICK_FS = 9

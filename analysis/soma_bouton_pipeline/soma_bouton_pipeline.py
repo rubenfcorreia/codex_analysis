@@ -840,6 +840,22 @@ def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_r
     return result_root
 
 
+
+def _state_plot_rows_for_branch(
+    leaf_roi_split: Mapping[str, Any] | None,
+    fallback_rows: Sequence[Mapping[str, Any]],
+    cohort_name: str,
+) -> List[Dict[str, Any]]:
+    """Use subject-level ROI split rows for the all-cohort leaf plots."""
+    split_rows = [
+        dict(row)
+        for row in (leaf_roi_split or {}).get("subject_state_rows", [])
+        if isinstance(row, Mapping)
+    ]
+    if cohort_name == "all" and any(str(row.get("split_group") or "").strip() for row in split_rows):
+        return split_rows
+    return [dict(row) for row in fallback_rows if isinstance(row, Mapping)]
+
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
     result_root = resolve_repo_path(config["result_root"], repo_root)
@@ -1999,18 +2015,18 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
             for cohort_name in ("all", "responsive", "nonresponsive"):
                 cohort_rows = basis_activity_rows.get(cohort_name, [])
-                if not cohort_rows:
+                plot_rows = _state_plot_rows_for_branch(leaf_roi_split, cohort_rows, cohort_name)
+                if not plot_rows:
                     continue
-                split_rows = _leaf_state_rows(cohort_rows)
                 plot_state_activity(
-                    split_rows,
+                    plot_rows,
                     leaf_root,
                     comparison_rows=basis_state_comparison_rows.get(cohort_name, []),
                     cohort_label=cohort_name,
                     state_order=analysis_state_order,
                 )
                 plot_state_event_frequency(
-                    split_rows,
+                    plot_rows,
                     leaf_root,
                     comparison_rows=basis_state_event_rows.get(cohort_name, []),
                     cohort_label=cohort_name,

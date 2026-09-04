@@ -27,6 +27,7 @@ from analysis.shared.cache_utils import (
 )
 from analysis.shared.state_utils import grouped_experiments_by_day, make_day_id, resolve_repo_path
 from analysis.soma_bouton_pipeline import soma_bouton_pipeline as soma_pipeline
+from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.soma_bouton_pipeline.plots import plot_state_correlation
 from analysis.soma_bouton_pipeline.analysis_families import normalize_analysis_families as soma_normalize
 from analysis.shared.analysis_families.registry import normalize_analysis_families as shared_normalize
@@ -396,4 +397,62 @@ def test_state_correlation_plot_helper_supports_custom_labels(tmp_path: Path) ->
     assert {path.name for path in outputs} == {
         'soma_pairwise_state_summary_boxplots_correlation.png',
         'soma_pairwise_state_summary_boxplots_correlation.svg',
+    }
+
+
+def test_soma_branch_state_plots_use_split_subject_rows_with_unsplit_fallback() -> None:
+    split_rows = [
+        {"state": "quiet_awake", "mean": 1.0, "split_group": "more_active"},
+        {"state": "quiet_awake", "mean": 2.0, "split_group": "less_active"},
+    ]
+    selected = soma_pipeline._state_plot_rows_for_branch(
+        {"subject_state_rows": split_rows},
+        [{"state": "quiet_awake", "mean": 9.0}],
+        "all",
+    )
+    assert selected == split_rows
+    fallback = soma_pipeline._state_plot_rows_for_branch(
+        {"subject_state_rows": split_rows},
+        [{"state": "quiet_awake", "mean": 9.0}],
+        "responsive",
+    )
+    assert fallback == [{"state": "quiet_awake", "mean": 9.0}]
+
+
+def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path, monkeypatch) -> None:
+    captured = []
+    import matplotlib.axes
+
+    original = matplotlib.axes.Axes.boxplot
+
+    def capture(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        captured.extend(result["boxes"])
+        return result
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", capture)
+    rows = [
+        {"state": "quiet_awake", "state_display": "Quiet Awake", "state_color": "#f58518", "split_group": "more_active", "split_group_display": "More active", "split_group_rank": 1, "mean": 1.0},
+        {"state": "quiet_awake", "state_display": "Quiet Awake", "state_color": "#f58518", "split_group": "less_active", "split_group_display": "Less active", "split_group_rank": 2, "mean": 2.0},
+    ]
+    paths = plot_grouped_boxplot_series(
+        rows,
+        tmp_path,
+        state_col="state",
+        value_col="mean",
+        state_order=["quiet_awake"],
+        state_label_col="state_display",
+        state_color_col="state_color",
+        group_col="split_group",
+        group_label_col="split_group_display",
+        group_rank_col="split_group_rank",
+        stem="state",
+        title="State",
+        ylabel="Activity",
+        xlabel="State",
+    )
+    assert paths
+    assert {patch.get_hatch() for patch in captured} == {"///", "\\"}
+    assert {patch.get_edgecolor()[:3] for patch in captured} == {
+        (0.9607843137254902, 0.521568627451, 0.09411764705882353)
     }
