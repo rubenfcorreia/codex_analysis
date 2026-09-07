@@ -327,7 +327,7 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
         "compartments": sorted({row["compartment"] for row in all_rows}),
         "skipped_experiments": skipped,
     }
-    _write_csv(result_root / "csv" / "pca_summary.csv", [{key: value if not isinstance(value, list) else ";".join(value) for key, value in summary.items()}])
+    _write_csv(result_root / "csv" / "pca_summary.csv", [{key: value if not isinstance(value, list) else json.dumps(value) for key, value in summary.items()}])
     for label, result, rows in figure_payloads:
         save_pca_figures(result_root / "figures", label, result, rows)
     with (result_root / "cache" / "run_summary.json").open("w") as handle:
