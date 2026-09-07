@@ -44,7 +44,7 @@ class PCAConfig:
     metric: str = "dF"
     thread_limit: int = 1
     auto_discover_expids: bool = True
-    source_configs: Sequence[str] = ("analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json")
+    source_configs: Sequence[str] = ("analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json", "analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any], repo_root: Path) -> "PCAConfig":
@@ -67,7 +67,7 @@ class PCAConfig:
             metric=str(value.get("metric", "dF")),
             thread_limit=max(1, int(value.get("thread_limit", 1))),
             auto_discover_expids=bool(value.get("auto_discover_expids", True)),
-            source_configs=tuple(value.get("source_configs", ("analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json"))),
+            source_configs=tuple(value.get("source_configs", ("analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json", "analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json"))),
         )
 
 
