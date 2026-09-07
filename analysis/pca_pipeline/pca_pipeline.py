@@ -88,8 +88,12 @@ def discover_expids(config: PCAConfig, repo_root: Path) -> Tuple[Tuple[str, ...]
         except (OSError, json.JSONDecodeError) as exc:
             LOGGER.warning("Could not read source config %s: %s", path, exc)
             continue
-        movies.extend(str(item) for item in source.get("movie_expids", []) if str(item).strip())
-        sleeps.extend(str(item) for item in source.get("sleep_expids", []) if str(item).strip())
+        source_movies = [str(item) for item in source.get("movie_expids", []) if str(item).strip()]
+        source_sleeps = [str(item) for item in source.get("sleep_expids", []) if str(item).strip()]
+        movies.extend(source_movies)
+        sleeps.extend(source_sleeps)
+        source_label = "soma/bouton" if "soma_bouton" in path.name else "dendrite/spine"
+        LOGGER.info("Found %d movie and %d sleep expIDs from %s config", len(source_movies), len(source_sleeps), source_label)
     return tuple(dict.fromkeys(movies)), tuple(dict.fromkeys(sleeps))
 
 
