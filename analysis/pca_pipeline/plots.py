@@ -68,6 +68,17 @@ def save_pca_figures(root: Path, label: str, result: Mapping[str, Any], rows: Se
         fig.tight_layout()
         fig.savefig(out / f"{label}_PC1_PC2_{filename}.png", dpi=160)
         plt.close(fig)
+    state_labels = np.asarray([str(row.get("state", "unknown")) for row in rows])
+    state_families = np.asarray(["awake" if "awake" in value else ("nrem" if "nrem" in value else ("rem" if "rem" in value else value)) for value in state_labels])
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for value in sorted(set(state_families)):
+        idx = state_families == value
+        ax.scatter(scores[idx, 0], scores[idx, 1], s=8, alpha=0.45, label=value)
+    ax.set(xlabel="PC1", ylabel="PC2", title=f"{label}: awake vs NREM vs REM")
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out / f"{label}_PC1_PC2_state_family.png", dpi=160)
+    plt.close(fig)
     for color_key, filename in (("locomotion", "locomotion"), ("pupil_size", "pupil")):
         values = np.asarray([float(row.get(color_key, np.nan)) for row in rows])
         if not np.isfinite(values).any():
