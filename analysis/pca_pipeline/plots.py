@@ -38,25 +38,6 @@ def save_pca_figures(root: Path, label: str, result: Mapping[str, Any], rows: Se
     plt.close(fig)
     if scores.shape[1] < 2:
         return
-    n_components = min(scores.shape[1], variance.size)
-    fig, axes = plt.subplots(n_components, n_components, figsize=(2.4 * n_components, 2.4 * n_components), squeeze=False)
-    for row_idx in range(n_components):
-        for col_idx in range(n_components):
-            ax = axes[row_idx, col_idx]
-            if row_idx == col_idx:
-                ax.hist(scores[:, col_idx], bins=30, color="#4c78a8", alpha=0.8)
-                ax.set_title(f"PC{col_idx + 1}: {variance[col_idx] * 100:.1f}%", fontsize=9)
-            else:
-                ax.scatter(scores[:, col_idx], scores[:, row_idx], s=4, alpha=0.35, color="#4c78a8", rasterized=True)
-            if row_idx == n_components - 1:
-                ax.set_xlabel(f"PC{col_idx + 1}")
-            if col_idx == 0:
-                ax.set_ylabel(f"PC{row_idx + 1}")
-            ax.tick_params(labelsize=7)
-    fig.suptitle(f"{label}: all principal components", y=1.0)
-    fig.tight_layout()
-    fig.savefig(out / f"{label}_all_PCs.png", dpi=160)
-    plt.close(fig)
     for color_key, filename in (("state", "state"), ("visual_condition", "visual_condition")):
         labels = np.asarray([str(row.get(color_key, "unknown")) for row in rows])
         fig, ax = plt.subplots(figsize=(6, 5))
