@@ -221,6 +221,15 @@ def _metadata_for_context(ctx: Any, time: np.ndarray, selected_states: Sequence[
     return metadata
 
 
+def _window_state_label(values: np.ndarray, time: np.ndarray, start: float, window_s: float) -> str:
+    left = int(np.searchsorted(time, start, side="left"))
+    right = int(np.searchsorted(time, start + window_s, side="left"))
+    labels = [str(value) for value in np.asarray(values[left:right], dtype=object) if str(value) != "unlabeled"]
+    if not labels:
+        return "unlabeled"
+    return max(set(labels), key=labels.count)
+
+
 def _window_nanmean(values: np.ndarray, time: np.ndarray, start: float, window_s: float) -> float:
     left = int(np.searchsorted(time, start, side="left"))
     right = int(np.searchsorted(time, start + window_s, side="left"))
@@ -247,7 +256,7 @@ def _rows_for_pca(ctx: Any, compartment: str, matrix: np.ndarray, time: np.ndarr
             "compartment": compartment,
             "window_start": float(start),
             "window_end": float(start + cfg.window_s),
-            "state": str(metadata["state"][min(int(np.searchsorted(time, start)), time.size - 1)]),
+            "state": _window_state_label(metadata["state"], time, start, cfg.window_s),
             "locomotion": _window_nanmean(metadata["locomotion"], time, start, cfg.window_s),
             "pupil_size": _window_nanmean(metadata["pupil_size"], time, start, cfg.window_s),
             "visual_condition": str(metadata["visual_condition"][0]),
@@ -295,7 +304,7 @@ def _group_pca_rows(contexts: Sequence[Any], compartment: str, cfg: PCAConfig) -
             rows.append({
                 "animal_id": ctx.animal_id, "day_id": ctx.day_id, "expid": ctx.expid, "session_id": ctx.expid,
                 "compartment": compartment, "window_start": start, "window_end": start + cfg.window_s,
-                "state": str(metadata["state"][min(int(np.searchsorted(time, start)), time.size - 1)]),
+                "state": _window_state_label(metadata["state"], time, start, cfg.window_s),
                 "locomotion": _window_nanmean(metadata["locomotion"], time, start, cfg.window_s),
                 "pupil_size": _window_nanmean(metadata["pupil_size"], time, start, cfg.window_s),
                 "visual_condition": str(metadata["visual_condition"][0]),
