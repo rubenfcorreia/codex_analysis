@@ -418,7 +418,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     repo_root = Path(__file__).resolve().parents[2]
     summary = run_pca_pipeline(_load_config(args.config, repo_root), repo_root)
-    LOGGER.info("PCA complete: %s", summary)
+    LOGGER.info("PCA complete: %d rows across %d days; compartments=%s; skipped=%d", summary["n_rows"], len(summary["days"]), ",".join(summary["compartments"]) or "none", len(summary["skipped_experiments"]))
 
 
 if __name__ == "__main__":
