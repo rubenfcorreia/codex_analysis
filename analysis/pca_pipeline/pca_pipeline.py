@@ -289,7 +289,9 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
         ctx = build_experiment_context(expid, mode, config.soma_channel, config.bouton_channel, repo_root=repo_root)
         contexts[expid] = ctx
         time = shared_time_axis(ctx)
+        LOGGER.info("[%s] processing %s session", ctx.day_id, expid)
         for compartment, bundle in (("soma", ctx.soma), ("bouton", ctx.bouton)):
+            LOGGER.info("[%s] PCA compartment=%s", ctx.day_id, compartment)
             matrix = bundle.matrix(preferred_keys=(config.metric, "Spikes", "F"))
             rows, result = _rows_for_pca(ctx, compartment, matrix, time, config)
             all_rows.extend(rows)
@@ -327,7 +329,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Exploratory same-day PCA of soma and bouton activity.")
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     repo_root = Path(__file__).resolve().parents[2]
     summary = run_pca_pipeline(_load_config(args.config, repo_root), repo_root)
     LOGGER.info("PCA complete: %s", summary)
