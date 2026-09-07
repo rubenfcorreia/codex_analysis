@@ -186,7 +186,10 @@ def _metadata_for_context(ctx: Any, time: np.ndarray, selected_states: Sequence[
             pupil = _interp_series(pupil_path, time, keys)
             if np.isfinite(pupil).any():
                 current = metadata["pupil_size"]
-                metadata["pupil_size"] = np.nanmean(np.vstack([current, pupil]), axis=0)
+                stacked = np.vstack([current, pupil])
+                counts = np.sum(np.isfinite(stacked), axis=0)
+                totals = np.nansum(stacked, axis=0)
+                metadata["pupil_size"] = np.divide(totals, counts, out=np.full(counts.shape, np.nan, dtype=float), where=counts > 0)
                 break
     metadata["visual_condition"][:] = "visual" if ctx.mode == "movie" else "no_visual"
     return metadata
