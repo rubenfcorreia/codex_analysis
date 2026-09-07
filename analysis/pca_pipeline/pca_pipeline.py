@@ -71,6 +71,24 @@ class PCAConfig:
         )
 
 
+def _source_type_for_expid(expid: str, config: PCAConfig, repo_root: Path) -> str:
+    matches: List[str] = []
+    for raw_path in config.source_configs:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = repo_root / path
+        if not path.exists():
+            continue
+        try:
+            with path.open() as handle:
+                source = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if expid in source.get("movie_expids", []) or expid in source.get("sleep_expids", []):
+            matches.append("soma/bouton" if "soma_bouton" in path.name else "dendrite/spine")
+    return " and ".join(dict.fromkeys(matches)) or "unknown"
+
+
 def discover_expids(config: PCAConfig, repo_root: Path) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
     """Read experiment IDs from the existing analysis configs."""
     movies: List[str] = []
@@ -344,7 +362,8 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
         try:
             ctx = build_experiment_context(expid, mode, config.soma_channel, config.bouton_channel, repo_root=repo_root)
         except (FileNotFoundError, KeyError, ValueError) as exc:
-            LOGGER.warning("[%s] skipping %s: %s", make_day_id(derive_animal_id(expid), derive_date(expid)), expid, exc)
+            source_type = _source_type_for_expid(expid, config, repo_root)
+            LOGGER.warning("[%s] %s experiment; skipping %s for soma/bouton PCA: %s", make_day_id(derive_animal_id(expid), derive_date(expid)), source_type, expid, exc)
             skipped.append({"expid": expid, "mode": mode, "reason": str(exc)})
             continue
         contexts[expid] = ctx
