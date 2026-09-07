@@ -278,6 +278,7 @@ def _load_config(path: Path, repo_root: Path) -> PCAConfig:
 
 def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
     result_root = ensure_dir(config.output_root)
+    ensure_dir(result_root / "cache")
     all_rows: List[Dict[str, Any]] = []
     contexts: Dict[str, Any] = {}
     figure_payloads: List[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]] = []
