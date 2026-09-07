@@ -19,6 +19,16 @@ def save_pca_figures(root: Path, label: str, result: Mapping[str, Any], rows: Se
     fig.tight_layout()
     fig.savefig(out / f"{label}_explained_variance.png", dpi=160)
     plt.close(fig)
+    fig, ax = plt.subplots(figsize=(6, 4))
+    pc_numbers = np.arange(1, variance.size + 1)
+    ax.bar(pc_numbers, variance * 100.0, color="#4c78a8", alpha=0.75, label="Individual")
+    ax.plot(pc_numbers, np.cumsum(variance) * 100.0, color="#e45756", marker="o", label="Cumulative")
+    ax.set(xlabel="Number of PCs", ylabel="Explained variance (%)", title=f"{label}: variance by PC")
+    ax.set_xticks(pc_numbers)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(out / f"{label}_variance_by_PC.png", dpi=160)
+    plt.close(fig)
     if scores.shape[1] < 2:
         return
     n_components = min(scores.shape[1], variance.size)
