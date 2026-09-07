@@ -1,0 +1,19 @@
+{
+  "movie_expids": [],
+  "sleep_expids": [],
+  "auto_discover_expids": true,
+  "source_configs": ["analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json", "analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json"],
+  "output_root": "results/pca_pipeline",
+  "window_s": 1.0,
+  "min_valid_fraction": 0.8,
+  "min_roi_std": 1e-9,
+  "n_components": 5,
+  "thread_limit": 1,
+  "thread_limit": 1,
+  "soma_channel": 1,
+  "bouton_channel": 0,
+  "selected_states": ["quiet_awake", "nrem", "rem", "running", "still", "all"],
+  "include_spines": false,
+  "spine_sources": [],
+  "metric": "dF"
+}
