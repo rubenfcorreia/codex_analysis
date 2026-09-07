@@ -194,6 +194,14 @@ def _metadata_for_context(ctx: Any, time: np.ndarray, selected_states: Sequence[
     state_masks = state_masks_for_context(ctx, selected_states)
     if not state_masks:
         state_masks = state_masks_for_context(ctx, ())
+    if ctx.mode == "movie" and state_masks:
+        covered = np.zeros(time.shape, dtype=bool)
+        for mask in state_masks.values():
+            mask = np.asarray(mask, dtype=bool)
+            if mask.size == time.size:
+                covered |= mask
+        state_masks = dict(state_masks)
+        state_masks["intertrial"] = ~covered
     metadata: Dict[str, np.ndarray] = {
         "state": np.full(time.shape, "unlabeled", dtype=object),
         "locomotion": np.full(time.shape, np.nan),
