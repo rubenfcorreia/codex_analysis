@@ -192,6 +192,8 @@ def _interp_series(path: Path, target_time: np.ndarray, keys: Sequence[str]) -> 
 
 def _metadata_for_context(ctx: Any, time: np.ndarray, selected_states: Sequence[str]) -> Dict[str, np.ndarray]:
     state_masks = state_masks_for_context(ctx, selected_states)
+    if not state_masks:
+        state_masks = state_masks_for_context(ctx, ())
     metadata: Dict[str, np.ndarray] = {
         "state": np.full(time.shape, "unlabeled", dtype=object),
         "locomotion": np.full(time.shape, np.nan),
