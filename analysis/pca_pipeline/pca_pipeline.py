@@ -234,6 +234,53 @@ def _rows_for_pca(ctx: Any, compartment: str, matrix: np.ndarray, time: np.ndarr
     return rows, result
 
 
+def _group_pca_rows(contexts: Sequence[Any], compartment: str, cfg: PCAConfig) -> Tuple[List[Dict[str, Any]], Dict[str, np.ndarray]] | None:
+    if not contexts:
+        return [], {}
+    first_bundle = contexts[0].soma if compartment == "soma" else contexts[0].bouton
+    reference_ids = first_bundle.roi_ids()
+    window_parts: List[np.ndarray] = []
+    start_parts: List[np.ndarray] = []
+    context_parts: List[Any] = []
+    for ctx in contexts:
+        bundle = ctx.soma if compartment == "soma" else ctx.bouton
+        if bundle.roi_ids() != reference_ids:
+            LOGGER.warning("[%s] ROI registration mismatch for %s; using session-level PCA", ctx.day_id, compartment)
+            return None
+        time = shared_time_axis(ctx)
+        windows, starts, valid = make_window_matrix(bundle.matrix(preferred_keys=(cfg.metric, "Spikes", "F")), time, cfg.window_s, cfg.min_valid_fraction)
+        if windows.size:
+            window_parts.append(windows[valid])
+            start_parts.append(starts[valid])
+            context_parts.extend([ctx] * int(valid.sum()))
+    if not window_parts:
+        return [], {}
+    windows = np.vstack(window_parts)
+    starts = np.concatenate(start_parts)
+    result = fit_population_pca(windows, n_components=cfg.n_components, min_roi_std=cfg.min_roi_std, thread_limit=cfg.thread_limit)
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    for ctx in contexts:
+        count = sum(1 for item in context_parts if item is ctx)
+        if not count:
+            continue
+        time = shared_time_axis(ctx)
+        metadata = _metadata_for_context(ctx, time, cfg.selected_states)
+        for row_idx in range(offset, offset + count):
+            start = float(starts[row_idx])
+            rows.append({
+                "animal_id": ctx.animal_id, "day_id": ctx.day_id, "expid": ctx.expid, "session_id": ctx.expid,
+                "compartment": compartment, "window_start": start, "window_end": start + cfg.window_s,
+                "state": str(metadata["state"][min(int(np.searchsorted(time, start)), time.size - 1)]),
+                "locomotion": _window_nanmean(metadata["locomotion"], time, start, cfg.window_s),
+                "pupil_size": _window_nanmean(metadata["pupil_size"], time, start, cfg.window_s),
+                "visual_condition": str(metadata["visual_condition"][0]),
+                **{f"PC{pc_idx}": float(score) for pc_idx, score in enumerate(result["scores"][row_idx], start=1)},
+            })
+        offset += count
+    return rows, result
+
+
 def _spine_source_rows(source: Mapping[str, Any], contexts: Mapping[str, Any], cfg: PCAConfig, repo_root: Path) -> Tuple[List[Dict[str, Any]], Dict[str, np.ndarray]]:
     source_path = Path(str(source.get("path", "")))
     if not source_path.is_absolute():
@@ -297,22 +344,23 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
             skipped.append({"expid": expid, "mode": mode, "reason": str(exc)})
             continue
         contexts[expid] = ctx
-        time = shared_time_axis(ctx)
-        LOGGER.info("[%s] processing %s session", ctx.day_id, expid)
-        for compartment, bundle in (("soma", ctx.soma), ("bouton", ctx.bouton)):
-            LOGGER.info("[%s] PCA compartment=%s", ctx.day_id, compartment)
-            matrix = bundle.matrix(preferred_keys=(config.metric, "Spikes", "F"))
-            rows, result = _rows_for_pca(ctx, compartment, matrix, time, config)
-            all_rows.extend(rows)
-            if result:
-                figure_payloads.append((f"{ctx.day_id}_{compartment}", result, rows))
-        if ctx.soma.matrix(preferred_keys=(config.metric, "Spikes", "F")).shape[1] == ctx.bouton.matrix(preferred_keys=(config.metric, "Spikes", "F")).shape[1] and time.size:
-            soma_matrix = ctx.soma.matrix(preferred_keys=(config.metric, "Spikes", "F"))
-            bouton_matrix = ctx.bouton.matrix(preferred_keys=(config.metric, "Spikes", "F"))
-            joint_rows, joint_result = _rows_for_pca(ctx, "soma_bouton_joint", np.vstack([soma_matrix, bouton_matrix]), time, config)
-            all_rows.extend(joint_rows)
-            if joint_result:
-                figure_payloads.append((f"{ctx.day_id}_soma_bouton_joint", joint_result, joint_rows))
+        LOGGER.info("[%s] loaded %s session", ctx.day_id, expid)
+    grouped_contexts: Dict[str, List[Any]] = {}
+    for ctx in contexts.values():
+        grouped_contexts.setdefault(ctx.day_id, []).append(ctx)
+    for day_id, day_contexts in grouped_contexts.items():
+        LOGGER.info("[%s] pooling %d registered sessions", day_id, len(day_contexts))
+        for compartment in ("soma", "bouton"):
+            grouped_result = _group_pca_rows(day_contexts, compartment, config)
+            if grouped_result is None:
+                for ctx in day_contexts:
+                    rows, result = _rows_for_pca(ctx, compartment, (ctx.soma if compartment == "soma" else ctx.bouton).matrix(preferred_keys=(config.metric, "Spikes", "F")), shared_time_axis(ctx), config)
+                    all_rows.extend(rows)
+                    if result: figure_payloads.append((f"{ctx.day_id}_{ctx.expid}_{compartment}", result, rows))
+            else:
+                rows, result = grouped_result
+                all_rows.extend(rows)
+                if result: figure_payloads.append((f"{day_id}_{compartment}", result, rows))
     if config.include_spines:
         for source in config.spine_sources:
             rows, result = _spine_source_rows(source, contexts, config, repo_root)
