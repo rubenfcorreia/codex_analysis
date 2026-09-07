@@ -280,6 +280,7 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
     all_rows: List[Dict[str, Any]] = []
     contexts: Dict[str, Any] = {}
     figure_payloads: List[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]] = []
+    skipped: List[Dict[str, str]] = []
     movie_expids = tuple(config.movie_expids)
     sleep_expids = tuple(config.sleep_expids)
     if config.auto_discover_expids and (not movie_expids or not sleep_expids):
@@ -289,7 +290,12 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
         LOGGER.info("Using %d movie and %d sleep experiment IDs from existing configs", len(movie_expids), len(sleep_expids))
     experiments = [(str(expid), "movie") for expid in movie_expids] + [(str(expid), "sleep") for expid in sleep_expids]
     for expid, mode in experiments:
-        ctx = build_experiment_context(expid, mode, config.soma_channel, config.bouton_channel, repo_root=repo_root)
+        try:
+            ctx = build_experiment_context(expid, mode, config.soma_channel, config.bouton_channel, repo_root=repo_root)
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            LOGGER.warning("[%s] skipping %s: %s", make_day_id(derive_animal_id(expid), derive_date(expid)), expid, exc)
+            skipped.append({"expid": expid, "mode": mode, "reason": str(exc)})
+            continue
         contexts[expid] = ctx
         time = shared_time_axis(ctx)
         LOGGER.info("[%s] processing %s session", ctx.day_id, expid)
@@ -319,6 +325,7 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
         "days": sorted({row["day_id"] for row in all_rows}),
         "same_day_groups": sorted({row["day_id"] for row in all_rows}),
         "compartments": sorted({row["compartment"] for row in all_rows}),
+        "skipped_experiments": skipped,
     }
     _write_csv(result_root / "csv" / "pca_summary.csv", [{key: value if not isinstance(value, list) else ";".join(value) for key, value in summary.items()}])
     for label, result, rows in figure_payloads:
