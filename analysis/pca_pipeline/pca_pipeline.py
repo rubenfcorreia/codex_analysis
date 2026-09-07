@@ -119,8 +119,6 @@ def make_window_matrix(matrix: np.ndarray, time: np.ndarray, window_s: float = 1
 
 def fit_population_pca(window_values: np.ndarray, *, n_components: int = 5, min_roi_std: float = 1e-9, thread_limit: int = 1) -> Dict[str, np.ndarray]:
     """Fit PCA after per-ROI z-scoring; rows are observations and columns are ROIs."""
-    from sklearn.decomposition import PCA
-
     values = np.asarray(window_values, dtype=float)
     if values.ndim != 2 or values.shape[0] < 2:
         raise ValueError("PCA requires at least two observations")
@@ -136,13 +134,19 @@ def fit_population_pca(window_values: np.ndarray, *, n_components: int = 5, min_
     try:
         from threadpoolctl import threadpool_limits
         with threadpool_limits(limits=max(1, int(thread_limit))):
-            model = PCA(n_components=components).fit(standardized)
+            _u, singular_values, components_matrix = np.linalg.svd(standardized, full_matrices=False)
     except ImportError:
-        model = PCA(n_components=components).fit(standardized)
+        _u, singular_values, components_matrix = np.linalg.svd(standardized, full_matrices=False)
+    components_matrix = components_matrix[:components]
+    singular_values = singular_values[:components]
+    scores = _u[:, :components] * singular_values
+    variance = (singular_values ** 2) / max(1, standardized.shape[0] - 1)
+    total_variance = float(np.sum(np.var(standardized, axis=0, ddof=1)))
+    explained_ratio = variance / total_variance if total_variance > 0 else np.zeros_like(variance)
     return {
-        "scores": model.transform(standardized),
-        "components": model.components_,
-        "explained_variance_ratio": model.explained_variance_ratio_,
+        "scores": scores,
+        "components": components_matrix,
+        "explained_variance_ratio": explained_ratio,
         "roi_keep": keep,
         "roi_mean": means[stds > min_roi_std],
         "roi_std": stds[stds > min_roi_std],
