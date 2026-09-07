@@ -363,8 +363,8 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
             ctx = build_experiment_context(expid, mode, config.soma_channel, config.bouton_channel, repo_root=repo_root)
         except (FileNotFoundError, KeyError, ValueError) as exc:
             source_type = _source_type_for_expid(expid, config, repo_root)
-            LOGGER.warning("[%s] %s experiment; skipping %s for soma/bouton PCA: %s", make_day_id(derive_animal_id(expid), derive_date(expid)), source_type, expid, exc)
-            skipped.append({"expid": expid, "mode": mode, "reason": str(exc)})
+            LOGGER.warning("[%s] skip %s (%s: no soma/bouton channels)", make_day_id(derive_animal_id(expid), derive_date(expid)), expid, source_type)
+            skipped.append({"expid": expid, "mode": mode, "source_type": source_type, "reason": str(exc)})
             continue
         contexts[expid] = ctx
         LOGGER.info("[%s] loaded %s session", ctx.day_id, expid)
@@ -391,6 +391,11 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
             if result:
                 figure_payloads.append((f'{source.get("day_id", "unknown")}_spine', result, rows))
     _write_csv(result_root / "csv" / "pca_scores.csv", all_rows)
+    if skipped:
+        by_type = {}
+        for item in skipped:
+            by_type[item["source_type"]] = by_type.get(item["source_type"], 0) + 1
+        LOGGER.info("Skipped %d sessions: %s", len(skipped), ", ".join(f"{count} {kind}" for kind, count in sorted(by_type.items())))
     summary = {
         "n_rows": len(all_rows),
         "days": sorted({row["day_id"] for row in all_rows}),
