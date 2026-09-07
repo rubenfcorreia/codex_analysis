@@ -389,6 +389,7 @@ def discover_figure_records(
         review_candidates = list(_review_candidates(review_root))
 
     # Manifests provide metadata, but some pipelines publish figures without one.
+    
     # The results tree itself is the authoritative fallback for those outputs.
     direct_result_files: List[Path] = []
     if results_root.exists():
@@ -401,6 +402,27 @@ def discover_figure_records(
                 and not {part.lower() for part in path.parts} & {"cache", "entities"}
             )
         )
+
+    manifested_paths: set[Path] = set()
+
+    for manifest_file in summary_manifests:
+        manifest = load_manifest(manifest_file.parent.parent)
+        if not isinstance(manifest, Mapping):
+            continue
+        output_root = Path(manifest.get("output_root") or manifest_file.parent.parent)
+        manifested_paths.update(
+            source_path.resolve()
+            for source_path, _, _ in _summary_candidates(
+                manifest,
+                output_root,
+                summary_depth_limit,
+            )
+        )
+
+    direct_result_files = [
+        path for path in direct_result_files
+        if path.resolve() not in manifested_paths
+    ]
 
     total_steps = (
         len(summary_manifests)

@@ -175,70 +175,92 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
     if not rows:
         return []
     grouped: Dict[tuple, List[float]] = {}
+    grouped_rows: Dict[tuple, List[Mapping[str, Any]]] = {}
     meta: Dict[tuple, Dict[str, Any]] = {}
     has_split_groups = any(_split_group_value(row) is not None for row in rows)
     split_meta = _split_group_meta(rows) if has_split_groups else {}
     for row in rows:
         split_group = _split_group_value(row) if has_split_groups else None
         key = (
-            row["day_id"],
-            row["mode"],
-            row["state"],
-            row["compartment"],
+            row['day_id'],
+            row['mode'],
+            row['state'],
+            row['compartment'],
             split_group,
         )
-        grouped.setdefault(key, []).append(float(row["mean"]))
+        grouped.setdefault(key, []).append(float(row['mean']))
+        grouped_rows.setdefault(key, []).append(row)
         payload = {
-            "day_id": row["day_id"],
-            "mode": row["mode"],
-            "state": row["state"],
-            "state_display": row["state_display"],
-            "state_color": row["state_color"],
-            "compartment": row["compartment"],
+            'day_id': row['day_id'],
+            'mode': row['mode'],
+            'state': row['state'],
+            'state_display': row['state_display'],
+            'state_color': row['state_color'],
+            'compartment': row['compartment'],
         }
         if has_split_groups:
-            payload["split_group"] = split_group
-            payload["split_group_display"] = None
-            payload["split_group_color"] = None
-            payload["split_group_rank"] = None
+            payload['split_group'] = split_group
+            payload['split_group_display'] = None
+            payload['split_group_color'] = None
+            payload['split_group_rank'] = None
             if split_group is not None:
                 split_group_meta = split_meta.get(split_group, {})
-                if split_group_meta.get("split_group_display") is not None:
-                    payload["split_group_display"] = split_group_meta.get("split_group_display")
-                if split_group_meta.get("split_group_color") is not None:
-                    payload["split_group_color"] = split_group_meta.get("split_group_color")
-                if split_group_meta.get("split_group_rank") is not None:
-                    payload["split_group_rank"] = split_group_meta.get("split_group_rank")
+                if split_group_meta.get('split_group_display') is not None:
+                    payload['split_group_display'] = split_group_meta.get('split_group_display')
+                if split_group_meta.get('split_group_color') is not None:
+                    payload['split_group_color'] = split_group_meta.get('split_group_color')
+                if split_group_meta.get('split_group_rank') is not None:
+                    payload['split_group_rank'] = split_group_meta.get('split_group_rank')
         meta[key] = payload
     summary_rows: List[Dict[str, Any]] = []
     for key, values in grouped.items():
         payload = meta[key].copy()
         arr = np.asarray(values, dtype=float)
         finite = arr[np.isfinite(arr)]
+        group_rows = grouped_rows.get(key, [])
+        total_rois = int(len(group_rows))
+        unique_experiments = {
+            str(row.get('expid') or row.get('day_id') or '').strip()
+            for row in group_rows
+            if str(row.get('expid') or row.get('day_id') or '').strip()
+        }
+        unique_days = {
+            str(row.get('day_id') or '').strip()
+            for row in group_rows
+            if str(row.get('day_id') or '').strip()
+        }
+        unique_animals = {
+            str(row.get('animal_id') or '').strip()
+            for row in group_rows
+            if str(row.get('animal_id') or '').strip()
+        }
         if finite.size == 0:
-            payload.update(
-                {
-                    "n_experiments": int(arr.size),
-                    "mean": float("nan"),
-                    "median": float("nan"),
-                    "std": float("nan"),
-                    "min": float("nan"),
-                    "max": float("nan"),
-                }
-            )
+            payload.update({
+                'n_experiments': int(len(unique_experiments)),
+                'n_days': int(len(unique_days)),
+                'n_animals': int(len(unique_animals)),
+                'n_rois': total_rois,
+                'mean': float('nan'),
+                'median': float('nan'),
+                'std': float('nan'),
+                'min': float('nan'),
+                'max': float('nan'),
+            })
         else:
-            payload.update(
-                {
-                    "n_experiments": int(arr.size),
-                    "mean": float(np.nanmean(finite)),
-                    "median": float(np.nanmedian(finite)),
-                    "std": float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
-                    "min": float(np.nanmin(finite)),
-                    "max": float(np.nanmax(finite)),
-                }
-            )
+            payload.update({
+                'n_experiments': int(len(unique_experiments)),
+                'n_days': int(len(unique_days)),
+                'n_animals': int(len(unique_animals)),
+                'n_rois': total_rois,
+                'mean': float(np.nanmean(finite)),
+                'median': float(np.nanmedian(finite)),
+                'std': float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
+                'min': float(np.nanmin(finite)),
+                'max': float(np.nanmax(finite)),
+            })
         summary_rows.append(payload)
     return summary_rows
+
 
 
 def _state_values_by_day(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], compartment: str | None = None) -> Dict[str, Dict[str, List[float]]]:

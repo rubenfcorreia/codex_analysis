@@ -257,6 +257,8 @@ VISUAL_RESPONSE_MOVIE_STATE = "quiet_awake_movies"
 VISUAL_RESPONSE_BLANK_STATE = "quiet_awake_blank"
 DEFAULT_DENDRITE_RESPONSE_COHORT = "all"
 DENDRITE_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
+DEFAULT_VISUAL_RESPONSE_COHORT = "all"
+VISUAL_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
 LEGACY_EVENT_DETECTION_METHOD = "amplitude"
 
 VISUAL_RESPONSE_CLASSIFIER_VERSION = 3
@@ -441,6 +443,7 @@ USER_EDITABLE_DEFAULTS = {
     "state_comparison_states": None,
     "basal_apical_states": None,
     "dendrite_response_cohort": DEFAULT_DENDRITE_RESPONSE_COHORT,
+    "spine_visual_response_cohort": DEFAULT_VISUAL_RESPONSE_COHORT,
     "spine_coactivity_anchor_state": "quiet_awake_movies",
     "spine_coactivity_abs_threshold": DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
     "source_cache_validate": True,
@@ -485,6 +488,15 @@ class StepFrame:
     total: Optional[int]
     started_at: float
 _STEP_STACK: List[StepFrame] = []
+_STAGE_TIMINGS: List[Dict[str, Any]] = []
+
+
+def reset_stage_timings() -> None:
+    _STAGE_TIMINGS.clear()
+
+
+def get_stage_timings() -> List[Dict[str, Any]]:
+    return [dict(entry) for entry in _STAGE_TIMINGS]
 def current_step_prefix() -> str:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not _STEP_STACK:
@@ -503,9 +515,13 @@ def step_scope(name: str, index: Optional[int] = None, total: Optional[int] = No
     frame = StepFrame(name=name, index=index, total=total, started_at=time.perf_counter())
     _STEP_STACK.append(frame)
     step_message(f"START {name}")
+    status = "completed"
+    error_message = None
     try:
         yield
     except Exception as exc:
+        status = "failed"
+        error_message = str(exc)
         elapsed = time.perf_counter() - frame.started_at
         step_message(f"FAIL {name} ({elapsed:.1f}s): {exc}")
         raise
@@ -513,7 +529,16 @@ def step_scope(name: str, index: Optional[int] = None, total: Optional[int] = No
         elapsed = time.perf_counter() - frame.started_at
         step_message(f"DONE {name} ({elapsed:.1f}s)")
     finally:
+        elapsed = time.perf_counter() - frame.started_at
         _STEP_STACK.pop()
+        _STAGE_TIMINGS.append({
+            "name": name,
+            "index": index,
+            "total": total,
+            "elapsed_s": float(elapsed),
+            "status": status,
+            "error": error_message,
+        })
 def step_progress(current: int, total: int, label: Optional[str] = None) -> None:
     prefix = current_step_prefix()
     detail = f"{current}/{total}"
@@ -523,6 +548,14 @@ def step_progress(current: int, total: int, label: Optional[str] = None) -> None
         print(f"{prefix} PROGRESS {detail}", file=sys.stderr)
     else:
         print(f"PROGRESS {detail}", file=sys.stderr)
+
+
+def visual_response_cohort_settings(config: Mapping[str, Any]) -> Dict[str, str]:
+    return {
+        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        "spine_visual_response_cohort": str(config.get("spine_visual_response_cohort", DEFAULT_VISUAL_RESPONSE_COHORT) or DEFAULT_VISUAL_RESPONSE_COHORT),
+    }
+
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -3267,6 +3300,18 @@ def mixed_model_branch_render_specs(
 results: Dict[str, Any], review: bool = False) -> List[Dict[str, Any]]:
     branch_configs = [
         {
+            "key": "mixed_model",
+            "scope": "all_state",
+            "name": "mixed_model_all_state",
+            "forest_output_name": "mixed_model_all_state_forest.svg",
+            "predicted_output_name": "mixed_model_all_state_predicted_means.svg",
+            "contrast_output_name": "mixed_model_contrasts_all_state.svg",
+            "forest_title": "Mixed-model fixed effects - all state",
+            "predicted_title": "Mixed-model predicted means - all state",
+            "contrast_title": "Mixed-model contrasts - all state",
+        },
+        {
+            
             "key": "mixed_model_selected_state",
             "scope": "selected_state",
             "name": "mixed_model_selected_state",
@@ -10203,6 +10248,7 @@ def analysis_results_cache_payload(results: Dict[str, Any]) -> Dict[str, Any]:
         "checkpoint_gallery",
         "shared_shuffle_cache",
         "state_coverage",
+        "stage_timings",
     ]:
         payload.pop(key, None)
     return payload
@@ -15033,6 +15079,7 @@ def write_analysis_report(
     shared_shuffle_cache = results.get("shared_shuffle_cache", {})
     demo_validation = list(results.get("demo_validation", []))
     alerts = list(dict.fromkeys(results.get("alerts", [])))
+    stage_timings = list(results.get("stage_timings", []))
     generated_at = datetime.datetime.now().isoformat(timespec="seconds")
     mode = "demo" if analysis_cache.get("demo_truth") else "real"
     report_artifacts = [report_relative_path(path, output_dir) for path in artifact_paths]
@@ -15118,6 +15165,20 @@ def write_analysis_report(
             f"{p_label}={format_report_pvalue(row.get('shuffle_p'))} | "
             f"random={row.get('random_structure', 'n/a')} | fit={row.get('fit_method', 'n/a')}"
         )
+    def format_stage_timing(row: Dict[str, Any]) -> str:
+        label = str(row.get("name") or "unknown")
+        index = row.get("index")
+        total = row.get("total")
+        if index is not None and total is not None:
+            label = f"[{index}/{total}] {label}"
+        elapsed = as_float(row.get("elapsed_s"))
+        elapsed_text = f"{elapsed:.2f}s" if elapsed is not None and np.isfinite(elapsed) else "n/a"
+        status = str(row.get("status") or "completed")
+        parts = [label, elapsed_text, status]
+        error = str(row.get("error") or "").strip()
+        if error:
+            parts.append(f"error={error}")
+        return " | ".join(parts)
     def correlation_family_label(analysis: Any) -> str:
         analysis_text = str(analysis or "correlation")
         return {
@@ -15752,6 +15813,13 @@ def write_analysis_report(
         append_kv("n_global_dendrites", cache_summary.get("n_global_dendrites", "n/a"))
         append_kv("n_global_spines", cache_summary.get("n_global_spines", "n/a"))
         append_kv("n_dendrite_observations", cache_summary.get("n_dendrite_observations", "n/a"))
+    append_section("Stage timings")
+    if stage_timings:
+        append_kv("captured stages", len(stage_timings))
+        for timing in stage_timings:
+            lines.append(f"- {format_stage_timing(timing)}")
+    else:
+        lines.append("- none")
     append_section("Model diagnostics")
     for branch_name, branch_summary in [("selected_state", mixed_selected_summary)]:
         if branch_summary.get("model_equations"):
@@ -16341,8 +16409,15 @@ def write_poster_ready_figures(
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
 
+    preset_csv_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+
     def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
-        return load_comparison_preset_csv_rows(poster_result_root, preset_name, csv_name, logger=logger)
+        cache_key = (preset_name, csv_name)
+        cached_rows = preset_csv_cache.get(cache_key)
+        if cached_rows is None:
+            cached_rows = [dict(row) for row in load_comparison_preset_csv_rows(poster_result_root, preset_name, csv_name, logger=logger)]
+            preset_csv_cache[cache_key] = cached_rows
+        return [dict(row) for row in cached_rows]
 
     written: List[str] = []
     selected_families = set(str(family) for family in (analysis_families or []) if str(family))
@@ -17728,6 +17803,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Select which dendrite cohort to render in poster-ready basal/apical panels: all, responsive, or nonresponsive",
     )
     parser.add_argument(
+        "--spine-visual-response-cohort",
+        choices=list(VISUAL_RESPONSE_COHORTS),
+        help="Select which spine visual-response cohort to render in poster-ready panels: all, responsive, or nonresponsive",
+    )
+    parser.add_argument(
         "--spine-coactivity-anchor-state",
         help="Anchor state used to select spine-pair comparison plots and basal-vs-apical distributions",
     )
@@ -17793,6 +17873,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_comparison_states": parse_list_argument(args.state_comparison_states),
         "basal_apical_states": parse_list_argument(args.basal_apical_states),
         "dendrite_response_cohort": args.dendrite_response_cohort,
+        "spine_visual_response_cohort": args.spine_visual_response_cohort,
         "spine_coactivity_anchor_state": args.spine_coactivity_anchor_state,
         "source_cache_validate": False if args.skip_source_cache_validation else None,
         "fit_spine_coactivity_mixed_model": True if args.fit_spine_coactivity_mixed_model else None,
@@ -17992,6 +18073,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shared_shuffle_cache = None
     from analysis_families.core import run_cached_analysis
     source_signature = source_cache_signature(source_cache)
+    visual_response_cohort_metadata = visual_response_cohort_settings(config)
     analysis_results_meta = {
         "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
         "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
@@ -18011,8 +18093,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_families": list(config.get("analysis_families") or []),
         "shuffle_n": int(shuffle_n),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
-        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
-        "spine_visual_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        **visual_response_cohort_metadata,
         "dendrite_visual_response_classifier_type": "dendrite",
         "spine_visual_response_classifier_type": "spine",
         "visual_response_classifier_method": VISUAL_RESPONSE_CLASSIFIER_METHOD,
@@ -18222,8 +18303,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "state_mode": selection_meta.get("state_mode"),
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "movie_trial_types": selection_meta.get("movie_trial_types"),
-        "dendrite_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
-        "spine_visual_response_cohort": str(config.get("dendrite_response_cohort", DEFAULT_DENDRITE_RESPONSE_COHORT) or DEFAULT_DENDRITE_RESPONSE_COHORT),
+        **visual_response_cohort_metadata,
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "spine_coactivity_selection_rule": spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold),
@@ -18237,13 +18317,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _restore_roi_split_from_analysis_tables(results, analysis_cache)
     # Save the analysis-results cache before figure generation so `plots_only` can still reuse it
     # even if a later plot or poster step fails.
-    early_analysis_results_payload = {
+    analysis_results_payload = {
         "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
         "meta": cacheable(analysis_results_meta),
         "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
         "analysis_results": cacheable(analysis_results_cache_payload(results)),
     }
-    save_analysis_results_cache(analysis_results_cache_file, early_analysis_results_payload)
+    save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
     with step_scope("analysis outputs"):
         written_artifacts = write_analysis_outputs(
             output_dir,
@@ -18275,6 +18355,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shuffle_n": shuffle_n,
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
     }
+    results["stage_timings"] = get_stage_timings()
     report_path: Optional[Path] = None
     if plots_only:
         results["analysis_mode"] = "plots_only"
@@ -18295,8 +18376,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         source_cache_payload.pop("analysis_tables", None)
         source_cache_payload.pop("analysis_results", None)
         save_npz_cache(cache_path, source_cache_payload)
-    results["output_artifacts"] = list(dict.fromkeys(list(results.get("output_artifacts", [])) + collect_output_artifacts(output_dir)))
-    write_manifest(output_dir, jsonable(results))
     poster_ready_outputs = [path for path in written_artifacts if "/poster_ready/" in str(path)]
     if poster_ready_outputs:
         step_message(f"poster-ready outputs ({len(poster_ready_outputs)}):")
@@ -18315,12 +18394,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "analysis_tables": cacheable(analysis_cache.get("analysis_tables", {}) if isinstance(analysis_cache.get("analysis_tables", {}), dict) else {}),
         }
         save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
-        analysis_results_payload = {
-            "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
-            "meta": cacheable(analysis_results_meta),
-            "meta_hash": analysis_cache_meta_hash(analysis_results_meta),
-            "analysis_results": cacheable(analysis_results_cache_payload(results)),
-        }
         save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
         if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict):
             save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
@@ -18332,6 +18405,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         info(f"Checkpoint gallery saved to: {output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME}")
         info(f"Review figures saved to: {output_dir / DEFAULT_REVIEW_FIGURES_DIRNAME}")
         info(f"Results saved to: {output_dir}")
+    tracked_output_artifacts = list(dict.fromkeys(results.get("output_artifacts", [])))
+    for candidate in (
+        cache_path,
+        analysis_tables_cache_file,
+        analysis_results_cache_file,
+        shared_shuffle_cache_file,
+        output_dir / "analysis_report.txt",
+    ):
+        if candidate is not None and Path(candidate).exists():
+            tracked_output_artifacts.append(report_relative_path(Path(candidate), output_dir))
+    results["output_artifacts"] = collect_output_artifacts(output_dir, tracked_output_artifacts)
+    write_manifest(output_dir, jsonable(results))
     run_issues = list(dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])))
     if run_issues:
         info(f"Issues encountered ({len(run_issues)}):")

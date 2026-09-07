@@ -61,7 +61,20 @@ def load_manifest(output_root: Path | str) -> Optional[Dict[str, Any]]:
         if isinstance(payload, dict):
             return payload
     return None
-def collect_output_artifacts(output_root: Path | str) -> List[str]:
+def _normalize_output_artifact_path(root: Path, artifact: Any) -> str:
+    text = str(artifact or '').strip()
+    if not text:
+        return ''
+    candidate = Path(text)
+    if candidate.is_absolute():
+        try:
+            candidate = candidate.relative_to(root)
+        except ValueError:
+            return text.replace('\\', '/').strip()
+    return str(candidate).replace('\\', '/').strip()
+
+
+def _scan_output_artifacts(output_root: Path | str) -> List[str]:
     root = Path(output_root)
     if not root.exists():
         return []
@@ -74,6 +87,29 @@ def collect_output_artifacts(output_root: Path | str) -> List[str]:
             continue
         artifacts.append(relative)
     return list(dict.fromkeys(artifacts))
+
+
+def collect_output_artifacts(
+    output_root: Path | str,
+    tracked_artifacts: Sequence[str] | None = None,
+    *,
+    validate: bool = False,
+) -> List[str]:
+    root = Path(output_root)
+    if tracked_artifacts is None:
+        return _scan_output_artifacts(root)
+    artifacts = [
+        artifact
+        for artifact in (_normalize_output_artifact_path(root, item) for item in tracked_artifacts)
+        if artifact and artifact not in {'manifest.json', 'summary/manifest.json'}
+    ]
+    artifacts = list(dict.fromkeys(artifacts))
+    if not validate:
+        return artifacts
+    scanned = _scan_output_artifacts(root)
+    return list(dict.fromkeys(artifacts + [artifact for artifact in scanned if artifact not in artifacts]))
+
+
 def _artifact_matches(relative_path: str, candidates: Sequence[str]) -> bool:
     relative = relative_path.replace('\\', '/').strip()
     if not relative:

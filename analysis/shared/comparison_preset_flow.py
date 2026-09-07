@@ -109,6 +109,7 @@ def load_comparison_preset_csv_rows(
     candidate_paths: List[Path] = []
     for relative_candidate in _preset_csv_relative_candidates(csv_name):
         candidate_paths.append(batch_result_root / relative_candidate)
+        candidate_paths.append(batch_result_root / str(preset_name) / relative_candidate)
     for csv_path in dict.fromkeys(candidate_paths):
         if csv_path.exists():
             return read_csv_rows(csv_path)

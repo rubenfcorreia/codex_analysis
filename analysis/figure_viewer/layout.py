@@ -188,7 +188,7 @@ def resolve_selection(
     for field_name in HIERARCHY_FIELDS:
         current_value = getattr(selection, field_name)
         if not current_value:
-            break
+            continue
         prefix_selection = SlotSelection(**cleaned_values, initialized=bool(cleaned_values))
         options = field_options(records, prefix_selection, field_name)
         if current_value not in options:

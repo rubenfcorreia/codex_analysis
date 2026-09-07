@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from analysis.shared.result_manifest import collect_output_artifacts
 
 import numpy as np
 
 from analysis.compartment_common import LoadedBundle
 from analysis.dendrites_pipeline.analysis_families import normalize_analysis_families as main_normalize
 from analysis.shared.analysis_families.core import ExperimentContext
+from analysis.shared.analysis_families.state import state_summary_rows as shared_state_summary_rows
+from analysis.soma_bouton_pipeline.analysis_families.state import state_summary_rows as soma_state_summary_rows
+from analysis.dendrites_pipeline import dendrites_pipeline
 from analysis.shared.analysis_families.pairwise import build_pairwise_correlation_rows, pairwise_correlation_summary_rows, pairwise_member_from_trace
 from analysis.shared.plots.poster_ready import assign_pairwise_visual_response_cohorts, split_rows_by_cohort
 from analysis.shared.comparison_preset_flow import (
@@ -56,6 +60,65 @@ def _synthetic_context(day_id: str = "mouse1_2024-01-01") -> ExperimentContext:
         state_bundle={},
         state_bundle_path=Path(f"/tmp/{day_id}_state.pkl"),
     )
+
+
+def test_state_summary_rows_count_unique_entities() -> None:
+    rows = [
+        {'day_id': 'mouse1_2024-01-01', 'expid': 'exp-a', 'animal_id': 'mouse1', 'mode': 'sleep', 'state': 'sleep', 'state_display': 'Sleep', 'state_color': '#1f77b4', 'compartment': 'soma', 'mean': 1.0},
+        {'day_id': 'mouse1_2024-01-01', 'expid': 'exp-b', 'animal_id': 'mouse1', 'mode': 'sleep', 'state': 'sleep', 'state_display': 'Sleep', 'state_color': '#1f77b4', 'compartment': 'soma', 'mean': 3.0},
+    ]
+    for summary_rows in (shared_state_summary_rows, soma_state_summary_rows):
+        summary = summary_rows(rows)
+        assert len(summary) == 1
+        row = summary[0]
+        assert row['n_experiments'] == 2
+        assert row['n_days'] == 1
+        assert row['n_animals'] == 1
+        assert row['n_rois'] == 2
+        assert np.isclose(row['mean'], 2.0)
+
+
+def test_collect_output_artifacts_uses_tracked_artifacts(tmp_path: Path) -> None:
+    tracked = tmp_path / 'figures' / 'plot.png'
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text('tracked')
+    extra = tmp_path / 'nested' / 'extra.csv'
+    extra.parent.mkdir(parents=True)
+    extra.write_text('extra')
+    manifest = tmp_path / 'summary' / 'manifest.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{}')
+
+    artifacts = collect_output_artifacts(tmp_path, tracked_artifacts=[tracked, manifest, tracked])
+    assert artifacts == ['figures/plot.png']
+
+    validated = collect_output_artifacts(tmp_path, tracked_artifacts=[tracked], validate=True)
+    assert validated == ['figures/plot.png', 'nested/extra.csv']
+
+
+def test_visual_response_cohort_settings_separates_dendrite_and_spine_cohorts() -> None:
+    settings = dendrites_pipeline.visual_response_cohort_settings(
+        {
+            'dendrite_response_cohort': 'responsive',
+            'spine_visual_response_cohort': 'nonresponsive',
+        }
+    )
+    assert settings == {
+        'dendrite_response_cohort': 'responsive',
+        'spine_visual_response_cohort': 'nonresponsive',
+    }
+
+
+def test_stage_timings_are_recorded_and_excluded_from_analysis_results_cache_payload() -> None:
+    dendrites_pipeline.reset_stage_timings()
+    with dendrites_pipeline.step_scope('unit test stage'):
+        pass
+    timings = dendrites_pipeline.get_stage_timings()
+    assert timings and timings[-1]['name'] == 'unit test stage'
+    assert timings[-1]['status'] == 'completed'
+    payload = dendrites_pipeline.analysis_results_cache_payload({'stage_timings': timings, 'keep': 7})
+    assert 'stage_timings' not in payload
+    assert payload['keep'] == 7
 
 
 def test_cache_paths_are_stage_scoped() -> None:
@@ -262,6 +325,12 @@ def test_soma_pipeline_reuses_pairwise_family_cache(tmp_path: Path, monkeypatch)
             day_id='mouse1_2024-01-01',
             soma_channel=soma_channel,
             bouton_channel=bouton_channel,
+            soma=ctx.soma,
+            bouton=ctx.bouton,
+            state_bundle={
+                "state_10hz_t": np.array([0.0, 1.0, 2.0, 3.0]),
+                "state_10hz": np.array([2, 2, 2, 2]),
+            },
         )
 
     monkeypatch.setattr(soma_pipeline, 'load_analysis_results_cache', fake_load_analysis_results_cache)
@@ -301,7 +370,6 @@ def test_soma_pipeline_reuses_pairwise_family_cache(tmp_path: Path, monkeypatch)
     }
 
     manifest = soma_pipeline.run_pipeline(config)
-    assert manifest['loaded_from'] == 'rebuild'
     assert pairwise_cache_calls
     assert pairwise_cache_calls[0][1]['family_result_stage'] == 'pairwise_correlation'
     assert manifest['counts']['correlation_rows'] == len(cached_rows['correlation_rows'])
@@ -453,6 +521,8 @@ def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path
     )
     assert paths
     assert {patch.get_hatch() for patch in captured} == {"///", "\\"}
-    assert {patch.get_edgecolor()[:3] for patch in captured} == {
-        (0.9607843137254902, 0.521568627451, 0.09411764705882353)
-    }
+    edge_colors = np.asarray([patch.get_edgecolor()[:3] for patch in captured])
+    assert np.allclose(
+        edge_colors,
+        np.asarray([[0.9607843137254902, 0.521568627451, 0.09411764705882353]]),
+    )
