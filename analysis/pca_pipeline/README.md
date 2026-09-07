@@ -11,7 +11,7 @@ python -m analysis.pca_pipeline --config analysis/pca_pipeline/pca_pipeline_conf
 ```
 
 The first version uses continuous soma/bouton recordings, one-second windows,
-with a one-thread numerical backend limit,
+with a one-thread numerical backend limit, and requires scikit-learn,
 per-ROI z-scoring, and preserves animal/day/session, state, locomotion, pupil,
 and visual-condition metadata in `csv/pca_scores.csv`. Spine support is kept
 disabled until an explicit same-day spine source mapping is supplied.

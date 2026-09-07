@@ -131,18 +131,16 @@ def fit_population_pca(window_values: np.ndarray, *, n_components: int = 5, min_
         raise ValueError("PCA requires at least two variable, finite ROIs")
     standardized = (values[:, keep] - means[stds > min_roi_std]) / stds[stds > min_roi_std]
     components = min(int(n_components), standardized.shape[0], standardized.shape[1])
+    from sklearn.decomposition import PCA
     try:
         from threadpoolctl import threadpool_limits
         with threadpool_limits(limits=max(1, int(thread_limit))):
-            _u, singular_values, components_matrix = np.linalg.svd(standardized, full_matrices=False)
+            model = PCA(n_components=components).fit(standardized)
     except ImportError:
-        _u, singular_values, components_matrix = np.linalg.svd(standardized, full_matrices=False)
-    components_matrix = components_matrix[:components]
-    singular_values = singular_values[:components]
-    scores = _u[:, :components] * singular_values
-    variance = (singular_values ** 2) / max(1, standardized.shape[0] - 1)
-    total_variance = float(np.sum(np.var(standardized, axis=0, ddof=1)))
-    explained_ratio = variance / total_variance if total_variance > 0 else np.zeros_like(variance)
+        model = PCA(n_components=components).fit(standardized)
+    scores = model.transform(standardized)
+    components_matrix = model.components_
+    explained_ratio = model.explained_variance_ratio_
     return {
         "scores": scores,
         "components": components_matrix,
