@@ -32,6 +32,7 @@ from analysis.shared.comparison_preset_flow import (
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
+from analysis.shared.union_rows import filter_rows_by_states, load_union_rows_cache, save_union_rows_cache, union_rows_meta, union_state_labels
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
@@ -140,8 +141,11 @@ DEFAULT_CONFIG = {
     "shared_shuffle_cache_rebuild": False,
     "general_output_root": None,
     "generate_shared_general_outputs": False,
+    "shared_union_rows_cache_path": None,
+    "union_state_labels_by_mode": None,
     "generate_shared_general_figures": False,
     "generate_visual_response_entity_figures": True,
+    "visual_response_entity_max_trace_points": None,
     "plots_only": False,
     "poster_ready_only": False,
     "comparison_presets": None,
@@ -227,6 +231,17 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     _stage("comparison presets", f"running {len(plan.presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
     preset_configs: Dict[str, Dict[str, Any]] = {}
+    preset_state_maps = []
+    for preset_name, overrides in plan.presets:
+        probe_config = copy.deepcopy(dict(config))
+        probe_config.update(overrides)
+        probe_state_map = {}
+        for mode in ("movie", "sleep"):
+            if probe_config.get(f"{mode}_expids"):
+                probe_state_map[mode] = resolve_analysis_state_selections(probe_config, mode)
+        preset_state_maps.append(probe_state_map)
+    union_states_by_mode = union_state_labels(preset_state_maps)
+    shared_union_rows_cache_path = base_result_root / "general" / "cache" / "soma_bouton_union_rows_cache.npz"
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
@@ -252,6 +267,9 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_results_rebuild"] = True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["general_output_root"] = str(base_result_root / "general")
+        preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
+        preset_config["union_state_labels_by_mode"] = union_states_by_mode
+        preset_config["union_rows_cache_builder"] = preset_index == 0
         preset_config["generate_shared_general_outputs"] = preset_index == 0
         preset_config["generate_shared_general_figures"] = preset_index == 0
         preset_config["source_cache_validate"] = False if preset_index else config.get("source_cache_validate", True)
@@ -1043,8 +1061,49 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if not bool(config.get("plots_only")) and pairwise_family_rows is not None:
                 return manifest
 
+    union_cache_path = resolve_repo_path(config.get("shared_union_rows_cache_path"), repo_root) if config.get("shared_union_rows_cache_path") else None
+    union_cache_enabled = union_cache_path is not None and bool(config.get("union_state_labels_by_mode"))
+    union_states_by_mode = {
+        str(mode): list(states)
+        for mode, states in (config.get("union_state_labels_by_mode") or {}).items()
+    }
+    union_rows_meta_payload = union_rows_meta(
+        source_signature=analysis_cache_meta_hash({
+            "movie_expids": list(expids_by_mode.get("movie", [])),
+            "sleep_expids": list(expids_by_mode.get("sleep", [])),
+            "soma_channel": int(config.get("soma_channel", 1)),
+            "bouton_channel": int(config.get("bouton_channel", 0)),
+        }),
+        union_states_by_mode=union_states_by_mode,
+        parameters={
+            "soma_channel": int(config.get("soma_channel", 1)),
+            "bouton_channel": int(config.get("bouton_channel", 0)),
+            "event_detection_method": event_detection_method,
+            "visual_response_metric": visual_response_metric,
+            "lag_window_s": float(config.get("lag_window_s", 2.0)),
+            "lag_step_s": float(config.get("lag_step_s", 0.1)),
+        },
+    )
+    union_rows_payload = None
+    union_rows_cache_status = "disabled"
+    union_rows_cache_elapsed_s = 0.0
+    if union_cache_enabled and not bool(config.get("union_rows_cache_builder")):
+        union_rows_payload, union_rows_cache_status, union_rows_cache_elapsed_s = load_union_rows_cache(
+            union_cache_path,
+            expected_meta=union_rows_meta_payload,
+        )
+        if isinstance(union_rows_payload, dict):
+            activity_rows = list(union_rows_payload.get("activity_rows", []))
+            correlation_rows = list(union_rows_payload.get("correlation_rows", []))
+            soma_pairwise_rows = list(union_rows_payload.get("soma_pairwise_rows", []))
+            bouton_pairwise_rows = list(union_rows_payload.get("bouton_pairwise_rows", []))
+            lag_rows = list(union_rows_payload.get("lag_rows", []))
+            coincidence_rows = list(union_rows_payload.get("coincidence_rows", []))
+            visual_response_rows = list(union_rows_payload.get("visual_response_rows", []))
+            transition_results = dict(union_rows_payload.get("transition_results", transition_results))
     for mode in state_modes:
         selected_states = list(selected_states_by_mode.get(mode, []))
+        row_states = list(union_states_by_mode.get(mode, selected_states)) if union_cache_enabled else selected_states
         _stage("state selection", f"{mode}: {', '.join(selected_states) if selected_states else 'none'}")
         for expid in expids_by_mode.get(mode, []):
             ctx = build_experiment_context(
@@ -1056,26 +1115,26 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             experiment_rows.append(experiment_summary_row(ctx))
             transition_contexts.append(ctx)
-            if config.get("plots_only"):
+            if config.get("plots_only") or isinstance(union_rows_payload, dict):
                 continue
-            state_masks = state_masks_for_context(ctx, selected_states)
-            activity_rows.extend(activity_rows_for_context(ctx, selected_states, state_masks=state_masks))
+            state_masks = state_masks_for_context(ctx, row_states)
+            activity_rows.extend(activity_rows_for_context(ctx, row_states, state_masks=state_masks))
             coincidence_rows.extend(
                 _build_coincidence_rows_for_context(
                     ctx,
-                    selected_states,
+                    row_states,
                     state_masks,
                     event_detection_method=event_detection_method,
                 )
             )
             if pairwise_family_rows is None:
-                correlation_rows.extend(bouton_soma_correlation_rows(ctx, selected_states, state_masks=state_masks))
-                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
-                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
+                correlation_rows.extend(bouton_soma_correlation_rows(ctx, row_states, state_masks=state_masks))
+                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks))
+                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks))
             lag_rows.extend(
                 lag_scan_rows(
                     ctx,
-                    selected_states,
+                    row_states,
                     lag_window_s=float(config.get("lag_window_s", 2.0)),
                     lag_step_s=float(config.get("lag_step_s", 0.1)),
                     state_masks=state_masks,
@@ -1106,6 +1165,56 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "mode complete",
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
+
+    union_rows_for_shared_output = None
+    if union_cache_enabled:
+        union_rows_for_shared_output = {
+            "activity_rows": list(activity_rows),
+            "correlation_rows": list(correlation_rows),
+            "soma_pairwise_rows": list(soma_pairwise_rows),
+            "bouton_pairwise_rows": list(bouton_pairwise_rows),
+            "lag_rows": list(lag_rows),
+            "coincidence_rows": list(coincidence_rows),
+            "visual_response_rows": list(visual_response_rows),
+        }
+        if bool(config.get("union_rows_cache_builder")) and union_cache_path is not None:
+            union_rows_cache_elapsed_s = save_union_rows_cache(
+                union_cache_path,
+                union_rows_for_shared_output,
+                meta=union_rows_meta_payload,
+            )
+            union_rows_cache_status = "built"
+        selected_state_rows = {
+            family: filter_rows_by_states(rows, selected_states_by_mode)
+            for family, rows in union_rows_for_shared_output.items()
+        }
+        activity_rows = selected_state_rows["activity_rows"]
+        correlation_rows = selected_state_rows["correlation_rows"]
+        soma_pairwise_rows = selected_state_rows["soma_pairwise_rows"]
+        bouton_pairwise_rows = selected_state_rows["bouton_pairwise_rows"]
+        lag_rows = selected_state_rows["lag_rows"]
+        coincidence_rows = selected_state_rows["coincidence_rows"]
+        visual_response_rows = selected_state_rows["visual_response_rows"]
+        if write_general_tables and union_rows_for_shared_output:
+            ensure_dir(general_csv_root)
+            for filename, family in (
+                ("state_activity_by_experiment.csv", "activity_rows"),
+                ("bouton_soma_correlation_by_roi.csv", "correlation_rows"),
+                ("soma_pairwise_correlation_by_roi.csv", "soma_pairwise_rows"),
+                ("bouton_pairwise_correlation_by_roi.csv", "bouton_pairwise_rows"),
+                ("bouton_soma_lag_scan_by_roi.csv", "lag_rows"),
+                ("soma_bouton_coincidence_by_roi.csv", "coincidence_rows"),
+                ("visual_response_by_roi.csv", "visual_response_rows"),
+            ):
+                rows = union_rows_for_shared_output.get(family, [])
+                if rows:
+                    write_csv_rows(general_csv_root / filename, rows, sorted({key for row in rows for key in row.keys()}))
+            write_csv_rows(
+                general_csv_root / "experiments.csv",
+                experiment_rows,
+                sorted({key for row in experiment_rows for key in row.keys()}) if experiment_rows else ["expid"],
+            )
+            write_general_tables = False
 
     if not config.get("plots_only"):
         transition_results = run_transition_analysis(
@@ -2150,6 +2259,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                             title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
                             cohort_label=cohort,
                             kind=compartment,
+                            max_trace_points=config.get("visual_response_entity_max_trace_points"),
                         )
                         if bool(config.get("generate_visual_response_entity_figures", True)):
                             render_visual_response_entity_figures(
@@ -2157,6 +2267,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                             cohort_dir / "entities",
                             cohort_label=cohort,
                             kind=compartment,
+                            max_trace_points=config.get("visual_response_entity_max_trace_points"),
                         )
 
             if branch_first_mixed_model_results:
@@ -2381,6 +2492,32 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "poster_ready_figures": list(poster_ready_figures),
         "coincidence_example_figures": list(coincidence_example_figures),
         "state_transitions": transition_results,
+        "union_rows_cache": {
+            "path": str(union_cache_path) if union_cache_path is not None else None,
+            "status": union_rows_cache_status,
+            "elapsed_s": float(union_rows_cache_elapsed_s),
+            "union_state_labels_by_mode": union_states_by_mode,
+            "row_counts_before_filter": {
+                family: len(rows)
+                for family, rows in (union_rows_for_shared_output or {}).items()
+            },
+            "row_counts_after_filter": {
+                "activity_rows": len(activity_rows),
+                "correlation_rows": len(correlation_rows),
+                "soma_pairwise_rows": len(soma_pairwise_rows),
+                "bouton_pairwise_rows": len(bouton_pairwise_rows),
+                "lag_rows": len(lag_rows),
+                "coincidence_rows": len(coincidence_rows),
+                "visual_response_rows": len(visual_response_rows),
+            },
+        },
+        "cache_scopes": {
+            "source": "superset_reusable",
+            "analysis_tables": "superset_reusable_where_state_filterable",
+            "shuffle": "reusable_when_metadata_matches",
+            "analysis_results": "preset_specific",
+            "figures": "shared_only_when_inputs_match",
+        },
         "cache_summary": {
             "analysis_run_cache_path": str(analysis_run_cache_file),
             "analysis_results_cache_path": str(analysis_results_cache_file),
@@ -2395,6 +2532,13 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "pipeline_elapsed_s": float(time.perf_counter() - pipeline_started),
     }
     manifest_json = _json_safe(manifest)
+    timing_report_path = result_root / "timing_report.json"
+    timing_report_path.write_text(json.dumps({
+        "pipeline": "soma_bouton_pipeline",
+        "comparison_preset_name": preset_name,
+        "pipeline_elapsed_s": manifest_json.get("pipeline_elapsed_s"),
+    }, indent=2, sort_keys=True))
+    manifest_json["timing_report_path"] = str(timing_report_path)
     analysis_tables_payload = {
         "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
         "meta": analysis_results_meta,

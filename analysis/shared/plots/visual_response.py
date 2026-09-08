@@ -116,12 +116,20 @@ def _load_visual_response_plot_data(response_row: Mapping[str, Any], *, locomoti
     }
 
 
+def _plot_trace_points(time_values: np.ndarray, trace: np.ndarray, max_points: Optional[int]) -> tuple[np.ndarray, np.ndarray]:
+    if max_points is None or max_points <= 0 or time_values.size <= max_points:
+        return time_values, trace
+    indices = np.linspace(0, time_values.size - 1, int(max_points), dtype=int)
+    return time_values[indices], trace[indices]
+
+
 def plot_visual_response_entity_figure(
     response_row: Mapping[str, Any],
     fig_dir: Path | str,
     *,
     cohort_label: str = "all",
     kind: str = "soma",
+    max_trace_points: Optional[int] = None,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -145,8 +153,10 @@ def plot_visual_response_entity_figure(
     blank_ax, movie_ax, box_ax = axes
 
     for trace in blank_traces:
-        blank_ax.plot(cut_time, trace, color="#9AA0A6", linewidth=0.7, alpha=0.10, zorder=1)
-    blank_ax.plot(cut_time, blank_mean_trace, color="#7F8790", linewidth=2.6, zorder=3)
+        plot_time, plot_trace = _plot_trace_points(cut_time, trace, max_trace_points)
+        blank_ax.plot(plot_time, plot_trace, color="#9AA0A6", linewidth=0.7, alpha=0.10, zorder=1)
+    plot_time, plot_trace = _plot_trace_points(cut_time, blank_mean_trace, max_trace_points)
+    blank_ax.plot(plot_time, plot_trace, color="#7F8790", linewidth=2.6, zorder=3)
     blank_ax.set_title("Blank traces", fontsize=14)
     blank_ax.set_xlabel("Time (s)")
     blank_ax.set_ylabel("dF/F")
@@ -154,8 +164,10 @@ def plot_visual_response_entity_figure(
     blank_ax.text(0.02, 0.98, f"trials: blank={len(blank_traces)}", transform=blank_ax.transAxes, ha="left", va="top", fontsize=9, color="#444444")
 
     for trace in visual_traces:
-        movie_ax.plot(cut_time, trace, color="#F58518", linewidth=0.7, alpha=0.10, zorder=1)
-    movie_ax.plot(cut_time, visual_mean_trace, color="#D97706", linewidth=2.6, zorder=3)
+        plot_time, plot_trace = _plot_trace_points(cut_time, trace, max_trace_points)
+        movie_ax.plot(plot_time, plot_trace, color="#F58518", linewidth=0.7, alpha=0.10, zorder=1)
+    plot_time, plot_trace = _plot_trace_points(cut_time, visual_mean_trace, max_trace_points)
+    movie_ax.plot(plot_time, plot_trace, color="#D97706", linewidth=2.6, zorder=3)
     movie_ax.set_title("Movies traces", fontsize=14)
     movie_ax.set_xlabel("Time (s)")
     movie_ax.set_ylabel("dF/F")
@@ -221,6 +233,7 @@ def render_visual_response_entity_figures(
     cohort_label: str = "all",
     kind: str = "soma",
     batch_size: int = 32,
+    max_trace_points: Optional[int] = None,
 ) -> List[str]:
     deduped_rows: List[Mapping[str, Any]] = []
     seen_entities: set[str] = set()
@@ -237,7 +250,13 @@ def render_visual_response_entity_figures(
     for batch_start in range(0, len(deduped_rows), safe_batch_size):
         batch = deduped_rows[batch_start : batch_start + safe_batch_size]
         for row in batch:
-            output = plot_visual_response_entity_figure(row, fig_dir, cohort_label=cohort_label, kind=kind)
+            output = plot_visual_response_entity_figure(
+                row,
+                fig_dir,
+                cohort_label=cohort_label,
+                kind=kind,
+                max_trace_points=max_trace_points,
+            )
             if output:
                 saved.append(output)
         del batch

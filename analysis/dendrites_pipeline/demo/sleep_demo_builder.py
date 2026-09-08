@@ -1525,8 +1525,28 @@ def run_pipeline_validation(recipe: Dict[str, Any], manifest: Dict[str, Any], ou
         "--config",
         str(config_path),
     ]
-    proc = subprocess.run(cmd, check=False)
-    return proc.returncode
+    first = subprocess.run(cmd, check=False)
+    if first.returncode != 0:
+        return first.returncode
+    reuse_config = dict(analysis_config)
+    reuse_config.update({
+        "rebuild": False,
+        "source_cache_rebuild": False,
+        "analysis_tables_rebuild": False,
+        "analysis_results_rebuild": False,
+        "shared_shuffle_cache_rebuild": False,
+        "source_cache_validate": False,
+    })
+    reuse_config_path = output_dir / "demo_analysis_reuse_config.json"
+    write_json(reuse_config_path, reuse_config)
+    reuse_cmd = [
+        sys.executable,
+        str(DENDRITES_PIPELINE_DIR / "dendrites_pipeline.py"),
+        "--config",
+        str(reuse_config_path),
+    ]
+    second = subprocess.run(reuse_cmd, check=False)
+    return second.returncode
 
 
 def build_command(args: argparse.Namespace) -> int:

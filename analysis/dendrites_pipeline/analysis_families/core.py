@@ -145,7 +145,6 @@ def prepare_visual_response_cohorts(
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
     generate_visual_response_entity_figures: bool = True,
-    transition_analysis: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     dendrite_visual_response = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
     step_message(f"visual response dendrites: {_visual_response_count_text(dendrite_visual_response)}")
@@ -656,6 +655,7 @@ def run_cached_analysis(
     analysis_results_meta: Optional[Dict[str, Any]] = None,
     cache_path: Optional[Path] = None,
     generate_visual_response_entity_figures: bool = True,
+    transition_analysis: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     selected_families = normalize_analysis_families(analysis_families)
     experiments = cache.get("experiments", {})

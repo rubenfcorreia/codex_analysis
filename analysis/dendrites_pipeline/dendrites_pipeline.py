@@ -36,6 +36,10 @@ from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PR
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.state_utils import resolve_repo_path
+from analysis.shared.union_rows import (
+    filter_table_rows_by_states, load_union_rows_cache, save_union_rows_cache,
+    union_rows_meta, union_state_labels,
+)
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results, split_group_hatch
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
@@ -479,6 +483,7 @@ USER_EDITABLE_DEFAULTS = {
     "analysis_tables_cache_path": None,
     "analysis_run_cache_path": None,
     "analysis_results_cache_path": None,
+    "shared_union_rows_cache_path": None,
     "output_dir": str(DEFAULT_RESULTS_DIR),
     "comparison_presets": None,
     "demo_spec": None,
@@ -10033,6 +10038,13 @@ def analysis_day_cache_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}_analysis_day_cache.npz")
 
 
+DAY_CACHE_CHUNK_SCHEMA_VERSION = 1
+
+
+def analysis_day_chunk_cache_path(cache_path: Path) -> Path:
+    return cache_path.with_suffix(".chunks")
+
+
 FAMILY_RESULT_CACHE_STAGES = (
     "visual_response",
     "state",
@@ -10118,14 +10130,40 @@ def analysis_day_cache_meta(
 
 
 def save_analysis_day_cache(path: Path, analysis_cache: Dict[str, Any], *, meta: Dict[str, Any]) -> Path:
-    payload = {
-        "schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
-        "meta": cacheable(meta),
+    chunk_dir = analysis_day_chunk_cache_path(path)
+    temp_dir = chunk_dir.with_name(f"{chunk_dir.name}.tmp")
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    ensure_dir(temp_dir / "experiments")
+    experiments = analysis_cache.get("experiments", {})
+    if not isinstance(experiments, dict):
+        experiments = {}
+    experiment_files = []
+    for index, (day_id, day_record) in enumerate(sorted(experiments.items(), key=lambda item: str(item[0]))):
+        filename = f"day_{index:06d}.pkl"
+        with (temp_dir / "experiments" / filename).open("wb") as handle:
+            pickle.dump({"day_id": day_id, "record": day_record}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        experiment_files.append({"day_id": str(day_id), "file": filename})
+    animals = analysis_cache.get("animals", {})
+    with (temp_dir / "animals.pkl").open("wb") as handle:
+        pickle.dump(animals, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    extras = {key: value for key, value in analysis_cache.items() if key not in {"experiments", "animals"}}
+    with (temp_dir / "extras.pkl").open("wb") as handle:
+        pickle.dump(extras, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    manifest = {
+        "schema_version": DAY_CACHE_CHUNK_SCHEMA_VERSION,
+        "cache_scope": "analysis_day",
+        "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
+        "meta": dict(meta),
         "meta_hash": analysis_cache_meta_hash(meta),
-        "analysis_cache": cacheable(analysis_cache),
+        "experiment_files": experiment_files,
+        "n_experiments": len(experiment_files),
     }
-    save_npz_cache(path, payload)
-    return path
+    (temp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    if chunk_dir.exists():
+        shutil.rmtree(chunk_dir)
+    temp_dir.replace(chunk_dir)
+    return chunk_dir
 
 
 def load_analysis_day_cache(
@@ -10134,10 +10172,45 @@ def load_analysis_day_cache(
     expected_meta: Optional[Dict[str, Any]] = None,
     ignore_meta_keys: Optional[Sequence[str]] = None,
     rebuild: bool = False,
+    required_day_ids: Optional[Sequence[str]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     if rebuild:
         step_message("rebuilding day-pooled analysis cache")
         return None, "rebuild_requested"
+    chunk_dir = analysis_day_chunk_cache_path(path)
+    manifest_path = chunk_dir / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            if manifest.get("schema_version") != DAY_CACHE_CHUNK_SCHEMA_VERSION:
+                raise ValueError("chunk schema mismatch")
+            if expected_meta is not None:
+                ignore_keys = {str(key) for key in (ignore_meta_keys or []) if str(key)}
+                expected = {key: value for key, value in expected_meta.items() if key not in ignore_keys}
+                saved = manifest.get("meta", {})
+                if not isinstance(saved, dict):
+                    saved = {}
+                saved = {key: value for key, value in saved.items() if key not in ignore_keys}
+                if analysis_cache_meta_hash(saved) != analysis_cache_meta_hash(expected):
+                    raise ValueError("chunk metadata mismatch")
+            with (chunk_dir / "extras.pkl").open("rb") as handle:
+                analysis_cache = pickle.load(handle)
+            with (chunk_dir / "animals.pkl").open("rb") as handle:
+                analysis_cache["animals"] = pickle.load(handle)
+            experiments = {}
+            required = {str(day_id) for day_id in (required_day_ids or []) if str(day_id)}
+            for entry in manifest.get("experiment_files", []):
+                if required and str(entry.get("day_id")) not in required:
+                    continue
+                with (chunk_dir / "experiments" / str(entry["file"])).open("rb") as handle:
+                    record = pickle.load(handle)
+                experiments[record["day_id"]] = record["record"]
+            analysis_cache["experiments"] = experiments
+            if not isinstance(analysis_cache, dict):
+                raise ValueError("invalid chunk analysis cache")
+            return {"schema_version": ANALYSIS_CACHE_SCHEMA_VERSION, "meta": manifest.get("meta", {}), "meta_hash": manifest.get("meta_hash"), "analysis_cache": analysis_cache}, "ok"
+        except Exception:
+            step_message("chunked day cache unavailable; trying legacy NPZ")
     if not path.exists():
         step_message("rebuilding day-pooled analysis cache")
         return None, "missing"
@@ -17743,6 +17816,20 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
 
     child_script = Path(__file__).resolve()
     preset_configs: Dict[str, Dict[str, Any]] = {}
+    preset_state_maps = []
+    for preset_name, overrides in plan.presets:
+        probe_config = copy.deepcopy(dict(config))
+        probe_config.update(overrides)
+        state_comparison, basal_apical, _ = resolve_analysis_state_selections(
+            probe_config,
+            movie_expids=parse_list_argument(probe_config.get("movie_expids")),
+            sleep_expids=parse_list_argument(probe_config.get("sleep_expids")),
+        )
+        preset_state_maps.append({
+            "state_comparison": state_comparison,
+            "basal_apical": basal_apical,
+        })
+    union_states_by_mode = union_state_labels(preset_state_maps)
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_output_dir = base_output_dir / safe_name
@@ -17759,6 +17846,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["cache_path"] = str(shared_cache_path)
         preset_config["analysis_run_cache_path"] = str(preset_cache_path)
         preset_config["analysis_results_cache_path"] = None
+        preset_config["shared_union_rows_cache_path"] = str(base_output_dir / "general" / "cache" / "dendrites_union_rows_cache.npz")
         generate_once = preset_index == 0
         preset_rebuild = bool(config.get("rebuild")) if generate_once else False
         preset_config["rebuild"] = preset_rebuild
@@ -17770,6 +17858,8 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["branch_first_figures"] = True
         preset_config["generate_visual_response_entity_figures"] = preset_index == 0
         preset_config["general_output_root"] = str(base_output_dir / "general")
+        preset_config["union_state_labels_by_mode"] = union_states_by_mode
+        preset_config["union_rows_cache_builder"] = generate_once
         preset_config["generate_shared_general_outputs"] = generate_once
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
@@ -18115,6 +18205,75 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_tables=analysis_tables,
             )
             save_analysis_day_cache(analysis_cache_file, analysis_cache, meta=analysis_cache_expected_meta)
+    union_states_by_mode = {
+        str(mode): sorted(str(state) for state in states)
+        for mode, states in (config.get("union_state_labels_by_mode") or {}).items()
+    }
+    union_cache_path = resolve_repo_path(
+        config.get("shared_union_rows_cache_path")
+        or (output_dir / "general" / "cache" / "dendrites_union_rows_cache.npz"),
+        REPO_ROOT,
+    )
+    union_meta = union_rows_meta(
+        source_signature=source_cache_signature(source_cache),
+        union_states_by_mode=union_states_by_mode or {"state": list(state_comparison_states or [])},
+        parameters={
+            "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
+            "channel": int(channel),
+            "event_detection_method": str(event_detection_method),
+            "visual_response_metric": str(visual_response_metric),
+            "analysis_tables_signature": str(source_cache.get("analysis_tables_signature", "")),
+        },
+    )
+    union_rows_cache_builder = config.get("union_rows_cache_builder") is not False
+    union_payload = None
+    union_status = "missing"
+    union_elapsed_s = 0.0
+    if not union_rows_cache_builder:
+        union_payload, union_status, union_elapsed_s = load_union_rows_cache(union_cache_path, expected_meta=union_meta)
+    if union_payload is None:
+        tables = analysis_cache.get("analysis_tables", {})
+        table_rows = {
+            str(name): list(entry.get("table_rows", []))
+            for name, entry in tables.items()
+            if isinstance(entry, dict) and isinstance(entry.get("table_rows"), list)
+        } if isinstance(tables, dict) else {}
+        union_payload = {"dendrites_analysis_table_rows": table_rows}
+        if union_rows_cache_builder:
+            union_elapsed_s = save_union_rows_cache(union_cache_path, union_payload, meta=union_meta)
+            union_status = "built"
+    union_table_rows = union_payload.get("dendrites_analysis_table_rows", {}) if isinstance(union_payload, dict) else {}
+    if not isinstance(union_table_rows, dict):
+        union_table_rows = {}
+    analysis_cache["union_rows"] = {
+        "cache_scope": "source_rows_union",
+        "path": str(union_cache_path),
+        "status": union_status,
+        "elapsed_s": float(union_elapsed_s),
+        "union_state_labels_by_mode": union_states_by_mode,
+        "source_signature": source_cache_signature(source_cache),
+        "generating_preset": str(config.get("comparison_preset_name") or "default") if union_status == "built" else None,
+        "row_counts_before_filter": {name: len(rows) for name, rows in union_table_rows.items() if isinstance(rows, list)},
+    }
+    union_tables = {name: {"table_rows": rows} for name, rows in union_table_rows.items() if isinstance(rows, list)}
+    preset_tables = filter_table_rows_by_states(
+        union_tables,
+        {"state": list(state_comparison_states or []), "basal_apical": list(basal_apical_states or [])},
+    )
+    analysis_cache_for_run = dict(analysis_cache)
+    original_tables = analysis_cache.get("analysis_tables", {})
+    merged_tables = dict(original_tables) if isinstance(original_tables, dict) else {}
+    for name, entry in preset_tables.items():
+        merged_entry = dict(merged_tables.get(name, {})) if isinstance(merged_tables.get(name), dict) else {}
+        merged_entry["table_rows"] = entry.get("table_rows", [])
+        merged_tables[name] = merged_entry
+    if merged_tables:
+        analysis_cache_for_run["analysis_tables"] = merged_tables
+    analysis_cache["union_rows"]["row_counts_after_filter"] = {
+        name: len(entry.get("table_rows", []))
+        for name, entry in preset_tables.items()
+        if isinstance(entry, dict)
+    }
     shuffle_state_labels = list(
         dict.fromkeys(
             [state for state in (state_comparison_states or []) + (basal_apical_states or []) if state]
@@ -18261,7 +18420,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             results = dict(analysis_results_cache.get("analysis_results", {}))
         elif bool(config.get("spine_coactivity_only")):
             results = run_cached_analysis(
-                analysis_cache,
+                analysis_cache_for_run,
                 shuffle_n=shuffle_n,
                 state_comparison_states=state_comparison_states,
                 basal_apical_states=basal_apical_states,
@@ -18280,7 +18439,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
-                analysis_cache,
+                analysis_cache_for_run,
                 shuffle_n=shuffle_n,
                 state_comparison_states=state_comparison_states,
                 basal_apical_states=basal_apical_states,
@@ -18299,7 +18458,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         else:
             results = run_cached_analysis(
-                analysis_cache,
+                analysis_cache_for_run,
                 shuffle_n=shuffle_n,
                 state_comparison_states=state_comparison_states,
                 basal_apical_states=basal_apical_states,
@@ -18359,10 +18518,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "generate_shared_general_figures": bool(config.get("generate_shared_general_figures", True)),
         "generate_shared_general_outputs": bool(config.get("generate_shared_general_outputs", False)),
         "generate_visual_response_entity_figures": bool(config.get("generate_visual_response_entity_figures", True)),
+        "union_rows_cache": dict(analysis_cache.get("union_rows", {})),
+        "cache_scopes": {
+            "source": "superset_reusable",
+            "analysis_tables": "superset_reusable_where_state_filterable",
+            "shuffle": "reusable_when_metadata_matches",
+            "analysis_results": "preset_specific",
+            "figures": "shared_only_when_inputs_match",
+        },
         "transition_analysis": dict(config.get("transition_analysis") or {}),
         "general_output_root": str(config.get("general_output_root")) if config.get("general_output_root") else None,
         "poster_ready_only": bool(config.get("poster_ready_only")),
         "analysis_run_cache_path": str(analysis_run_cache_path),
+        "shared_union_rows_cache_path": str(union_cache_path),
+        "union_rows_cache_status": union_status,
+        "union_rows_cache_elapsed_s": float(union_elapsed_s),
+        "union_state_labels_by_mode": union_states_by_mode,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": selection_meta.get("movie_trial_types"),
         "compare_states": selection_meta.get("compare_states"),
@@ -18432,6 +18603,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
     }
     results["stage_timings"] = get_stage_timings()
+    timing_report_path = output_dir / "timing_report.json"
+    timing_report_path.write_text(json.dumps(jsonable({
+        "pipeline": "dendrites_pipeline",
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "stages": results["stage_timings"],
+    }), indent=2, sort_keys=True))
     report_path: Optional[Path] = None
     if plots_only:
         results["analysis_mode"] = "plots_only"
@@ -18488,6 +18665,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_results_cache_file,
         shared_shuffle_cache_file,
         output_dir / "analysis_report.txt",
+        timing_report_path,
     ):
         if candidate is not None and Path(candidate).exists():
             tracked_output_artifacts.append(report_relative_path(Path(candidate), output_dir))
