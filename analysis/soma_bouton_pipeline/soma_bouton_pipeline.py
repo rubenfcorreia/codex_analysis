@@ -665,7 +665,6 @@ def _build_coincidence_rows_for_context(
                         "state_display": state_display_label(state_key),
                         "state_color": state_display_color(state_key),
                         "event_detection_method": str(event_detection_method),
-        "transition_analysis": dict(config.get("transition_analysis") or {}),
                         "soma_channel": int(ctx.soma_channel),
                         "bouton_channel": int(ctx.bouton_channel),
                     }
@@ -817,6 +816,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "shuffle_n": int(config.get("shuffle_n", 200)),
         "event_detection_method": str(event_detection_method),
+        "transition_analysis": dict(config.get("transition_analysis") or {}),
         "visual_response_metric": str(visual_response_metric),
         "visual_response_cohort": str(visual_response_cohort),
         "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
