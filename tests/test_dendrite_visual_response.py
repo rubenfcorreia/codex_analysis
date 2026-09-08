@@ -219,6 +219,77 @@ def test_event_info_records_parallel_detection_methods_for_dendrite_and_spine() 
     assert np.isfinite(spine_event_info["methods"]["amplitude"]["coincident_event_frequency_per_min"])
 
 
+def test_state_summary_grouping_requires_and_filters_branch_leaf_scope() -> None:
+    rows = [
+        {
+            "branch_name": "activity_split",
+            "basis_name": "all",
+            "state": "quiet_awake_movies",
+            "state_display": "Quiet Awake Movies",
+            "compartment": "basal",
+            "mean": 1.0,
+            "split_group": "more_active",
+            "split_group_display": "More active",
+            "split_group_rank": 1,
+        },
+        {
+            "branch_name": "frequency_split",
+            "basis_name": "all",
+            "state": "quiet_awake_movies",
+            "state_display": "Quiet Awake Movies",
+            "compartment": "basal",
+            "mean": 2.0,
+            "split_group": "higher_frequency",
+            "split_group_display": "Higher frequency",
+            "split_group_rank": 1,
+        },
+        {
+            "branch_name": "activity_split",
+            "basis_name": "nrem",
+            "state": "nrem",
+            "state_display": "NREM",
+            "compartment": "basal",
+            "mean": 3.0,
+            "split_group": "less_active",
+            "split_group_display": "Less active",
+            "split_group_rank": 2,
+        },
+    ]
+    results = {"roi_split": {"subject_state_rows": rows, "membership_rows": []}}
+    assert pipeline.state_summary_grouped_results(results) is None
+
+    scoped = dict(results)
+    scoped["analysis_branch_name"] = "activity_split"
+    scoped["analysis_basis_name"] = "all"
+    grouped = pipeline.state_summary_grouped_results(scoped, compartment_filter="basal")
+    assert grouped is not None
+    grouped_rows = pipeline._state_summary_grouped_rows(
+        grouped,
+        "mean",
+        ["quiet_awake_movies"],
+        compartment_filter="basal",
+    )
+    assert {row["split_group"] for row in grouped_rows} == {"more_active"}
+    assert all(row["branch_name"] == "activity_split" and row["basis_name"] == "all" for row in grouped_rows)
+
+
+def test_state_summary_split_styles_keep_hatches_and_compartment_tones() -> None:
+    basal = pipeline._state_summary_box_style(
+        "quiet_awake_movies",
+        "basal",
+        split_group="more_active",
+    )
+    apical = pipeline._state_summary_box_style(
+        "quiet_awake_movies",
+        "apical",
+        split_group="more_active",
+    )
+    assert basal["hatch"] == "///"
+    assert apical["hatch"] == "///"
+    assert basal["facecolor"] != apical["facecolor"]
+    assert basal["edgecolor"] == apical["edgecolor"]
+
+
 def test_state_summary_outputs_use_family_and_cohort_subfolders(tmp_path: Path) -> None:
     cache = _build_cache()
     response_summary = pipeline.classify_visual_responsive_dendrites(cache)
@@ -235,6 +306,7 @@ def test_state_summary_outputs_use_family_and_cohort_subfolders(tmp_path: Path) 
     )
     assert overview_path is not None
     assert Path(overview_path).parent == output_dir / "dendrites" / "selected_states" / "all"
+    assert not (output_dir / "selected_states" / "dendrites" / "selected_states").exists()
     assert (output_dir / "dendrites" / "selected_states" / "all" / "state_summary_boxplots_dendrite_mean.svg").exists()
     assert (output_dir / "spines" / "selected_states" / "all" / "state_summary_boxplots_spine_specific_mean.svg").exists()
 

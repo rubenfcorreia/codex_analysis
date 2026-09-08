@@ -455,6 +455,16 @@ USER_EDITABLE_DEFAULTS = {
     "poster_ready_only": False,
     "plots_only_include_supporting_figures": False,
     "generate_poster_ready_figures": True,
+    "generate_shared_general_outputs": False,
+    "generate_shared_general_figures": True,
+    "generate_visual_response_entity_figures": True,
+    "transition_analysis": {
+        "enabled": False,
+        "window_s": 60,
+        "window_modes": ["strict", "max_available"],
+        "scopes": ["all_states", "sleep_states"],
+        "metrics": ["activity", "event_frequency"],
+    },
     "source_cache_rebuild": False,
     "analysis_tables_rebuild": False,
     "analysis_results_rebuild": False,
@@ -5984,13 +5994,25 @@ SPINE_COACTIVITY_FIGURE_SUBDIRS = {
 }
 
 
+def _state_summary_output_root(root: Path) -> Path:
+    root_path = Path(root)
+    if root_path.name == DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME:
+        return root_path
+    return root_path / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME
+
+
 def state_summary_metric_output_dir(
     root: Path,
     metric_name: str,
     cohort_label: str = "all",
     state_group: str = DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
 ) -> Path:
-    return figure_nested_dir(root, state_summary_metric_family(metric_name), state_group, cohort_label)
+    return figure_nested_dir(
+        _state_summary_output_root(root),
+        state_summary_metric_family(metric_name),
+        state_group,
+        cohort_label,
+    )
 
 
 def _state_summary_significant_pair_rows(
@@ -6390,6 +6412,20 @@ def state_summary_grouped_results(
     split_rows = [dict(row) for row in roi_split_results.get("subject_state_rows", []) if isinstance(row, Mapping)]
     if not split_rows:
         return None
+    branch_key = canonical_state_label(results.get("analysis_branch_name"))
+    basis_key = canonical_state_label(results.get("analysis_basis_name"))
+    if branch_key not in {canonical_state_label(branch) for branch in ANALYSIS_BRANCHES}:
+        return None
+    if basis_key not in {canonical_state_label(basis) for basis in ANALYSIS_BASES}:
+        return None
+    split_rows = [
+        row
+        for row in split_rows
+        if canonical_state_label(row.get("branch_name")) == branch_key
+        and canonical_state_label(row.get("basis_name")) == basis_key
+    ]
+    if not split_rows:
+        return None
     membership_rows = roi_split_results.get("membership_rows", [])
     if isinstance(membership_rows, Sequence) and not isinstance(membership_rows, (str, bytes)):
         split_rows = annotate_rows_with_split_group(split_rows, membership_rows)
@@ -6401,9 +6437,10 @@ def state_summary_grouped_results(
     if not any(str(row.get("split_group") or "").strip() for row in split_rows):
         return None
     grouped_results = dict(results)
-    grouped_results["roi_split"] = roi_split_results
-    grouped_results["analysis_branch_name"] = "roi_split"
-    grouped_results["analysis_basis_name"] = "all"
+    grouped_results["roi_split"] = dict(roi_split_results)
+    grouped_results["roi_split"]["subject_state_rows"] = split_rows
+    grouped_results["analysis_branch_name"] = branch_key
+    grouped_results["analysis_basis_name"] = basis_key
     if compartment_key is not None:
         grouped_results["compartment_filter"] = compartment_key
     return grouped_results
@@ -7433,7 +7470,7 @@ def generate_analysis_figures(
         return []
     _restore_roi_split_from_analysis_tables(results, cache)
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
-    summary_fig_dir = state_summary_figure_dir(fig_dir)
+    summary_fig_dir = fig_dir
     saved: List[str] = []
     coactivity_dir = fig_dir
     shuffle_n = int(results.get("run_parameters", {}).get("shuffle_n", DEFAULT_SHUFFLES) or DEFAULT_SHUFFLES)
@@ -7480,11 +7517,6 @@ def generate_analysis_figures(
     roi_split_results = results.get("roi_split", {})
     with step_scope("figure prep: state summary overview results"):
         overview_results = results
-        if isinstance(roi_split_results, dict) and roi_split_results.get("subject_state_rows"):
-            overview_results = dict(results)
-            overview_results["analysis_branch_name"] = "roi_split"
-            overview_results["analysis_basis_name"] = "all"
-            overview_results["roi_split"] = roi_split_results
     with step_scope("figure prep: state summary basal results"):
         basal_results = state_summary_grouped_results(results, compartment_filter="basal") or build_state_summary_gallery_results(cache, state_labels, "basal")
     with step_scope("figure prep: state summary apical results"):
@@ -8020,7 +8052,7 @@ def generate_review_figures(
         eprint("[ALERT] matplotlib is unavailable; skipping review figure generation.")
         return []
     review_dir = ensure_dir(Path(review_root) if review_root is not None else DEFAULT_REVIEW_FIGURES_DIR)
-    summary_review_dir = state_summary_figure_dir(review_dir)
+    summary_review_dir = review_dir
     saved: List[str] = []
     state_labels = selected_matrix_state_labels(results)
     basal_apical_state_labels = selected_basal_apical_state_labels(results)
@@ -16089,6 +16121,15 @@ def write_analysis_outputs(
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
     _restore_roi_split_from_analysis_tables(results, cache)
+    run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    configured_general_root = run_params.get("general_output_root")
+    if source_cache is not None and configured_general_root and bool(run_params.get("generate_shared_general_outputs", False)):
+        general_csv_dir = ensure_dir(Path(configured_general_root) / "csv")
+        experiment_rows = [dict(meta) for _, meta in sorted(dict(source_cache.get("experiments", {})).items()) if isinstance(meta, dict)]
+        if experiment_rows:
+            fieldnames = sorted({key for row in experiment_rows for key in row.keys()})
+            write_csv_rows(general_csv_dir / "experiments.csv", experiment_rows, fieldnames)
+
     if include_supporting_figures:
         # Save figures first so the JSON report can include their exact file paths.
         step_message("figure generation starting; this may take a while")
@@ -16110,8 +16151,12 @@ def write_analysis_outputs(
         generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
         shared_general_root = None
         if generate_shared_general_figures:
-            base_root = Path(figure_root) if figure_root is not None else (output_dir / "figures")
-            shared_general_root = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME)
+            configured_general_root = run_params.get("general_output_root")
+            if configured_general_root:
+                shared_general_root = ensure_dir(Path(configured_general_root) / "figures")
+            else:
+                base_root = Path(figure_root) if figure_root is not None else (output_dir / "figures")
+                shared_general_root = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME)
         if source_cache is not None and shared_general_root is not None:
             step_message("visual response figure generation starting")
             with step_scope("visual response figure generation"):
@@ -16222,6 +16267,22 @@ def write_analysis_outputs(
         state_csv = output_dir / "state_comparisons.csv"
         write_csv_rows(state_csv, state_rows, fieldnames)
         written_artifacts.append(report_relative_path(state_csv, output_dir))
+    transition_result = results.get("state_transitions", {}) if isinstance(results.get("state_transitions", {}), dict) else {}
+    transition_event_rows = list(transition_result.get("event_rows", []))
+    transition_summary_rows = list(transition_result.get("summary_rows", []))
+    for table_name, rows in (("events", transition_event_rows), ("comparisons", transition_summary_rows)):
+        grouped_rows = {}
+        for row in rows:
+            key = (str(row.get("scope") or "all_states"), str(row.get("window_mode") or "strict"))
+            grouped_rows.setdefault(key, []).append(row)
+        for (scope, window_mode), grouped in sorted(grouped_rows.items()):
+            filename = f"state_transition_{table_name}_{scope}_{window_mode}.csv"
+            path = output_dir / filename
+            write_csv_rows(path, grouped, sorted({key for row in grouped for key in row.keys()}))
+            written_artifacts.append(report_relative_path(path, output_dir))
+    for path in transition_result.get("figure_paths", []):
+        written_artifacts.append(report_relative_path(path, output_dir))
+
     if results.get("correlations"):
         fieldnames = sorted({key for row in results["correlations"] for key in row.keys()})
         correlations_csv = output_dir / "correlations.csv"
@@ -17707,6 +17768,9 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["branch_first_output_root"] = str(preset_output_dir)
         preset_config["branch_first_figures"] = True
+        preset_config["generate_visual_response_entity_figures"] = preset_index == 0
+        preset_config["general_output_root"] = str(base_output_dir / "general")
+        preset_config["generate_shared_general_outputs"] = generate_once
         if bool(preset_config.get("plots_only")):
             preset_results_cache_path = analysis_results_cache_path(preset_cache_path)
             preset_family_stage = family_results_cache_stage_for_selection(preset_config.get("analysis_families"))
@@ -17721,6 +17785,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["plots_only_include_supporting_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         preset_config["generate_shared_general_figures"] = True if generate_once else False
+        preset_config["source_cache_validate"] = bool(config.get("source_cache_validate", True)) if generate_once else False
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             temp_config_path = Path(handle.name)
@@ -18085,6 +18150,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "spine_coactivity_anchor_state": SPINE_COACTIVITY_ANCHOR_STATE,
         "spine_coactivity_abs_threshold": spine_coactivity_abs_threshold,
         "event_detection_method": event_detection_method,
+        "transition_analysis": dict(config.get("transition_analysis") or {}),
         "visual_response_metric": visual_response_metric,
         "state_mode": selection_meta.get("state_mode"),
         "movie_trial_types": list(selection_meta.get("movie_trial_types") or []),
@@ -18209,6 +18275,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_families=["spine_coactivity"],
                 analysis_results_meta=analysis_results_meta,
                 cache_path=analysis_run_cache_path,
+                generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
+                transition_analysis=config.get("transition_analysis"),
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
@@ -18226,6 +18294,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_families=["mixed_model"],
                 analysis_results_meta=analysis_results_meta,
                 cache_path=analysis_run_cache_path,
+                generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
+                transition_analysis=config.get("transition_analysis"),
             )
         else:
             results = run_cached_analysis(
@@ -18243,6 +18313,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_families=config.get("analysis_families"),
                 analysis_results_meta=analysis_results_meta,
                 cache_path=analysis_run_cache_path,
+                generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
+                transition_analysis=config.get("transition_analysis"),
             )
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
@@ -18285,6 +18357,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_families": list(config.get("analysis_families") or []),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "generate_shared_general_figures": bool(config.get("generate_shared_general_figures", True)),
+        "generate_shared_general_outputs": bool(config.get("generate_shared_general_outputs", False)),
+        "generate_visual_response_entity_figures": bool(config.get("generate_visual_response_entity_figures", True)),
+        "transition_analysis": dict(config.get("transition_analysis") or {}),
+        "general_output_root": str(config.get("general_output_root")) if config.get("general_output_root") else None,
         "poster_ready_only": bool(config.get("poster_ready_only")),
         "analysis_run_cache_path": str(analysis_run_cache_path),
         "state_mode": selection_meta.get("state_mode"),
@@ -18417,6 +18493,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             tracked_output_artifacts.append(report_relative_path(Path(candidate), output_dir))
     results["output_artifacts"] = collect_output_artifacts(output_dir, tracked_output_artifacts)
     write_manifest(output_dir, jsonable(results))
+    configured_general_root = results.get("run_parameters", {}).get("general_output_root") if isinstance(results.get("run_parameters", {}), dict) else None
+    if configured_general_root and bool(results.get("run_parameters", {}).get("generate_shared_general_figures", False)):
+        write_manifest(Path(configured_general_root), {
+            "pipeline": "dendrites_pipeline",
+            "generated_by_preset": results.get("run_parameters", {}).get("comparison_preset_name", "default"),
+            "output_root": str(configured_general_root),
+            "output_artifacts": collect_output_artifacts(Path(configured_general_root)),
+        })
     run_issues = list(dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])))
     if run_issues:
         info(f"Issues encountered ({len(run_issues)}):")

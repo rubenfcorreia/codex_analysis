@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -70,6 +70,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
     spine_coactivity_anchor_state_compartments,
     visual_response_dendrite_ids,
 )
+from analysis.dendrites_pipeline.analysis_families.transitions import run_transition_analysis
 
 ANALYSIS_FAMILIES: List[str] = [
     "state",
@@ -110,6 +111,7 @@ def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:
         "direct_trial_type_comparison": {},
         "spine_coactivity": {},
         "spine_coactivity_model": {},
+        "state_transitions": {"event_rows": [], "summary_rows": [], "figure_paths": [], "alerts": []},
 
     }
 
@@ -142,6 +144,8 @@ def prepare_visual_response_cohorts(
     source_cache: Optional[Dict[str, Any]] = None,
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
+    generate_visual_response_entity_figures: bool = True,
+    transition_analysis: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     dendrite_visual_response = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
     step_message(f"visual response dendrites: {_visual_response_count_text(dendrite_visual_response)}")
@@ -172,29 +176,30 @@ def prepare_visual_response_cohorts(
                     entity_dir = cohort_dir / "entities"
                     finite_pairs = 0
                     saved_entities = 0
-                    for row in cohort_rows:
-                        blank_value = row.get("mean_blank")
-                        visual_value = row.get("mean_visual")
-                        if blank_value is None or visual_value is None:
-                            continue
-                        try:
-                            blank_value = float(blank_value)
-                            visual_value = float(visual_value)
-                        except Exception:
-                            continue
-                        if np.isfinite(blank_value) and np.isfinite(visual_value):
-                            finite_pairs += 1
-                        output_path = plot_visual_response_entity_figure(
-                            row,
-                            cache,
-                            source_cache,
-                            entity_dir,
-                            kind=kind[:-1],
-                            cohort_label=cohort,
-                            cut_cache=cut_cache,
-                        )
-                        if output_path:
-                            saved_entities += 1
+                    if generate_visual_response_entity_figures:
+                        for row in cohort_rows:
+                            blank_value = row.get("mean_blank")
+                            visual_value = row.get("mean_visual")
+                            if blank_value is None or visual_value is None:
+                                continue
+                            try:
+                                blank_value = float(blank_value)
+                                visual_value = float(visual_value)
+                            except Exception:
+                                continue
+                            if np.isfinite(blank_value) and np.isfinite(visual_value):
+                                finite_pairs += 1
+                            output_path = plot_visual_response_entity_figure(
+                                row,
+                                cache,
+                                source_cache,
+                                entity_dir,
+                                kind=kind[:-1],
+                                cohort_label=cohort,
+                                cut_cache=cut_cache,
+                            )
+                            if output_path:
+                                saved_entities += 1
                     output_path = plot_visual_response_boxplot_figure(
                         response_summary,
                         cohort_dir,
@@ -650,6 +655,7 @@ def run_cached_analysis(
     analysis_families: Optional[Sequence[str]] = None,
     analysis_results_meta: Optional[Dict[str, Any]] = None,
     cache_path: Optional[Path] = None,
+    generate_visual_response_entity_figures: bool = True,
 ) -> Dict[str, Any]:
     selected_families = normalize_analysis_families(analysis_families)
     experiments = cache.get("experiments", {})
@@ -673,6 +679,7 @@ def run_cached_analysis(
                     source_cache=source_cache,
                     output_dir=output_dir,
                     figure_root=figure_root,
+                    generate_visual_response_entity_figures=generate_visual_response_entity_figures,
                 )
             )
         if cache_path is not None and analysis_results_meta is not None:
@@ -692,6 +699,16 @@ def run_cached_analysis(
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
+    if transition_analysis and bool(transition_analysis.get("enabled", False)):
+        with step_scope("state transitions"):
+            results["state_transitions"] = run_transition_analysis(
+                cache,
+                state_comparison_states,
+                transition_analysis,
+                output_root=Path(output_dir) if output_dir is not None else None,
+            )
+            results["alerts"].extend(results["state_transitions"].get("alerts", []))
+
     if "mixed_model" in selected_families:
         run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
