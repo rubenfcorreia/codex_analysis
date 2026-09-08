@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -219,6 +220,7 @@ def render_visual_response_entity_figures(
     *,
     cohort_label: str = "all",
     kind: str = "soma",
+    batch_size: int = 32,
 ) -> List[str]:
     deduped_rows: List[Mapping[str, Any]] = []
     seen_entities: set[str] = set()
@@ -231,10 +233,15 @@ def render_visual_response_entity_figures(
         seen_entities.add(entity_id)
         deduped_rows.append(row)
     saved: List[str] = []
-    for row in deduped_rows:
-        output = plot_visual_response_entity_figure(row, fig_dir, cohort_label=cohort_label, kind=kind)
-        if output:
-            saved.append(output)
+    safe_batch_size = max(1, int(batch_size))
+    for batch_start in range(0, len(deduped_rows), safe_batch_size):
+        batch = deduped_rows[batch_start : batch_start + safe_batch_size]
+        for row in batch:
+            output = plot_visual_response_entity_figure(row, fig_dir, cohort_label=cohort_label, kind=kind)
+            if output:
+                saved.append(output)
+        del batch
+        gc.collect()
     return saved
 
 

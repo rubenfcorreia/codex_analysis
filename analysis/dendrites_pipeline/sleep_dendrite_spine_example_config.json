@@ -40,10 +40,12 @@
     "plots_only_include_supporting_figures": "Set true to keep the slower supporting figure galleries during plots-only. Leave false for the fastest poster-focused pass.",
     "comparison_presets": "Named comparison presets executed one at a time by the runner. Each preset can override the top-level comparison knobs, and --comparison-presets can select a subset by name.",
     "event_detection_method": "How calcium events are detected before event-rate summaries are written. Use derivative for the current default derivative-based detector or amplitude for the legacy amplitude-based detector.",
+    "transition_analysis": "Optional preset-level transition analysis. Disabled by default; enable only for presets with meaningful within-expID state changes.",
     "visual_response_metric": "Which metric the visual-response classification uses. Use mean for the original mean-trace path or calcium_events to classify from event frequency instead."
   },
   "comparison_presets": {
     "movies_state_comparisons": {
+      "transition_analysis": {"enabled": true, "window_s": 60, "window_modes": ["strict", "max_available"], "scopes": ["all_states"], "metrics": ["activity", "event_frequency"]},
       "state_comparison_states": [
         "quiet_awake_movies",
         "nrem_movies",
@@ -80,6 +82,7 @@
       ]
     },
     "all_states": {
+      "transition_analysis": {"enabled": true, "window_s": 60, "window_modes": ["strict", "max_available"], "scopes": ["all_states", "sleep_states"], "metrics": ["activity", "event_frequency"]},
       "state_comparison_states": [
         "quiet_awake_blank",
         "nrem_blank",
@@ -186,6 +189,7 @@
   "plots_only": false,
   "plots_only_include_supporting_figures": false,
   "event_detection_method": "amplitude",
+  "transition_analysis": {"enabled": false, "window_s": 60, "window_modes": ["strict", "max_available"], "scopes": ["all_states", "sleep_states"], "metrics": ["activity", "event_frequency"]},
   "visual_response_metric": "mean",
   "comparison_preset_names": [
     "movies_state_comparisons",
