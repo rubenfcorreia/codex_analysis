@@ -526,3 +526,15 @@ def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path
         edge_colors,
         np.asarray([[0.9607843137254902, 0.521568627451, 0.09411764705882353]]),
     )
+
+
+def test_result_layout_auditor_flags_only_comparison_level_figures(tmp_path: Path) -> None:
+    from analysis.audit_result_layout import find_illegal_figure_dirs
+
+    comparison = tmp_path / "comparison"
+    (comparison / "pooled" / "all" / "figures").mkdir(parents=True)
+    (comparison / "figures").mkdir()
+    direct = tmp_path / "direct"
+    (direct / "figures").mkdir(parents=True)
+
+    assert find_illegal_figure_dirs(tmp_path) == [comparison / "figures"]

@@ -33,7 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
-from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.union_rows import (
@@ -585,6 +585,18 @@ def figure_nested_dir(root: Path, *parts: str) -> Path:
 
 def visual_response_figure_dir(root: Path) -> Path:
     return figure_family_dir(root, DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME)
+
+
+def comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Optional[Path]:
+    """Return the canonical figure root for a branch-first comparison run."""
+    configured = config.get("figure_output_dir")
+    if configured:
+        return resolve_repo_path(configured, repo_root)
+    branch_root_value = config.get("branch_first_output_root")
+    if not branch_root_value or not bool(config.get("branch_first_figures", True)):
+        return None
+    branch_root = resolve_repo_path(branch_root_value, repo_root)
+    return comparison_leaf_root(branch_root) / "figures"
 
 def cleanup_roi_detail_figures(figure_root: Optional[Path]) -> List[str]:
     if figure_root is None:
@@ -8791,11 +8803,17 @@ def render_analysis_family_figures(
     except Exception as exc:
         eprint(f"[ALERT] Failed to create basal-vs-apical coactivity figure: {exc}")
     return saved
-def generate_checkpoint_gallery(output_dir: Path, cache: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
+def generate_checkpoint_gallery(
+    output_dir: Path,
+    cache: Dict[str, Any],
+    results: Dict[str, Any],
+    *,
+    gallery_root: Optional[Path] = None,
+) -> Dict[str, Any]:
     if plt is None:
         eprint("[ALERT] matplotlib is unavailable; skipping checkpoint gallery generation.")
         return {"manifest_path": None, "entries": [], "files": []}
-    gallery_dir = ensure_dir(output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME)
+    gallery_dir = ensure_dir(Path(gallery_root) if gallery_root is not None else output_dir / DEFAULT_CHECKPOINT_GALLERY_DIRNAME)
     entries: List[Dict[str, Any]] = []
     files: List[str] = []
     def append_entry(
@@ -16256,7 +16274,10 @@ def write_analysis_outputs(
             results["event_example_gallery"] = []
         step_message("checkpoint gallery generation starting")
         with step_scope("checkpoint gallery"):
-            checkpoint_gallery = generate_checkpoint_gallery(output_dir, cache, results)
+            checkpoint_root = output_dir
+            if figure_root is not None and Path(figure_root).name == "figures":
+                checkpoint_root = Path(figure_root).parent
+            checkpoint_gallery = generate_checkpoint_gallery(output_dir, cache, results, gallery_root=checkpoint_root)
         results["checkpoint_gallery"] = checkpoint_gallery
         if checkpoint_gallery.get("manifest_path"):
             written_artifacts.append(report_relative_path(checkpoint_gallery["manifest_path"], output_dir))
@@ -17856,6 +17877,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["branch_first_output_root"] = str(preset_output_dir)
         preset_config["branch_first_figures"] = True
+        preset_config["figure_output_dir"] = str(branch_leaf_figure_root(preset_output_dir, "pooled", "all"))
         preset_config["generate_visual_response_entity_figures"] = preset_index == 0
         preset_config["general_output_root"] = str(base_output_dir / "general")
         preset_config["union_state_labels_by_mode"] = union_states_by_mode
@@ -18140,7 +18162,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
         analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
         analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
-        figure_output_dir = resolve_repo_path(config.get("figure_output_dir"), REPO_ROOT) if config.get("figure_output_dir") else None
+        figure_output_dir = comparison_figure_root(config, REPO_ROOT, output_dir)
         plots_only = bool(config.get("plots_only"))
         if plots_only:
             source_cache_rebuild = False

@@ -202,7 +202,11 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
 
     monkeypatch.setattr(pipeline, "generate_analysis_figures", lambda *args, **kwargs: [_write_dummy(figure_root / "analysis" / "figure.svg", "analysis")])
     monkeypatch.setattr(pipeline, "generate_review_figures", lambda *args, **kwargs: [_write_dummy(figure_root / "review" / "figure.svg", "review")])
-    monkeypatch.setattr(pipeline, "generate_checkpoint_gallery", lambda *args, **kwargs: {"manifest_path": str(_write_dummy(output_dir / "checkpoint" / "manifest.json", "checkpoint")), "entries": [], "files": [str(_write_dummy(output_dir / "checkpoint" / "figure.svg", "checkpoint"))]})
+    checkpoint_call = {}
+    def _fake_checkpoint_gallery(*args, **kwargs):
+        checkpoint_call.update(kwargs)
+        return {"manifest_path": str(_write_dummy(output_dir / "checkpoint" / "manifest.json", "checkpoint")), "entries": [], "files": [str(_write_dummy(output_dir / "checkpoint" / "figure.svg", "checkpoint"))]}
+    monkeypatch.setattr(pipeline, "generate_checkpoint_gallery", _fake_checkpoint_gallery)
     monkeypatch.setattr(pipeline, "generate_event_detection_example_gallery", lambda *args, **kwargs: [str(_write_dummy(figure_root / "event_examples" / "figure.svg", "event"))])
     monkeypatch.setattr(pipeline, "write_text_report", lambda *args, **kwargs: pytest.fail("report should not be written in plots_only mode"))
     monkeypatch.setattr(pipeline, "write_csv_rows", lambda *args, **kwargs: pytest.fail("csv should not be written in plots_only mode"))
@@ -215,10 +219,25 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
     assert written
     assert (figure_root / "analysis" / "figure.svg").exists()
     assert (figure_root / "review" / "figure.svg").exists()
+    assert checkpoint_call["gallery_root"] == figure_root.parent
     assert (output_dir / "checkpoint" / "figure.svg").exists()
     assert not (output_dir / "analysis_results.json").exists()
     assert not (output_dir / "state_comparisons.csv").exists()
     assert not (output_dir / "analysis_report.txt").exists()
+
+
+def test_comparison_figure_root_uses_pooled_all_leaf(tmp_path: Path) -> None:
+    branch_root = tmp_path / "comparison"
+    root = pipeline.comparison_figure_root(
+        {"branch_first_output_root": str(branch_root), "branch_first_figures": True},
+        tmp_path,
+        tmp_path / "result",
+    )
+    assert root == branch_root / "pooled" / "all" / "figures"
+
+
+def test_comparison_figure_root_preserves_direct_run_fallback(tmp_path: Path) -> None:
+    assert pipeline.comparison_figure_root({}, tmp_path, tmp_path / "result") is None
 
 
 def test_mixed_model_row_selector_prefers_mean_activity() -> None:

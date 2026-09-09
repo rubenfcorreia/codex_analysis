@@ -30,7 +30,7 @@ from analysis.shared.comparison_preset_flow import (
     load_comparison_preset_csv_rows,
 )
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
-from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
 from analysis.shared.union_rows import filter_rows_by_states, load_union_rows_cache, save_union_rows_cache, union_rows_meta, union_state_labels
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
@@ -871,10 +871,10 @@ def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_r
     """
 
     branch_root_value = config.get("branch_first_output_root")
-    if branch_root_value:
-        branch_root = resolve_repo_path(branch_root_value, repo_root)
-        return branch_leaf_root(branch_root, "pooled", "all")
-    return result_root
+    return comparison_leaf_root(
+        result_root,
+        branch_root=resolve_repo_path(branch_root_value, repo_root) if branch_root_value else None,
+    )
 
 
 

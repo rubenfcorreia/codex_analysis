@@ -35,6 +35,21 @@ def branch_leaf_figure_root(result_root: Path | str, branch_name: Any, basis_nam
     return branch_leaf_root(result_root, branch_name, basis_name, preset_name=preset_name) / 'figures'
 
 
+def comparison_leaf_root(
+    result_root: Path | str,
+    *,
+    branch_root: Path | str | None = None,
+    branch_name: Any = "pooled",
+    basis_name: Any = "all",
+) -> Path:
+    """Return the canonical branch/basis leaf for a comparison result."""
+    return branch_leaf_root(
+        Path(branch_root) if branch_root is not None else result_root,
+        branch_name,
+        basis_name,
+    )
+
+
 def _normalize_basis_day_key(value: Any) -> str:
     text = str(value or '').strip()
     if not text:
@@ -198,6 +213,7 @@ __all__ = [
     'basis_state_labels',
     'branch_leaf_figure_root',
     'branch_leaf_root',
+    'comparison_leaf_root',
     'iter_branch_basis_leaves',
     'scope_rows_for_basis',
     'scoped_analysis_state_selection',

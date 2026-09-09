@@ -121,5 +121,28 @@ def test_dendrites_preset_orchestration_shares_union_cache(monkeypatch, tmp_path
     assert analysis_runs[1]["union_rows_cache_builder"] is False
     assert analysis_runs[0]["shared_union_rows_cache_path"] == analysis_runs[1]["shared_union_rows_cache_path"]
     assert analysis_runs[0]["union_state_labels_by_mode"]["state_comparison"] == ["active_awake", "quiet_awake"]
+    assert analysis_runs[0]["figure_output_dir"].endswith("/first/pooled/all/figures")
+    assert analysis_runs[1]["figure_output_dir"].endswith("/second/pooled/all/figures")
     assert analysis_runs[0]["generate_shared_general_outputs"] is True
     assert analysis_runs[1]["generate_shared_general_outputs"] is False
+
+
+def test_cache_entrypoint_preset_orchestration_uses_branch_first_figures(monkeypatch, tmp_path):
+    import analysis.soma_bouton_pipeline_cache as pipeline
+
+    captured = []
+    monkeypatch.setattr(pipeline, "run_pipeline", lambda config: captured.append(dict(config)) or {"ok": True})
+    pipeline.run_comparison_preset_runs({
+        "result_root": str(tmp_path / "results"),
+        "cache_root": str(tmp_path / "cache"),
+        "comparison_presets": {"first": {}, "second": {}},
+    })
+
+    assert [entry["branch_first_figures"] for entry in captured] == [True, True]
+    assert [Path(entry["result_root"]).name for entry in captured] == ["first", "second"]
+
+
+def test_comparison_leaf_root_is_pooled_all(tmp_path):
+    from analysis.shared.branch_tree import comparison_leaf_root
+
+    assert comparison_leaf_root(tmp_path / "preset") == tmp_path / "preset" / "pooled" / "all"
