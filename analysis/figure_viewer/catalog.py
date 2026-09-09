@@ -383,14 +383,18 @@ def discover_figure_records(
     review_candidates: List[Tuple[Path, Path, str, Dict[str, str], Dict[str, Any]]] = []
 
     if results_root.exists():
-        summary_manifests = sorted(results_root.rglob("summary/manifest.json"))
-        checkpoint_manifests = sorted(results_root.rglob("checkpoint_examples/manifest.json"))
+        summary_manifests = sorted(set(
+            results_root.rglob("summary/manifest.json")
+        ) | set(results_root.rglob("analysis/manifest.json")) | set(results_root.rglob("analysis/manifests/manifest.json")))
+        checkpoint_manifests = sorted(
+            set(results_root.rglob("checkpoint_examples/manifest.json"))
+            | set(results_root.rglob("figures/checkpoint/manifest.json"))
+        )
     if include_review_figures and review_root.exists():
         review_candidates = list(_review_candidates(review_root))
 
     # Manifests provide metadata, but some pipelines publish figures without one.
-    
-    # The results tree itself is the authoritative fallback for those outputs.
+    # New-layout filesystem fallback is restricted to disposable figure trees.
     direct_result_files: List[Path] = []
     if results_root.exists():
         direct_result_files = sorted(
@@ -399,7 +403,8 @@ def discover_figure_records(
             if (
                 path.is_file()
                 and path.suffix.lower() in IMAGE_SUFFIXES
-                and not {part.lower() for part in path.parts} & {"cache", "entities"}
+                and not {part.lower() for part in path.parts} & {"cache", "entities", "statistics", "reports", "manifests"}
+                and ({part.lower() for part in path.parts} & {"figures", "checkpoint_examples", "poster_ready"})
             )
         )
 

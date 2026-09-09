@@ -21,6 +21,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import extract_series_bundle
 from analysis.shared.analysis_families.core import build_experiment_context, shared_time_axis
 from analysis.shared.analysis_families.state import state_masks_for_context
 from analysis.shared.state_utils import derive_animal_id, derive_date, make_day_id
+from analysis.shared.result_layout import resolve_result_layout
 
 from .plots import save_pca_figures
 
@@ -32,6 +33,9 @@ class PCAConfig:
     movie_expids: Sequence[str]
     sleep_expids: Sequence[str]
     output_root: Path
+    analysis_output_dir: Path | None = None
+    figure_output_dir: Path | None = None
+    plots_only: bool = False
     window_s: float = 1.0
     min_valid_fraction: float = 0.8
     min_roi_std: float = 1e-9
@@ -55,6 +59,9 @@ class PCAConfig:
             movie_expids=tuple(value.get("movie_expids", [])),
             sleep_expids=tuple(value.get("sleep_expids", [])),
             output_root=root,
+            analysis_output_dir=Path(value["analysis_output_dir"]) if value.get("analysis_output_dir") else None,
+            figure_output_dir=Path(value["figure_output_dir"]) if value.get("figure_output_dir") else None,
+            plots_only=bool(value.get("plots_only", False)),
             window_s=float(value.get("window_s", 1.0)),
             min_valid_fraction=float(value.get("min_valid_fraction", 0.8)),
             min_roi_std=float(value.get("min_roi_std", 1e-9)),
@@ -363,8 +370,19 @@ def _load_config(path: Path, repo_root: Path) -> PCAConfig:
 
 
 def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
-    result_root = ensure_dir(config.output_root)
-    ensure_dir(result_root / "cache")
+    layout = resolve_result_layout({"output_dir": config.output_root, "analysis_output_dir": config.analysis_output_dir, "figure_output_dir": config.figure_output_dir}, repo_root=repo_root)
+    result_root = layout.analysis_root
+    layout.ensure_stable()
+    layout.ensure_figures()
+    payload_path = result_root / "cache" / "pca_plot_payload.pkl"
+    if config.plots_only:
+        if not payload_path.exists():
+            raise FileNotFoundError(f"PCA plots_only requires existing cache at {payload_path}")
+        with payload_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        for label, result, rows in payload["figure_payloads"]:
+            save_pca_figures(layout.figure_root / "standard", label, result, rows)
+        return dict(payload["summary"])
     all_rows: List[Dict[str, Any]] = []
     contexts: Dict[str, Any] = {}
     figure_payloads: List[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]] = []
@@ -409,7 +427,7 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
             all_rows.extend(rows)
             if result:
                 figure_payloads.append((f'{source.get("day_id", "unknown")}_spine', result, rows))
-    _write_csv(result_root / "csv" / "pca_scores.csv", all_rows)
+    _write_csv(result_root / "statistics" / "pca_scores.csv", all_rows)
     if skipped:
         by_type = {}
         for item in skipped:
@@ -422,9 +440,11 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
         "compartments": sorted({row["compartment"] for row in all_rows}),
         "skipped_experiments": skipped,
     }
-    _write_csv(result_root / "csv" / "pca_summary.csv", [{key: value if not isinstance(value, list) else json.dumps(value) for key, value in summary.items()}])
+    _write_csv(result_root / "statistics" / "pca_summary.csv", [{key: value if not isinstance(value, list) else json.dumps(value) for key, value in summary.items()}])
     for label, result, rows in figure_payloads:
-        save_pca_figures(result_root / "figures", label, result, rows)
+        save_pca_figures(layout.figure_root / "standard", label, result, rows)
+    with payload_path.open("wb") as handle:
+        pickle.dump({"summary": summary, "figure_payloads": figure_payloads}, handle, protocol=pickle.HIGHEST_PROTOCOL)
     with (result_root / "cache" / "run_summary.json").open("w") as handle:
         json.dump(summary, handle, indent=2)
     return summary
@@ -433,10 +453,14 @@ def run_pca_pipeline(config: PCAConfig, repo_root: Path) -> Dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Exploratory same-day PCA of soma and bouton activity.")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--plots-only", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     repo_root = Path(__file__).resolve().parents[2]
-    summary = run_pca_pipeline(_load_config(args.config, repo_root), repo_root)
+    config = _load_config(args.config, repo_root)
+    if args.plots_only:
+        config.plots_only = True
+    summary = run_pca_pipeline(config, repo_root)
     LOGGER.info("PCA complete: %d rows across %d days; compartments=%s; skipped=%d", summary["n_rows"], len(summary["days"]), ",".join(summary["compartments"]) or "none", len(summary["skipped_experiments"]))
 
 

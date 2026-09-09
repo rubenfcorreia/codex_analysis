@@ -4,6 +4,8 @@
   "auto_discover_expids": true,
   "source_configs": ["analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json", "analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json"],
   "output_root": "results/pca_pipeline",
+  "analysis_output_dir": "results/pca_pipeline/analysis",
+  "figure_output_dir": "results/pca_pipeline/figures",
   "window_s": 1.0,
   "min_valid_fraction": 0.8,
   "min_roi_std": 1e-9,

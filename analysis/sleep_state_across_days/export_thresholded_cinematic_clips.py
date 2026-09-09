@@ -10,6 +10,8 @@ from typing import Iterable
 import imageio.v2 as imageio
 import numpy as np
 
+from analysis.shared.result_layout import resolve_result_layout
+
 
 ANALYSES = [
     {
@@ -254,7 +256,8 @@ def main() -> None:
     args = parse_args()
     results_dir = args.results_dir
     clips_dir = args.clips_dir
-    output_root = args.output_root or (results_dir / "video_exports")
+    layout = resolve_result_layout({"output_dir": results_dir}, repo_root=Path(__file__).resolve().parents[2])
+    output_root = args.output_root or (layout.figure_root / "video_exports")
     output_root.mkdir(parents=True, exist_ok=True)
 
     summary_rows = []
@@ -270,7 +273,7 @@ def main() -> None:
             )
         )
 
-    summary_path = output_root / "export_summary.csv"
+    summary_path = layout.statistics_root / "video_export_summary.csv"
     with summary_path.open("w", newline="") as handle:
         writer = csv.DictWriter(
             handle,

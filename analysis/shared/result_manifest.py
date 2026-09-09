@@ -52,7 +52,12 @@ def write_manifest(output_root: Path | str, manifest: Mapping[str, Any]) -> Path
     return path
 def load_manifest(output_root: Path | str) -> Optional[Dict[str, Any]]:
     root = Path(output_root)
-    candidate_paths = [manifest_path(root), root / 'manifest.json']
+    candidate_paths = [
+        manifest_path(root),
+        root / 'manifest.json',
+        root / 'analysis' / 'manifest.json',
+        root / 'analysis' / 'manifests' / 'manifest.json',
+    ]
     for path in candidate_paths:
         if not path.exists():
             continue

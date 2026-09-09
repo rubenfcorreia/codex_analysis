@@ -21,7 +21,9 @@
     "2026-06-23_03_ESRC033"
   ],
   "result_root": "results/soma_bouton_pipeline",
-  "cache_root": "results/soma_bouton_pipeline/cache",
+  "cache_root": "results/soma_bouton_pipeline/analysis/cache",
+  "analysis_output_dir": "results/soma_bouton_pipeline/analysis",
+  "figure_output_dir": "results/soma_bouton_pipeline/figures",
   "soma_channel": 1,
   "bouton_channel": 0,
   "lag_window_s": 2.0,

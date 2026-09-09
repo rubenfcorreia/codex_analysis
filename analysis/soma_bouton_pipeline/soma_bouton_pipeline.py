@@ -30,6 +30,7 @@ from analysis.shared.comparison_preset_flow import (
     load_comparison_preset_csv_rows,
 )
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
 from analysis.shared.union_rows import filter_rows_by_states, load_union_rows_cache, save_union_rows_cache, union_rows_meta, union_state_labels
@@ -122,7 +123,7 @@ def _json_safe(value: Any) -> Any:
 DEFAULT_CONFIG = {
     "analysis_name": "soma_bouton_pipeline",
     "result_root": "results/soma_bouton_pipeline",
-    "cache_root": "results/soma_bouton_pipeline/cache",
+    "cache_root": "results/soma_bouton_pipeline/analysis/cache",
     "movie_expids": [],
     "sleep_expids": [],
     "soma_channel": 1,
@@ -916,9 +917,10 @@ def _state_plot_rows_for_branch(
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
     pipeline_started = time.perf_counter()
-    result_root = resolve_repo_path(config["result_root"], repo_root)
+    layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
+    result_root = layout.analysis_root
     preset_name = str(config.get("comparison_preset_name") or "default")
-    figure_root = _comparison_figure_root(config, repo_root, result_root)
+    figure_root = resolve_repo_path(config["figure_output_dir"], repo_root) if config.get("figure_output_dir") else layout.figure_root
     general_output_root = resolve_repo_path(config.get("general_output_root"), repo_root) if config.get("general_output_root") else None
     generate_shared_general_outputs = bool(config.get("generate_shared_general_outputs", False))
     generate_shared_general_figures = bool(config.get("generate_shared_general_figures", False))
@@ -2637,6 +2639,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
     parser.add_argument("--plots-only", action="store_true", help="Skip metric recomputation and regenerate plots from written CSVs only.")
+    parser.add_argument("--analysis-output-dir", type=Path, help="Stable analysis/statistics/cache directory override.")
+    parser.add_argument("--figure-output-dir", type=Path, help="Disposable figure directory override.")
     parser.add_argument(
         "--poster-ready-only",
         action="store_true",
@@ -2653,6 +2657,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["rebuild"] = True
     if args.plots_only:
         config["plots_only"] = True
+    if args.analysis_output_dir:
+        config["analysis_output_dir"] = str(args.analysis_output_dir)
+    if args.figure_output_dir:
+        config["figure_output_dir"] = str(args.figure_output_dir)
     if args.poster_ready_only:
         config["poster_ready_only"] = True
     if args.comparison_presets:

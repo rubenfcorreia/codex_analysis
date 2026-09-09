@@ -1317,9 +1317,9 @@ class FigureViewerApp:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Native results-first figure viewer")
-    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2], help="Repository root containing results/")
+    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2], help="Repository root containing results/<pipeline>/<run>/figures/")
     parser.add_argument("--notes-db", type=Path, default=None, help="Path to the note database")
-    parser.add_argument("--summary-depth-limit", type=int, default=DEFAULT_RESULTS_DEPTH, help="Maximum depth within figures/ to index summary outputs")
+    parser.add_argument("--summary-depth-limit", type=int, default=DEFAULT_RESULTS_DEPTH, help="Maximum depth within run figure directories to index visual outputs")
     return parser
 
 

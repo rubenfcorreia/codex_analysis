@@ -35,6 +35,7 @@ from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.union_rows import (
     filter_table_rows_by_states, load_union_rows_cache, save_union_rows_cache,
@@ -16237,7 +16238,7 @@ def write_analysis_outputs(
         step_message("figure generation complete: %d file(s)" % len(figure_files))
         step_message("review figure generation starting")
         with step_scope("review figure generation"):
-            review_figure_files = generate_review_figures(output_dir, results, cache, review_root=DEFAULT_REVIEW_FIGURES_DIR)
+            review_figure_files = generate_review_figures(output_dir, results, cache, review_root=Path(figure_root or output_dir) / DEFAULT_REVIEW_FIGURES_DIRNAME)
         results["review_figure_files"] = review_figure_files
         for path in review_figure_files:
             written_artifacts.append(report_relative_path(path, ROOT_DIR))
@@ -16566,7 +16567,7 @@ def write_poster_ready_figures(
         write_visual_response_poster_figure,
     )
 
-    poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
+    poster_output_dir = ensure_dir(Path(results.get("figure_output_root") or output_dir) / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
 
     preset_csv_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
@@ -18032,6 +18033,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analysis-results-rebuild", action="store_true")
     parser.add_argument("--shared-shuffle-cache-rebuild", action="store_true")
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--analysis-output-dir", type=Path)
+    parser.add_argument("--figure-output-dir", type=Path)
     parser.add_argument("--shuffle-n", type=int)
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--demo", action="store_true")
@@ -18078,6 +18081,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_results_rebuild": True if args.analysis_results_rebuild else None,
         "shared_shuffle_cache_rebuild": True if args.shared_shuffle_cache_rebuild else None,
         "output_dir": str(args.output_dir) if args.output_dir else None,
+        "analysis_output_dir": str(args.analysis_output_dir) if args.analysis_output_dir else None,
+        "figure_output_dir": str(args.figure_output_dir) if args.figure_output_dir else None,
         "rebuild": True if args.rebuild else None,
     }
     config = merge_cli_config(cli_config, file_config)
@@ -18162,12 +18167,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_tables_rebuild = bool(config.get("analysis_tables_rebuild")) or rebuild
         analysis_results_rebuild = bool(config.get("analysis_results_rebuild")) or rebuild
         shared_shuffle_cache_rebuild = bool(config.get("shared_shuffle_cache_rebuild")) or rebuild
-        output_dir = resolve_repo_path(config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+        layout = resolve_result_layout(config, root_key="output_dir", legacy_root_key="output_dir", repo_root=REPO_ROOT)
+        output_dir = layout.analysis_root
         cache_path = resolve_repo_path(config.get("cache_path") or (ensure_dir(output_dir / DEFAULT_CACHE_DIRNAME) / DEFAULT_CACHE_NAME), REPO_ROOT)
         analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
         analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
         analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
-        figure_output_dir = comparison_figure_root(config, REPO_ROOT, output_dir)
+        figure_output_dir = resolve_repo_path(config["figure_output_dir"], REPO_ROOT) if config.get("figure_output_dir") else layout.figure_root
         plots_only = bool(config.get("plots_only"))
         if plots_only:
             source_cache_rebuild = False
@@ -18178,7 +18184,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"RUN FLAGS: rebuild={rebuild}, plots_only={plots_only}, "
             f"analysis_results_rebuild={analysis_results_rebuild}"
         )
-        ensure_dir(output_dir)
+        layout.ensure_stable()
+        layout.ensure_figures()
     
     
     # Build or reuse the cache first; every later output comes from this normalized data structure.
@@ -18599,6 +18606,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
     with step_scope("analysis outputs"):
+        results["figure_output_root"] = str(figure_output_dir or (output_dir / "figures"))
         written_artifacts = write_analysis_outputs(
             output_dir,
             results,
