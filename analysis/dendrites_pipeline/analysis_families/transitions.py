@@ -10,6 +10,7 @@ import numpy as np
 from analysis.shared.state_transitions import (
     SLEEP_STATE_LABELS,
     add_window_metadata,
+    aligned_trace_segment,
     interval_mask,
     normalize_transition_config,
     paired_transition_summaries,
@@ -89,6 +90,7 @@ def run_transition_analysis(
     if not transition_config["enabled"]:
         return result
     event_rows: list[dict[str, Any]] = []
+    trace_segments: list[dict[str, Any]] = []
     experiments = cache.get("experiments", {})
     animals = cache.get("animals", {})
     for animal_id, animal_entry in animals.items():
@@ -124,6 +126,8 @@ def run_transition_analysis(
                                     pre = _window_values(d_trace, d_time, event, "pre")
                                     post = _window_values(d_trace, d_time, event, "post")
                                     event_rows.append(_row(event, exp_id=str(exp_id), animal_id=str(animal_id), day_id=str(d_obs.get("day_id") or exp_id), compartment=str(compartment), entity_id=dendrite_id_text, metric="dendrite_mean", pre_value=float(np.nanmean(pre)) if pre.size else float("nan"), post_value=float(np.nanmean(post)) if post.size else float("nan")))
+                                    relative, values = aligned_trace_segment(d_trace, d_time, event)
+                                    trace_segments.append({"scope": scope, "window_mode": window_mode, "state_before": event["state_before"], "state_after": event["state_after"], "metric": "dendrite_mean", "compartment": str(compartment), "window_s": event["window_s"], "relative_time_s": relative, "values": values})
                                 if "event_frequency" in transition_config["metrics"]:
                                     d_event_info = d_obs.get("event_info") or {}
                                     event_rows.append(_row(event, exp_id=str(exp_id), animal_id=str(animal_id), day_id=str(d_obs.get("day_id") or exp_id), compartment=str(compartment), entity_id=dendrite_id_text, metric="dendrite_event_frequency_per_min", pre_value=_frequency(d_trace, d_time, d_event_info, event, "pre", "event_frequency_per_min"), post_value=_frequency(d_trace, d_time, d_event_info, event, "post", "event_frequency_per_min")))
@@ -140,6 +144,8 @@ def run_transition_analysis(
                                     pre = _window_values(s_trace, s_time, event, "pre")
                                     post = _window_values(s_trace, s_time, event, "post")
                                     event_rows.append(_row(event, exp_id=str(exp_id), animal_id=str(animal_id), day_id=str(s_obs.get("day_id") or exp_id), compartment=str(observation_compartment(cache, exp_id, s_obs) or compartment), entity_id=entity_id, metric="spine_specific_mean", pre_value=float(np.nanmean(pre)) if pre.size else float("nan"), post_value=float(np.nanmean(post)) if post.size else float("nan")))
+                                    relative, values = aligned_trace_segment(s_trace, s_time, event)
+                                    trace_segments.append({"scope": scope, "window_mode": window_mode, "state_before": event["state_before"], "state_after": event["state_after"], "metric": "spine_specific_mean", "compartment": str(observation_compartment(cache, exp_id, s_obs) or compartment), "window_s": event["window_s"], "relative_time_s": relative, "values": values})
                                 if "event_frequency" in transition_config["metrics"]:
                                     s_event_info = s_obs.get("event_info") or {}
                                     s_event_trace = s_obs.get("trace")
@@ -158,7 +164,7 @@ def run_transition_analysis(
     result["event_rows"] = event_rows
     result["summary_rows"] = paired_transition_summaries(event_rows)
     if output_root is not None:
-        result["figure_paths"] = plot_transition_summaries(event_rows, Path(output_root), pipeline_name="dendrites")
+        result["figure_paths"] = plot_transition_summaries(event_rows, Path(output_root), pipeline_name="dendrites", trace_segments=trace_segments)
     if not event_rows:
         result["alerts"].append("No valid within-experiment state transitions were found for this preset.")
     return result

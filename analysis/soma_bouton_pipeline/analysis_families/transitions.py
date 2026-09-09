@@ -11,6 +11,7 @@ from analysis.shared.shared_calcium_response import build_masked_event_summary
 from analysis.shared.state_transitions import (
     SLEEP_STATE_LABELS,
     add_window_metadata,
+    aligned_trace_segment,
     interval_mask,
     normalize_transition_config,
     paired_transition_summaries,
@@ -56,6 +57,7 @@ def _append_entity_rows(
     entity_id: str,
     event_method: str,
     metrics: Sequence[str],
+    trace_segments: list[dict[str, Any]],
 ) -> None:
     for metric_group in metrics:
         metric_names = ["activity"] if metric_group == "activity" else ["event_frequency"]
@@ -85,6 +87,9 @@ def _append_entity_rows(
                 }
             )
             rows.append(row)
+            if metric == "activity":
+                relative, values = aligned_trace_segment(trace, time, event)
+                trace_segments.append({"scope": event["scope"], "window_mode": event["window_mode"], "state_before": event["state_before"], "state_after": event["state_after"], "metric": metric_name, "compartment": compartment, "window_s": event["window_s"], "relative_time_s": relative, "values": values})
 
 
 def run_transition_analysis(
@@ -107,6 +112,7 @@ def run_transition_analysis(
     if not transition_config["enabled"]:
         return result
     event_rows: list[dict[str, Any]] = []
+    trace_segments: list[dict[str, Any]] = []
     for ctx in contexts:
         selected = [str(state) for state in selected_states_by_mode.get(ctx.mode, []) if str(state).strip()]
         if len(selected) < 2:
@@ -137,15 +143,15 @@ def run_transition_analysis(
                     for index, trace in enumerate(soma_matrix):
                         roi_id = soma_ids[index] if index < len(soma_ids) else index
                         entity_id = make_global_soma_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.soma_channel, roi_id=roi_id)
-                        _append_entity_rows(event_rows, ctx=ctx, event=event, trace=np.asarray(trace, dtype=float), time=soma_time, compartment="soma", entity_id=entity_id, event_method=event_detection_method, metrics=transition_config["metrics"])
+                        _append_entity_rows(event_rows, ctx=ctx, event=event, trace=np.asarray(trace, dtype=float), time=soma_time, compartment="soma", entity_id=entity_id, event_method=event_detection_method, metrics=transition_config["metrics"], trace_segments=trace_segments)
                     for index, trace in enumerate(bouton_matrix):
                         roi_id = bouton_ids[index] if index < len(bouton_ids) else index
                         entity_id = make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.bouton_channel, roi_id=roi_id)
-                        _append_entity_rows(event_rows, ctx=ctx, event=event, trace=np.asarray(trace, dtype=float), time=bouton_time, compartment="bouton", entity_id=entity_id, event_method=event_detection_method, metrics=transition_config["metrics"])
+                        _append_entity_rows(event_rows, ctx=ctx, event=event, trace=np.asarray(trace, dtype=float), time=bouton_time, compartment="bouton", entity_id=entity_id, event_method=event_detection_method, metrics=transition_config["metrics"], trace_segments=trace_segments)
     result["event_rows"] = event_rows
     result["summary_rows"] = paired_transition_summaries(event_rows)
     if output_root is not None:
-        result["figure_paths"] = plot_transition_summaries(event_rows, Path(output_root), pipeline_name="soma_bouton")
+        result["figure_paths"] = plot_transition_summaries(event_rows, Path(output_root), pipeline_name="soma_bouton", trace_segments=trace_segments)
     if not event_rows:
         result["alerts"].append("No valid within-experiment state transitions were found for this preset.")
     return result

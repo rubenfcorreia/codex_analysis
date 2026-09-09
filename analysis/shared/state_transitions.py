@@ -179,6 +179,24 @@ def interval_mask(time: Sequence[float] | np.ndarray, start: float, end: float) 
     return np.isfinite(values) & (values >= float(start)) & (values < float(end))
 
 
+def aligned_trace_segment(
+    trace: Sequence[float] | np.ndarray,
+    time: Sequence[float] | np.ndarray,
+    event: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return valid trace samples aligned to an event's transition time."""
+    trace_array = np.asarray(trace, dtype=float).reshape(-1)
+    time_array = np.asarray(time, dtype=float).reshape(-1)
+    usable = min(trace_array.size, time_array.size)
+    if usable <= 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    relative_time = time_array[:usable] - float(event["transition_time"])
+    start = float(event["pre_start_time"])
+    end = float(event["post_end_time"])
+    keep = np.isfinite(relative_time) & np.isfinite(trace_array[:usable]) & (time_array[:usable] >= start) & (time_array[:usable] < end)
+    return relative_time[keep], trace_array[:usable][keep]
+
+
 def paired_transition_summaries(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
     group_fields = ("scope", "window_mode", "state_before", "state_after", "metric", "compartment")
@@ -230,6 +248,7 @@ def plot_transition_summaries(
     output_root: Path,
     *,
     pipeline_name: str,
+    trace_segments: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     if not event_rows:
         return []
@@ -242,6 +261,10 @@ def plot_transition_summaries(
     for row in event_rows:
         if row.get("pre_value") is not None and row.get("post_value") is not None:
             groups[tuple(str(row.get(field, "")) for field in fields)].append(row)
+    summary_lookup = {
+        tuple(str(row.get(field, "")) for field in fields): row
+        for row in paired_transition_summaries(event_rows)
+    }
     saved: list[str] = []
     for key, rows in sorted(groups.items()):
         scope, mode, state_before, state_after, metric, compartment = key
@@ -253,20 +276,91 @@ def plot_transition_summaries(
             continue
         fig, ax = plt.subplots(figsize=(5.8, 4.6))
         positions = np.asarray([1.0, 2.0])
-        ax.boxplot([pre, post], positions=positions, widths=0.55, showfliers=False)
-        rng = np.random.default_rng(7)
-        for left, right in zip(pre, post):
-            ax.plot(positions, [left, right], color="#777777", alpha=0.22, linewidth=0.8)
-        ax.scatter(np.full(pre.size, 1.0) + rng.uniform(-0.07, 0.07, pre.size), pre, s=12, alpha=0.5, color="#4c78a8")
-        ax.scatter(np.full(post.size, 2.0) + rng.uniform(-0.07, 0.07, post.size), post, s=12, alpha=0.5, color="#e45756")
+        box = ax.boxplot([pre, post], positions=positions, widths=0.55, showfliers=False, patch_artist=True)
+        for patch, color in zip(box["boxes"], ("#4c78a8", "#e45756")):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.65)
         ax.set_xticks([1, 2], ["Before", "After"])
         ax.set_ylabel(metric)
         ax.set_title(f"{state_before} → {state_after} | {compartment}\n{scope}, {mode}")
-        ax.text(0.02, 0.97, f"transition events n={pre.size}", transform=ax.transAxes, va="top", fontsize=9)
+        summary = summary_lookup.get(key, {})
+        n_entities = int(summary.get("n_entities", 0))
+        try:
+            p_value = float(summary.get("paired_pvalue", np.nan))
+        except (TypeError, ValueError):
+            p_value = float("nan")
+        stars = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
+        if stars:
+            y_max = float(np.nanmax(np.concatenate((pre, post))))
+            y_min = float(np.nanmin(np.concatenate((pre, post))))
+            y_span = max(y_max - y_min, 1e-9)
+            star_y = y_max + 0.12 * y_span
+            ax.text(1.5, star_y, stars, ha="center", va="bottom", fontsize=12)
+        ax.text(0.02, 0.97, f"transition events n={pre.size}; entities n={n_entities}", transform=ax.transAxes, va="top", fontsize=9)
         ax.grid(axis="y", alpha=0.2)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + ".svg"
+        path = Path(output_root) / "figures" / "state_transitions" / scope / mode / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, format="svg", bbox_inches="tight")
+        plt.close(fig)
+        saved.append(str(path))
+
+    trace_groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
+    for segment in trace_segments or ():
+        if segment.get("relative_time_s") is None or segment.get("values") is None:
+            continue
+        trace_groups[tuple(str(segment.get(field, "")) for field in ("scope", "window_mode", "metric", "compartment"))].append(segment)
+    for key, segments in sorted(trace_groups.items()):
+        scope, mode, metric, compartment = key
+        window_s = max(float(segment.get("window_s", 60.0)) for segment in segments)
+        grid = np.linspace(-window_s, window_s, 241)
+        direction_groups: dict[tuple[str, str], list[np.ndarray]] = defaultdict(list)
+        for segment in segments:
+            relative = np.asarray(segment["relative_time_s"], dtype=float)
+            values = np.asarray(segment["values"], dtype=float)
+            keep = np.isfinite(relative) & np.isfinite(values)
+            if keep.sum() < 2:
+                continue
+            relative, values = relative[keep], values[keep]
+            order = np.argsort(relative)
+            relative, values = relative[order], values[order]
+            unique, unique_indices = np.unique(relative, return_index=True)
+            values = values[unique_indices]
+            interpolated = np.full(grid.shape, np.nan, dtype=float)
+            valid_grid = (grid >= unique[0]) & (grid <= unique[-1])
+            interpolated[valid_grid] = np.interp(grid[valid_grid], unique, values)
+            direction_groups[(str(segment.get("state_before", "")), str(segment.get("state_after", "")))].append(interpolated)
+        if not direction_groups:
+            continue
+        fig, ax = plt.subplots(figsize=(7.0, 4.8))
+        for direction_index, (direction, traces) in enumerate(sorted(direction_groups.items())):
+            matrix = np.asarray(traces, dtype=float)
+            count = np.sum(np.isfinite(matrix), axis=0)
+            mean = np.full(matrix.shape[1], np.nan, dtype=float)
+            sem = np.full(matrix.shape[1], np.nan, dtype=float)
+            valid_columns = count > 0
+            mean[valid_columns] = np.nansum(matrix[:, valid_columns], axis=0) / count[valid_columns]
+            sem_columns = count > 1
+            if np.any(sem_columns):
+                centered = matrix[:, sem_columns] - mean[sem_columns]
+                centered[~np.isfinite(centered)] = np.nan
+                sem[sem_columns] = np.sqrt(np.nansum(centered ** 2, axis=0) / (count[sem_columns] - 1)) / np.sqrt(count[sem_columns])
+            color = ("#2166ac", "#b2182b", "#1b7837", "#762a83", "#e08214")[direction_index % 5]
+            label = f"{direction[0]} → {direction[1]} (n={len(traces)})"
+            ax.plot(grid, mean, color=color, linewidth=2.0, label=label)
+            ax.fill_between(grid, mean - sem, mean + sem, color=color, alpha=0.16, linewidth=0)
+        ax.axvline(0.0, color="#333333", linestyle="--", linewidth=1.0)
+        ax.set_xlim(-window_s, window_s)
+        ax.set_xlabel("Time from transition (s)")
+        ax.set_ylabel("dF/F")
+        ax.set_title(f"Aligned mean dF/F | {compartment}\n{scope}, {mode}")
+        ax.legend(frameon=False, fontsize=8)
+        ax.grid(axis="y", alpha=0.2)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + "_trace.svg"
         path = Path(output_root) / "figures" / "state_transitions" / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(path, format="svg", bbox_inches="tight")
