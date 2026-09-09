@@ -45,9 +45,9 @@ ROI_SPLIT_GROUP_HATCHES: Dict[str, str] = {
     'low_activity_high_frequency': 'xxx',
     'low_activity_low_frequency': '...',
     'more_active': '///',
-    'less_active': '\\',
+    'less_active': '',
     'higher_frequency': '///',
-    'lower_frequency': '\\',
+    'lower_frequency': '',
 }
 
 

@@ -882,16 +882,36 @@ def _state_plot_rows_for_branch(
     leaf_roi_split: Mapping[str, Any] | None,
     fallback_rows: Sequence[Mapping[str, Any]],
     cohort_name: str,
+    *,
+    prefer_subject_rows: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Use subject-level ROI split rows for the all-cohort leaf plots."""
+    """Return state rows with split membership attached for every cohort."""
     split_rows = [
         dict(row)
         for row in (leaf_roi_split or {}).get("subject_state_rows", [])
         if isinstance(row, Mapping)
     ]
-    if cohort_name == "all" and any(str(row.get("split_group") or "").strip() for row in split_rows):
+    if prefer_subject_rows and cohort_name == "all" and any(str(row.get("split_group") or "").strip() for row in split_rows):
         return split_rows
-    return [dict(row) for row in fallback_rows if isinstance(row, Mapping)]
+    rows = [dict(row) for row in fallback_rows if isinstance(row, Mapping)]
+    membership_rows = (leaf_roi_split or {}).get("membership_rows", [])
+    if not rows or not membership_rows:
+        return rows
+    context = {
+        "roi_type": str((leaf_roi_split or {}).get("roi_type") or "").strip(),
+        "branch_name": str((leaf_roi_split or {}).get("branch_name") or "").strip(),
+        "basis_name": str((leaf_roi_split or {}).get("basis_name") or "").strip(),
+        "split_name": str((leaf_roi_split or {}).get("split_name") or "").strip(),
+        "split_mode": str((leaf_roi_split or {}).get("split_mode") or "").strip(),
+    }
+    scoped_rows = []
+    for row in rows:
+        payload = dict(row)
+        for key, value in context.items():
+            if value and not str(payload.get(key) or "").strip():
+                payload[key] = value
+        scoped_rows.append(payload)
+    return annotate_rows_with_split_group(scoped_rows, membership_rows)
 
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
@@ -1639,8 +1659,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort_rows = cohort_activity_rows.get(cohort_name, [])
             if not cohort_rows:
                 continue
+            cohort_plot_rows = _state_plot_rows_for_branch(roi_split_results, cohort_rows, cohort_name)
+            if not cohort_plot_rows:
+                continue
             plot_state_activity(
-                cohort_rows,
+                cohort_plot_rows,
                 figure_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
@@ -1648,7 +1671,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             _stage("plotting", f"state event frequency - {cohort_name}")
             plot_state_event_frequency(
-                cohort_rows,
+                cohort_plot_rows,
                 figure_root,
                 comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
@@ -1656,7 +1679,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             _stage("plotting", f"axon-soma correlation - {cohort_name}")
             plot_state_correlation(
-                cohort_correlation_summary.get(cohort_name, []),
+                _state_plot_rows_for_branch(roi_split_results, cohort_correlation_summary.get(cohort_name, []), cohort_name, prefer_subject_rows=False),
                 figure_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
@@ -1666,7 +1689,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             _stage("plotting", f"soma-soma correlation - {cohort_name}")
             plot_state_correlation(
-                cohort_soma_pairwise_summary.get(cohort_name, []),
+                _state_plot_rows_for_branch(roi_split_results, cohort_soma_pairwise_summary.get(cohort_name, []), cohort_name, prefer_subject_rows=False),
                 figure_root,
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
@@ -1675,7 +1698,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             _stage("plotting", f"axon-axon correlation - {cohort_name}")
             plot_state_correlation(
-                cohort_bouton_pairwise_summary.get(cohort_name, []),
+                _state_plot_rows_for_branch(roi_split_results, cohort_bouton_pairwise_summary.get(cohort_name, []), cohort_name, prefer_subject_rows=False),
                 figure_root,
                 cohort_label=cohort_name,
                 state_order=analysis_state_order,
@@ -2138,7 +2161,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     return []
                 if not roi_split_membership_rows:
                     return [dict(row) for row in rows]
-                return annotate_rows_with_split_group(rows, roi_split_membership_rows)
+                scoped_rows = []
+                for row in rows:
+                    payload = dict(row)
+                    for key, value in leaf_split_metadata.items():
+                        if value and not str(payload.get(key) or "").strip():
+                            payload[key] = value
+                    scoped_rows.append(payload)
+                return annotate_rows_with_split_group(scoped_rows, roi_split_membership_rows)
 
             def _leaf_split_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
                 if not rows:

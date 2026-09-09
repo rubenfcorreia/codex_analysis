@@ -17,12 +17,21 @@ from analysis.shared.state_utils import state_display_color
 from analysis.shared.statistics import is_significant_row
 
 
-FIGURE_WIDTH_MM = 170.0
-FIGURE_HEIGHT_MM = 105.0
+FIGURE_WIDTH_MM = 190.0
+FIGURE_HEIGHT_MM = 125.0
 FIGURE_TITLE_FS = 12
 FIGURE_LABEL_FS = 11
 FIGURE_TICK_FS = 9
 FIGURE_NOTE_FS = 9
+
+
+def _hatch_contrast_color(color: Any) -> str:
+    try:
+        red, green, blue = mcolors.to_rgb(color)
+        luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        return "#ffffff" if luminance < 0.58 else "#1f2937"
+    except Exception:
+        return "#1f2937"
 
 
 
@@ -133,12 +142,12 @@ def draw_boxplot_series(
 
     rng = np.random.default_rng(0)
     for position, values, color in zip(range(1, len(cleaned_values) + 1), cleaned_values, cleaned_colors):
-        jitter = rng.normal(0.0, 0.12, size=values.size)
+        jitter = rng.normal(0.0, 0.08, size=values.size)
         if horizontal:
             ax.scatter(
                 values,
                 np.full(values.shape, position, dtype=float) + jitter,
-                s=20,
+                s=12,
                 alpha=0.55,
                 color=color,
                 edgecolors='none',
@@ -148,7 +157,7 @@ def draw_boxplot_series(
             ax.scatter(
                 np.full(values.shape, position, dtype=float) + jitter,
                 values,
-                s=20,
+                s=12,
                 alpha=0.55,
                 color=color,
                 edgecolors='none',
@@ -490,7 +499,8 @@ def plot_grouped_boxplot_series(
         offsets = np.linspace(-0.24, 0.24, len(present_group_keys))
     box_width = max(0.10, min(0.22, 0.60 / max(len(present_group_keys), 1)))
 
-    fig, ax = plt.subplots(figsize=(FIGURE_WIDTH_MM / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=False)
+    figure_width_mm = max(FIGURE_WIDTH_MM, FIGURE_WIDTH_MM + 10.0 * max(len(present_group_keys) - 2, 0) * max(len(present_state_keys) - 1, 1))
+    fig, ax = plt.subplots(figsize=(figure_width_mm / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=False)
     series_values: list[np.ndarray] = []
     series_positions: list[float] = []
     series_colors: list[str] = []
@@ -532,12 +542,12 @@ def plot_grouped_boxplot_series(
 
     rng = np.random.default_rng(0)
     for position, values, color in zip(series_positions, series_values, series_colors):
-        jitter = rng.normal(0.0, box_width * 0.12, size=values.size)
+        jitter = rng.normal(0.0, box_width * 0.08, size=values.size)
         if horizontal:
             ax.scatter(
                 values,
                 np.full(values.shape, position, dtype=float) + jitter,
-                s=20,
+                s=12,
                 alpha=0.55,
                 color=color,
                 edgecolors='none',
@@ -547,7 +557,7 @@ def plot_grouped_boxplot_series(
             ax.scatter(
                 np.full(values.shape, position, dtype=float) + jitter,
                 values,
-                s=20,
+                s=12,
                 alpha=0.55,
                 color=color,
                 edgecolors='none',

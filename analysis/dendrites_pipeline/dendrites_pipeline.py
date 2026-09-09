@@ -6641,8 +6641,8 @@ def _render_state_summary_grouped_panel_figure(
         group_offsets = {group: float(offset) for group, offset in zip(present_group_keys, np.linspace(-0.08, 0.08, len(present_group_keys)))}
     box_width = max(0.08, min(0.22, 0.56 / max(len(present_compartments) * len(present_group_keys), 1)))
 
-    fig_width = min(max(6.9, 0.76 * len(present_state_keys) + 2.8), 9.0)
-    fig_height = min(max(4.2, POSTER_DOUBLE_FIGSIZE[1] - 0.7), 5.2)
+    fig_width = min(max(7.8, 0.82 * len(present_state_keys) + 2.8), 10.5)
+    fig_height = min(max(5.2, POSTER_DOUBLE_FIGSIZE[1] + 0.3), 6.2)
     fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
     ax = ax.ravel()[0]
 
@@ -6671,6 +6671,7 @@ def _render_state_summary_grouped_panel_figure(
         plt.close(fig)
         return None
 
+    from matplotlib import colors as mcolors
     bp = ax.boxplot(
         series_values,
         positions=series_positions,
@@ -6687,14 +6688,18 @@ def _render_state_summary_grouped_panel_figure(
         patch.set_edgecolor(style["edgecolor"])
         patch.set_alpha(style["alpha"])
         patch.set_hatch(style["hatch"] or "")
+        if style["hatch"]:
+            red, green, blue = mcolors.to_rgb(style["facecolor"])
+            luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            patch._hatch_color = mcolors.to_rgba("#ffffff" if luminance < 0.58 else "#1f2937")
 
     rng = np.random.default_rng(7)
     for position, values, state in zip(series_positions, series_values, series_states):
-        jitter = rng.uniform(-0.08, 0.08, size=values.size)
+        jitter = rng.uniform(-0.06, 0.06, size=values.size)
         ax.scatter(
             np.full(values.size, position) + jitter,
             values,
-            s=14,
+            s=11,
             alpha=0.48,
             color=state_display_color(state),
             edgecolor="none",
@@ -6947,7 +6952,7 @@ def plot_state_summary_compartment_comparison_figure(
                 state_order,
                 y_limits.get(metric_name) if y_limits else None,
                 comparison_rows=panel_comparisons,
-                use_group_hatches=False,
+                use_group_hatches=True,
             )
             if panel_fig is not None:
                 metric_output_path = state_summary_metric_output_dir(
