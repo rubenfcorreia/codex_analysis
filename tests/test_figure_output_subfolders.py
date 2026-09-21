@@ -190,8 +190,8 @@ def test_day_figure_helpers_use_family_subfolders(tmp_path: Path) -> None:
 
 
 def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    figure_root = tmp_path / "figures"
     output_dir = tmp_path / "results"
+    figure_root = output_dir
     cache = {"animals": {}, "experiments": {}, "config": {}, "alerts": []}
     results = {"state_comparisons": [{"state": "quiet_awake_movies"}]}
 
@@ -219,7 +219,7 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
     assert written
     assert (figure_root / "analysis" / "figure.svg").exists()
     assert (figure_root / "review" / "figure.svg").exists()
-    assert checkpoint_call["gallery_root"] == figure_root.parent
+    assert checkpoint_call["gallery_root"] == figure_root
     assert (output_dir / "checkpoint" / "figure.svg").exists()
     assert not (output_dir / "analysis_results.json").exists()
     assert not (output_dir / "state_comparisons.csv").exists()
@@ -233,7 +233,7 @@ def test_comparison_figure_root_uses_pooled_all_leaf(tmp_path: Path) -> None:
         tmp_path,
         tmp_path / "result",
     )
-    assert root == branch_root / "pooled" / "all" / "figures"
+    assert root == branch_root / "pooled" / "all"
 
 
 def test_comparison_figure_root_preserves_direct_run_fallback(tmp_path: Path) -> None:
@@ -399,3 +399,24 @@ def test_state_mixed_model_poster_figure_keeps_full_state_order(monkeypatch: pyt
     assert output is not None
     assert [order for order, _ in captured] == [tuple(state_order), tuple(state_order)]
     assert {cohort for _, cohort in captured} == {"responsive", "nonresponsive"}
+
+
+def test_audit_detects_nested_and_missing_manifest_artifacts(tmp_path: Path) -> None:
+    from analysis.audit_result_layout import audit_roots
+    nested = tmp_path / "activity_split" / "nrem" / "figures"
+    nested.mkdir(parents=True)
+    (nested / "plot.svg").write_text("svg")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"output_root": ".", "output_artifacts": ["missing.svg"]}')
+    findings = audit_roots([tmp_path])
+    assert any("figures" in finding for finding in findings)
+    assert any("missing.svg" in finding for finding in findings)
+
+
+def test_split_guard_requires_two_groups() -> None:
+    with pytest.raises(RuntimeError, match="fewer than two"):
+        pipeline._require_split_rows_for_branch({
+            "analysis_branch_name": "activity_frequency_split",
+            "analysis_basis_name": "nrem",
+            "roi_split": {"subject_state_rows": [{"split_group": "low"}]},
+        })

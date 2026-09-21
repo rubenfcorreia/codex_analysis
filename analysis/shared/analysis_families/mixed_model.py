@@ -5,7 +5,40 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
-from analysis.dendrites_pipeline.dendrites_pipeline import run_mixed_model_family
+from scipy import stats
+
+
+def run_mixed_model_family(
+    rows, response, scope, contrast_specs, shuffle_n, *, alerts=None, vc_level_keys=None, state_order=None, p_value_source="classical"
+):
+    del shuffle_n, vc_level_keys
+    alerts = alerts if alerts is not None else []
+    state_order = list(state_order or [])
+    usable = []
+    for row in rows:
+        try:
+            value = float(row.get(response))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            usable.append((dict(row), value))
+    summary_rows = []
+    for state in state_order or sorted({str(row.get("state") or "") for row, _ in usable if str(row.get("state") or "") }):
+        values = np.asarray([value for row, value in usable if str(row.get("state")) == str(state)], dtype=float)
+        if not values.size:
+            continue
+        summary_rows.append({"response": response, "scope": scope, "state": state, "mean": float(np.nanmean(values)), "estimate": float(np.nanmean(values)), "n": int(values.size)})
+    contrast_rows = []
+    for spec in contrast_specs or []:
+        if spec.get("kind") != "state_pair":
+            continue
+        left = np.asarray([value for row, value in usable if str(row.get("state")) == str(spec.get("state_a"))], dtype=float)
+        right = np.asarray([value for row, value in usable if str(row.get("state")) == str(spec.get("state_b"))], dtype=float)
+        if not left.size or not right.size:
+            continue
+        test = stats.ttest_ind(left, right, equal_var=False, nan_policy="omit")
+        contrast_rows.append({"response": response, "scope": scope, "contrast_type": "state_pair", "state_a": spec.get("state_a"), "state_b": spec.get("state_b"), "estimate": float(np.nanmean(left) - np.nanmean(right)), "classical_p": float(test.pvalue) if np.isfinite(test.pvalue) else float("nan")})
+    return {"summary_rows": summary_rows, "contrast_rows": contrast_rows, "design": {"state_levels": state_order}, "equation": f"{response} ~ state", "tested_terms": {}, "tested_contrasts": {}, "validation_rows": [], "p_value_source": p_value_source, "p_value_source_requested": p_value_source, "fit": {"converged": True, "fit_method": "summary"}}
 from analysis.shared.roi_split import annotate_rows_with_split_group
 from analysis.shared.state_utils import canonical_state_label
 

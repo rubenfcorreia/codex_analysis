@@ -15,6 +15,7 @@ import numpy as np
 from analysis.shared.roi_split import split_group_hatch
 from analysis.shared.state_utils import state_display_color
 from analysis.shared.statistics import is_significant_row
+from analysis.shared.plots.figure_io import save_figure
 
 
 FIGURE_WIDTH_MM = 190.0
@@ -77,9 +78,15 @@ def _draw_boxplot_significance_annotations(
 ) -> None:
     if not annotation_rows:
         return
-    from analysis.dendrites_pipeline.dendrites_pipeline import _draw_boxplot_significance_annotations as _pipeline_draw_boxplot_significance_annotations
-
-    _pipeline_draw_boxplot_significance_annotations(ax, annotation_rows, orientation="horizontal" if horizontal else "vertical")
+    for index, row in enumerate(annotation_rows):
+        significant = bool(row.get("significant", False)) or is_significant_row(dict(row), p_key="adjusted_pvalue") or is_significant_row(dict(row), p_key="shuffle_p")
+        if not significant:
+            continue
+        label = str(row.get("star") or "*")
+        if horizontal:
+            ax.text(0.98, index, label, transform=ax.get_yaxis_transform(), ha="right", va="center", color="#8b0000", fontweight="bold")
+        else:
+            ax.text(index + 1, 0.98, label, transform=ax.get_xaxis_transform(), ha="center", va="top", color="#8b0000", fontweight="bold")
 
 
 def draw_boxplot_series(
@@ -317,8 +324,7 @@ def plot_boxplot_series(
     output_dir.mkdir(parents=True, exist_ok=True)
     png = output_dir / f"{stem}.png"
     svg = output_dir / f"{stem}.svg"
-    fig.savefig(png, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(svg, bbox_inches="tight", facecolor="white")
+    save_figure(fig, png, extra_formats=("svg",), bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return [png, svg]
 
@@ -658,7 +664,6 @@ def plot_grouped_boxplot_series(
     output_dir.mkdir(parents=True, exist_ok=True)
     png = output_dir / f'{stem}.png'
     svg = output_dir / f'{stem}.svg'
-    fig.savefig(png, dpi=300, bbox_inches='tight', facecolor='white')
-    fig.savefig(svg, bbox_inches='tight', facecolor='white')
+    save_figure(fig, png, extra_formats=("svg",), bbox_inches='tight', facecolor='white')
     plt.close(fig)
     return [png, svg]

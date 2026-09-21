@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from analysis.shared.plots.boxplots import draw_boxplot_series
+from analysis.shared.plots.figure_io import save_figure
 from analysis.shared.roi_split import WINDOW_DISPLAY_LABELS, WINDOW_LABELS, split_group_specs_for_branch
 from analysis.shared.state_utils import canonical_state_label, ensure_dir, safe_filename_component
 
@@ -90,38 +91,22 @@ def roi_split_figure_output_dir(
     branch_name: Any | None = None,
     basis_name: Any | None = None,
 ) -> Path:
-    branch_text = str(branch_name or "").strip().lower()
-    basis_text = canonical_state_label(basis_name)
-    compartment_text = str(compartment or "").strip().lower()
+    """Return a split-family directory below the caller-provided final root."""
+    del branch_name, basis_name
     root_path = Path(result_root)
-    branch_component = safe_filename_component(branch_text)
-    basis_component = safe_filename_component(basis_text)
-    root_parts = [safe_filename_component(part) for part in root_path.parts if part != root_path.anchor]
-    already_leaf_scoped = False
-    if branch_text and basis_text:
-        already_leaf_scoped = (
-            len(root_parts) >= 3 and root_parts[-3] == branch_component and root_parts[-1] == basis_component
-        ) or (
-            len(root_parts) >= 2 and root_parts[-2] == branch_component and root_parts[-1] == basis_component
-        )
-    if branch_text and basis_text and not already_leaf_scoped:
-        parts = ["figures", branch_component, basis_component, "roi_split", safe_filename_component(roi_type)]
-        if compartment_text:
-            parts.append(safe_filename_component(compartment_text))
-        return ensure_dir(root_path.joinpath(*parts))
-    parts = ["figures", "roi_split", safe_filename_component(roi_type)]
-    if compartment_text:
-        parts.append(safe_filename_component(compartment_text))
+    if root_path.name == "figures":
+        root_path = root_path.parent
+    parts = ["roi_split", safe_filename_component(roi_type)]
+    if compartment:
+        parts.append(safe_filename_component(compartment))
     parts.append(safe_filename_component(split_name))
-    return ensure_dir(Path(result_root).joinpath(*parts))
-
+    return ensure_dir(root_path.joinpath(*parts))
 
 def _save_figure(fig: plt.Figure, output_dir: Path, stem: str) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     png = output_dir / f"{stem}.png"
     svg = output_dir / f"{stem}.svg"
-    fig.savefig(png, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(svg, bbox_inches="tight", facecolor="white")
+    save_figure(fig, png, extra_formats=("svg",), bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return [png, svg]
 

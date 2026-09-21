@@ -43,12 +43,67 @@ def job_root(base_root: Path | str, spec: AnalysisJobSpec) -> Path:
     )
 def manifest_path(output_root: Path | str) -> Path:
     return Path(output_root) / 'summary' / 'manifest.json'
+def validate_manifest_payload(output_root: Path | str, manifest: Mapping[str, Any]) -> None:
+    storage_root = Path(output_root).resolve()
+    root = storage_root
+    declared_root = manifest.get("output_root")
+    if declared_root:
+        resolved_declared = Path(str(declared_root)).resolve()
+        # Standalone runs may store analysis/summary/manifest.json while
+        # figures live in a sibling figures directory. Accept that one
+        # declared run root, but never accept an unrelated path.
+        try:
+            storage_root.relative_to(resolved_declared)
+            root = resolved_declared
+        except ValueError:
+            try:
+                resolved_declared.relative_to(storage_root)
+            except ValueError as exc:
+                raise ValueError(f"manifest output_root {resolved_declared} is outside {storage_root}") from exc
+    artifacts = manifest.get("output_artifacts", [])
+    if not isinstance(artifacts, Sequence) or isinstance(artifacts, (str, bytes)):
+        raise ValueError("manifest output_artifacts must be a sequence")
+    for artifact in artifacts:
+        candidate = Path(str(artifact))
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"manifest artifact {candidate} is outside {root}") from exc
+        if not candidate.exists():
+            raise FileNotFoundError(f"manifest artifact does not exist: {candidate}")
+
+
 def write_manifest(output_root: Path | str, manifest: Mapping[str, Any]) -> Path:
     path = manifest_path(output_root)
     ensure_dir(path.parent)
-    with path.open('w', encoding='utf-8') as handle:
-        json.dump(dict(manifest), handle, indent=2, sort_keys=True)
-        handle.write('\n')
+    payload = dict(manifest)
+    if "output_artifacts" in payload:
+        declared_root = Path(str(payload.get("output_root") or output_root)).resolve()
+        normalized_artifacts = []
+        for artifact in payload.get("output_artifacts", []):
+            text = str(artifact)
+            candidate = Path(text)
+            if not candidate.is_absolute():
+                rooted_candidate = declared_root / candidate
+                if not rooted_candidate.exists() and candidate.exists():
+                    rooted_candidate = candidate.resolve()
+                candidate = rooted_candidate
+            try:
+                normalized_artifacts.append(str(candidate.resolve().relative_to(declared_root)))
+            except ValueError:
+                # Leave invalid paths untouched so validation raises the
+                # actionable outside-root error below.
+                normalized_artifacts.append(text)
+        payload["output_artifacts"] = normalized_artifacts
+        validate_manifest_payload(output_root, payload)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    temporary.replace(path)
     return path
 def load_manifest(output_root: Path | str) -> Optional[Dict[str, Any]]:
     root = Path(output_root)

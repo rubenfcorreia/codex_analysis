@@ -8,7 +8,7 @@ import numpy as np
 
 from analysis.shared.analysis_families.registry import analysis_families_to_text as _shared_analysis_families_to_text
 from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
-from analysis.dendrites_pipeline.dendrites_pipeline import (
+from analysis.shared.plots.dendrite_plot_support import (
     ALL_REQUESTED_STATES,
     DEFAULT_BASAL_APICAL_STATES,
     DENDRITE_RESPONSE_COHORTS,
@@ -70,7 +70,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
     spine_coactivity_anchor_state_compartments,
     visual_response_dendrite_ids,
 )
-from analysis.dendrites_pipeline.analysis_families.transitions import run_transition_analysis
+from analysis.shared.analysis_families.dendrite_transitions import run_transition_analysis
 
 ANALYSIS_FAMILIES: List[str] = [
     "state",
@@ -705,7 +705,7 @@ def run_cached_analysis(
                 cache,
                 state_comparison_states,
                 transition_analysis,
-                output_root=Path(output_dir) if output_dir is not None else None,
+                output_root=Path(figure_root) if figure_root is not None else (Path(output_dir) if output_dir is not None else None),
             )
             results["alerts"].extend(results["state_transitions"].get("alerts", []))
 

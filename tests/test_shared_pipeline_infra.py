@@ -468,7 +468,7 @@ def test_state_correlation_plot_helper_supports_custom_labels(tmp_path: Path) ->
     }
 
 
-def test_soma_branch_state_plots_use_split_subject_rows_with_unsplit_fallback() -> None:
+def test_soma_branch_state_plots_require_split_rows_when_requested() -> None:
     split_rows = [
         {"state": "quiet_awake", "mean": 1.0, "split_group": "more_active"},
         {"state": "quiet_awake", "mean": 2.0, "split_group": "less_active"},
@@ -485,6 +485,14 @@ def test_soma_branch_state_plots_use_split_subject_rows_with_unsplit_fallback() 
         "responsive",
     )
     assert fallback == [{"state": "quiet_awake", "mean": 9.0}]
+    import pytest
+    with pytest.raises(ValueError, match="at least 2 split groups"):
+        soma_pipeline._state_plot_rows_for_branch(
+            {"branch_name": "activity_split", "basis_name": "nrem", "subject_state_rows": []},
+            [{"state": "nrem", "mean": 9.0}],
+            "all",
+            require_split=True,
+        )
 
 
 def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path, monkeypatch) -> None:
@@ -537,4 +545,4 @@ def test_result_layout_auditor_flags_only_comparison_level_figures(tmp_path: Pat
     direct = tmp_path / "direct"
     (direct / "figures").mkdir(parents=True)
 
-    assert find_illegal_figure_dirs(tmp_path) == [comparison / "figures"]
+    assert find_illegal_figure_dirs(tmp_path) == [comparison / "figures", comparison / "pooled" / "all" / "figures"]

@@ -1,11 +1,18 @@
 from importlib import import_module
 
+from .registry import plot_analysis_family, plot_family_names, register_plot_family
+
 _EXPORTS = {
     "build_coincidence_example_figure_path": (".coincidence", "build_coincidence_example_figure_path"),
     "coincidence_example_figure_dir": (".coincidence", "coincidence_example_figure_dir"),
     "draw_boxplot_series": (".boxplots", "draw_boxplot_series"),
     "plot_boxplot_series": (".boxplots", "plot_boxplot_series"),
     "plot_grouped_boxplot_series": (".boxplots", "plot_grouped_boxplot_series"),
+    "save_figure": (".figure_io", "save_figure"),
+    "plot_lag_heatmap": (".state", "plot_lag_heatmap"),
+    "plot_state_activity": (".state", "plot_state_activity"),
+    "plot_state_correlation": (".state", "plot_state_correlation"),
+    "plot_state_event_frequency": (".state", "plot_state_event_frequency"),
     "plot_coincidence_event_example_figure": (".coincidence", "plot_coincidence_event_example_figure"),
     "plot_mixed_model_contrasts_checkpoint": (".mixed_model", "plot_mixed_model_contrasts_checkpoint"),
     "plot_mixed_model_forest_figure": (".mixed_model", "plot_mixed_model_forest_figure"),
@@ -36,4 +43,4 @@ def __dir__():
     return sorted(set(globals()) | set(_EXPORTS))
 
 
-__all__ = sorted(_EXPORTS)
+__all__ = sorted(set(_EXPORTS) | {"plot_analysis_family", "plot_family_names", "register_plot_family"})

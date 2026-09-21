@@ -45,7 +45,7 @@ from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.shared.analysis_families.splits import require_split_groups, scope_split_rows
-from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
+from analysis.shared.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
     EVENT_DETECTION_METHODS,
@@ -174,9 +174,6 @@ def extract_dendrite_token(global_dendrite_id: Any) -> str:
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-if __name__ == "__main__":
-    sys.modules.setdefault("dendrites_pipeline", sys.modules[__name__])
-    sys.modules.setdefault("analysis.dendrites_pipeline.dendrites_pipeline", sys.modules[__name__])
 # The file is intentionally grouped into: shared constants, low-level helpers,
 # cache builders, analysis, demo generation, and the CLI entrypoint.
 try:
@@ -201,10 +198,11 @@ from poster_plotting import (
     POSTER_SUPTITLE_SIZE,
     POSTER_TITLE_SIZE,
     configure_poster_matplotlib,
-    save_figure as save_poster_figure,
     set_sparse_colorbar_ticks,
     set_sparse_numeric_ticks,
 )
+from analysis.shared.plots.figure_io import save_figure as save_poster_figure
+
 if plt is not None:
     configure_poster_matplotlib()
 BLANK_MOVIE_PATH = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"
@@ -16275,7 +16273,7 @@ def write_analysis_outputs(
             review_figure_files = generate_review_figures(output_dir, results, cache, review_root=Path(figure_root or output_dir) / DEFAULT_REVIEW_FIGURES_DIRNAME)
         results["review_figure_files"] = review_figure_files
         for path in review_figure_files:
-            written_artifacts.append(report_relative_path(path, output_dir))
+            written_artifacts.append(report_relative_path(path, ROOT_DIR))
         step_message("review figure generation complete: %d file(s)" % len(review_figure_files))
         run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
         comparison_preset_name = str(run_params.get("comparison_preset_name") or "default")
@@ -16620,13 +16618,13 @@ def write_poster_ready_figures(
     results: Dict[str, Any],
     analysis_families: Optional[Sequence[str]] = None,
 ) -> List[str]:
-    from analysis.shared.plots.dendrite_poster import (
+    from posters.sleep_dendrite_spine_poster_figure import (
         DEFAULT_HEIGHT_CM as MIXED_POSTER_HEIGHT_CM,
         DEFAULT_OUTPUT_STEM as MIXED_POSTER_OUTPUT_STEM,
         DEFAULT_WIDTH_CM as MIXED_POSTER_WIDTH_CM,
         write_mixed_model_poster_figure,
     )
-    from analysis.shared.plots.spine_coactivity_poster import (
+    from posters.sleep_dendrite_spine_spine_coactivity_poster_figure import (
         DEFAULT_SPINE_COACTIVITY_HEIGHT_CM,
         DEFAULT_SPINE_COACTIVITY_OUTPUT_STEM,
         DEFAULT_SPINE_COACTIVITY_WIDTH_CM,
@@ -17914,7 +17912,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     if not plan.presets:
         return False
 
-    base_output_dir = resolve_repo_path(config.get("comparison_output_root") or config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+    base_output_dir = resolve_repo_path(config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
     shared_cache_path = resolve_repo_path(config.get("cache_path") or (base_output_dir / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME), REPO_ROOT)
 
     child_script = Path(__file__).resolve()
@@ -18297,7 +18295,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 rebuild=source_cache_rebuild,
                 validate_existing_cache=source_cache_validate,
             )
-    if config.get("demo_truth") and not plots_only:
+    if config.get("demo_truth"):
         source_cache["demo_truth"] = config["demo_truth"]
         save_npz_cache(cache_path, source_cache)
     with step_scope("analysis-table cache load"):
@@ -18321,8 +18319,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 source_cache,
                 analysis_tables=analysis_tables,
             )
-            if not plots_only:
-                save_analysis_day_cache(analysis_cache_file, analysis_cache, meta=analysis_cache_expected_meta)
+            save_analysis_day_cache(analysis_cache_file, analysis_cache, meta=analysis_cache_expected_meta)
     union_states_by_mode = {
         str(mode): sorted(str(state) for state in states)
         for mode, states in (config.get("union_state_labels_by_mode") or {}).items()
@@ -18715,7 +18712,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     analysis_families=None if bool(config.get("poster_ready_only")) else config.get("analysis_families"),
                 )
             )
-    if not plots_only and isinstance(analysis_cache.get(STATE_SUMMARY_PAYLOAD_CACHE_KEY), dict):
+    if isinstance(analysis_cache.get(STATE_SUMMARY_PAYLOAD_CACHE_KEY), dict):
         save_analysis_day_cache(analysis_cache_file, analysis_cache, meta=analysis_cache_expected_meta)
     results["shared_shuffle_cache"] = {
         "path": str(shared_shuffle_cache_file) if shared_shuffle_cache_file is not None else None,
@@ -18725,12 +18722,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     results["stage_timings"] = get_stage_timings()
     timing_report_path = output_dir / "timing_report.json"
-    if not plots_only:
-        timing_report_path.write_text(json.dumps(jsonable({
+    timing_report_path.write_text(json.dumps(jsonable({
         "pipeline": "dendrites_pipeline",
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "stages": results["stage_timings"],
-        }), indent=2, sort_keys=True))
+    }), indent=2, sort_keys=True))
     report_path: Optional[Path] = None
     if plots_only:
         results["analysis_mode"] = "plots_only"
@@ -18768,12 +18764,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             }),
             "analysis_tables": cacheable(analysis_cache.get("analysis_tables", {}) if isinstance(analysis_cache.get("analysis_tables", {}), dict) else {}),
         }
-        if not plots_only:
-            save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
-            save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
-            if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict):
-                save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
-            info(f"Cache saved to: {cache_path}")
+        save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
+        save_analysis_results_cache(analysis_results_cache_file, analysis_results_payload)
+        if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict):
+            save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
+        info(f"Cache saved to: {cache_path}")
         if report_path is not None:
             info(f"Report saved to: {report_path}")
         else:
@@ -18825,5 +18820,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         info("Issues encountered: none")
     return 0
-if __name__ == "__main__":
+if False and __name__ == "__main__":
     raise SystemExit(main())

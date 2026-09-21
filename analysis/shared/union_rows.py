@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from analysis.shared.state_utils import canonical_state_label
+
 from analysis.shared.cache_utils import (
     analysis_cache_meta_hash,
     load_npz_cache,
@@ -50,7 +52,24 @@ def filter_rows_by_states(
         if allowed is None:
             filtered.append(dict(row))
         elif str(state) in allowed:
-            filtered.append(dict(row))
+            copied = dict(row)
+            copied.setdefault("source_state", str(state))
+            filtered.append(copied)
+        elif mode in {"movie", "sleep"}:
+            state_key = canonical_state_label(state)
+            aliases = {state_key}
+            for suffix in ("_movies", "_blank"):
+                if state_key.endswith(suffix):
+                    aliases.add(state_key[: -len(suffix)])
+                elif f"{state_key}{suffix}" in allowed:
+                    aliases.add(f"{state_key}{suffix}")
+            matching = [alias for alias in aliases if alias in allowed]
+            if matching:
+                copied = dict(row)
+                copied.setdefault("source_state", str(state))
+                if state_key not in allowed:
+                    copied["state"] = sorted(matching, key=lambda value: (value == state_key, value))[0]
+                filtered.append(copied)
     return filtered
 
 

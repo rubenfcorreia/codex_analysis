@@ -15,10 +15,11 @@ from scipy import stats
 
 from analysis.compartment_common import pick_state_bundle
 from analysis.shared.shared_calcium_response import load_visual_response_cut_data, visual_response_trial_group
-from analysis.dendrites_pipeline.dendrites_pipeline import (
-    plot_visual_response_boxplot_figure,
-    visual_response_figure_output_dir,
-)
+from analysis.shared.plots.figure_io import save_figure
+
+
+def visual_response_figure_output_dir(root: Path | str, kind: str, cohort_label: str) -> Path:
+    return Path(root) / "visual_response" / str(kind).strip().lower() / str(cohort_label).strip().lower()
 
 
 def _safe_filename_component(value: Any) -> str:
@@ -221,7 +222,7 @@ def plot_visual_response_entity_figure(
     fig_dir = Path(fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
     output_path = fig_dir / f"{animal_slug}_{entity_slug}_{cohort_label}_blank_vs_movies.svg"
-    fig.savefig(output_path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, output_path, extra_formats=(), bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return str(output_path)
 
@@ -262,6 +263,42 @@ def render_visual_response_entity_figures(
         del batch
         gc.collect()
     return saved
+
+
+def plot_visual_response_boxplot_figure(
+    response_summary: Mapping[str, Any],
+    fig_dir: Path | str,
+    *,
+    output_name: str,
+    title: str,
+    cohort_label: str = "all",
+    kind: str = "dendrites",
+) -> Optional[str]:
+    rows = response_summary.get("rows", []) if isinstance(response_summary, Mapping) else []
+    values = []
+    for row in rows:
+        if not isinstance(row, Mapping) or (cohort_label != "all" and str(row.get("cohort") or "all") != cohort_label):
+            continue
+        try:
+            blank = float(row.get("mean_blank")); visual = float(row.get("mean_visual"))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(blank) and np.isfinite(visual):
+            values.append((blank, visual, bool(row.get("responsive"))))
+    if not values or plt is None:
+        return None
+    fig, ax = plt.subplots(figsize=(4.6, 4.7))
+    data = [np.asarray([item[0] for item in values]), np.asarray([item[1] for item in values])]
+    bp = ax.boxplot(data, positions=[1, 2], widths=0.58, patch_artist=True, showfliers=False)
+    for patch, color in zip(bp.get("boxes", []), ("#D9D9D9", "#4C78A8")):
+        patch.set_facecolor(color); patch.set_edgecolor("#444444")
+    for blank, visual, responsive in values:
+        ax.plot([1, 2], [blank, visual], color="#2F855A" if responsive else "#888888", alpha=0.2, linewidth=0.9)
+    ax.set_xticks([1, 2]); ax.set_xticklabels(["Blank", "Movies"]); ax.set_ylabel("Mean activity during cut stimulus"); ax.set_title(title); ax.grid(axis="y", alpha=0.2)
+    output = Path(fig_dir) / output_name
+    save_figure(fig, output, extra_formats=(), bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(output)
 
 
 __all__ = [

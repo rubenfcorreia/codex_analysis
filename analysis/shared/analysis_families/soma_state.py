@@ -14,12 +14,9 @@ from analysis.shared.analysis_families.common_helpers import (
     interpolate_series,
     paired_comparison,
 )
-from analysis.compartment_common import read_pickle
 from analysis.shared.roi_split import summarize_mask_duration
-from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
-from analysis.shared.shared_calcium_response import build_masked_event_summary
-
-from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id, shared_time_axis, summarize_activity
+from ...compartment_common import canonical_state_label, read_pickle, state_display_color, state_display_label
+from .core import ExperimentContext, summarize_activity
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -32,8 +29,16 @@ def _float_or_none(value: Any) -> float | None:
     return float(result)
 
 
+def _shared_time_axis(ctx: ExperimentContext) -> np.ndarray:
+    if ctx.soma.t.size:
+        return np.asarray(ctx.soma.t, dtype=float)
+    if ctx.bouton.t.size:
+        return np.asarray(ctx.bouton.t, dtype=float)
+    return np.array([], dtype=float)
+
+
 def _movie_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
-    exp_time = shared_time_axis(ctx)
+    exp_time = _shared_time_axis(ctx)
     if exp_time.size == 0:
         return {}
 
@@ -87,7 +92,7 @@ def _movie_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
 
 
 def _sleep_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
-    exp_time = shared_time_axis(ctx)
+    exp_time = _shared_time_axis(ctx)
     if exp_time.size == 0:
         return {}
     sleep_state = ctx.state_bundle if isinstance(ctx.state_bundle, Mapping) else {}
@@ -121,86 +126,11 @@ def state_masks_for_context(ctx: ExperimentContext, selected_states: Sequence[st
         state, mask = match
         ordered[state] = mask
 
+    # Only include "all" when it was explicitly requested.
     if "all" in masks and any(canonical_state_label(state) == "all" for state in selected_states):
         ordered.setdefault("all", masks["all"])
 
     return ordered
-
-
-def _event_summary_for_trace(trace: np.ndarray, time: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
-    trace = np.asarray(trace, dtype=float).reshape(-1)
-    time = np.asarray(time, dtype=float).reshape(-1)
-    mask = np.asarray(mask, dtype=bool).reshape(-1)
-    usable = min(trace.size, time.size, mask.size)
-    if usable <= 0:
-        return {"event_count": 0, "event_frequency_per_min": float("nan")}
-    summary = build_masked_event_summary(trace[:usable], time[:usable], mask[:usable])
-    return {
-        "event_count": int(summary.get("event_count", 0) or 0),
-        "event_frequency_per_min": float(summary.get("event_frequency_per_min", float("nan"))),
-    }
-
-
-def _summarize_roi_trace(trace: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
-    trace = np.asarray(trace, dtype=float).reshape(-1)
-    mask = np.asarray(mask, dtype=bool).reshape(-1)
-    usable = min(trace.size, mask.size) if mask.size else trace.size
-    if usable <= 0:
-        return {"n": 0, "mean": float("nan"), "median": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan")}
-    if mask.size:
-        masked = trace[:usable][mask[:usable]]
-    else:
-        masked = trace[:usable]
-    finite = masked[np.isfinite(masked)]
-    if finite.size == 0:
-        return {"n": 0, "mean": float("nan"), "median": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan")}
-    return {
-        "n": int(finite.size),
-        "mean": float(np.nanmean(finite)),
-        "median": float(np.nanmedian(finite)),
-        "std": float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
-        "min": float(np.nanmin(finite)),
-        "max": float(np.nanmax(finite)),
-    }
-
-
-def _roi_subject_id(row: Mapping[str, Any]) -> str:
-    unit_id = row.get("unit_id")
-    if unit_id is not None and str(unit_id).strip():
-        return str(unit_id)
-    for key in ("global_soma_id", "global_bouton_id", "roi_key"):
-        value = row.get(key)
-        if value is not None and str(value).strip():
-            return str(value)
-    roi_id = row.get("roi_id")
-    if roi_id is not None and str(roi_id).strip():
-        return str(roi_id)
-    compartment = str(row.get("compartment") or "").strip().lower()
-    compartment_id = row.get(f"{compartment}_id") if compartment in {"soma", "bouton"} else None
-    if compartment_id is not None and str(compartment_id).strip():
-        return str(compartment_id)
-    roi_index = row.get("roi_index")
-    if roi_index is None:
-        roi_index = row.get("bouton_roi_index")
-    expid = str(row.get("expid") or "")
-    if expid or roi_index is not None:
-        return f"{expid}:{compartment}:{roi_index}"
-    return ""
-
-
-def _bundle_roi_ids(bundle: Any, n_rows: int) -> List[Any]:
-    roi_ids: List[Any] = []
-    if hasattr(bundle, "roi_ids"):
-        try:
-            roi_ids = list(bundle.roi_ids())
-        except Exception:
-            roi_ids = []
-    if not roi_ids:
-        roi_ids = list(range(n_rows))
-    if len(roi_ids) < n_rows:
-        roi_ids.extend(range(len(roi_ids), n_rows))
-    return roi_ids[:n_rows]
-
 
 def activity_rows_for_context(
     ctx: ExperimentContext,
@@ -208,68 +138,35 @@ def activity_rows_for_context(
     state_masks: Mapping[str, np.ndarray] | None = None,
 ) -> List[Dict[str, Any]]:
     masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
-    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
-    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
-    soma_roi_ids = _bundle_roi_ids(ctx.soma, soma_matrix.shape[0])
-    bouton_roi_ids = _bundle_roi_ids(ctx.bouton, bouton_matrix.shape[0])
-    time = shared_time_axis(ctx)
+    soma_matrix = ctx.soma.matrix()
+    bouton_matrix = ctx.bouton.matrix()
     rows: List[Dict[str, Any]] = []
     for state, mask in masks.items():
         mask = np.asarray(mask, dtype=bool)
-        state_n_frames, state_duration_s = summarize_mask_duration(time, mask)
+        state_n_frames, state_duration_s = summarize_mask_duration(_shared_time_axis(ctx), mask)
         soma_summary = summarize_activity(soma_matrix, mask)
         bouton_summary = summarize_activity(bouton_matrix, mask)
-        for compartment, summary, matrix, roi_ids in (("soma", soma_summary, soma_matrix, soma_roi_ids), ("bouton", bouton_summary, bouton_matrix, bouton_roi_ids)):
-            if matrix.size == 0:
-                continue
-            for roi_index in range(matrix.shape[0]):
-                trace = np.asarray(matrix[roi_index], dtype=float)
-                events = _event_summary_for_trace(trace, time, mask)
-                roi_id = roi_ids[roi_index] if roi_index < len(roi_ids) else roi_index
-                channel = ctx.soma_channel if compartment == "soma" else ctx.bouton_channel
-                unit_id = make_unit_id(
-                    animal_id=ctx.animal_id,
-                    expid=ctx.expid,
-                    day_id=ctx.day_id,
-                    compartment=compartment,
-                    channel=channel,
-                    roi_id=roi_id,
-                    roi_index=int(roi_index),
-                )
-                global_soma_id = make_global_soma_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=channel, roi_id=roi_id)
-                global_bouton_id = make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=channel, roi_id=roi_id)
-                row = {
-                    "expid": ctx.expid,
-                    "mode": ctx.mode,
-                    "animal_id": ctx.animal_id,
-                    "date": ctx.date,
-                    "day_id": ctx.day_id,
-                    "channel": int(channel),
-                    "state": canonical_state_label(state),
-                    "state_display": state_display_label(state),
-                    "state_color": state_display_color(state),
-                    "state_n_frames": int(state_n_frames),
-                    "state_duration_s": float(state_duration_s),
-                    "compartment": compartment,
-                    "roi_index": int(roi_index),
-                    "roi_id": roi_id,
-                    "unit_id": unit_id,
-                    "roi_key": unit_id,
-                    **summary,
-                    "event_count": events["event_count"],
-                    "event_frequency_per_min": events["event_frequency_per_min"],
-                }
-                if compartment == "soma":
-                    row["soma_id"] = roi_id
-                    row["bouton_id"] = None
-                    row["global_soma_id"] = global_soma_id
-                    row["global_bouton_id"] = None
-                else:
-                    row["soma_id"] = None
-                    row["bouton_id"] = roi_id
-                    row["global_soma_id"] = None
-                    row["global_bouton_id"] = global_bouton_id
-                rows.append(row)
+        for compartment, summary in (("soma", soma_summary), ("bouton", bouton_summary)):
+            row = {
+                "expid": ctx.expid,
+                "mode": ctx.mode,
+                "animal_id": ctx.animal_id,
+                "date": ctx.date,
+                "day_id": ctx.day_id,
+                "state": canonical_state_label(state),
+                "state_display": state_display_label(state),
+                "state_color": state_display_color(state),
+                "state_n_frames": int(state_n_frames),
+                "state_duration_s": float(state_duration_s),
+                "compartment": compartment,
+                "n": summary["n"],
+                "mean": summary["mean"],
+                "median": summary["median"],
+                "std": summary["std"],
+                "min": summary["min"],
+                "max": summary["max"],
+            }
+            rows.append(row)
     return rows
 
 
@@ -365,12 +262,7 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
 
 
 
-def _state_values_by_subject(
-    rows: Sequence[Mapping[str, Any]],
-    selected_states: Sequence[str],
-    compartment: str | None = None,
-    metric_col: str = "mean",
-) -> Dict[str, Dict[str, List[float]]]:
+def _state_values_by_day(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], compartment: str | None = None) -> Dict[str, Dict[str, List[float]]]:
     selected_lookup = {canonical_state_label(state) for state in selected_states if canonical_state_label(state)}
     values_by_state: Dict[str, Dict[str, List[float]]] = {state: {} for state in selected_lookup}
     for row in rows:
@@ -379,10 +271,10 @@ def _state_values_by_subject(
             continue
         if compartment is not None and str(row.get("compartment") or "") != compartment:
             continue
-        subject_id = str(row.get("unit_id") or row.get("roi_key") or row.get("global_soma_id") or row.get("global_bouton_id") or row.get("roi_id") or row.get("soma_id") or row.get("bouton_id") or _roi_subject_id(row) or "")
-        if not subject_id:
+        day_id = str(row.get("day_id") or "")
+        if not day_id:
             continue
-        values_by_state.setdefault(state, {}).setdefault(subject_id, []).append(float(row.get(metric_col, float("nan"))))
+        values_by_state.setdefault(state, {}).setdefault(day_id, []).append(float(row.get("mean", float("nan"))))
     return values_by_state
 
 
@@ -433,44 +325,9 @@ def _split_group_meta(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, 
             payload["split_group_rank"] = rank_float
     return meta
 
-def build_state_comparison_row_groups(
-    rows: Sequence[Mapping[str, Any]],
-    selected_states: Sequence[str],
-) -> Dict[str | None, Dict[str, Dict[str, List[Mapping[str, Any]]]]]:
-    selected = [state for state in selected_states if canonical_state_label(state)]
-    selected_lookup = set(selected)
-    if len(selected_lookup) < 2:
-        return {}
-
-    grouped_rows: Dict[str | None, Dict[str, Dict[str, List[Mapping[str, Any]]]]] = {
-        None: {state: {} for state in selected},
-        "soma": {state: {} for state in selected},
-        "bouton": {state: {} for state in selected},
-    }
-    for row in rows:
-        state = canonical_state_label(row.get("state"))
-        if state not in selected_lookup:
-            continue
-        day_id = str(row.get("day_id") or "")
-        if not day_id:
-            continue
-        grouped_rows[None].setdefault(state, {}).setdefault(day_id, []).append(row)
-        compartment = str(row.get("compartment") or "")
-        if compartment in {"soma", "bouton"}:
-            grouped_rows[compartment].setdefault(state, {}).setdefault(day_id, []).append(row)
-    return grouped_rows
 
 
-
-
-def state_comparison_rows(
-    rows: Sequence[Mapping[str, Any]],
-    selected_states: Sequence[str],
-    shuffle_n: int,
-    *,
-    metric_col: str = "mean",
-    grouped_rows: Mapping[str | None, Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]]] | None = None,
-) -> List[Dict[str, Any]]:
+def state_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
     selected = [state for state in selected_states if canonical_state_label(state)]
     if len(selected) < 2:
         return []
@@ -478,60 +335,23 @@ def state_comparison_rows(
     has_split_groups = any(_split_group_value(row) is not None for row in rows)
     split_groups = _split_group_order(rows) if has_split_groups else [None]
     split_meta = _split_group_meta(rows) if has_split_groups else {}
-    if not has_split_groups:
-        if grouped_rows is None:
-            grouped_rows = build_state_comparison_row_groups(rows, selected)
-        for compartment in (None, "soma", "bouton"):
-            compartment_rows = grouped_rows.get(compartment, {})
-            if not any(compartment_rows.values()):
-                continue
-            values_by_state: Dict[str, Dict[str, List[float]]] = {
-                state: {
-                    subject_id: [float(row.get(metric_col, float("nan"))) for row in member_rows]
-                    for subject_id, member_rows in subject_rows.items()
-                }
-                for state, subject_rows in compartment_rows.items()
-            }
-            for idx, state_a in enumerate(selected):
-                for state_b in selected[idx + 1:]:
-                    subjects_a = values_by_state.get(state_a, {})
-                    subjects_b = values_by_state.get(state_b, {})
-                    subjects = sorted(set(subjects_a).intersection(subjects_b))
-                    if len(subjects) >= 2:
-                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
-                    else:
-                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
-                    result["comparison"] = "state_pair"
-                    result["compartment"] = compartment or "all"
-                    result["state_a_display"] = state_a
-                    result["state_b_display"] = state_b
-                    comparisons.append(result)
-        return comparisons
     for split_group in split_groups:
-        split_rows = [row for row in rows if _split_group_value(row) == split_group]
+        split_rows = [row for row in rows if _split_group_value(row) == split_group] if has_split_groups else rows
         if not split_rows:
             continue
-        split_grouped_rows = build_state_comparison_row_groups(split_rows, selected)
         for compartment in (None, "soma", "bouton"):
-            compartment_rows = split_grouped_rows.get(compartment, {})
-            if not any(compartment_rows.values()):
+            values_by_state = _state_values_by_day(split_rows, selected, compartment=compartment)
+            if not any(values_by_state.values()):
                 continue
-            values_by_state: Dict[str, Dict[str, List[float]]] = {
-                state: {
-                    subject_id: [float(row.get(metric_col, float("nan"))) for row in member_rows]
-                    for subject_id, member_rows in subject_rows.items()
-                }
-                for state, subject_rows in compartment_rows.items()
-            }
             for idx, state_a in enumerate(selected):
                 for state_b in selected[idx + 1:]:
                     subjects_a = values_by_state.get(state_a, {})
                     subjects_b = values_by_state.get(state_b, {})
                     subjects = sorted(set(subjects_a).intersection(subjects_b))
                     if len(subjects) >= 2:
-                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                        result = paired_comparison(values_by_state, state_a, state_b, "mean", shuffle_n)
                     else:
-                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                        result = independent_comparison(values_by_state, state_a, state_b, "mean", shuffle_n)
                     result["comparison"] = "state_pair"
                     result["compartment"] = compartment or "all"
                     result["state_a_display"] = state_a
@@ -551,6 +371,8 @@ def state_comparison_rows(
 
 
 def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
+    # Soma/bouton does not have basal/apical compartments, so reuse the same state list
+    # to provide a parallel comparison table for preset parity.
     selected = [state for state in selected_states if canonical_state_label(state)]
     if not selected:
         return []
@@ -563,7 +385,7 @@ def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_sta
         if not split_rows:
             continue
         for state in selected:
-            values_by_state = _state_values_by_subject(split_rows, [state])
+            values_by_state = _state_values_by_day(split_rows, [state])
             if state not in values_by_state:
                 continue
             result = {
@@ -586,26 +408,3 @@ def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_sta
                 result["split_group"] = None
             comparisons.append(result)
     return comparisons
-
-def build_state_family_results(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> Dict[str, Any]:
-    summary_rows = state_summary_rows(rows)
-    comparison_groups = build_state_comparison_row_groups(rows, selected_states)
-    comparisons = state_comparison_rows(rows, selected_states, shuffle_n, grouped_rows=comparison_groups)
-    basal_apical = basal_apical_comparison_rows(rows, selected_states, shuffle_n)
-    return {
-        "activity_rows": list(rows),
-        "summary_rows": summary_rows,
-        "state_comparison_rows": comparisons,
-        "basal_apical_comparison_rows": basal_apical,
-    }
-
-__all__ = [
-    "ExperimentContext",
-    "activity_rows_for_context",
-    "basal_apical_comparison_rows",
-    "build_state_comparison_row_groups",
-    "build_state_family_results",
-    "state_comparison_rows",
-    "state_masks_for_context",
-    "state_summary_rows",
-]

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Sequence, Tuple
+from collections.abc import Mapping
 
 from analysis.shared.roi_split import ROI_SPLIT_BASES, ROI_SPLIT_BRANCHES
 from analysis.shared.state_utils import canonical_state_label, derive_animal_id, derive_date, make_day_id, safe_filename_component
@@ -32,7 +33,7 @@ def branch_leaf_root(result_root: Path | str, branch_name: Any, basis_name: Any,
 
 
 def branch_leaf_figure_root(result_root: Path | str, branch_name: Any, basis_name: Any, preset_name: Any | None = None) -> Path:
-    return branch_leaf_root(result_root, branch_name, basis_name, preset_name=preset_name) / 'figures'
+    return branch_leaf_root(result_root, branch_name, basis_name, preset_name=preset_name)
 
 
 def comparison_leaf_root(

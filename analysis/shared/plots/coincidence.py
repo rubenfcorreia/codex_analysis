@@ -12,6 +12,7 @@ import numpy as np
 
 from analysis.shared.analysis_families.coincidence import coincident_event_runs, event_run_onsets_match
 from analysis.shared.state_utils import ensure_dir, safe_filename_component
+from analysis.shared.plots.figure_io import save_figure
 
 
 DEFAULT_COINCIDENCE_EXAMPLE_FIGURES_DIRNAME = "coincidence_event_examples"
@@ -368,7 +369,7 @@ def plot_coincidence_event_example_figure(
         fig.tight_layout(rect=(0, 0, 1, 0.985))
         output_path = Path(output_path)
         ensure_dir(output_path.parent)
-        fig.savefig(output_path, bbox_inches="tight", facecolor="white")
+        save_figure(fig, output_path, extra_formats=(), bbox_inches="tight", facecolor="white")
         plt.close(fig)
         return str(output_path)
 

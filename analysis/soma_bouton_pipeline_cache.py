@@ -35,15 +35,15 @@ from analysis.soma_bouton_pipeline.analysis_families.core import (  # noqa: E402
     build_experiment_context,
     experiment_summary_row,
 )
-from analysis.soma_bouton_pipeline.analysis_families.correlation import (  # noqa: E402
+from analysis.shared.analysis_families.soma_correlation import (  # noqa: E402
     bouton_pairwise_correlation_rows,
     bouton_soma_correlation_rows,
     correlation_summary_rows,
     soma_pairwise_correlation_rows,
 )
-from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows  # noqa: E402
-from analysis.soma_bouton_pipeline.analysis_families.state import activity_rows_for_context, state_summary_rows  # noqa: E402
-from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation  # noqa: E402
+from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows  # noqa: E402
+from analysis.shared.analysis_families.soma_state import activity_rows_for_context, state_summary_rows  # noqa: E402
+from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_correlation  # noqa: E402
 from analysis.shared.plots.poster_ready import assign_pairwise_visual_response_cohorts, split_rows_by_cohort  # noqa: E402
 from analysis.shared.branch_tree import comparison_leaf_root  # noqa: E402
 
@@ -444,13 +444,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     preset_name = str(config.get("comparison_preset_name") or "default")
     branch_first_figures = bool(config.get("branch_first_figures", False))
-    figure_root = comparison_leaf_root(result_root) if branch_first_figures else result_root
+    comparison_run = bool(str(config.get("comparison_preset_name") or "").strip())
+    figure_root = comparison_leaf_root(result_root) if (branch_first_figures or comparison_run) else result_root / "figures"
     logger.info("Running preset %s -> result_root=%s figure_root=%s cache_root=%s", preset_name, result_root, figure_root, cache_root)
 
     ensure_dir(result_root)
     ensure_dir(cache_root)
     ensure_dir(result_root / "csv")
-    ensure_dir(figure_root / "figures")
+    ensure_dir(figure_root)
     ensure_dir(result_root / "summary")
 
     expids_by_mode = _mode_expids(config)
@@ -608,14 +609,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         if lag_summary:
             write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", lag_summary, list(lag_summary[0].keys()))
 
-    plot_state_activity(activity_summary_rows, result_root)
+    plot_state_activity(activity_summary_rows, figure_root)
     _plot_pairwise_correlation_figures(
-        result_root,
+        figure_root,
         {"all": list(correlation_rows), "responsive": [], "nonresponsive": []},
         {"all": list(soma_pairwise_rows), "responsive": [], "nonresponsive": []},
         {"all": list(bouton_pairwise_rows), "responsive": [], "nonresponsive": []},
     )
-    plot_lag_heatmap(lag_rows, result_root)
+    plot_lag_heatmap(lag_rows, figure_root)
 
     summary_payload = {
         "schema_version": CACHE_SCHEMA_VERSION,

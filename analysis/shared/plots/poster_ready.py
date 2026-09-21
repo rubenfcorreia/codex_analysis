@@ -13,6 +13,7 @@ from matplotlib.lines import Line2D
 import numpy as np
 from scipy import stats
 
+from analysis.shared.plots.figure_io import save_figure
 from analysis.shared.shared_calcium_response import build_state_masks_movie, choose_locomotion_threshold, extract_cut_neural_bundle, find_first_key, load_visual_response_cut_data, read_pickle, visual_response_trial_group
 from analysis.compartment_common import pick_state_bundle
 from poster_plotting import (
@@ -22,7 +23,6 @@ from poster_plotting import (
     POSTER_NOTE_SIZE,
     POSTER_TITLE_SIZE,
     configure_poster_matplotlib,
-    save_figure,
 )
 
 if plt is not None:
@@ -1602,7 +1602,7 @@ def write_blank_movie_and_correlation_poster_figure(
         ax_corr.set_axis_off()
 
     output_path = out_dir / f"{stem}.svg"
-    fig.savefig(output_path, format="svg", dpi=300)
+    save_figure(fig, output_path, extra_formats=(), format="svg")
     if plt is not None:
         plt.close(fig)
     return str(output_path)

@@ -232,8 +232,14 @@ def filter_comparison_presets(
     return [(name, overrides) for name, overrides in presets if name in selected_set]
 
 def read_pickle(path: Path | str) -> Any:
+    class _NumpyCompatUnpickler(pickle.Unpickler):
+        def find_class(self, module: str, name: str) -> Any:
+            if module.startswith("numpy._core"):
+                module = "numpy.core" + module[len("numpy._core") :]
+            return super().find_class(module, name)
+
     with Path(path).open("rb") as fh:
-        return pickle.load(fh)
+        return _NumpyCompatUnpickler(fh).load()
 
 
 def read_csv_rows(path: Path | str) -> List[Dict[str, str]]:

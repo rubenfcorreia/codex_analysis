@@ -38,6 +38,7 @@ from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family, run_split_family
+from analysis.shared.analysis_families.splits import SPLIT_BRANCHES, require_split_groups
 from analysis.shared.analysis_families.state import (
     activity_rows_for_context,
     build_state_comparison_row_groups,
@@ -58,10 +59,10 @@ from analysis.shared.shared_calcium_response import (
     summarize_visual_response_entity_rows,
     visual_response_trial_rows,
 )
-from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
-from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
-from analysis.soma_bouton_pipeline.analysis_families.transitions import run_transition_analysis
-from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
+from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
+from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows
+from analysis.shared.analysis_families.soma_transitions import run_transition_analysis
+from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
@@ -83,7 +84,7 @@ from analysis.shared.plots.poster_ready import (
 from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, run_family as run_coincidence_family
 from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
-from analysis.dendrites_pipeline.dendrites_pipeline import (
+from analysis.shared.analysis_cache import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
     analysis_cache_meta_hash,
@@ -92,7 +93,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, save_family_results_cache
+from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
 
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ DEFAULT_CONFIG = {
     "visual_response_cohort": DEFAULT_VISUAL_RESPONSE_COHORT,
     "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
     "coincidence_example_top_n": 5,
+    "coincidence_example_max_total": 5,
     "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
     "state_comparison_states": [
         "quiet_awake_blank",
@@ -226,7 +228,10 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         return []
 
     repo_root = resolve_repo_root(Path(__file__))
-    base_result_root = resolve_repo_path(config.get("result_root") or DEFAULT_CONFIG["result_root"], repo_root)
+    base_result_root = resolve_repo_path(
+        config.get("comparison_output_root") or config.get("result_root") or DEFAULT_CONFIG["result_root"],
+        repo_root,
+    )
     base_cache_root = resolve_repo_path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"], repo_root)
     shared_source_cache_path = resolve_repo_path(config.get("cache_path") or (base_cache_root / "source_cache.npz"), repo_root)
     _stage("comparison presets", f"running {len(plan.presets)} preset(s)")
@@ -253,6 +258,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["comparison_preset_name"] = preset_name
         preset_result_root = base_result_root / safe_name
         preset_config["result_root"] = str(preset_result_root)
+        preset_config["analysis_output_dir"] = str(preset_result_root)
         preset_cache_root = base_cache_root / safe_name
         preset_run_cache_path = preset_cache_root / "analysis_run_cache.npz"
         preset_results_cache_path = preset_cache_root / "analysis_results_cache.npz"
@@ -265,18 +271,18 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["rebuild"] = preset_rebuild
         preset_config["source_cache_rebuild"] = preset_rebuild
         preset_config["analysis_tables_rebuild"] = preset_rebuild
-        preset_config["analysis_results_rebuild"] = True
+        preset_config["analysis_results_rebuild"] = False if bool(config.get("plots_only")) else True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["general_output_root"] = str(base_result_root / "general")
         preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
         preset_config["union_state_labels_by_mode"] = union_states_by_mode
-        preset_config["union_rows_cache_builder"] = preset_index == 0
+        preset_config["union_rows_cache_builder"] = preset_index == 0 and not bool(config.get("plots_only"))
         preset_config["generate_shared_general_outputs"] = preset_index == 0
         preset_config["generate_shared_general_figures"] = preset_index == 0
         preset_config["source_cache_validate"] = False if preset_index else config.get("source_cache_validate", True)
         preset_config["branch_first_output_root"] = str(preset_result_root)
         preset_config["branch_first_figures"] = True
-        preset_config["generate_visual_response_entity_figures"] = preset_index == 0
+        preset_config["generate_visual_response_entity_figures"] = preset_index == 0 and bool(config.get("generate_visual_response_entity_figures", True))
         preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
@@ -729,11 +735,12 @@ def _generate_coincidence_example_figures(
     result_root: Path,
     repo_root: Path,
     coincidence_example_top_n: int,
+    coincidence_example_max_total: int,
     soma_channel: int,
     bouton_channel: int,
     default_event_detection_method: str,
 ) -> List[str]:
-    if coincidence_example_top_n <= 0 or not coincidence_rows:
+    if coincidence_example_top_n <= 0 or coincidence_example_max_total <= 0 or not coincidence_rows:
         return []
     saved: List[str] = []
     context_cache: Dict[tuple[str, str, int, int], ExperimentContext] = {}
@@ -747,10 +754,12 @@ def _generate_coincidence_example_figures(
         )
         grouped.setdefault(key, []).append(dict(row))
     for mode, day_id, state, event_detection_method in sorted(grouped):
+        if len(saved) >= coincidence_example_max_total:
+            break
         group_rows = sorted(grouped[(mode, day_id, state, event_detection_method)], key=_coincidence_row_sort_key)
         written = 0
         for row in group_rows:
-            if written >= coincidence_example_top_n:
+            if written >= coincidence_example_top_n or len(saved) >= coincidence_example_max_total:
                 break
             expid = str(row.get("expid") or "").strip()
             if not expid:
@@ -777,7 +786,7 @@ def _generate_coincidence_example_figures(
                 continue
             pair_unit_id = str(row.get("pair_unit_id") or "pair")
             path = build_coincidence_example_figure_path(
-                result_root / "figures",
+                result_root,
                 expid=expid,
                 mode=row_mode,
                 day_id=day_id,
@@ -885,6 +894,7 @@ def _state_plot_rows_for_branch(
     cohort_name: str,
     *,
     prefer_subject_rows: bool = True,
+    require_split: bool = False,
 ) -> List[Dict[str, Any]]:
     """Return state rows with split membership attached for every cohort."""
     split_rows = [
@@ -892,6 +902,8 @@ def _state_plot_rows_for_branch(
         for row in (leaf_roi_split or {}).get("subject_state_rows", [])
         if isinstance(row, Mapping)
     ]
+    if require_split:
+        require_split_groups(split_rows, branch=str((leaf_roi_split or {}).get("branch_name") or "split"), basis=str((leaf_roi_split or {}).get("basis_name") or "all"))
     if prefer_subject_rows and cohort_name == "all" and any(str(row.get("split_group") or "").strip() for row in split_rows):
         return split_rows
     rows = [dict(row) for row in fallback_rows if isinstance(row, Mapping)]
@@ -920,7 +932,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
     result_root = layout.analysis_root
     preset_name = str(config.get("comparison_preset_name") or "default")
-    figure_root = resolve_repo_path(config["figure_output_dir"], repo_root) if config.get("figure_output_dir") else layout.figure_root
+    if config.get("branch_first_figures"):
+        # Comparison presets always use their canonical pooled/all leaf; a
+        # legacy top-level figure_output_dir must not override that contract.
+        figure_root = _comparison_figure_root(config, repo_root, result_root)
+    else:
+        figure_root = resolve_repo_path(config["figure_output_dir"], repo_root) if config.get("figure_output_dir") else layout.figure_root
     general_output_root = resolve_repo_path(config.get("general_output_root"), repo_root) if config.get("general_output_root") else None
     generate_shared_general_outputs = bool(config.get("generate_shared_general_outputs", False))
     generate_shared_general_figures = bool(config.get("generate_shared_general_figures", False))
@@ -932,7 +949,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     _stage("run preset", f"{preset_name} -> {result_root}")
     ensure_dir(result_root)
     ensure_dir(result_root / "csv")
-    ensure_dir(figure_root / "figures")
+    ensure_dir(figure_root)
     ensure_dir(result_root / "cache")
     ensure_dir(result_root / "summary")
 
@@ -973,6 +990,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     selected_states_by_mode_payload = {mode: list(states) for mode, states in selected_states_by_mode.items()}
     day_groups = build_day_groups(expids_by_mode)
     coincidence_example_top_n = int(config.get("coincidence_example_top_n", DEFAULT_CONFIG["coincidence_example_top_n"]))
+    coincidence_example_max_total = int(config.get("coincidence_example_max_total", DEFAULT_CONFIG["coincidence_example_max_total"]))
     analysis_results_meta = _soma_analysis_results_meta(
         config,
         selected_states_by_mode,
@@ -1048,6 +1066,19 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 }
             )
             _stage("cache load", f"reused analysis-results cache at {analysis_results_cache_file}")
+            if bool(config.get("plots_only")):
+                table_cache = load_npz_cache(analysis_tables_cache_file) if analysis_tables_cache_file.exists() else {}
+                table_rows = table_cache.get("analysis_tables", {}) if isinstance(table_cache, dict) else {}
+                if isinstance(table_rows, dict):
+                    experiment_rows = list(table_rows.get("experiment_rows", []))
+                    activity_rows = list(table_rows.get("activity_rows", []))
+                    correlation_rows = list(table_rows.get("correlation_rows", []))
+                    lag_rows = list(table_rows.get("lag_rows", []))
+                    visual_response_rows = list(table_rows.get("visual_response_rows", []))
+                    coincidence_rows = list(table_rows.get("coincidence_rows", []))
+                    transition_results = {"event_rows": list(table_rows.get("state_transition_event_rows", [])), "summary_rows": list(table_rows.get("state_transition_summary_rows", [])), "figure_paths": [], "alerts": []}
+                    selected_states_by_mode = dict(table_rows.get("selected_states_by_mode", selected_states_by_mode))
+                    state_modes = list(table_rows.get("state_modes", state_modes))
             if bool(config.get("poster_ready_only")):
                 config = dict(config)
                 config["plots_only"] = True
@@ -1128,6 +1159,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         row_states = list(union_states_by_mode.get(mode, selected_states)) if union_cache_enabled else selected_states
         _stage("state selection", f"{mode}: {', '.join(selected_states) if selected_states else 'none'}")
         for expid in expids_by_mode.get(mode, []):
+            # Figure-only runs consume the validated analysis-results cache;
+            # constructing raw experiment contexts here can unnecessarily
+            # deserialize incompatible legacy source pickles.
+            if config.get("plots_only"):
+                continue
             ctx = build_experiment_context(
                 expid=expid,
                 mode=mode,
@@ -1244,7 +1280,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             selected_states_by_mode,
             config.get("transition_analysis"),
             event_detection_method=event_detection_method,
-            output_root=result_root,
+            output_root=figure_root,
         )
 
     activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows = _reload_plot_rows_from_csv(
@@ -1738,12 +1774,13 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 result_root=(shared_general_root or figure_root),
                 repo_root=repo_root,
                 coincidence_example_top_n=coincidence_example_top_n,
+                coincidence_example_max_total=coincidence_example_max_total,
                 soma_channel=int(config["soma_channel"]),
                 bouton_channel=int(config["bouton_channel"]),
                 default_event_detection_method=event_detection_method,
             )
         if visual_response_rows and (general_output_root is None or generate_shared_general_figures):
-            visual_response_fig_dir = ensure_dir((shared_general_root or figure_root) / "figures" / "visual_response")
+            visual_response_fig_dir = ensure_dir((shared_general_root or figure_root) / "visual_response")
             for compartment in ("soma", "bouton"):
                 compartment_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
                 if not compartment_rows:
@@ -1770,7 +1807,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         kind=compartment,
                     )
         if not poster_ready_only and mixed_model_results:
-            mixed_model_fig_dir = ensure_dir(figure_root / "figures" / "mixed_model")
+            mixed_model_fig_dir = ensure_dir(figure_root / "mixed_model")
             for cohort_name, cohort_results in mixed_model_results.items():
                 if not isinstance(cohort_results, dict) or not cohort_results:
                     continue
@@ -2150,6 +2187,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if not isinstance(leaf_roi_split, dict):
                 leaf_roi_split = {}
             roi_split_membership_rows = leaf_roi_split.get("membership_rows", [])
+            if branch_name in SPLIT_BRANCHES:
+                require_split_groups(roi_split_membership_rows, branch=branch_name, basis=basis_name)
             leaf_split_metadata = {
                 "roi_type": str(leaf_roi_split.get("roi_type") or "").strip(),
                 "branch_name": str(leaf_roi_split.get("branch_name") or branch_name).strip(),
@@ -2161,6 +2200,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             def _leaf_state_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
                 if not rows:
                     return []
+                if branch_name in SPLIT_BRANCHES and not roi_split_membership_rows:
+                    raise ValueError(f"{branch_name}/{basis_name} has no split membership rows")
                 if not roi_split_membership_rows:
                     return [dict(row) for row in rows]
                 scoped_rows = []
@@ -2208,7 +2249,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
             for cohort_name in ("all", "responsive", "nonresponsive"):
                 cohort_rows = basis_activity_rows.get(cohort_name, [])
-                plot_rows = _state_plot_rows_for_branch(leaf_roi_split, cohort_rows, cohort_name)
+                plot_rows = _state_plot_rows_for_branch(leaf_roi_split, cohort_rows, cohort_name, require_split=branch_name in SPLIT_BRANCHES)
                 if not plot_rows:
                     continue
                 plot_state_activity(
@@ -2273,7 +2314,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     continue
 
             if basis_visual_rows and general_output_root is None:
-                visual_response_fig_dir = ensure_dir(leaf_root / "figures" / "visual_response")
+                visual_response_fig_dir = ensure_dir(leaf_root / "visual_response")
                 for compartment in ("soma", "bouton"):
                     compartment_rows = [row for row in basis_visual_rows if str(row.get("compartment") or "") == compartment]
                     if not compartment_rows:
@@ -2303,7 +2344,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         )
 
             if branch_first_mixed_model_results:
-                mixed_model_fig_dir = ensure_dir(leaf_root / "figures" / "mixed_model")
+                mixed_model_fig_dir = ensure_dir(leaf_root / "mixed_model")
                 for cohort_name, cohort_results in branch_first_mixed_model_results.items():
                     if not isinstance(cohort_results, dict) or not cohort_results:
                         continue

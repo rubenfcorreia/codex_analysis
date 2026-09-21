@@ -8,6 +8,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from analysis.shared.plots.figure_io import save_figure
+
 TRANSITION_SCHEMA_VERSION = 1
 SLEEP_STATE_LABELS = frozenset({"active_awake", "quiet_awake", "wake", "nrem", "rem"})
 
@@ -301,9 +303,9 @@ def plot_transition_summaries(
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + ".svg"
-        path = Path(output_root) / "figures" / "state_transitions" / scope / mode / filename
+        path = Path(output_root) / "state_transitions" / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, format="svg", bbox_inches="tight")
+        save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")
         plt.close(fig)
         saved.append(str(path))
 
@@ -361,9 +363,9 @@ def plot_transition_summaries(
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + "_trace.svg"
-        path = Path(output_root) / "figures" / "state_transitions" / scope / mode / filename
+        path = Path(output_root) / "state_transitions" / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, format="svg", bbox_inches="tight")
+        save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")
         plt.close(fig)
         saved.append(str(path))
     return saved

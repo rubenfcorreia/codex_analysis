@@ -29,6 +29,15 @@ def test_filter_preserves_invariant_rows_and_filters_modes():
     assert [row["id"] for row in filtered] == ["q", "invariant", "unknown"]
 
 
+
+def test_filter_normalizes_base_state_to_requested_scoped_alias():
+    rows = [{"id": "q", "state": "quiet_awake", "mode": "movie"}]
+    blank = filter_rows_by_states(rows, {"movie": ["quiet_awake_blank"]})
+    movies = filter_rows_by_states(rows, {"movie": ["quiet_awake_movies"]})
+    assert blank[0]["state"] == "quiet_awake_blank"
+    assert movies[0]["state"] == "quiet_awake_movies"
+    assert blank[0]["source_state"] == movies[0]["source_state"] == "quiet_awake"
+
 def test_table_filter_deduplicates_without_changing_rows():
     rows = [{"id": 1, "state": "quiet"}, {"id": 1, "state": "quiet"}, {"id": 2, "value": 3}]
     assert deduplicate_rows(rows) == [{"id": 1, "state": "quiet"}, {"id": 2, "value": 3}]
@@ -121,8 +130,8 @@ def test_dendrites_preset_orchestration_shares_union_cache(monkeypatch, tmp_path
     assert analysis_runs[1]["union_rows_cache_builder"] is False
     assert analysis_runs[0]["shared_union_rows_cache_path"] == analysis_runs[1]["shared_union_rows_cache_path"]
     assert analysis_runs[0]["union_state_labels_by_mode"]["state_comparison"] == ["active_awake", "quiet_awake"]
-    assert analysis_runs[0]["figure_output_dir"].endswith("/first/pooled/all/figures")
-    assert analysis_runs[1]["figure_output_dir"].endswith("/second/pooled/all/figures")
+    assert analysis_runs[0]["figure_output_dir"].endswith("/first/pooled/all")
+    assert analysis_runs[1]["figure_output_dir"].endswith("/second/pooled/all")
     assert analysis_runs[0]["generate_shared_general_outputs"] is True
     assert analysis_runs[1]["generate_shared_general_outputs"] is False
 
