@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 from analysis.shared.analysis_families import require_split_groups, scope_split_rows
+from analysis.shared.analysis_families.common_helpers import build_state_masks_movie
 from analysis.shared.figure_paths import (
     comparison_leaf_figure_root,
     shared_figure_root,
@@ -25,6 +26,32 @@ def test_split_rows_are_scoped_and_require_two_groups() -> None:
         {"state": "nrem", "split_group": "more_active", "analysis_branch_name": "activity_split", "analysis_basis_name": "nrem"},
         {"state": "nrem", "split_group": "less_active", "analysis_branch_name": "activity_split", "analysis_basis_name": "nrem"},
         {"state": "rem", "split_group": "wrong_state", "analysis_branch_name": "activity_split", "analysis_basis_name": "rem"},
+    ]
+    scoped = scope_split_rows(rows, branch="activity_split", basis="nrem", selected_states=["nrem"])
+    assert {row["split_group"] for row in scoped} == {"more_active", "less_active"}
+    assert require_split_groups(scoped, branch="activity_split", basis="nrem") == ("more_active", "less_active")
+
+
+def test_movie_masks_accept_time_duration_and_f1_type() -> None:
+    import numpy as np
+
+    masks, metadata, _ = build_state_masks_movie(
+        np.arange(0.0, 40.0, 1.0),
+        [{"time": "10", "duration": "5", "F1_type": "movie"}],
+        ["time", "duration", "F1_type"],
+        None,
+        None,
+        {"state_10hz_t": np.array([0.0, 40.0]), "state_10hz": np.array([1.0, 1.0])},
+        0.0,
+    )
+    assert metadata[0]["state_label"] == "movies"
+    assert masks["movies"].sum() == 6
+
+
+def test_split_rows_normalize_roi_membership_group() -> None:
+    rows = [
+        {"state": "nrem", "group": "more_active", "branch_name": "activity_split", "basis_name": "nrem"},
+        {"state": "nrem", "group": "less_active", "branch_name": "activity_split", "basis_name": "nrem"},
     ]
     scoped = scope_split_rows(rows, branch="activity_split", basis="nrem", selected_states=["nrem"])
     assert {row["split_group"] for row in scoped} == {"more_active", "less_active"}

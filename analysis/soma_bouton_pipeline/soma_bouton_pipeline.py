@@ -294,6 +294,11 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         final_config["poster_ready_only"] = True
         final_config["generate_poster_ready_figures"] = True
         final_config["plots_only_include_supporting_figures"] = False
+        # Poster readback needs the common preset parent so it can resolve
+        # blank_state_comparisons and movies_state_comparisons alongside the
+        # reference preset. Keep result_root unchanged for cache/manifest
+        # ownership of the reference preset itself.
+        final_config["comparison_output_root"] = str(base_result_root)
         _stage("comparison poster readback", f"{plan.reference_preset_name} -> {base_result_root}")
         manifests.append(run_pipeline(final_config))
     return manifests
@@ -1224,6 +1229,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
 
+    movie_activity_count = sum(1 for row in activity_rows if str(row.get("mode") or "") == "movie")
+    if expids_by_mode.get("movie") and movie_activity_count == 0:
+        logger.error(
+            "Movie state selection produced zero movie activity rows for %s; selected states=%s",
+            ", ".join(str(expid) for expid in expids_by_mode["movie"]),
+            selected_states_by_mode.get("movie", []),
+        )
+
     union_rows_for_shared_output = None
     if union_cache_enabled:
         union_rows_for_shared_output = {
@@ -1944,7 +1957,11 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
         movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
         mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
-        preset_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+        preset_result_root = Path(
+            config.get("comparison_output_root")
+            or config.get("result_root")
+            or DEFAULT_CONFIG["result_root"]
+        )
         if not preset_result_root.is_absolute():
             preset_result_root = REPO_ROOT / preset_result_root
 
@@ -1958,6 +1975,26 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
         blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
         movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
+        for source_name, source_preset, source_csv, source_rows in (
+            ("blank_activity", "blank_state_comparisons", "state_activity_by_experiment.csv", blank_preset_activity_rows),
+            ("movie_activity", "movies_state_comparisons", "state_activity_by_experiment.csv", movie_preset_activity_rows),
+            ("blank_comparisons", "blank_state_comparisons", "state_comparisons_movie.csv", blank_preset_comparison_rows),
+            ("movie_comparisons", "movies_state_comparisons", "state_comparisons_movie.csv", movie_preset_comparison_rows),
+        ):
+            logger.info(
+                "poster source contract: %s preset=%s csv=%s rows=%d",
+                source_name,
+                source_preset,
+                source_csv,
+                len(source_rows),
+            )
+            if not source_rows:
+                logger.warning(
+                    "poster source contract unavailable: %s preset=%s csv=%s",
+                    source_name,
+                    source_preset,
+                    source_csv,
+                )
 
         for compartment in ("soma", "bouton"):
             compartment_root = ensure_dir(poster_output_dir / compartment)
@@ -2187,7 +2224,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if not isinstance(leaf_roi_split, dict):
                 leaf_roi_split = {}
             roi_split_membership_rows = leaf_roi_split.get("membership_rows", [])
-            if branch_name in SPLIT_BRANCHES:
+            if branch_name in SPLIT_BRANCHES and roi_split_membership_rows:
                 require_split_groups(roi_split_membership_rows, branch=branch_name, basis=basis_name)
             leaf_split_metadata = {
                 "roi_type": str(leaf_roi_split.get("roi_type") or "").strip(),

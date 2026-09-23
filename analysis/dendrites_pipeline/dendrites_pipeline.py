@@ -10403,7 +10403,7 @@ def _restore_roi_split_from_analysis_tables(results: Dict[str, Any], cache: Dict
             scoped = select_roi_split_leaf(roi_split, branch_name=branch_name, basis_name=basis_name)
             rows = scoped.get("subject_state_rows", []) if isinstance(scoped, Mapping) else []
             if rows:
-                scoped_rows = scope_split_rows(rows, branch=branch_name, basis=basis_name, selected_states=selected_states)
+                scoped_rows = scope_split_rows(annotate_rows_with_split_group(rows, scoped.get("membership_rows", [])), branch=branch_name, basis=basis_name, selected_states=selected_states)
                 if scoped_rows:
                     scoped = dict(scoped)
                     scoped["subject_state_rows"] = scoped_rows
@@ -10412,16 +10412,17 @@ def _restore_roi_split_from_analysis_tables(results: Dict[str, Any], cache: Dict
         elif not branch_name and not basis_name:
             return
 
-    analysis_tables_cache_path = run_parameters.get("analysis_tables_cache_path")
-    if not analysis_tables_cache_path:
-        return
-
-    analysis_tables_cache = load_analysis_tables_cache(Path(str(analysis_tables_cache_path)), rebuild=False)
-    if not isinstance(analysis_tables_cache, dict):
-        return
-    analysis_tables = analysis_tables_cache.get("analysis_tables", {})
-    if not isinstance(analysis_tables, dict):
-        return
+    analysis_tables = cache.get("analysis_tables", {}) if isinstance(cache.get("analysis_tables"), Mapping) else {}
+    if not analysis_tables:
+        analysis_tables_cache_path = run_parameters.get("analysis_tables_cache_path")
+        if not analysis_tables_cache_path:
+            return
+        analysis_tables_cache = load_analysis_tables_cache(Path(str(analysis_tables_cache_path)), rebuild=False)
+        if not isinstance(analysis_tables_cache, dict):
+            return
+        analysis_tables = analysis_tables_cache.get("analysis_tables", {})
+        if not isinstance(analysis_tables, dict):
+            return
     mixed_model_table = analysis_tables.get("mixed_model_table", {})
     if not isinstance(mixed_model_table, dict):
         return
@@ -10451,7 +10452,7 @@ def _restore_roi_split_from_analysis_tables(results: Dict[str, Any], cache: Dict
             basis_name=basis_name,
         )
         if scoped_roi_split.get("subject_state_rows"):
-            scoped_rows = scope_split_rows(scoped_roi_split.get("subject_state_rows", []), branch=branch_name, basis=basis_name, selected_states=selected_states)
+            scoped_rows = scope_split_rows(annotate_rows_with_split_group(scoped_roi_split.get("subject_state_rows", []), scoped_roi_split.get("membership_rows", [])), branch=branch_name, basis=basis_name, selected_states=selected_states)
             if scoped_rows:
                 scoped_roi_split = dict(scoped_roi_split)
                 scoped_roi_split["subject_state_rows"] = scoped_rows
@@ -10459,7 +10460,7 @@ def _restore_roi_split_from_analysis_tables(results: Dict[str, Any], cache: Dict
                 return
 
     if branch_name and basis_name:
-        rebuilt_rows = scope_split_rows(rebuilt_roi_split.get("subject_state_rows", []), branch=branch_name, basis=basis_name, selected_states=selected_states)
+        rebuilt_rows = scope_split_rows(annotate_rows_with_split_group(rebuilt_roi_split.get("subject_state_rows", []), rebuilt_roi_split.get("membership_rows", [])), branch=branch_name, basis=basis_name, selected_states=selected_states)
         if rebuilt_rows:
             rebuilt_roi_split = dict(rebuilt_roi_split)
             rebuilt_roi_split["subject_state_rows"] = rebuilt_rows
@@ -18681,7 +18682,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "alerts": list(selection_meta.get("alerts", [])),
     }
     results["family_result_cache_index"] = family_results_cache_index(analysis_run_cache_path)
-    _restore_roi_split_from_analysis_tables(results, analysis_cache)
+    _restore_roi_split_from_analysis_tables(results, analysis_cache_for_run)
+    if not plots_only and isinstance(analysis_cache_for_run.get("analysis_tables"), dict):
+        analysis_tables_meta = {"analysis_unit": str(analysis_cache_for_run.get("analysis_unit", "day")), "source_config_hash": str(source_cache.get("config_hash", ""))}
+        save_analysis_tables_cache(
+            analysis_tables_cache_file,
+            {
+                "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
+                "meta": cacheable(analysis_tables_meta),
+                "meta_hash": analysis_cache_meta_hash(analysis_tables_meta),
+                "analysis_tables": cacheable(analysis_cache_for_run["analysis_tables"]),
+            },
+        )
+
     # Save the analysis-results cache before figure generation so `plots_only` can still reuse it
     # even if a later plot or poster step fails.
     analysis_results_payload = {
@@ -18696,7 +18709,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         written_artifacts = write_analysis_outputs(
             output_dir,
             results,
-            analysis_cache,
+            analysis_cache_for_run,
             source_cache=source_cache,
             figure_root=figure_output_dir,
             plots_only=plots_only,

@@ -71,15 +71,22 @@ def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any]
 
 
 def build_state_masks_movie(exp_time: np.ndarray, trial_rows: Sequence[Mapping[str, Any]], columns: Sequence[str], wheel_time: Optional[np.ndarray], wheel_speed: Optional[np.ndarray], sleep_state: Optional[Mapping[str, Any]], locomotion_threshold: float) -> Tuple[Dict[str, np.ndarray], List[Dict[str, Any]], Optional[np.ndarray]]:
-    del columns, sleep_state
+    del columns
     time = np.asarray(exp_time, dtype=float)
     wheel = interpolate_series(time, wheel_time, wheel_speed) if wheel_time is not None and wheel_speed is not None else None
     masks: Dict[str, np.ndarray] = {"all": np.ones(time.shape, dtype=bool)}
     metadata: List[Dict[str, Any]] = []
     for index, row in enumerate(trial_rows):
-        label = canonical_state_label(row.get("state_label") or row.get("state") or row.get("trial_type") or "movies")
-        start = row.get("start", row.get("onset", row.get("trial_start")))
+        label = canonical_state_label(row.get("state_label") or row.get("state") or row.get("trial_type") or row.get("F1_type") or "movies")
+        if label == "movie":
+            label = "movies"
+        start = row.get("start", row.get("onset", row.get("trial_start", row.get("time"))))
         end = row.get("end", row.get("trial_end"))
+        if end is None and row.get("duration") is not None:
+            try:
+                end = float(start) + float(row.get("duration"))
+            except (TypeError, ValueError):
+                end = None
         try:
             start_value = float(start)
             end_value = float(end) if end is not None else start_value

@@ -16,7 +16,7 @@ from analysis.shared.analysis_families.common_helpers import (
 )
 from analysis.compartment_common import read_pickle
 from analysis.shared.roi_split import summarize_mask_duration
-from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
+from analysis.shared.state_utils import canonical_state_label, combined_movie_state_label, state_display_color, state_display_label
 from analysis.shared.shared_calcium_response import build_masked_event_summary
 
 from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id, shared_time_axis, summarize_activity
@@ -83,6 +83,21 @@ def _movie_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
         sleep_state if isinstance(sleep_state, Mapping) else None,
         locomotion_threshold,
     )
+    if isinstance(sleep_state, Mapping) and sleep_state.get("state_10hz_t") is not None:
+        sleep_masks, _ = build_state_masks_sleep(exp_time, sleep_state)
+        combined_masks = {"all": masks.get("all", np.ones(exp_time.shape, dtype=bool))}
+        for movie_label, movie_mask in masks.items():
+            if movie_label == "all":
+                continue
+            movie_type = movie_label.rsplit("_", 1)[-1] if "_" in movie_label else movie_label
+            if movie_type == "movie":
+                movie_type = "movies"
+            for sleep_label, sleep_mask in sleep_masks.items():
+                if sleep_label == "all":
+                    continue
+                combined_label = combined_movie_state_label(sleep_label, movie_type)
+                combined_masks[combined_label] = combined_masks.get(combined_label, np.zeros(exp_time.shape, dtype=bool)) | (movie_mask & sleep_mask)
+        return combined_masks
     return masks
 
 

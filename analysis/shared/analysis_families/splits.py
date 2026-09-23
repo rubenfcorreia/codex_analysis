@@ -25,7 +25,9 @@ def scope_split_rows(rows: Sequence[Mapping[str, Any]], *, branch: str, basis: s
         copied = dict(row)
         copied["analysis_branch_name"] = canonical_state_label(branch)
         copied["analysis_basis_name"] = canonical_state_label(basis)
-        if str(copied.get("split_group") or "").strip():
+        split_group = copied.get("split_group") or copied.get("group") or copied.get("split_group_display") or copied.get("group_display")
+        if str(split_group or "").strip():
+            copied["split_group"] = str(split_group).strip()
             scoped.append(copied)
     return scoped
 
