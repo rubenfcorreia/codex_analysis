@@ -36,6 +36,24 @@ def _hatch_contrast_color(color: Any) -> str:
 
 
 
+def _short_group_label(group_key: Any, display: Any = None) -> str:
+    key = str(group_key or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "high_activity_high_frequency": "HA/HF",
+        "high_activity_low_frequency": "HA/LF",
+        "low_activity_high_frequency": "LA/HF",
+        "low_activity_low_frequency": "LA/LF",
+        "more_active": "More active",
+        "less_active": "Less active",
+        "higher_frequency": "Higher freq.",
+        "lower_frequency": "Lower freq.",
+    }
+    if key in aliases:
+        return aliases[key]
+    text = str(display or group_key or "").strip()
+    return text.replace(" / ", "\n") if " / " in text else text
+
+
 def _boxplot_significance_stars(p_value: Any) -> str:
     try:
         p = float(p_value)
@@ -502,16 +520,34 @@ def plot_grouped_boxplot_series(
     if len(present_group_keys) == 1:
         offsets = np.asarray([0.0], dtype=float)
     else:
-        offsets = np.linspace(-0.24, 0.24, len(present_group_keys))
-    box_width = max(0.10, min(0.22, 0.60 / max(len(present_group_keys), 1)))
+        offsets = np.linspace(-0.60, 0.60, len(present_group_keys))
+    box_width = max(0.07, min(0.12, 0.32 / max(len(present_group_keys), 1)))
+    state_step = 1.85 if not horizontal else 1.0
 
-    figure_width_mm = max(FIGURE_WIDTH_MM, FIGURE_WIDTH_MM + 10.0 * max(len(present_group_keys) - 2, 0) * max(len(present_state_keys) - 1, 1))
+    figure_width_mm = max(FIGURE_WIDTH_MM, 25.4 * (1.05 * state_step * len(present_state_keys) + 3.0))
     fig, ax = plt.subplots(figsize=(figure_width_mm / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=False)
     series_values: list[np.ndarray] = []
     series_positions: list[float] = []
     series_colors: list[str] = []
     series_hatches: list[str] = []
-    state_position_lookup = {state_key: float(index) for index, state_key in enumerate(state_keys, start=1)}
+    state_position_lookup = {
+        state_key: 1.0 + state_step * index
+        for index, state_key in enumerate(state_keys)
+    }
+    if not horizontal:
+        for state_key in state_keys:
+            state_center = state_position_lookup[state_key]
+            for group_index, group_key in enumerate(present_group_keys):
+                slot_center = state_center + float(offsets[group_index])
+                slot_half_width = box_width / 2.0 + 0.06
+                ax.axvspan(
+                    slot_center - slot_half_width,
+                    slot_center + slot_half_width,
+                    facecolor="#64748b" if group_index % 2 == 0 else "#94a3b8",
+                    alpha=0.035,
+                    linewidth=0,
+                    zorder=0,
+                )
 
     for state_key in present_state_keys:
         group_map = group_rows.get(state_key, {})
@@ -547,8 +583,9 @@ def plot_grouped_boxplot_series(
         patch.set_hatch(hatch or '')
 
     rng = np.random.default_rng(0)
+    jitter_half_width = min(0.06, box_width * 0.30)
     for position, values, color in zip(series_positions, series_values, series_colors):
-        jitter = rng.normal(0.0, box_width * 0.08, size=values.size)
+        jitter = rng.uniform(-jitter_half_width, jitter_half_width, size=values.size)
         if horizontal:
             ax.scatter(
                 values,
@@ -612,16 +649,38 @@ def plot_grouped_boxplot_series(
                 ax.set_xlim(x_min - pad, x_max + pad)
         ax.set_ylim(0.5, float(len(state_keys)) + 0.5)
     else:
-        ax.set_xticks(list(state_position_lookup.values()))
-        ax.set_xticklabels([state_labels.get(state_key, state_key.replace('_', ' ').title()) for state_key in state_keys], rotation=30, ha='right')
-        for tick, state_key in zip(ax.get_xticklabels(), state_keys):
-            tick.set_color(state_colors.get(state_key, '#1f2937'))
-            tick.set_fontweight('bold')
+        group_tick_positions = [
+            state_position_lookup[state_key] + float(offsets[group_index])
+            for state_key in state_keys
+            for group_index in range(len(present_group_keys))
+        ]
+        group_tick_labels = [
+            _short_group_label(group_key, group_labels.get(group_key, group_key))
+            for state_key in state_keys
+            for group_key in present_group_keys
+        ]
+        ax.set_xticks(group_tick_positions)
+        ax.set_xticklabels(
+            group_tick_labels,
+            rotation=0,
+            ha="center",
+            va="top",
+            fontsize=max(8, FIGURE_TICK_FS - 1),
+            linespacing=0.9,
+        )
+        state_axis = ax.secondary_xaxis("top")
+        state_axis.set_xticks([state_position_lookup[state_key] for state_key in state_keys])
+        state_axis.set_xticklabels([state_labels.get(state_key, state_key.replace("_", " ").title()) for state_key in state_keys])
+        for tick, state_key in zip(state_axis.get_xticklabels(), state_keys):
+            tick.set_color(state_colors.get(state_key, "#1f2937"))
+            tick.set_fontweight("bold")
+        state_axis.tick_params(axis="x", labelsize=FIGURE_TICK_FS, pad=5, length=0)
+        state_axis.spines["top"].set_visible(False)
         ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
-        ax.set_xlabel(xlabel, fontsize=FIGURE_LABEL_FS)
-        ax.grid(axis='y', alpha=0.18, linewidth=0.8)
-        ax.tick_params(axis='x', labelsize=FIGURE_TICK_FS)
-        ax.tick_params(axis='y', labelsize=FIGURE_TICK_FS)
+        ax.set_xlabel("Activity / frequency subset", fontsize=FIGURE_LABEL_FS, labelpad=24)
+        ax.grid(axis="y", alpha=0.18, linewidth=0.8)
+        ax.tick_params(axis="x", labelsize=max(8, FIGURE_TICK_FS - 1), pad=7, length=0)
+        ax.tick_params(axis="y", labelsize=FIGURE_TICK_FS)
         if series_values:
             all_values = np.concatenate(series_values)
             finite = all_values[np.isfinite(all_values)]
@@ -630,7 +689,7 @@ def plot_grouped_boxplot_series(
                 y_max = float(np.nanmax(finite))
                 pad = max(0.06 * (y_max - y_min) if y_max > y_min else 0.1, 0.05)
                 ax.set_ylim(y_min - pad, y_max + pad)
-        ax.set_xlim(0.5, float(len(state_keys)) + 0.5)
+        ax.set_xlim(min(state_position_lookup.values()) - 0.82, max(state_position_lookup.values()) + 0.82)
 
     ax.set_title(title, fontsize=FIGURE_TITLE_FS, fontweight='bold', color=title_color, pad=10)
     if len(present_group_keys) > 1:
@@ -644,12 +703,12 @@ def plot_grouped_boxplot_series(
             )
             for group_key in present_group_keys
         ]
-        ax.legend(
+        fig.legend(
             handles=legend_handles,
             frameon=False,
             fontsize=max(FIGURE_NOTE_FS - 1, 8),
-            loc='upper center',
-            bbox_to_anchor=(0.5, 1.18),
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.995),
             ncol=2 if len(legend_handles) > 2 else len(legend_handles),
             columnspacing=0.8,
             handletextpad=0.35,
@@ -659,7 +718,7 @@ def plot_grouped_boxplot_series(
     for spine in ('top', 'right'):
         ax.spines[spine].set_visible(False)
 
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.84))
+    fig.tight_layout(rect=(0.0, 0.10, 1.0, 0.88))
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     png = output_dir / f'{stem}.png'
