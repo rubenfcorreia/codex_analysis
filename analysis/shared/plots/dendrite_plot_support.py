@@ -6573,6 +6573,27 @@ def _state_summary_box_style(state_label: Any, compartment: Any, *, split_group:
     }
 
 
+def _state_summary_split_group_short_label(group: Any, display: Any = None) -> str:
+    # Return a compact lower-axis label for an activity/frequency subset.
+    key = canonical_state_label(group)
+    aliases = {
+        "high_activity_high_frequency": "HA/HF",
+        "high_activity_low_frequency": "HA/LF",
+        "low_activity_high_frequency": "LA/HF",
+        "low_activity_low_frequency": "LA/LF",
+        "more_active": "More active",
+        "less_active": "Less active",
+        "higher_frequency": "Higher freq.",
+        "lower_frequency": "Lower freq.",
+    }
+    if key in aliases:
+        return aliases[key]
+    text = str(display or group or "").strip()
+    if " / " in text:
+        return text.replace(" / ", "\n")
+    return text
+
+
 def _render_state_summary_grouped_panel_figure(
     metric_key: str,
     metric_title: str,
@@ -6637,16 +6658,23 @@ def _render_state_summary_grouped_panel_figure(
     if len(present_compartments) == 1:
         compartment_offsets = {present_compartments[0]: 0.0}
     else:
-        comp_span = 0.20 if len(present_compartments) == 2 else 0.24
+        # Preserve compartment fills while leaving a visible gap within each subset slot.
+        # Keep basal/apical close enough to read as one subset pair.
+        comp_span = 0.07 if len(present_compartments) == 2 else 0.14
         compartment_offsets = {compartment: float(offset) for compartment, offset in zip(present_compartments, np.linspace(-comp_span, comp_span, len(present_compartments)))}
     if len(present_group_keys) == 1:
         group_offsets = {present_group_keys[0]: 0.0}
     else:
-        group_offsets = {group: float(offset) for group, offset in zip(present_group_keys, np.linspace(-0.08, 0.08, len(present_group_keys)))}
-    box_width = max(0.08, min(0.22, 0.56 / max(len(present_compartments) * len(present_group_keys), 1)))
+        # Stable slots keep lower-axis labels aligned when a state lacks a subset.
+        # Make the gap between subset pairs larger than the basal/apical gap.
+        group_offsets = {group: float(offset) for group, offset in zip(present_group_keys, np.linspace(-0.60, 0.60, len(present_group_keys)))}
+    box_width = max(0.055, min(0.085, 0.16 / max(len(present_compartments), 1)))
 
-    fig_width = min(max(7.8, 0.82 * len(present_state_keys) + 2.8), 10.5)
-    fig_height = min(max(5.2, POSTER_DOUBLE_FIGSIZE[1] + 0.3), 6.2)
+    # State centers must be farther apart than the complete subgroup cluster.
+    # Otherwise the outer subset boxes of neighboring states can overlap.
+    state_step = 1.85
+    fig_width = max(10.5, 1.05 * state_step * len(present_state_keys) + 3.0)
+    fig_height = max(5.8, POSTER_DOUBLE_FIGSIZE[1] + 0.9)
     fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
     ax = ax.ravel()[0]
 
@@ -6656,7 +6684,25 @@ def _render_state_summary_grouped_panel_figure(
     series_states: List[str] = []
     series_compartments: List[str] = []
     series_groups: List[str] = []
-    state_position_lookup = {state: float(index) for index, state in enumerate(present_state_keys, start=1)}
+    state_position_lookup = {
+        state: 1.0 + state_step * index
+        for index, state in enumerate(present_state_keys)
+    }
+    # Subtle slot bands make the subset-to-box association visible without
+    # replacing the existing state and compartment color encodings.
+    for state in present_state_keys:
+        state_center = state_position_lookup[state]
+        for group_index, group in enumerate(present_group_keys):
+            slot_center = state_center + group_offsets[group]
+            slot_half_width = max(abs(compartment_offsets.get(compartment, 0.0)) for compartment in present_compartments) + box_width / 2.0 + 0.055
+            ax.axvspan(
+                slot_center - slot_half_width,
+                slot_center + slot_half_width,
+                facecolor="#64748b" if group_index % 2 == 0 else "#94a3b8",
+                alpha=0.035,
+                linewidth=0,
+                zorder=0,
+            )
     for state in present_state_keys:
         for compartment in present_compartments:
             for group in present_group_keys:
@@ -6698,8 +6744,9 @@ def _render_state_summary_grouped_panel_figure(
             patch._hatch_color = mcolors.to_rgba("#ffffff" if luminance < 0.58 else "#1f2937")
 
     rng = np.random.default_rng(7)
+    jitter_half_width = min(0.06, box_width * 0.30)
     for position, values, state in zip(series_positions, series_values, series_states):
-        jitter = rng.uniform(-0.06, 0.06, size=values.size)
+        jitter = rng.uniform(-jitter_half_width, jitter_half_width, size=values.size)
         ax.scatter(
             np.full(values.size, position) + jitter,
             values,
@@ -6710,9 +6757,42 @@ def _render_state_summary_grouped_panel_figure(
             zorder=3,
         )
 
-    set_requested_state_ticks(ax, present_state_keys, axis="x")
+    group_tick_positions = [
+        state_position_lookup[state] + group_offsets[group]
+        for state in present_state_keys
+        for group in present_group_keys
+    ]
+    group_tick_labels = [
+        _state_summary_split_group_short_label(group, group_display_lookup.get(group, group))
+        for state in present_state_keys
+        for group in present_group_keys
+    ]
+    ax.set_xlim(
+        min(state_position_lookup.values()) - 0.84,
+        max(state_position_lookup.values()) + 0.84,
+    )
+    ax.set_xticks(group_tick_positions)
+    ax.set_xticklabels(
+        group_tick_labels,
+        fontsize=max(8, POSTER_FONT_SIZE - 4),
+        rotation=0,
+        ha="center",
+        va="top",
+        linespacing=0.9,
+    )
+    ax.tick_params(axis="x", labelsize=max(8, POSTER_FONT_SIZE - 4), pad=8, length=0)
+    state_axis = ax.secondary_xaxis("top")
+    state_axis.set_xticks([state_position_lookup[state] for state in present_state_keys])
+    state_axis.set_xticklabels(
+        [state_display_lookup.get(state, state_display_label(state)) for state in present_state_keys],
+        fontsize=POSTER_FONT_SIZE,
+    )
+    color_state_tick_labels(state_axis, present_state_keys, axis="x")
+    state_axis.tick_params(axis="x", labelsize=POSTER_FONT_SIZE, pad=6, length=0)
+    state_axis.spines["top"].set_visible(False)
+    ax.set_xlabel("Activity / frequency subset", fontsize=POSTER_LABEL_SIZE, labelpad=28)
     ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
-    ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=1)
+    ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=30)
     _pad_boxplot_ylim(ax, series_values)
     if y_limit is not None and len(y_limit) == 2:
         try:
@@ -6721,16 +6801,21 @@ def _render_state_summary_grouped_panel_figure(
             pass
     y0, y1 = ax.get_ylim()
     y_range = max(float(y1 - y0), 1e-6)
-    for position, values, state in zip(series_positions, series_values, series_states):
+    for annotation_index, (position, values, state) in enumerate(zip(series_positions, series_values, series_states)):
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             continue
+        annotation_level = annotation_index % 3
+        annotation_y = min(
+            float(np.nanmax(finite)) + (0.025 + 0.018 * annotation_level) * y_range,
+            float(y1) - 0.012 * y_range,
+        )
         annotate_sample_size(
             ax,
             position,
-            min(float(np.nanmax(finite)) + 0.03 * y_range, float(y1) - 0.01 * y_range),
+            annotation_y,
             f"n={finite.size}",
-            fontsize=POSTER_NOTE_SIZE - 1,
+            fontsize=max(9, POSTER_NOTE_SIZE - 2),
             color=state_display_color(state),
         )
     ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
@@ -6792,15 +6877,7 @@ def _render_state_summary_grouped_panel_figure(
                 Patch(facecolor="#e5e7eb", edgecolor="#555555", label="Apical"),
             ]
         )
-        compartment_legend = ax.legend(
-            handles=legend_handles,
-            loc="upper right",
-            frameon=False,
-            fontsize=POSTER_LEGEND_SIZE,
-            bbox_to_anchor=(1.0, 1.18),
-            ncol=2,
-        )
-        ax.add_artist(compartment_legend)
+        legend_handles = list(legend_handles)
     if len(present_group_keys) > 1:
         from matplotlib.patches import Patch
         group_handles = [
@@ -6813,18 +6890,20 @@ def _render_state_summary_grouped_panel_figure(
             )
             for group in present_group_keys
         ]
-        ax.legend(
-            handles=group_handles,
+        legend_handles.extend(group_handles)
+    if legend_handles:
+        fig.legend(
+            handles=legend_handles,
             loc="upper center",
             frameon=False,
-            fontsize=POSTER_LEGEND_SIZE,
-            bbox_to_anchor=(0.5, 1.18),
-            ncol=min(len(group_handles), 4),
-            columnspacing=0.9,
+            fontsize=max(9, POSTER_LEGEND_SIZE - 1),
+            bbox_to_anchor=(0.5, 0.995),
+            ncol=min(len(legend_handles), 4),
+            columnspacing=1.0,
             handletextpad=0.4,
         )
 
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
+    fig.tight_layout(rect=(0.0, 0.10, 1.0, 0.88))
     return fig
 
 
