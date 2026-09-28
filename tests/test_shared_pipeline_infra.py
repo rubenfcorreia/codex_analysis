@@ -536,6 +536,74 @@ def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path
     )
 
 
+def test_canonical_secondary_grouped_boxplots_reserve_subset_slots(tmp_path, monkeypatch) -> None:
+    import matplotlib.pyplot as plt
+    import matplotlib.axes
+
+    captured = {}
+    original = matplotlib.axes.Axes.boxplot
+
+    def capture(self, *args, **kwargs):
+        captured["positions"] = list(kwargs.get("positions", []))
+        result = original(self, *args, **kwargs)
+        captured["boxes"] = list(result["boxes"])
+        captured["axes"] = self
+        return result
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", capture)
+    rows = []
+    groups = [
+        "low_activity_low_frequency",
+        "high_activity_high_frequency",
+    ]
+    for state, state_color in (("quiet_awake", "#f58518"), ("nrem", "#54a24b")):
+        for group_index, group in enumerate(groups):
+            for compartment, face in (("basal", "#d97706"), ("apical", "#fbbf24")):
+                if state == "nrem" and group != "high_activity_high_frequency":
+                    continue
+                rows.append({
+                    "state": state,
+                    "state_display": state.replace("_", " ").title(),
+                    "state_color": state_color,
+                    "group": group,
+                    "group_display": group,
+                    "compartment": compartment,
+                    "values": [group_index + 1.0, group_index + 2.0, group_index + 3.0],
+                    "face": face,
+                    "edge": state_color,
+                    "hatch": "///" if group_index else "...",
+                })
+
+    figure = plot_grouped_boxplot_series(
+        rows,
+        tmp_path,
+        state_col="state",
+        value_col="values",
+        state_order=["quiet_awake", "nrem"],
+        state_label_col="state_display",
+        state_color_col="state_color",
+        group_col="group",
+        group_label_col="group_display",
+        secondary_col="compartment",
+        values_col="values",
+        face_color_col="face",
+        edge_color_col="edge",
+        hatch_col="hatch",
+        stem="canonical",
+        title="Canonical",
+        ylabel="Metric",
+        return_figure=True,
+    )
+    assert figure is not None
+    assert len(captured["positions"]) == 6
+    assert len({round(position, 3) for position in captured["positions"]}) == 6
+    assert abs(captured["positions"][0] - captured["positions"][1]) < abs(captured["positions"][1] - captured["positions"][2])
+    assert [tick.get_text() for tick in captured["axes"].get_xticklabels()][:4] == ["LA/LF", "LA/HF", "HA/LF", "HA/HF"]
+    assert {patch.get_hatch() for patch in captured["boxes"]} == {"...", "///"}
+    assert captured["boxes"][0].get_facecolor() != captured["boxes"][1].get_facecolor()
+    plt.close(figure)
+
+
 def test_result_layout_auditor_flags_only_comparison_level_figures(tmp_path: Path) -> None:
     from analysis.audit_result_layout import find_illegal_figure_dirs
 

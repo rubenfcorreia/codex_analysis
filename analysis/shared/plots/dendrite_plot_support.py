@@ -6603,308 +6603,64 @@ def _render_state_summary_grouped_panel_figure(
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
     use_group_hatches: bool = True,
 ) -> Optional[Any]:
-    if plt is None:
-        return None
-    cleaned_rows = [dict(row) for row in rows if isinstance(row, Mapping)]
-    if not cleaned_rows:
-        return None
-
-    state_keys = [canonical_state_label(state) for state in state_order if canonical_state_label(state)]
-    if not state_keys:
-        state_keys = []
-        for row in cleaned_rows:
-            state = canonical_state_label(row.get("state"))
-            if state and state not in state_keys:
-                state_keys.append(state)
-
-    split_group_order, split_group_meta = _state_summary_split_group_order(cleaned_rows)
-    if not split_group_order:
-        return None
-    compartments = _state_summary_compartment_order(cleaned_rows)
-    if not compartments:
-        compartments = [""]
-
-    series_lookup: Dict[Tuple[str, str, str], List[float]] = defaultdict(list)
-    state_display_lookup: Dict[str, str] = {}
-    compartment_display_lookup: Dict[str, str] = {}
-    group_display_lookup: Dict[str, str] = {}
-    for row in cleaned_rows:
-        state = canonical_state_label(row.get("state"))
-        if state_keys and state not in state_keys:
-            continue
-        compartment = str(row.get("compartment") or "").strip().lower()
-        group = str(row.get("split_group") or "").strip()
-        if not group:
-            continue
-        value = as_float(row.get(metric_key))
-        if not np.isfinite(value):
-            continue
-        series_lookup[(state, compartment, group)].append(float(value))
-        state_display_lookup.setdefault(state, str(row.get("state_display") or state_display_label(state)).strip() or state_display_label(state))
-        compartment_display_lookup.setdefault(compartment, str(row.get("compartment_display") or compartment.replace("_", " ").strip().title()).strip() or compartment)
-        group_display_lookup.setdefault(group, str(row.get("split_group_display") or group).strip() or group)
-
-    present_state_keys = [state for state in state_keys if any(key[0] == state for key in series_lookup)]
-    if not present_state_keys:
-        return None
-    present_compartments = [compartment for compartment in compartments if any(key[1] == compartment for key in series_lookup)]
-    if not present_compartments:
-        present_compartments = [compartment for _, compartment, _ in series_lookup]
-    present_compartments = list(dict.fromkeys(present_compartments))
-    present_group_keys = [group for group in split_group_order if any(key[2] == group for key in series_lookup)]
-    if not present_group_keys:
-        return None
-
-    if len(present_compartments) == 1:
-        compartment_offsets = {present_compartments[0]: 0.0}
-    else:
-        # Preserve compartment fills while leaving a visible gap within each subset slot.
-        # Keep basal/apical close enough to read as one subset pair.
-        comp_span = 0.07 if len(present_compartments) == 2 else 0.14
-        compartment_offsets = {compartment: float(offset) for compartment, offset in zip(present_compartments, np.linspace(-comp_span, comp_span, len(present_compartments)))}
-    if len(present_group_keys) == 1:
-        group_offsets = {present_group_keys[0]: 0.0}
-    else:
-        # Stable slots keep lower-axis labels aligned when a state lacks a subset.
-        # Make the gap between subset pairs larger than the basal/apical gap.
-        group_offsets = {group: float(offset) for group, offset in zip(present_group_keys, np.linspace(-0.60, 0.60, len(present_group_keys)))}
-    box_width = max(0.055, min(0.085, 0.16 / max(len(present_compartments), 1)))
-
-    # State centers must be farther apart than the complete subgroup cluster.
-    # Otherwise the outer subset boxes of neighboring states can overlap.
-    state_step = 1.85
-    fig_width = max(10.5, 1.05 * state_step * len(present_state_keys) + 3.0)
-    fig_height = max(5.8, POSTER_DOUBLE_FIGSIZE[1] + 0.9)
-    fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height), squeeze=False)
-    ax = ax.ravel()[0]
-
-    series_values: List[np.ndarray] = []
-    series_positions: List[float] = []
-    series_styles: List[Dict[str, Any]] = []
-    series_states: List[str] = []
-    series_compartments: List[str] = []
-    series_groups: List[str] = []
-    state_position_lookup = {
-        state: 1.0 + state_step * index
-        for index, state in enumerate(present_state_keys)
-    }
-    # Subtle slot bands make the subset-to-box association visible without
-    # replacing the existing state and compartment color encodings.
-    for state in present_state_keys:
-        state_center = state_position_lookup[state]
-        for group_index, group in enumerate(present_group_keys):
-            slot_center = state_center + group_offsets[group]
-            slot_half_width = max(abs(compartment_offsets.get(compartment, 0.0)) for compartment in present_compartments) + box_width / 2.0 + 0.055
-            ax.axvspan(
-                slot_center - slot_half_width,
-                slot_center + slot_half_width,
-                facecolor="#64748b" if group_index % 2 == 0 else "#94a3b8",
-                alpha=0.035,
-                linewidth=0,
-                zorder=0,
-            )
-    for state in present_state_keys:
-        for compartment in present_compartments:
-            for group in present_group_keys:
-                values = np.asarray(series_lookup.get((state, compartment, group), []), dtype=float)
-                values = values[np.isfinite(values)]
-                if values.size == 0:
-                    continue
-                series_values.append(values)
-                series_positions.append(state_position_lookup[state] + compartment_offsets.get(compartment, 0.0) + group_offsets.get(group, 0.0))
-                series_styles.append(_state_summary_box_style(state, compartment, split_group=group, use_group_hatches=use_group_hatches))
-                series_states.append(state)
-                series_compartments.append(compartment)
-                series_groups.append(group)
-
-    if not series_values:
-        plt.close(fig)
-        return None
-
-    from matplotlib import colors as mcolors
-    bp = ax.boxplot(
-        series_values,
-        positions=series_positions,
-        widths=box_width,
-        patch_artist=True,
-        showfliers=False,
-        medianprops={"color": "#111827", "linewidth": 2.2},
-        whiskerprops={"color": "#555555", "linewidth": 1.8},
-        capprops={"color": "#555555", "linewidth": 1.8},
-        boxprops={"linewidth": 2.0},
-    )
-    for patch, style in zip(bp.get("boxes", []), series_styles):
-        patch.set_facecolor(style["facecolor"])
-        patch.set_edgecolor(style["edgecolor"])
-        patch.set_alpha(style["alpha"])
-        patch.set_hatch(style["hatch"] or "")
-        if style["hatch"]:
-            red, green, blue = mcolors.to_rgb(style["facecolor"])
-            luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-            patch._hatch_color = mcolors.to_rgba("#ffffff" if luminance < 0.58 else "#1f2937")
-
-    rng = np.random.default_rng(7)
-    jitter_half_width = min(0.06, box_width * 0.30)
-    for position, values, state in zip(series_positions, series_values, series_states):
-        jitter = rng.uniform(-jitter_half_width, jitter_half_width, size=values.size)
-        ax.scatter(
-            np.full(values.size, position) + jitter,
-            values,
-            s=11,
-            alpha=0.48,
-            color=state_display_color(state),
-            edgecolor="none",
-            zorder=3,
-        )
-
-    group_tick_positions = [
-        state_position_lookup[state] + group_offsets[group]
-        for state in present_state_keys
-        for group in present_group_keys
-    ]
-    group_tick_labels = [
-        _state_summary_split_group_short_label(group, group_display_lookup.get(group, group))
-        for state in present_state_keys
-        for group in present_group_keys
-    ]
-    ax.set_xlim(
-        min(state_position_lookup.values()) - 0.84,
-        max(state_position_lookup.values()) + 0.84,
-    )
-    ax.set_xticks(group_tick_positions)
-    ax.set_xticklabels(
-        group_tick_labels,
-        fontsize=max(8, POSTER_FONT_SIZE - 4),
-        rotation=0,
-        ha="center",
-        va="top",
-        linespacing=0.9,
-    )
-    ax.tick_params(axis="x", labelsize=max(8, POSTER_FONT_SIZE - 4), pad=8, length=0)
-    state_axis = ax.secondary_xaxis("top")
-    state_axis.set_xticks([state_position_lookup[state] for state in present_state_keys])
-    state_axis.set_xticklabels(
-        [state_display_lookup.get(state, state_display_label(state)) for state in present_state_keys],
-        fontsize=POSTER_FONT_SIZE,
-    )
-    color_state_tick_labels(state_axis, present_state_keys, axis="x")
-    state_axis.tick_params(axis="x", labelsize=POSTER_FONT_SIZE, pad=6, length=0)
-    state_axis.spines["top"].set_visible(False)
-    ax.set_xlabel("Activity / frequency subset", fontsize=POSTER_LABEL_SIZE, labelpad=28)
-    ax.set_ylabel("Dendrite dF/F", fontsize=POSTER_LABEL_SIZE)
-    ax.set_title(metric_title, fontsize=max(17, POSTER_TITLE_SIZE - 5), pad=30)
-    _pad_boxplot_ylim(ax, series_values)
-    if y_limit is not None and len(y_limit) == 2:
-        try:
-            ax.set_ylim(float(y_limit[0]), float(y_limit[1]))
-        except Exception:
-            pass
-    y0, y1 = ax.get_ylim()
-    y_range = max(float(y1 - y0), 1e-6)
-    for annotation_index, (position, values, state) in enumerate(zip(series_positions, series_values, series_states)):
-        finite = values[np.isfinite(values)]
-        if finite.size == 0:
-            continue
-        annotation_level = annotation_index % 3
-        annotation_y = min(
-            float(np.nanmax(finite)) + (0.025 + 0.018 * annotation_level) * y_range,
-            float(y1) - 0.012 * y_range,
-        )
-        annotate_sample_size(
-            ax,
-            position,
-            annotation_y,
-            f"n={finite.size}",
-            fontsize=max(9, POSTER_NOTE_SIZE - 2),
-            color=state_display_color(state),
-        )
-    ax.tick_params(axis="y", labelsize=POSTER_FONT_SIZE)
-    ax.grid(axis="y", alpha=0.25)
-
-    state_center_lookup = {state: state_position_lookup[state] for state in present_state_keys}
-    compartment_center_lookup = {
-        state: {compartment: state_position_lookup[state] + compartment_offsets.get(compartment, 0.0) for compartment in present_compartments}
-        for state in present_state_keys
-    }
-    comparison_subset: List[Dict[str, Any]] = []
-    for row in comparison_rows or []:
+    """Dendrite adapter for the canonical shared grouped-boxplot renderer."""
+    grouped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for row in rows or []:
         if not isinstance(row, Mapping):
             continue
-        x1 = row.get("x1")
-        x2 = row.get("x2")
-        if x1 is not None and x2 is not None:
-            try:
-                x1_value = float(x1)
-                x2_value = float(x2)
-            except (TypeError, ValueError):
-                x1_value = float("nan")
-                x2_value = float("nan")
-            if np.isfinite(x1_value) and np.isfinite(x2_value):
-                comparison_subset.append({"x1": x1_value, "x2": x2_value, "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
-                continue
-        comparison_name = str(row.get("comparison") or "")
-        if comparison_name == "basal_vs_apical":
-            state = canonical_state_label(row.get("state"))
-            if state not in state_center_lookup:
-                continue
-            split_group = str(row.get("split_group") or "").strip()
-            if split_group and split_group in present_group_keys:
-                basal_x = series_positions[[idx for idx, (series_state, series_compartment, series_group) in enumerate(zip(series_states, series_compartments, series_groups)) if series_state == state and series_compartment == "basal" and series_group == split_group][0]] if any(series_state == state and series_compartment == "basal" and series_group == split_group for series_state, series_compartment, series_group in zip(series_states, series_compartments, series_groups)) else compartment_center_lookup.get(state, {}).get("basal")
-                apical_x = series_positions[[idx for idx, (series_state, series_compartment, series_group) in enumerate(zip(series_states, series_compartments, series_groups)) if series_state == state and series_compartment == "apical" and series_group == split_group][0]] if any(series_state == state and series_compartment == "apical" and series_group == split_group for series_state, series_compartment, series_group in zip(series_states, series_compartments, series_groups)) else compartment_center_lookup.get(state, {}).get("apical")
-                if basal_x is None or apical_x is None:
-                    continue
-                comparison_subset.append({"x1": float(basal_x), "x2": float(apical_x), "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
-                continue
-            basal_x = compartment_center_lookup.get(state, {}).get("basal")
-            apical_x = compartment_center_lookup.get(state, {}).get("apical")
-            if basal_x is None or apical_x is None:
-                continue
-            comparison_subset.append({"x1": float(basal_x), "x2": float(apical_x), "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
+        state = canonical_state_label(row.get("state"))
+        group = str(row.get("split_group") or "").strip()
+        compartment = str(row.get("compartment") or "").strip().lower()
+        value = as_float(row.get(metric_key))
+        if not state or not group or not np.isfinite(value):
             continue
-        state_a = canonical_state_label(row.get("state_a"))
-        state_b = canonical_state_label(row.get("state_b"))
-        if state_a not in state_center_lookup or state_b not in state_center_lookup:
-            continue
-        comparison_subset.append({"x1": float(state_center_lookup[state_a]), "x2": float(state_center_lookup[state_b]), "shuffle_p": row.get("shuffle_p"), "label": _state_summary_comparison_display_label(row)})
-    _draw_boxplot_significance_annotations(ax, comparison_subset)
-
-    legend_handles = []
-    if len(present_compartments) > 1:
-        from matplotlib.patches import Patch
-        legend_handles.extend(
-            [
-                Patch(facecolor="#d1d5db", edgecolor="#555555", label="Basal"),
-                Patch(facecolor="#e5e7eb", edgecolor="#555555", label="Apical"),
-            ]
-        )
-        legend_handles = list(legend_handles)
-    if len(present_group_keys) > 1:
-        from matplotlib.patches import Patch
-        group_handles = [
-            Patch(
-                facecolor="#ffffff",
-                edgecolor="#334155",
-                linewidth=1.2,
-                hatch=split_group_meta.get(group, {}).get("split_group_hatch") or split_group_hatch(group),
-                label=group_display_lookup.get(group, split_group_meta.get(group, {}).get("split_group_display", group)),
+        key = (state, group, compartment)
+        if key not in grouped:
+            style = _state_summary_box_style(
+                state,
+                compartment,
+                split_group=group if use_group_hatches else None,
+                use_group_hatches=use_group_hatches,
             )
-            for group in present_group_keys
-        ]
-        legend_handles.extend(group_handles)
-    if legend_handles:
-        fig.legend(
-            handles=legend_handles,
-            loc="upper center",
-            frameon=False,
-            fontsize=max(9, POSTER_LEGEND_SIZE - 1),
-            bbox_to_anchor=(0.5, 0.995),
-            ncol=min(len(legend_handles), 4),
-            columnspacing=1.0,
-            handletextpad=0.4,
-        )
-
-    fig.tight_layout(rect=(0.0, 0.10, 1.0, 0.88))
-    return fig
+            grouped[key] = {
+                "state": state,
+                "group": group,
+                "secondary": compartment,
+                "values": [],
+                "state_label": str(row.get("state_display") or state_display_label(state)),
+                "state_color": state_display_color(state),
+                "group_label": str(row.get("split_group_display") or group),
+                "face_color": style["facecolor"],
+                "edge_color": style["edgecolor"],
+                "hatch": style["hatch"] or "",
+            }
+        grouped[key]["values"].append(float(value))
+    normalized_rows = list(grouped.values())
+    return plot_grouped_boxplot_series(
+        normalized_rows,
+        Path("."),
+        state_col="state",
+        value_col="values",
+        state_order=state_order,
+        stem="unused",
+        title=metric_title,
+        ylabel="Dendrite dF/F",
+        xlabel="State",
+        title_color="#334155",
+        edge_color="#334155",
+        group_col="group",
+        state_label_col="state_label",
+        state_color_col="state_color",
+        group_label_col="group_label",
+        comparison_rows=comparison_rows,
+        secondary_col="secondary",
+        values_col="values",
+        face_color_col="face_color",
+        edge_color_col="edge_color",
+        hatch_col="hatch",
+        return_figure=True,
+        y_limits=y_limit,
+    )
 
 
 def _render_state_summary_single_panel_figure(
