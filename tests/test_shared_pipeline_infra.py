@@ -536,6 +536,54 @@ def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path
     )
 
 
+def test_two_subset_spacing_matches_neighboring_state_spacing(tmp_path, monkeypatch) -> None:
+    import matplotlib.axes
+    import numpy as np
+
+    captured = {}
+    original = matplotlib.axes.Axes.boxplot
+
+    def capture(self, *args, **kwargs):
+        captured["positions"] = np.asarray(kwargs["positions"], dtype=float)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", capture)
+    rows = []
+    for state, color in (("quiet_awake", "#f58518"), ("nrem", "#54a24b")):
+        for rank, group in ((1, "more_active"), (2, "less_active")):
+            rows.append({
+                "state": state,
+                "state_display": state.replace("_", " ").title(),
+                "state_color": color,
+                "split_group": group,
+                "split_group_display": group.replace("_", " ").title(),
+                "split_group_rank": rank,
+                "mean": float(1.0 + rank),
+            })
+
+    paths = plot_grouped_boxplot_series(
+        rows,
+        tmp_path,
+        state_col="state",
+        value_col="mean",
+        state_order=["quiet_awake", "nrem"],
+        state_label_col="state_display",
+        state_color_col="state_color",
+        group_col="split_group",
+        group_label_col="split_group_display",
+        group_rank_col="split_group_rank",
+        stem="two_subset_spacing",
+        title="Two subsets",
+        ylabel="Metric",
+    )
+    assert paths
+    positions = captured["positions"]
+    within_state_gap = positions[1] - positions[0]
+    neighboring_state_gap = positions[2] - positions[1]
+    assert np.isclose(within_state_gap, 0.65)
+    assert np.isclose(neighboring_state_gap, 1.85)
+
+
 def test_canonical_secondary_grouped_boxplots_reserve_subset_slots(tmp_path, monkeypatch) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.axes

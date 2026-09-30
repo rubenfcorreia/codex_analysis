@@ -109,10 +109,13 @@ def _render_normalized_grouped_boxplot(
         group_hatches.setdefault(group, split_group_hatch(group))
     if not state_keys or not groups:
         return None
-    group_offsets = {group: 0.0 if len(groups) == 1 else float(offset) for group, offset in zip(groups, np.linspace(-0.60, 0.60, len(groups)))}
+    if len(groups) == 2 and not horizontal:
+        group_offsets = {group: float(offset) for group, offset in zip(groups, (-0.325, 0.325))}
+    else:
+        group_offsets = {group: 0.0 if len(groups) == 1 else float(offset) for group, offset in zip(groups, np.linspace(-0.60, 0.60, len(groups)))}
     secondary_offsets = {secondary: 0.0 if len(secondary_order) == 1 else float(offset) for secondary, offset in zip(secondary_order, np.linspace(-0.075, 0.075, len(secondary_order)))}
     box_width = max(0.055, min(0.085, 0.16 / max(len(secondary_order), 1)))
-    state_step = 1.85 if not horizontal else 1.0
+    state_step = 2.50 if len(groups) == 2 and not horizontal else (1.85 if not horizontal else 1.0)
     figure_width_mm = max(FIGURE_WIDTH_MM, 25.4 * (1.05 * state_step * len(state_keys) + 3.0))
     fig, ax = plt.subplots(figsize=(figure_width_mm / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=False)
     state_position = {state: 1.0 + state_step * index for index, state in enumerate(state_keys)}
@@ -752,10 +755,12 @@ def plot_grouped_boxplot_series(
 
     if len(present_group_keys) == 1:
         offsets = np.asarray([0.0], dtype=float)
+    elif len(present_group_keys) == 2 and not horizontal:
+        offsets = np.asarray([-0.325, 0.325], dtype=float)
     else:
         offsets = np.linspace(-0.60, 0.60, len(present_group_keys))
     box_width = max(0.07, min(0.12, 0.32 / max(len(present_group_keys), 1)))
-    state_step = 1.85 if not horizontal else 1.0
+    state_step = 2.50 if len(present_group_keys) == 2 and not horizontal else (1.85 if not horizontal else 1.0)
 
     figure_width_mm = max(FIGURE_WIDTH_MM, 25.4 * (1.05 * state_step * len(present_state_keys) + 3.0))
     fig, ax = plt.subplots(figsize=(figure_width_mm / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=False)
