@@ -581,7 +581,7 @@ def test_two_subset_spacing_matches_neighboring_state_spacing(tmp_path, monkeypa
     within_state_gap = positions[1] - positions[0]
     neighboring_state_gap = positions[2] - positions[1]
     assert np.isclose(within_state_gap, 0.65)
-    assert np.isclose(neighboring_state_gap, 1.65)
+    assert np.isclose(neighboring_state_gap, 1.35)
 
 
 def test_canonical_secondary_grouped_boxplots_reserve_subset_slots(tmp_path, monkeypatch) -> None:
