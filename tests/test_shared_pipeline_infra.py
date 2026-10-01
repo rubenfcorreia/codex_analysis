@@ -32,7 +32,7 @@ from analysis.shared.cache_utils import (
 from analysis.shared.state_utils import grouped_experiments_by_day, make_day_id, resolve_repo_path
 from analysis.soma_bouton_pipeline import soma_bouton_pipeline as soma_pipeline
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
-from analysis.soma_bouton_pipeline.plots import plot_state_correlation
+from analysis.soma_bouton_pipeline.plots import plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.soma_bouton_pipeline.analysis_families import normalize_analysis_families as soma_normalize
 from analysis.shared.analysis_families.registry import normalize_analysis_families as shared_normalize
 
@@ -662,3 +662,42 @@ def test_result_layout_auditor_flags_only_comparison_level_figures(tmp_path: Pat
     (direct / "figures").mkdir(parents=True)
 
     assert find_illegal_figure_dirs(tmp_path) == [comparison / "figures", comparison / "pooled" / "all" / "figures"]
+
+
+def test_split_state_metrics_emit_multi_panel_group_figures(tmp_path: Path) -> None:
+    rows = []
+    for state_index, state in enumerate(("quiet_awake", "nrem")):
+        for group_index, group in enumerate(("higher_frequency", "lower_frequency")):
+            rows.append({
+                "state": state,
+                "state_display": state.replace("_", " ").title(),
+                "split_group": group,
+                "split_group_display": group.replace("_", " ").title(),
+                "split_group_rank": group_index + 1,
+                "mean": float(state_index + group_index + 1),
+                "event_frequency_per_min": float(state_index + group_index + 2),
+                "global_soma_id": f"roi-{state_index}-{group_index}",
+            })
+    activity_outputs = plot_state_activity(rows, tmp_path, state_order=["quiet_awake", "nrem"])
+    frequency_outputs = plot_state_event_frequency(rows, tmp_path, state_order=["quiet_awake", "nrem"])
+    correlation_rows = [dict(row, mean_corr=row["mean"] / 10.0) for row in rows]
+    correlation_outputs = plot_state_correlation(
+        correlation_rows,
+        tmp_path,
+        state_order=["quiet_awake", "nrem"],
+        output_stem="state_correlation",
+    )
+
+    expected = {
+        "state_summary_boxplots_mean_multi_panel_split_groups.png",
+        "state_summary_boxplots_mean_multi_panel_split_groups.svg",
+    }
+    assert expected.issubset({path.name for path in activity_outputs})
+    assert {
+        "state_summary_boxplots_event_frequency_multi_panel_split_groups.png",
+        "state_summary_boxplots_event_frequency_multi_panel_split_groups.svg",
+    }.issubset({path.name for path in frequency_outputs})
+    assert {
+        "state_correlation_multi_panel_split_groups.png",
+        "state_correlation_multi_panel_split_groups.svg",
+    }.issubset({path.name for path in correlation_outputs})

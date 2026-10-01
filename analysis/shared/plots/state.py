@@ -19,6 +19,7 @@ from analysis.shared.state_utils import state_display_color as _shared_state_dis
 from analysis.shared.state_utils import state_family_label as _shared_state_family_label
 from analysis.shared.statistics import is_significant_row
 from analysis.shared.plots.figure_io import save_figure
+from analysis.shared.plots.boxplots import draw_boxplot_series
 from analysis.shared.shared_boxplots import plot_boxplot_series, plot_grouped_boxplot_series
 
 _main_state_display_color = _shared_state_display_color
@@ -346,6 +347,119 @@ def _state_comparison_rows_for_plot(
     return filtered or None
 
 
+def _comparison_rows_for_group(
+    comparison_rows: list[Mapping[str, Any]] | None,
+    group_col: str,
+    group_key: str,
+) -> list[Mapping[str, Any]] | None:
+    if not comparison_rows:
+        return None
+    group_rows = []
+    has_group_values = False
+    for row in comparison_rows:
+        if not isinstance(row, Mapping):
+            continue
+        value = str(row.get(group_col) or row.get("group") or "").strip()
+        if value:
+            has_group_values = True
+            if canonical_state_label(value) == canonical_state_label(group_key):
+                group_rows.append(row)
+    return group_rows if has_group_values else comparison_rows
+
+
+def _plot_multi_panel_grouped_state_figure(
+    frame: pd.DataFrame,
+    *,
+    state_col: str,
+    value_col: str,
+    group_col: str,
+    output_dir: Path,
+    stem: str,
+    title: str,
+    ylabel: str,
+    title_color: str,
+    edge_color: str,
+    state_order: list[str] | tuple[str, ...] | None,
+    comparison_rows: list[Mapping[str, Any]] | None,
+) -> list[Path]:
+    """Render one state-across-group panel per split group."""
+    if frame.empty or group_col not in frame.columns:
+        return []
+    working = frame.copy()
+    working["_state_key"] = working[state_col].map(canonical_state_label)
+    working["_group_key"] = working[group_col].map(canonical_state_label)
+    working = working.loc[working["_group_key"] != ""].copy()
+    if working.empty:
+        return []
+
+    group_meta: dict[str, dict[str, Any]] = {}
+    for _, row in working.iterrows():
+        key = str(row["_group_key"])
+        meta = group_meta.setdefault(key, {})
+        meta.setdefault("label", str(row.get(f"{group_col}_display") or row.get(group_col) or key))
+        try:
+            rank = float(row.get(f"{group_col}_rank"))
+        except (TypeError, ValueError):
+            rank = float("nan")
+        if np.isfinite(rank) and (meta.get("rank") is None or rank < meta["rank"]):
+            meta["rank"] = rank
+    group_keys = sorted(group_meta, key=lambda key: (group_meta[key].get("rank", float("inf")), key))
+    if len(group_keys) < 2:
+        return []
+
+    state_set = set(working["_state_key"])
+    states = ordered_state_labels(list(state_order or []) + working["_state_key"].dropna().tolist())
+    states = [state for state in states if state in state_set]
+    if not states:
+        return []
+
+    ncols = 2
+    nrows = int(np.ceil(len(group_keys) / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(7.5 * ncols, 5.0 * nrows), sharey=True,
+        squeeze=False, constrained_layout=False,
+    )
+    axes_flat = list(axes.flat)
+    plotted = 0
+    for index, group_key in enumerate(group_keys):
+        ax = axes_flat[index]
+        group_frame = working.loc[working["_group_key"] == group_key]
+        values_by_state: list[np.ndarray] = []
+        labels: list[str] = []
+        series_names: list[str] = []
+        colors: list[str] = []
+        top_labels: list[str] = []
+        for state in states:
+            state_frame = group_frame.loc[group_frame["_state_key"] == state]
+            values = pd.to_numeric(state_frame[value_col], errors="coerce").dropna().to_numpy(dtype=float)
+            if values.size == 0:
+                continue
+            values_by_state.append(values)
+            labels.append(pretty_state_label(state))
+            series_names.append(state)
+            colors.append(state_display_color(state))
+            top_labels.append(f"n={_unique_roi_count(state_frame)}")
+        if not values_by_state:
+            ax.set_axis_off()
+            continue
+        if draw_boxplot_series(
+            ax, values_by_state, labels, series_names, colors,
+            title=str(group_meta[group_key]["label"]), ylabel=ylabel, xlabel="State",
+            title_color=title_color, label_color_fn=state_display_color, edge_color=edge_color,
+            comparison_rows=_comparison_rows_for_group(comparison_rows, group_col, group_key),
+            top_labels=top_labels,
+        ):
+            plotted += 1
+    for ax in axes_flat[len(group_keys):]:
+        ax.set_axis_off()
+    if not plotted:
+        plt.close(fig)
+        return []
+    fig.suptitle(title, fontsize=14, fontweight="bold", color=title_color, y=0.995)
+    fig.subplots_adjust(top=0.90, bottom=0.16, left=0.08, right=0.98, wspace=0.18, hspace=0.34)
+    return _save_figure(fig, output_dir, stem)
+
+
 def _plot_state_metric(
     rows: Any,
     output_root: Any,
@@ -404,6 +518,22 @@ def _plot_state_metric(
                         comparison_rows=rows_for_plot,
                     )
                 )
+                generated.extend(
+                    _plot_multi_panel_grouped_state_figure(
+                        subset,
+                        state_col=state_col,
+                        value_col=value_col,
+                        group_col=group_col,
+                        output_dir=output_dir,
+                        stem=f"{compartment.title()}_{stem_prefix}_multi_panel_split_groups",
+                        title=f"{compartment.title()} {title_prefix.lower()} by split group and state",
+                        ylabel=ylabel,
+                        title_color=COMPARTMENT_ACCENTS[compartment],
+                        edge_color=COMPARTMENT_ACCENTS[compartment],
+                        state_order=state_order,
+                        comparison_rows=rows_for_plot,
+                    )
+                )
             else:
                 generated.extend(
                     _plot_boxplot(
@@ -421,26 +551,45 @@ def _plot_state_metric(
                 )
         return generated
     if group_col is not None:
-        return plot_grouped_boxplot_series(
-            frame.to_dict("records"),
-            output_dir,
-            state_col=state_col,
-            value_col=value_col,
-            state_order=list(state_order or []),
-            stem=stem_prefix,
-            title=f"{title_prefix} by state",
-            ylabel=ylabel,
-            xlabel="State",
-            title_color="#334155",
-            edge_color="#334155",
-            group_col=group_col,
-            state_label_col=label_col,
-            state_color_col="state_color" if "state_color" in frame.columns else None,
-            group_label_col=f"{group_col}_display" if f"{group_col}_display" in frame.columns else None,
-            group_color_col=f"{group_col}_color" if f"{group_col}_color" in frame.columns else None,
-            group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in frame.columns else None,
-            comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        generated.extend(
+            plot_grouped_boxplot_series(
+                frame.to_dict("records"),
+                output_dir,
+                state_col=state_col,
+                value_col=value_col,
+                state_order=list(state_order or []),
+                stem=stem_prefix,
+                title=f"{title_prefix} by state",
+                ylabel=ylabel,
+                xlabel="State",
+                title_color="#334155",
+                edge_color="#334155",
+                group_col=group_col,
+                state_label_col=label_col,
+                state_color_col="state_color" if "state_color" in frame.columns else None,
+                group_label_col=f"{group_col}_display" if f"{group_col}_display" in frame.columns else None,
+                group_color_col=f"{group_col}_color" if f"{group_col}_color" in frame.columns else None,
+                group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in frame.columns else None,
+                comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+            )
         )
+        generated.extend(
+            _plot_multi_panel_grouped_state_figure(
+                frame,
+                state_col=state_col,
+                value_col=value_col,
+                group_col=group_col,
+                output_dir=output_dir,
+                stem=f"{stem_prefix}_multi_panel_split_groups",
+                title=f"{title_prefix} by split group and state",
+                ylabel=ylabel,
+                title_color="#334155",
+                edge_color="#334155",
+                state_order=state_order,
+                comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+            )
+        )
+        return generated
     return _plot_boxplot(
         frame,
         state_col=state_col,
@@ -513,26 +662,46 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
         raise ValueError("plot_state_correlation could not find a correlation column")
     group_col = "split_group" if "split_group" in frame.columns else ("group" if "group" in frame.columns else None)
     if group_col is not None:
-        return plot_grouped_boxplot_series(
-            frame.to_dict("records"),
-            Path(output_root) / "correlation" / cohort_label,
-            state_col=state_col,
-            value_col=value_col,
-            state_order=list(state_order or []),
-            stem=output_stem,
-            title=title,
-            ylabel="Correlation",
-            xlabel="State",
-            title_color="#334155",
-            edge_color="#334155",
-            group_col=group_col,
-            state_label_col=label_col,
-            state_color_col="state_color" if "state_color" in frame.columns else None,
-            group_label_col=f"{group_col}_display" if f"{group_col}_display" in frame.columns else None,
-            group_color_col=f"{group_col}_color" if f"{group_col}_color" in frame.columns else None,
-            group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in frame.columns else None,
-            comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        correlation_dir = Path(output_root) / "correlation" / cohort_label
+        generated = list(
+            plot_grouped_boxplot_series(
+                frame.to_dict("records"),
+                correlation_dir,
+                state_col=state_col,
+                value_col=value_col,
+                state_order=list(state_order or []),
+                stem=output_stem,
+                title=title,
+                ylabel="Correlation",
+                xlabel="State",
+                title_color="#334155",
+                edge_color="#334155",
+                group_col=group_col,
+                state_label_col=label_col,
+                state_color_col="state_color" if "state_color" in frame.columns else None,
+                group_label_col=f"{group_col}_display" if f"{group_col}_display" in frame.columns else None,
+                group_color_col=f"{group_col}_color" if f"{group_col}_color" in frame.columns else None,
+                group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in frame.columns else None,
+                comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+            )
         )
+        generated.extend(
+            _plot_multi_panel_grouped_state_figure(
+                frame,
+                state_col=state_col,
+                value_col=value_col,
+                group_col=group_col,
+                output_dir=correlation_dir,
+                stem=f"{output_stem}_multi_panel_split_groups",
+                title=f"{title} by split group and state",
+                ylabel="Correlation",
+                title_color="#334155",
+                edge_color="#334155",
+                state_order=state_order,
+                comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+            )
+        )
+        return generated
     return _plot_boxplot(
         frame,
         state_col=state_col,
