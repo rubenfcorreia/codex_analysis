@@ -370,7 +370,7 @@ def state_family_basal_fill_color(state_label: Any) -> str:
     base_color = STATE_FAMILY_COLORS.get(family, "#444444")
     if family == "neutral":
         return STATE_FAMILY_APICAL_FILL_COLORS.get("neutral", "#e6e6e6")
-    return base_color
+    return _mix_state_family_color(base_color, "#000000", 0.18)
 
 
 def state_family_apical_fill_color(state_label: Any) -> str:
@@ -5314,6 +5314,7 @@ def plot_state_summary_figure(
                 state_order,
                 y_limits.get(metric_name) if y_limits else None,
                 comparison_rows=metric_comparison_rows,
+                compartment_mode="single" if compartment_filter else "pooled",
             )
             if panel_fig is None:
                 continue
@@ -6015,6 +6016,8 @@ def _state_summary_output_root(root: Path) -> Path:
     root_path = Path(root)
     if root_path.name == DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME:
         return root_path
+    if root_path.parent.name == DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME:
+        return root_path.parent
     return root_path / DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME
 
 
@@ -6602,6 +6605,7 @@ def _render_state_summary_grouped_panel_figure(
     y_limit: Optional[Tuple[float, float]] = None,
     comparison_rows: Optional[Sequence[Dict[str, Any]]] = None,
     use_group_hatches: bool = True,
+    compartment_mode: str = "pooled",
 ) -> Optional[Any]:
     """Dendrite adapter for the canonical shared grouped-boxplot renderer."""
     grouped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -6614,18 +6618,22 @@ def _render_state_summary_grouped_panel_figure(
         value = as_float(row.get(metric_key))
         if not state or not group or not np.isfinite(value):
             continue
-        key = (state, group, compartment)
+        mode = str(compartment_mode or "pooled").strip().lower()
+        if mode not in {"pooled", "single", "comparison"}:
+            raise ValueError(f"unknown state-summary compartment mode: {compartment_mode!r}")
+        secondary = compartment if mode == "comparison" else ""
+        key = (state, group, secondary)
         if key not in grouped:
             style = _state_summary_box_style(
                 state,
-                compartment,
+                compartment if mode != "pooled" else None,
                 split_group=group if use_group_hatches else None,
                 use_group_hatches=use_group_hatches,
             )
             grouped[key] = {
                 "state": state,
                 "group": group,
-                "secondary": compartment,
+                "secondary": secondary,
                 "values": [],
                 "state_label": str(row.get("state_display") or state_display_label(state)),
                 "state_color": state_display_color(state),
@@ -6792,6 +6800,7 @@ def plot_state_summary_compartment_comparison_figure(
                 y_limits.get(metric_name) if y_limits else None,
                 comparison_rows=panel_comparisons,
                 use_group_hatches=True,
+                compartment_mode="comparison",
             )
             if panel_fig is not None:
                 metric_output_path = state_summary_metric_output_dir(

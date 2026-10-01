@@ -60,7 +60,6 @@ from analysis.shared.plots.dendrite_plot_support import (
     summarize_state_values_by_dendrite,
     summarize_cache,
     selected_matrix_state_labels,
-    state_summary_figure_dir,
     state_summary_y_limits,
     visual_response_figure_output_dir,
     build_filtered_matrix_similarity_results,
@@ -314,7 +313,6 @@ def _render_visual_response_state_summary_figures(
     )
 
     for state_group, state_labels in state_groups:
-        summary_root = state_summary_figure_dir(fig_root, state_group)
         for kind, source_key, entity_id_key, entity_kind in cohort_specs:
             response_summary = results.get(source_key, {})
             if not isinstance(response_summary, dict) or not response_summary:
@@ -359,7 +357,7 @@ def _render_visual_response_state_summary_figures(
                     continue
                 output_path = plot_state_summary_figure(
                     cohort_results,
-                    summary_root,
+                    fig_root,
                     output_name=f"visual_response_state_summary_{entity_kind}_{cohort}.svg",
                     title=f"Visual response state summary - {kind.capitalize()} ({cohort}, {state_group})",
                     state_labels=state_labels,
