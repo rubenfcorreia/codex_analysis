@@ -465,6 +465,12 @@ USER_EDITABLE_DEFAULTS = {
     "generate_poster_ready_figures": True,
     "generate_shared_general_outputs": False,
     "generate_shared_general_figures": True,
+    "progression_analysis": {
+        "enabled": False,
+        "blank_bin_s": 1.0,
+        "max_blank_duration_s": None,
+        "spine_signals": ["raw", "spine_specific"],
+    },
     "generate_visual_response_entity_figures": True,
     "transition_analysis": {
         "enabled": False,
@@ -15756,6 +15762,11 @@ def write_analysis_outputs(
         if experiment_rows:
             fieldnames = sorted({key for row in experiment_rows for key in row.keys()})
             write_csv_rows(general_csv_dir / "experiments.csv", experiment_rows, fieldnames)
+    progression_config = run_params.get("progression_analysis") or {}
+    if source_cache is not None and bool(progression_config.get("enabled", False)) and (not configured_general_root or bool(run_params.get("generate_shared_general_outputs", False))):
+        from analysis.shared.progression import run_dendrite_spine_progression
+        progression_root = Path(configured_general_root) if configured_general_root else (Path(output_dir) / "general")
+        run_dendrite_spine_progression(source_cache, progression_root / "progression", progression_config)
 
     if include_supporting_figures:
         # Save figures first so the JSON report can include their exact file paths.
@@ -15949,7 +15960,7 @@ def write_analysis_outputs(
             grouped_rows.setdefault(key, []).append(row)
         for (scope, window_mode), grouped in sorted(grouped_rows.items()):
             filename = f"state_transition_{table_name}_{scope}_{window_mode}.csv"
-            path = output_dir / filename
+            path = (Path(configured_general_root) / "state_transitions" / filename) if configured_general_root and bool(run_params.get("generate_shared_general_outputs", False)) else ((Path(output_dir) / "general" / "state_transitions" / filename) if not configured_general_root else (output_dir / filename))
             write_csv_rows(path, grouped, sorted({key for row in grouped for key in row.keys()}))
             written_artifacts.append(report_relative_path(path, output_dir))
     for path in transition_result.get("figure_paths", []):
@@ -18119,6 +18130,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
+                transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
@@ -18138,6 +18150,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
+                transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
         else:
             results = run_cached_analysis(
@@ -18157,6 +18170,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
+                transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
@@ -18211,6 +18225,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "figures": "shared_only_when_inputs_match",
         },
         "transition_analysis": dict(config.get("transition_analysis") or {}),
+        "progression_analysis": dict(config.get("progression_analysis") or {}),
         "general_output_root": str(config.get("general_output_root")) if config.get("general_output_root") else None,
         "poster_ready_only": bool(config.get("poster_ready_only")),
         "analysis_run_cache_path": str(analysis_run_cache_path),

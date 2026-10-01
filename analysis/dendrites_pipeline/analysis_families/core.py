@@ -656,6 +656,7 @@ def run_cached_analysis(
     cache_path: Optional[Path] = None,
     generate_visual_response_entity_figures: bool = True,
     transition_analysis: Optional[Mapping[str, Any]] = None,
+    transition_output_root: Optional[Any] = None,
 ) -> Dict[str, Any]:
     selected_families = normalize_analysis_families(analysis_families)
     experiments = cache.get("experiments", {})
@@ -705,7 +706,7 @@ def run_cached_analysis(
                 cache,
                 state_comparison_states,
                 transition_analysis,
-                output_root=Path(figure_root) if figure_root is not None else (Path(output_dir) if output_dir is not None else None),
+                output_root=(Path(transition_output_root) if transition_output_root is not None else (Path(figure_root) if figure_root is not None else (Path(output_dir) if output_dir is not None else None))),
             )
             results["alerts"].extend(results["state_transitions"].get("alerts", []))
 

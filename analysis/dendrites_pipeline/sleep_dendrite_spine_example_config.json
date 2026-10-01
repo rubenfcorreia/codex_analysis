@@ -45,7 +45,21 @@
   },
   "comparison_presets": {
     "movies_state_comparisons": {
-      "transition_analysis": {"enabled": true, "window_s": 60, "window_modes": ["strict", "max_available"], "scopes": ["all_states"], "metrics": ["activity", "event_frequency"]},
+      "transition_analysis": {
+        "enabled": true,
+        "window_s": 60,
+        "window_modes": [
+          "strict",
+          "max_available"
+        ],
+        "scopes": [
+          "all_states"
+        ],
+        "metrics": [
+          "activity",
+          "event_frequency"
+        ]
+      },
       "state_comparison_states": [
         "quiet_awake_movies",
         "nrem_movies",
@@ -82,7 +96,22 @@
       ]
     },
     "all_states": {
-      "transition_analysis": {"enabled": true, "window_s": 60, "window_modes": ["strict", "max_available"], "scopes": ["all_states", "sleep_states"], "metrics": ["activity", "event_frequency"]},
+      "transition_analysis": {
+        "enabled": true,
+        "window_s": 60,
+        "window_modes": [
+          "strict",
+          "max_available"
+        ],
+        "scopes": [
+          "all_states",
+          "sleep_states"
+        ],
+        "metrics": [
+          "activity",
+          "event_frequency"
+        ]
+      },
       "state_comparison_states": [
         "quiet_awake_blank",
         "nrem_blank",
@@ -189,11 +218,36 @@
   "plots_only": false,
   "plots_only_include_supporting_figures": false,
   "event_detection_method": "amplitude",
-  "transition_analysis": {"enabled": false, "window_s": 60, "window_modes": ["strict", "max_available"], "scopes": ["all_states", "sleep_states"], "metrics": ["activity", "event_frequency"]},
+  "transition_analysis": {
+    "enabled": false,
+    "window_s": 60,
+    "window_modes": [
+      "strict",
+      "max_available"
+    ],
+    "scopes": [
+      "all_states",
+      "sleep_states"
+    ],
+    "metrics": [
+      "activity",
+      "event_frequency"
+    ]
+  },
   "visual_response_metric": "mean",
   "comparison_preset_names": [
+    "all_states",
     "movies_state_comparisons",
     "blank_state_comparisons",
     "quiet_vs_sleep_blank_movies"
-  ]
+  ],
+  "progression_analysis": {
+    "enabled": true,
+    "blank_bin_s": 1.0,
+    "max_blank_duration_s": null,
+    "spine_signals": [
+      "raw",
+      "spine_specific"
+    ]
+  }
 }

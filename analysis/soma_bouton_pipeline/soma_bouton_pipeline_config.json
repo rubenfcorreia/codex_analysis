@@ -243,5 +243,14 @@
   "source_cache_rebuild": false,
   "shared_shuffle_cache_rebuild": false,
   "mixed_model_contrast_p_source": "classical",
-  "coincidence_example_max_total": 5
+  "coincidence_example_max_total": 5,
+  "progression_analysis": {
+    "enabled": true,
+    "blank_bin_s": 1.0,
+    "max_blank_duration_s": null,
+    "spine_signals": [
+      "raw",
+      "spine_specific"
+    ]
+  }
 }

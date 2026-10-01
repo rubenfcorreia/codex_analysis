@@ -99,5 +99,14 @@
     "nrem",
     "rem"
   ],
-  "comparison_presets": null
+  "comparison_presets": null,
+  "progression_analysis": {
+    "enabled": true,
+    "blank_bin_s": 1.0,
+    "max_blank_duration_s": null,
+    "spine_signals": [
+      "raw",
+      "spine_specific"
+    ]
+  }
 }

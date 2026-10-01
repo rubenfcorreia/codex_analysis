@@ -96,6 +96,7 @@ from analysis.shared.analysis_cache import (
     save_analysis_tables_cache,
 )
 from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
+from analysis.shared.progression import run_soma_bouton_progression
 
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,12 @@ DEFAULT_CONFIG = {
     "shared_union_rows_cache_path": None,
     "union_state_labels_by_mode": None,
     "generate_shared_general_figures": False,
+    "progression_analysis": {
+        "enabled": False,
+        "blank_bin_s": 1.0,
+        "max_blank_duration_s": None,
+        "spine_signals": ["raw", "spine_specific"],
+    },
     "generate_visual_response_entity_figures": True,
     "visual_response_entity_max_trace_points": None,
     "plots_only": False,
@@ -1295,8 +1302,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             selected_states_by_mode,
             config.get("transition_analysis"),
             event_detection_method=event_detection_method,
-            output_root=figure_root,
+            output_root=((general_output_root / "state_transitions" / "figures") if general_output_root is not None and generate_shared_general_outputs else figure_root),
         )
+
+    progression_enabled = bool((config.get("progression_analysis") or {}).get("enabled", False))
+    progression_general_root = general_output_root or (result_root / "general")
+    if progression_enabled and not config.get("plots_only") and (general_output_root is None or generate_shared_general_outputs or not config.get("comparison_preset_name")):
+        _stage("progression analysis", "soma and bouton mean dF/F")
+        run_soma_bouton_progression(transition_contexts, progression_general_root / "progression", config.get("progression_analysis"))
 
     activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows = _reload_plot_rows_from_csv(
         result_root,
@@ -1618,7 +1631,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             grouped_rows.setdefault(key, []).append(row)
         for (scope, window_mode), grouped in sorted(grouped_rows.items()):
             _stage("writing csv", f"state_transition_{table_name}_{scope}_{window_mode}")
-            path = result_root / "csv" / f"state_transition_{table_name}_{scope}_{window_mode}.csv"
+            transition_root = (general_output_root / "state_transitions") if general_output_root is not None else (result_root / "general" / "state_transitions")
+            path = transition_root / f"state_transition_{table_name}_{scope}_{window_mode}.csv"
             write_csv_rows(path, grouped, sorted({key for row in grouped for key in row.keys()}))
 
     if activity_summary_rows:
