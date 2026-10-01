@@ -216,11 +216,24 @@ def paired_transition_summaries(rows: Sequence[Mapping[str, Any]]) -> list[dict[
             continue
         delta = post - pre
         payload = dict(zip(group_fields, key))
+        aggregation_level = str(group_rows[0].get("aggregation_level", "event"))
+        expdays = {str(row.get("expday", "")) for row, keep_row in zip(group_rows, keep) if keep_row}
+        entities = {str(row.get("entity_id", "")) for row, keep_row in zip(group_rows, keep) if keep_row}
+        animals = {str(row.get("animal_id", "")) for row, keep_row in zip(group_rows, keep) if keep_row}
+        if aggregation_level == "expday":
+            entity_count = sum(int(row.get("n_entities", 0) or 0) for row, keep_row in zip(group_rows, keep) if keep_row)
+        else:
+            entity_count = len(entities - {""})
+        raw_events = sum(int(row.get("n_transition_events", 1) or 0) for row, keep_row in zip(group_rows, keep) if keep_row)
         payload.update(
             {
                 "comparison": "state_transition_pre_post",
-                "n_transition_events": int(pre.size),
-                "n_entities": int(len({str(row.get("entity_id", "")) for row, keep_row in zip(group_rows, keep) if keep_row})),
+                "aggregation_level": aggregation_level,
+                "n_expdays": int(len(expdays)),
+                "n_animals": int(len(animals - {""})),
+                "n_transition_events": int(raw_events),
+                "n_entities": int(entity_count),
+                "n_replicates": int(pre.size),
                 "mean_pre": float(np.mean(pre)),
                 "mean_post": float(np.mean(post)),
                 "mean_change": float(np.mean(delta)),
@@ -245,6 +258,48 @@ def paired_transition_summaries(rows: Sequence[Mapping[str, Any]]) -> list[dict[
     return output
 
 
+def _finite_mean(values: Sequence[Any]) -> float:
+    array = np.asarray(values, dtype=float)
+    finite = array[np.isfinite(array)]
+    return float(np.mean(finite)) if finite.size else float("nan")
+
+
+def aggregate_transition_rows_expday(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Balance transition values so each experiment-day contributes once."""
+    if not rows:
+        return []
+    fields = ("scope", "window_mode", "state_before", "state_after", "metric", "compartment")
+    entity_groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.get("pre_value") is None or row.get("post_value") is None:
+            continue
+        expday = str(row.get("expday") or row.get("day_id") or row.get("expid") or "")
+        key = tuple(str(row.get(field, "")) for field in fields) + (expday, str(row.get("entity_id", "")))
+        entity_groups[key].append(row)
+
+    entity_rows: list[dict[str, Any]] = []
+    for key, group in entity_groups.items():
+        *field_values, expday, entity_id = key
+        first = dict(group[0])
+        first.update(dict(zip(fields, field_values)))
+        first.update({"aggregation_level": "entity_expday", "expday": expday, "entity_id": entity_id, "pre_value": _finite_mean([row.get("pre_value") for row in group]), "post_value": _finite_mean([row.get("post_value") for row in group]), "n_transition_events": len(group), "n_entities": 1})
+        entity_rows.append(first)
+
+    expday_groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in entity_rows:
+        key = tuple(str(row.get(field, "")) for field in fields) + (str(row.get("expday", "")),)
+        expday_groups[key].append(row)
+
+    output: list[dict[str, Any]] = []
+    for key, group in sorted(expday_groups.items()):
+        *field_values, expday = key
+        first = dict(group[0])
+        first.update(dict(zip(fields, field_values)))
+        first.update({"aggregation_level": "expday", "expday": expday, "pre_value": _finite_mean([row.get("pre_value") for row in group]), "post_value": _finite_mean([row.get("post_value") for row in group]), "n_transition_events": int(sum(int(row.get("n_transition_events", 0) or 0) for row in group)), "n_entities": int(len({str(row.get("entity_id", "")) for row in group} - {""}))})
+        output.append(first)
+    return output
+
+
 def plot_transition_summaries(
     event_rows: Sequence[Mapping[str, Any]],
     output_root: Path,
@@ -258,14 +313,16 @@ def plot_transition_summaries(
         import matplotlib.pyplot as plt
     except Exception:
         return []
+
+    balanced_rows = aggregate_transition_rows_expday(event_rows)
     groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
     fields = ("scope", "window_mode", "state_before", "state_after", "metric", "compartment")
-    for row in event_rows:
+    for row in balanced_rows:
         if row.get("pre_value") is not None and row.get("post_value") is not None:
             groups[tuple(str(row.get(field, "")) for field in fields)].append(row)
     summary_lookup = {
         tuple(str(row.get(field, "")) for field in fields): row
-        for row in paired_transition_summaries(event_rows)
+        for row in paired_transition_summaries(balanced_rows)
     }
     saved: list[str] = []
     for key, rows in sorted(groups.items()):
@@ -274,19 +331,20 @@ def plot_transition_summaries(
         post = np.asarray([float(row["post_value"]) for row in rows], dtype=float)
         keep = np.isfinite(pre) & np.isfinite(post)
         pre, post = pre[keep], post[keep]
+        kept_rows = [row for row, keep_row in zip(rows, keep) if keep_row]
         if pre.size == 0:
             continue
         fig, ax = plt.subplots(figsize=(5.8, 4.6))
-        positions = np.asarray([1.0, 2.0])
-        box = ax.boxplot([pre, post], positions=positions, widths=0.55, showfliers=False, patch_artist=True)
-        for patch, color in zip(box["boxes"], ("#4c78a8", "#e45756")):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.65)
+        for before, after in zip(pre, post):
+            ax.plot([1.0, 2.0], [before, after], color="#777777", alpha=0.28, linewidth=0.8, zorder=1)
+        ax.scatter(np.ones(pre.size), pre, color="#4c78a8", alpha=0.75, s=18, zorder=2)
+        ax.scatter(np.full(post.size, 2.0), post, color="#e45756", alpha=0.75, s=18, zorder=2)
+        ax.scatter([1.0, 2.0], [np.mean(pre), np.mean(post)], color="#222222", s=42, zorder=3)
+        ax.plot([1.0, 2.0], [np.mean(pre), np.mean(post)], color="#222222", linewidth=2.0, zorder=3)
         ax.set_xticks([1, 2], ["Before", "After"])
         ax.set_ylabel(metric)
         ax.set_title(f"{state_before} → {state_after} | {compartment}\n{scope}, {mode}")
         summary = summary_lookup.get(key, {})
-        n_entities = int(summary.get("n_entities", 0))
         try:
             p_value = float(summary.get("paired_pvalue", np.nan))
         except (TypeError, ValueError):
@@ -296,9 +354,12 @@ def plot_transition_summaries(
             y_max = float(np.nanmax(np.concatenate((pre, post))))
             y_min = float(np.nanmin(np.concatenate((pre, post))))
             y_span = max(y_max - y_min, 1e-9)
-            star_y = y_max + 0.12 * y_span
-            ax.text(1.5, star_y, stars, ha="center", va="bottom", fontsize=12)
-        ax.text(0.02, 0.97, f"transition events n={pre.size}; entities n={n_entities}", transform=ax.transAxes, va="top", fontsize=9)
+            ax.text(1.5, y_max + 0.12 * y_span, stars, ha="center", va="bottom", fontsize=12)
+        n_expdays = int(summary.get("n_expdays", pre.size))
+        n_animals = int(summary.get("n_animals", len({str(row.get("animal_id", "")) for row in kept_rows if row.get("animal_id")})))
+        n_entities = int(summary.get("n_entities", sum(int(row.get("n_entities", 0) or 0) for row in kept_rows)))
+        n_events = int(summary.get("n_transition_events", len(event_rows)))
+        ax.text(0.02, 0.97, f"expdays n={n_expdays}; animals n={n_animals}; entities n={n_entities}; transitions n={n_events}", transform=ax.transAxes, va="top", fontsize=8)
         ax.grid(axis="y", alpha=0.2)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -310,59 +371,95 @@ def plot_transition_summaries(
         saved.append(str(path))
 
     trace_groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
-    for segment in trace_segments or ():
+    for index, segment in enumerate(trace_segments or ()):
         if segment.get("relative_time_s") is None or segment.get("values") is None:
             continue
+        segment = dict(segment)
+        segment.setdefault("expday", segment.get("day_id") or segment.get("expid") or f"segment-{index}")
+        segment.setdefault("entity_id", f"segment-{index}")
         trace_groups[tuple(str(segment.get(field, "")) for field in ("scope", "window_mode", "metric", "compartment"))].append(segment)
+
     for key, segments in sorted(trace_groups.items()):
         scope, mode, metric, compartment = key
         window_s = max(float(segment.get("window_s", 60.0)) for segment in segments)
         grid = np.linspace(-window_s, window_s, 241)
-        direction_groups: dict[tuple[str, str], list[np.ndarray]] = defaultdict(list)
+        direction_groups: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
         for segment in segments:
-            relative = np.asarray(segment["relative_time_s"], dtype=float)
-            values = np.asarray(segment["values"], dtype=float)
-            keep = np.isfinite(relative) & np.isfinite(values)
-            if keep.sum() < 2:
-                continue
-            relative, values = relative[keep], values[keep]
-            order = np.argsort(relative)
-            relative, values = relative[order], values[order]
-            unique, unique_indices = np.unique(relative, return_index=True)
-            values = values[unique_indices]
-            interpolated = np.full(grid.shape, np.nan, dtype=float)
-            valid_grid = (grid >= unique[0]) & (grid <= unique[-1])
-            interpolated[valid_grid] = np.interp(grid[valid_grid], unique, values)
-            direction_groups[(str(segment.get("state_before", "")), str(segment.get("state_after", "")))].append(interpolated)
+            direction_groups[(str(segment.get("state_before", "")), str(segment.get("state_after", "")))].append(segment)
         if not direction_groups:
             continue
         fig, ax = plt.subplots(figsize=(7.0, 4.8))
-        for direction_index, (direction, traces) in enumerate(sorted(direction_groups.items())):
-            matrix = np.asarray(traces, dtype=float)
+        for direction_index, (direction, direction_segments) in enumerate(sorted(direction_groups.items())):
+            interpolated: list[tuple[Mapping[str, Any], np.ndarray]] = []
+            for segment in direction_segments:
+                relative = np.asarray(segment["relative_time_s"], dtype=float)
+                values = np.asarray(segment["values"], dtype=float)
+                keep = np.isfinite(relative) & np.isfinite(values)
+                if keep.sum() < 2:
+                    continue
+                relative, values = relative[keep], values[keep]
+                order = np.argsort(relative)
+                relative, values = relative[order], values[order]
+                unique, unique_indices = np.unique(relative, return_index=True)
+                values = values[unique_indices]
+                if unique.size < 2:
+                    continue
+                matrix = np.full(grid.shape, np.nan, dtype=float)
+                valid_grid = (grid >= unique[0]) & (grid <= unique[-1])
+                matrix[valid_grid] = np.interp(grid[valid_grid], unique, values)
+                interpolated.append((segment, matrix))
+            entity_groups: dict[tuple[str, str], list[np.ndarray]] = defaultdict(list)
+            for segment, matrix in interpolated:
+                entity_groups[(str(segment.get("expday", "")), str(segment.get("entity_id", "")))].append(matrix)
+            expday_matrices: dict[str, list[np.ndarray]] = defaultdict(list)
+            for (expday, _entity_id), matrices in entity_groups.items():
+                matrix = np.asarray(matrices, dtype=float)
+                count = np.sum(np.isfinite(matrix), axis=0)
+                mean = np.full(grid.shape, np.nan, dtype=float)
+                valid = count > 0
+                mean[valid] = np.nansum(matrix[:, valid], axis=0) / count[valid]
+                expday_matrices[expday].append(mean)
+            balanced_traces: list[np.ndarray] = []
+            for matrices in expday_matrices.values():
+                matrix = np.asarray(matrices, dtype=float)
+                count = np.sum(np.isfinite(matrix), axis=0)
+                mean = np.full(grid.shape, np.nan, dtype=float)
+                valid = count > 0
+                mean[valid] = np.nansum(matrix[:, valid], axis=0) / count[valid]
+                balanced_traces.append(mean)
+            if not balanced_traces:
+                continue
+            matrix = np.asarray(balanced_traces, dtype=float)
             count = np.sum(np.isfinite(matrix), axis=0)
-            mean = np.full(matrix.shape[1], np.nan, dtype=float)
-            sem = np.full(matrix.shape[1], np.nan, dtype=float)
-            valid_columns = count > 0
-            mean[valid_columns] = np.nansum(matrix[:, valid_columns], axis=0) / count[valid_columns]
-            sem_columns = count > 1
-            if np.any(sem_columns):
-                centered = matrix[:, sem_columns] - mean[sem_columns]
+            mean = np.full(grid.shape, np.nan, dtype=float)
+            sem = np.full(grid.shape, np.nan, dtype=float)
+            valid = count > 0
+            mean[valid] = np.nansum(matrix[:, valid], axis=0) / count[valid]
+            if np.any(count > 1):
+                sem_valid = count > 1
+                centered = matrix[:, sem_valid] - mean[sem_valid]
                 centered[~np.isfinite(centered)] = np.nan
-                sem[sem_columns] = np.sqrt(np.nansum(centered ** 2, axis=0) / (count[sem_columns] - 1)) / np.sqrt(count[sem_columns])
+                sem[sem_valid] = np.sqrt(np.nansum(centered ** 2, axis=0) / (count[sem_valid] - 1)) / np.sqrt(count[sem_valid])
             color = ("#2166ac", "#b2182b", "#1b7837", "#762a83", "#e08214")[direction_index % 5]
-            label = f"{direction[0]} → {direction[1]} (n={len(traces)})"
+            label = f"{direction[0]} → {direction[1]} (expdays n={len(balanced_traces)})"
+            for trace in balanced_traces:
+                ax.plot(grid, trace, color=color, alpha=0.12, linewidth=0.7)
             ax.plot(grid, mean, color=color, linewidth=2.0, label=label)
             ax.fill_between(grid, mean - sem, mean + sem, color=color, alpha=0.16, linewidth=0)
         ax.axvline(0.0, color="#333333", linestyle="--", linewidth=1.0)
         ax.set_xlim(-window_s, window_s)
         ax.set_xlabel("Time from transition (s)")
+        n_trace_expdays = len({str(segment.get("expday", "")) for segment in segments})
+        n_trace_entities = len({(str(segment.get("expday", "")), str(segment.get("entity_id", ""))) for segment in segments})
+        n_trace_animals = len({str(segment.get("animal_id", "")) for segment in segments if segment.get("animal_id")})
+        ax.text(0.02, 0.97, f"expdays n={n_trace_expdays}; animals n={n_trace_animals}; entities n={n_trace_entities}; transitions n={len(segments)}", transform=ax.transAxes, va="top", fontsize=8)
         ax.set_ylabel("dF/F")
-        ax.set_title(f"Aligned mean dF/F | {compartment}\n{scope}, {mode}")
+        ax.set_title(f"Experiment-day aligned mean dF/F | {compartment}\n{scope}, {mode}")
         ax.legend(frameon=False, fontsize=8)
         ax.grid(axis="y", alpha=0.2)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + "_trace.svg"
+        filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + "_expday_trace.svg"
         path = Path(output_root) / "state_transitions" / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")

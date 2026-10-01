@@ -15953,7 +15953,8 @@ def write_analysis_outputs(
     transition_result = results.get("state_transitions", {}) if isinstance(results.get("state_transitions", {}), dict) else {}
     transition_event_rows = list(transition_result.get("event_rows", []))
     transition_summary_rows = list(transition_result.get("summary_rows", []))
-    for table_name, rows in (("events", transition_event_rows), ("comparisons", transition_summary_rows)):
+    transition_pooled_summary_rows = list(transition_result.get("pooled_summary_rows", []))
+    for table_name, rows in (("events", transition_event_rows), ("comparisons", transition_summary_rows), ("pooled_comparisons", transition_pooled_summary_rows)):
         grouped_rows = {}
         for row in rows:
             key = (str(row.get("scope") or "all_states"), str(row.get("window_mode") or "strict"))

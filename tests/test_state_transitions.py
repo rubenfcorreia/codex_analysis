@@ -1,6 +1,6 @@
 import numpy as np
 
-from analysis.shared.state_transitions import add_window_metadata, transition_events
+from analysis.shared.state_transitions import add_window_metadata, aggregate_transition_rows_expday, paired_transition_summaries, transition_events
 
 
 def test_transitions_stay_within_one_experiment():
@@ -58,7 +58,7 @@ def _plot_rows():
     return rows
 
 
-def test_transition_boxplot_has_no_paired_connecting_lines(tmp_path, monkeypatch):
+def test_transition_summary_has_paired_connecting_lines(tmp_path, monkeypatch):
     import matplotlib.axes
     from analysis.shared.state_transitions import plot_transition_summaries
 
@@ -67,7 +67,7 @@ def test_transition_boxplot_has_no_paired_connecting_lines(tmp_path, monkeypatch
     monkeypatch.setattr(matplotlib.axes.Axes, "plot", lambda self, *args, **kwargs: calls.append((args, kwargs)) or original_plot(self, *args, **kwargs))
     paths = plot_transition_summaries(_plot_rows(), tmp_path, pipeline_name="test")
     assert len(paths) == 1
-    assert not any(list(args[0]) == [1.0, 2.0] and len(args[1]) == 2 for args, _ in calls)
+    assert any(list(args[0]) == [1.0, 2.0] and len(args[1]) == 2 for args, _ in calls)
     assert "state_transition" in paths[0]
 
 
@@ -99,3 +99,39 @@ def test_transition_trace_is_zero_aligned_and_direction_specific(tmp_path, monke
     assert 0.0 in vlines
     assert any("wake → nrem" in str(label) for label in labels)
     assert any("nrem → wake" in str(label) for label in labels)
+
+
+def test_expday_aggregation_balances_transitions_and_entities():
+    rows = []
+    for transition_index, value in enumerate((1.0, 3.0, 5.0)):
+        rows.append({
+            "scope": "all_states", "window_mode": "strict", "state_before": "wake",
+            "state_after": "nrem", "metric": "mean_activity", "compartment": "soma",
+            "expid": "e1", "day_id": "d1", "expday": "e1|d1", "animal_id": "a1",
+            "entity_id": "soma-1", "transition_id": str(transition_index),
+            "pre_value": value, "post_value": value + 1.0,
+        })
+    rows.extend([
+        {
+            "scope": "all_states", "window_mode": "strict", "state_before": "wake",
+            "state_after": "nrem", "metric": "mean_activity", "compartment": "soma",
+            "expid": "e1", "day_id": "d1", "expday": "e1|d1", "animal_id": "a1",
+            "entity_id": "soma-2", "transition_id": "other", "pre_value": 9.0, "post_value": 10.0,
+        },
+        {
+            "scope": "all_states", "window_mode": "strict", "state_before": "wake",
+            "state_after": "nrem", "metric": "mean_activity", "compartment": "soma",
+            "expid": "e2", "day_id": "d2", "expday": "e2|d2", "animal_id": "a1",
+            "entity_id": "soma-3", "transition_id": "other", "pre_value": 20.0, "post_value": 21.0,
+        },
+    ])
+    balanced = aggregate_transition_rows_expday(rows)
+    assert len(balanced) == 2
+    first = next(row for row in balanced if row["expday"] == "e1|d1")
+    assert first["pre_value"] == 6.0
+    assert first["post_value"] == 7.0
+    assert first["n_entities"] == 2
+    summaries = paired_transition_summaries(balanced)
+    assert summaries[0]["aggregation_level"] == "expday"
+    assert summaries[0]["n_expdays"] == 2
+    assert summaries[0]["n_replicates"] == 2

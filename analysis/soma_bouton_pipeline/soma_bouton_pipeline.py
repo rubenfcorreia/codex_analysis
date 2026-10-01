@@ -62,6 +62,7 @@ from analysis.shared.shared_calcium_response import (
 from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
 from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows
 from analysis.shared.analysis_families.soma_transitions import run_transition_analysis
+from analysis.shared.state_transitions import aggregate_transition_rows_expday, paired_transition_summaries
 from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
@@ -1090,7 +1091,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     lag_rows = list(table_rows.get("lag_rows", []))
                     visual_response_rows = list(table_rows.get("visual_response_rows", []))
                     coincidence_rows = list(table_rows.get("coincidence_rows", []))
-                    transition_results = {"event_rows": list(table_rows.get("state_transition_event_rows", [])), "summary_rows": list(table_rows.get("state_transition_summary_rows", [])), "figure_paths": [], "alerts": []}
+                    cached_transition_events = list(table_rows.get("state_transition_event_rows", []))
+                    transition_results = {"event_rows": cached_transition_events, "pooled_summary_rows": paired_transition_summaries(cached_transition_events), "summary_rows": paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events)), "figure_paths": [], "alerts": []}
                     selected_states_by_mode = dict(table_rows.get("selected_states_by_mode", selected_states_by_mode))
                     state_modes = list(table_rows.get("state_modes", state_modes))
             if bool(config.get("poster_ready_only")):
@@ -1168,6 +1170,10 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             coincidence_rows = list(union_rows_payload.get("coincidence_rows", []))
             visual_response_rows = list(union_rows_payload.get("visual_response_rows", []))
             transition_results = dict(union_rows_payload.get("transition_results", transition_results))
+            cached_transition_events = list(transition_results.get("event_rows", []))
+            if cached_transition_events:
+                transition_results["pooled_summary_rows"] = paired_transition_summaries(cached_transition_events)
+                transition_results["summary_rows"] = paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events))
     for mode in state_modes:
         selected_states = list(selected_states_by_mode.get(mode, []))
         row_states = list(union_states_by_mode.get(mode, selected_states)) if union_cache_enabled else selected_states
@@ -1624,7 +1630,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if lag_rows and write_general_tables:
         _stage("writing csv", "bouton_soma_lag_scan_by_roi")
         write_csv_rows(general_csv_root / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
-    for table_name, rows in (("events", transition_results.get("event_rows", [])), ("comparisons", transition_results.get("summary_rows", []))):
+    for table_name, rows in (("events", transition_results.get("event_rows", [])), ("comparisons", transition_results.get("summary_rows", [])), ("pooled_comparisons", transition_results.get("pooled_summary_rows", []))):
         grouped_rows = {}
         for row in rows:
             key = (str(row.get("scope") or "all_states"), str(row.get("window_mode") or "strict"))
