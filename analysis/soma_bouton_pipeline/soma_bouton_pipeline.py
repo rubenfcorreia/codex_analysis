@@ -76,7 +76,9 @@ from analysis.shared.plots.poster_ready import (
     assign_pairwise_visual_response_cohorts,
     split_rows_by_cohort,
     write_blank_movie_and_correlation_poster_figure,
+    paired_state_values_from_rows,
     write_blank_movie_state_boxplot_figure,
+    write_paired_state_summary_figure,
     write_correlation_poster_figure,
     write_state_mixed_model_poster_figure,
     write_visual_response_poster_figure,
@@ -2001,6 +2003,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             visual_dir = ensure_dir(compartment_root / "visual_response")
             mixed_dir = ensure_dir(compartment_root / "mixed_model")
             blank_dir = ensure_dir(compartment_root / "blank_movie_states")
+            paired_dir = ensure_dir(compartment_root / "paired_state_summary")
             compartment_visual_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
             if not compartment_visual_rows:
                 continue
@@ -2070,6 +2073,36 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 row for row in movie_preset_comparison_rows
                 if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
             ]
+            paired_rows_by_preset = {
+                "blank": [row for row in blank_preset_activity_rows if str(row.get("compartment") or "").strip().lower() == compartment],
+                "movies": [row for row in movie_preset_activity_rows if str(row.get("compartment") or "").strip().lower() == compartment],
+            }
+            entity_id_column = "global_soma_id" if compartment == "soma" else "global_bouton_id"
+            for preset_label, preset_rows, state_prefix in (
+                ("blank", paired_rows_by_preset["blank"], "blank"),
+                ("movies", paired_rows_by_preset["movies"], "movies"),
+            ):
+                for comparison_label, paired_states in (
+                    ("quiet_awake_vs_nrem", [f"quiet_awake_{state_prefix}", f"nrem_{state_prefix}"]),
+                    ("quiet_awake_nrem_rem", [f"quiet_awake_{state_prefix}", f"nrem_{state_prefix}", f"rem_{state_prefix}"]),
+                ):
+                    paired_values, paired_sample_sizes = paired_state_values_from_rows(
+                        preset_rows,
+                        state_order=paired_states,
+                        entity_id_column=entity_id_column,
+                        value_columns=("mean",),
+                    )
+                    paired_path = write_paired_state_summary_figure(
+                        output_dir=paired_dir,
+                        entity_label=compartment,
+                        state_values=paired_values,
+                        state_order=paired_states,
+                        sample_sizes=paired_sample_sizes,
+                        output_stem=f"{compartment}_{preset_label}_{comparison_label}_paired_state_summary",
+                        title=f"{preset_label.capitalize()} {comparison_label.replace('_', ' ')}",
+                    )
+                    if paired_path:
+                        poster_ready_figures.append(str(paired_path))
             responsive_significant_states.update(_significant_state_labels_from_comparison_rows(responsive_comparison_rows))
             nonresponsive_significant_states.update(_significant_state_labels_from_comparison_rows(nonresponsive_comparison_rows))
             responsive_significant_states.update(_significant_state_labels_from_comparison_rows(blank_comparison_rows))

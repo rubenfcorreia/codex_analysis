@@ -91,6 +91,53 @@ def _finite_array(values: Iterable[Any]) -> np.ndarray:
     return arr[np.isfinite(arr)]
 
 
+def paired_state_values_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    state_order: Sequence[str],
+    entity_id_column: str,
+    value_columns: Sequence[str] = ("mean",),
+) -> tuple[dict[str, list[float]], dict[str, int]]:
+    """Return values for entities observed in every requested state."""
+    ordered_states = [str(state) for state in state_order if str(state).strip()]
+    state_keys = {_canonical_state_key(state): state for state in ordered_states}
+    by_entity_state: dict[tuple[str, str], list[float]] = {}
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        entity_id = str(row.get(entity_id_column) or "").strip()
+        state_key = _canonical_state_key(row.get("state") or row.get("state_label") or row.get("state_display"))
+        if not entity_id or state_key not in state_keys:
+            continue
+        value = None
+        for column in value_columns:
+            try:
+                candidate = float(row.get(column))
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(candidate):
+                value = candidate
+                break
+        if value is not None:
+            by_entity_state.setdefault((entity_id, state_key), []).append(value)
+    entities_by_state = {
+        state_key: {entity_id for (entity_id, row_state), values in by_entity_state.items() if row_state == state_key and values}
+        for state_key in state_keys
+    }
+    common_entities = set.intersection(*(entities for entities in entities_by_state.values())) if entities_by_state else set()
+    values: dict[str, list[float]] = {}
+    sample_sizes: dict[str, int] = {}
+    for state_key, display_state in state_keys.items():
+        state_values = [
+            float(np.nanmean(by_entity_state[(entity_id, state_key)]))
+            for entity_id in sorted(common_entities)
+            if by_entity_state.get((entity_id, state_key))
+        ]
+        values[display_state] = state_values
+        sample_sizes[display_state] = len(state_values)
+    return values, sample_sizes
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -2087,6 +2134,75 @@ def write_state_mixed_model_poster_figure(
     output_path = out_dir / f"{stem}.svg"
     return _write_figure(fig, output_path)
 
+def write_paired_state_summary_figure(
+    *,
+    output_dir: Path | str,
+    entity_label: str,
+    state_values: Mapping[str, Sequence[float]],
+    state_order: Sequence[str],
+    sample_sizes: Mapping[str, int] | None = None,
+    panel_values: Mapping[str, Mapping[str, Sequence[float]]] | None = None,
+    panel_sample_sizes: Mapping[str, Mapping[str, int]] | None = None,
+    output_stem: str,
+    title: str,
+) -> Optional[str]:
+    """Write one paired-only state summary figure."""
+    if plt is None:
+        return None
+    if panel_values:
+        panel_items = [
+            (str(label), values)
+            for label, values in panel_values.items()
+            if any(_finite_array(values.get(state, [])).size for state in state_order)
+        ]
+        if not panel_items:
+            return None
+        out_dir = _ensure_dir(Path(output_dir))
+        fig = plt.figure(figsize=(cm_to_inch(17.0), cm_to_inch(7.5)), constrained_layout=False)
+        axes = fig.subplots(1, len(panel_items), squeeze=False).ravel()
+        for ax, (panel_label, panel_map) in zip(axes, panel_items):
+            present_states = [str(state) for state in state_order if _finite_array(panel_map.get(state, [])).size]
+            values = {state: panel_map.get(state, []) for state in present_states}
+            _boxplot(
+                ax,
+                values,
+                present_states,
+                title=panel_label,
+                ylabel="Mean response",
+                cohort_label="paired entities",
+                significance_flags=[False] * len(present_states),
+                sample_sizes=(panel_sample_sizes or {}).get(panel_label),
+                horizontal=True,
+            )
+            ax.set_xlabel("Mean response", fontsize=FIGURE_LABEL_FS)
+            ax.set_ylabel("State", fontsize=FIGURE_LABEL_FS)
+        fig.suptitle(f"{entity_label.capitalize()} paired state summary - {title}", fontsize=FIGURE_TITLE_FS, y=0.985)
+    else:
+        present_states = [str(state) for state in state_order if _finite_array(state_values.get(state, [])).size]
+        if not present_states:
+            return None
+        out_dir = _ensure_dir(Path(output_dir))
+        fig = plt.figure(figsize=(cm_to_inch(9.5), cm_to_inch(7.5)), constrained_layout=False)
+        ax = fig.add_subplot(111)
+        values = {state: state_values.get(state, []) for state in present_states}
+        _boxplot(
+            ax,
+            values,
+            present_states,
+            title=title,
+            ylabel="Mean response",
+            cohort_label="paired entities",
+            significance_flags=[False] * len(present_states),
+            sample_sizes=sample_sizes,
+            horizontal=True,
+        )
+        ax.set_xlabel("Mean response", fontsize=FIGURE_LABEL_FS)
+        ax.set_ylabel("State", fontsize=FIGURE_LABEL_FS)
+        fig.suptitle(f"{entity_label.capitalize()} paired state summary", fontsize=FIGURE_TITLE_FS, y=0.985)
+    output_path = out_dir / f"{output_stem}.svg"
+    return _write_figure(fig, output_path)
+
+
 def write_blank_movie_state_boxplot_figure(
     *,
     output_dir: Path | str,
@@ -2366,5 +2482,7 @@ __all__ = [
     "write_visual_response_poster_figure",
     "write_state_mixed_model_poster_figure",
     "write_blank_movie_state_boxplot_figure",
+    "paired_state_values_from_rows",
+    "write_paired_state_summary_figure",
     "write_blank_movie_and_correlation_poster_figure",
 ]

@@ -16134,7 +16134,9 @@ def write_poster_ready_figures(
         _poster_mixed_model_significant_states,
         _select_mixed_model_rows,
         _significant_state_labels_from_comparison_rows,
+        paired_state_values_from_rows,
         write_blank_movie_state_boxplot_figure,
+        write_paired_state_summary_figure,
         write_state_mixed_model_poster_figure,
         write_visual_response_poster_figure,
     )
@@ -16326,6 +16328,7 @@ def write_poster_ready_figures(
                 visual_dir = ensure_dir(entity_root / "visual_response")
                 mixed_dir = ensure_dir(entity_root / "mixed_model")
                 blank_dir = ensure_dir(entity_root / "blank_movie_states")
+                paired_dir = ensure_dir(entity_root / "paired_state_summary")
                 rows = list(visual_payload.get("rows", [])) if isinstance(visual_payload, dict) else []
                 blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), rows)
                 movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), rows)
@@ -16366,6 +16369,71 @@ def write_poster_ready_figures(
                     preset_compartments = {entity_key}
                 if entity_key == "dendrite":
                     preset_compartments.update({"dendrite", "basal_dendrite", "apical_dendrite"})
+                paired_entity_id_column = "global_dendrite_id" if entity_key == "dendrite" else "global_spine_id"
+                paired_value_columns = (
+                    ("mean_dendrite_activity", "mean")
+                    if entity_key == "dendrite"
+                    else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")
+                )
+                paired_rows_by_preset = {
+                    "blank": [
+                        row for row in blank_preset_activity_rows
+                        if _poster_compartment_matches(row.get("compartment"), preset_compartments)
+                    ],
+                    "movies": [
+                        row for row in movie_preset_activity_rows
+                        if _poster_compartment_matches(row.get("compartment"), preset_compartments)
+                    ],
+                }
+                for preset_label, preset_rows, state_prefix in (
+                    ("blank", paired_rows_by_preset["blank"], "blank"),
+                    ("movies", paired_rows_by_preset["movies"], "movies"),
+                ):
+                    for comparison_label, paired_states in (
+                        ("quiet_awake_vs_nrem", [f"quiet_awake_{state_prefix}", f"nrem_{state_prefix}"]),
+                        ("quiet_awake_nrem_rem", [f"quiet_awake_{state_prefix}", f"nrem_{state_prefix}", f"rem_{state_prefix}"]),
+                    ):
+                        panel_values = None
+                        panel_sample_sizes = None
+                        if entity_key == "dendrite":
+                            panel_values = {}
+                            panel_sample_sizes = {}
+                            for panel_label in ("basal", "apical"):
+                                panel_rows = [
+                                    row for row in preset_rows
+                                    if _poster_compartment_matches(
+                                        row.get("compartment"),
+                                        (panel_label, f"{panel_label}_dendrite"),
+                                    )
+                                ]
+                                panel_values[panel_label], panel_sample_sizes[panel_label] = paired_state_values_from_rows(
+                                    panel_rows,
+                                    state_order=paired_states,
+                                    entity_id_column=paired_entity_id_column,
+                                    value_columns=paired_value_columns,
+                                )
+                            paired_values = {}
+                            paired_sample_sizes = {}
+                        else:
+                            paired_values, paired_sample_sizes = paired_state_values_from_rows(
+                                preset_rows,
+                                state_order=paired_states,
+                                entity_id_column=paired_entity_id_column,
+                                value_columns=paired_value_columns,
+                            )
+                        paired_path = write_paired_state_summary_figure(
+                            output_dir=paired_dir,
+                            entity_label=entity_label,
+                            state_values=paired_values,
+                            state_order=paired_states,
+                            sample_sizes=paired_sample_sizes,
+                            panel_values=panel_values,
+                            panel_sample_sizes=panel_sample_sizes,
+                            output_stem=f"{entity_key}_{preset_label}_{comparison_label}_paired_state_summary",
+                            title=f"{preset_label.capitalize()} {comparison_label.replace('_', ' ')}",
+                        )
+                        if paired_path:
+                            written.append(report_relative_path(Path(paired_path), output_dir))
                 if rows:
                     if entity_key == "dendrite":
                         for compartment in visual_compartments:
