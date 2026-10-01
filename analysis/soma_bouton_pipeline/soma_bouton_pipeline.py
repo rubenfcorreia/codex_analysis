@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -21,17 +22,23 @@ from analysis.compartment_common import (
     read_csv_rows,
     resolve_repo_root,
     write_csv_rows,
-    write_json_file,
 )
 from analysis.shared.comparison_preset_flow import (
     POSTER_REQUIRED_COMPARISON_PRESETS,
     build_comparison_preset_batch_plan,
+    load_all_requested_comparison_rows,
+    load_comparison_preset_csv_rows,
 )
+from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.result_layout import resolve_result_layout
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
-from analysis.shared.roi_split import build_roi_split_results
+from analysis.shared.union_rows import filter_rows_by_states, load_union_rows_cache, save_union_rows_cache, union_rows_meta, union_state_labels
+from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
 from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
-from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family
+from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family, run_split_family
+from analysis.shared.analysis_families.splits import SPLIT_BRANCHES, require_split_groups
 from analysis.shared.analysis_families.state import (
     activity_rows_for_context,
     build_state_comparison_row_groups,
@@ -52,9 +59,10 @@ from analysis.shared.shared_calcium_response import (
     summarize_visual_response_entity_rows,
     visual_response_trial_rows,
 )
-from analysis.soma_bouton_pipeline.analysis_families.correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
-from analysis.soma_bouton_pipeline.analysis_families.lag import lag_scan_rows, lag_summary_rows
-from analysis.soma_bouton_pipeline.plots import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
+from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
+from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows
+from analysis.shared.analysis_families.soma_transitions import run_transition_analysis
+from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
@@ -76,7 +84,7 @@ from analysis.shared.plots.poster_ready import (
 from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, run_family as run_coincidence_family
 from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
-from analysis.dendrites_pipeline.dendrites_pipeline import (
+from analysis.shared.analysis_cache import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
     analysis_cache_meta_hash,
@@ -85,7 +93,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, save_family_results_cache
+from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
 
 
 logger = logging.getLogger(__name__)
@@ -116,7 +124,7 @@ def _json_safe(value: Any) -> Any:
 DEFAULT_CONFIG = {
     "analysis_name": "soma_bouton_pipeline",
     "result_root": "results/soma_bouton_pipeline",
-    "cache_root": "results/soma_bouton_pipeline/cache",
+    "cache_root": "results/soma_bouton_pipeline/analysis/cache",
     "movie_expids": [],
     "sleep_expids": [],
     "soma_channel": 1,
@@ -133,16 +141,31 @@ DEFAULT_CONFIG = {
     "analysis_tables_rebuild": False,
     "source_cache_rebuild": False,
     "shared_shuffle_cache_rebuild": False,
+    "general_output_root": None,
+    "generate_shared_general_outputs": False,
+    "shared_union_rows_cache_path": None,
+    "union_state_labels_by_mode": None,
+    "generate_shared_general_figures": False,
+    "generate_visual_response_entity_figures": True,
+    "visual_response_entity_max_trace_points": None,
     "plots_only": False,
     "poster_ready_only": False,
     "comparison_presets": None,
     "comparison_preset_name": None,
     "comparison_preset_names": None,
     "event_detection_method": "amplitude",
+    "transition_analysis": {
+        "enabled": False,
+        "window_s": 60,
+        "window_modes": ["strict", "max_available"],
+        "scopes": ["all_states", "sleep_states"],
+        "metrics": ["activity", "event_frequency"],
+    },
     "visual_response_metric": "calcium_events",
     "visual_response_cohort": DEFAULT_VISUAL_RESPONSE_COHORT,
     "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
     "coincidence_example_top_n": 5,
+    "coincidence_example_max_total": 5,
     "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
     "state_comparison_states": [
         "quiet_awake_blank",
@@ -205,12 +228,26 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         return []
 
     repo_root = resolve_repo_root(Path(__file__))
-    base_result_root = resolve_repo_path(config.get("result_root") or DEFAULT_CONFIG["result_root"], repo_root)
+    base_result_root = resolve_repo_path(
+        config.get("comparison_output_root") or config.get("result_root") or DEFAULT_CONFIG["result_root"],
+        repo_root,
+    )
     base_cache_root = resolve_repo_path(config.get("cache_root") or DEFAULT_CONFIG["cache_root"], repo_root)
     shared_source_cache_path = resolve_repo_path(config.get("cache_path") or (base_cache_root / "source_cache.npz"), repo_root)
     _stage("comparison presets", f"running {len(plan.presets)} preset(s)")
     manifests: List[Dict[str, Any]] = []
     preset_configs: Dict[str, Dict[str, Any]] = {}
+    preset_state_maps = []
+    for preset_name, overrides in plan.presets:
+        probe_config = copy.deepcopy(dict(config))
+        probe_config.update(overrides)
+        probe_state_map = {}
+        for mode in ("movie", "sleep"):
+            if probe_config.get(f"{mode}_expids"):
+                probe_state_map[mode] = resolve_analysis_state_selections(probe_config, mode)
+        preset_state_maps.append(probe_state_map)
+    union_states_by_mode = union_state_labels(preset_state_maps)
+    shared_union_rows_cache_path = base_result_root / "general" / "cache" / "soma_bouton_union_rows_cache.npz"
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
@@ -221,6 +258,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["comparison_preset_name"] = preset_name
         preset_result_root = base_result_root / safe_name
         preset_config["result_root"] = str(preset_result_root)
+        preset_config["analysis_output_dir"] = str(preset_result_root)
         preset_cache_root = base_cache_root / safe_name
         preset_run_cache_path = preset_cache_root / "analysis_run_cache.npz"
         preset_results_cache_path = preset_cache_root / "analysis_results_cache.npz"
@@ -233,8 +271,18 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["rebuild"] = preset_rebuild
         preset_config["source_cache_rebuild"] = preset_rebuild
         preset_config["analysis_tables_rebuild"] = preset_rebuild
-        preset_config["analysis_results_rebuild"] = True
+        preset_config["analysis_results_rebuild"] = False if bool(config.get("plots_only")) else True
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
+        preset_config["general_output_root"] = str(base_result_root / "general")
+        preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
+        preset_config["union_state_labels_by_mode"] = union_states_by_mode
+        preset_config["union_rows_cache_builder"] = preset_index == 0 and not bool(config.get("plots_only"))
+        preset_config["generate_shared_general_outputs"] = preset_index == 0
+        preset_config["generate_shared_general_figures"] = preset_index == 0
+        preset_config["source_cache_validate"] = False if preset_index else config.get("source_cache_validate", True)
+        preset_config["branch_first_output_root"] = str(preset_result_root)
+        preset_config["branch_first_figures"] = True
+        preset_config["generate_visual_response_entity_figures"] = preset_index == 0 and bool(config.get("generate_visual_response_entity_figures", True))
         preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
         manifests.append(run_pipeline(preset_config))
@@ -246,6 +294,11 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         final_config["poster_ready_only"] = True
         final_config["generate_poster_ready_figures"] = True
         final_config["plots_only_include_supporting_figures"] = False
+        # Poster readback needs the common preset parent so it can resolve
+        # blank_state_comparisons and movies_state_comparisons alongside the
+        # reference preset. Keep result_root unchanged for cache/manifest
+        # ownership of the reference preset itself.
+        final_config["comparison_output_root"] = str(base_result_root)
         _stage("comparison poster readback", f"{plan.reference_preset_name} -> {base_result_root}")
         manifests.append(run_pipeline(final_config))
     return manifests
@@ -444,6 +497,7 @@ def _normalize_scoped_unit_ids(
 
 def _reload_plot_rows_from_csv(
     result_root: Path,
+    preset_name: str,
     *,
     plots_only: bool,
     activity_rows: List[Dict[str, Any]],
@@ -456,41 +510,24 @@ def _reload_plot_rows_from_csv(
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     if not plots_only:
         return activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows
-    preferred_csv_root = result_root / "all_requested_comparisons" / "csv"
-    csv_root = preferred_csv_root if preferred_csv_root.exists() else result_root / "csv"
+
+    def _load_csv_rows(csv_name: str) -> List[Dict[str, Any]]:
+        return load_comparison_preset_csv_rows(result_root, preset_name, csv_name, logger=logger)
+
     if not activity_rows:
-        activity_csv = csv_root / "state_activity_by_experiment.csv"
-        if not activity_csv.exists():
-            raise SystemExit(f"Missing poster-ready activity CSV: {activity_csv}")
-        activity_rows = read_csv_rows(activity_csv)
+        activity_rows = _load_csv_rows("state_activity_by_experiment.csv")
     if not correlation_rows:
-        correlation_csv = csv_root / "bouton_soma_correlation_by_roi.csv"
-        if not correlation_csv.exists():
-            raise SystemExit(f"Missing poster-ready correlation CSV: {correlation_csv}")
-        correlation_rows = read_csv_rows(correlation_csv)
+        correlation_rows = _load_csv_rows("bouton_soma_correlation_by_roi.csv")
     if not soma_pairwise_rows:
-        soma_pairwise_csv = csv_root / "soma_pairwise_correlation_by_roi.csv"
-        if soma_pairwise_csv.exists():
-            soma_pairwise_rows = read_csv_rows(soma_pairwise_csv)
+        soma_pairwise_rows = _load_csv_rows("soma_pairwise_correlation_by_roi.csv")
     if not bouton_pairwise_rows:
-        bouton_pairwise_csv = csv_root / "bouton_pairwise_correlation_by_roi.csv"
-        if bouton_pairwise_csv.exists():
-            bouton_pairwise_rows = read_csv_rows(bouton_pairwise_csv)
+        bouton_pairwise_rows = _load_csv_rows("bouton_pairwise_correlation_by_roi.csv")
     if not lag_rows:
-        lag_csv = csv_root / "bouton_soma_lag_scan_by_roi.csv"
-        if not lag_csv.exists():
-            raise SystemExit(f"Missing poster-ready lag CSV: {lag_csv}")
-        lag_rows = read_csv_rows(lag_csv)
+        lag_rows = _load_csv_rows("bouton_soma_lag_scan_by_roi.csv")
     if not visual_response_rows:
-        visual_csv = csv_root / "visual_response_by_roi.csv"
-        if not visual_csv.exists():
-            raise SystemExit(f"Missing poster-ready visual-response CSV: {visual_csv}")
-        visual_response_rows = read_csv_rows(visual_csv)
+        visual_response_rows = _load_csv_rows("visual_response_by_roi.csv")
     if not coincidence_rows:
-        coincidence_csv = csv_root / "soma_bouton_coincidence_by_roi.csv"
-        if not coincidence_csv.exists():
-            raise SystemExit(f"Missing poster-ready coincidence CSV: {coincidence_csv}")
-        coincidence_rows = read_csv_rows(coincidence_csv)
+        coincidence_rows = _load_csv_rows("soma_bouton_coincidence_by_roi.csv")
     return activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows
 
 
@@ -703,11 +740,12 @@ def _generate_coincidence_example_figures(
     result_root: Path,
     repo_root: Path,
     coincidence_example_top_n: int,
+    coincidence_example_max_total: int,
     soma_channel: int,
     bouton_channel: int,
     default_event_detection_method: str,
 ) -> List[str]:
-    if coincidence_example_top_n <= 0 or not coincidence_rows:
+    if coincidence_example_top_n <= 0 or coincidence_example_max_total <= 0 or not coincidence_rows:
         return []
     saved: List[str] = []
     context_cache: Dict[tuple[str, str, int, int], ExperimentContext] = {}
@@ -721,10 +759,12 @@ def _generate_coincidence_example_figures(
         )
         grouped.setdefault(key, []).append(dict(row))
     for mode, day_id, state, event_detection_method in sorted(grouped):
+        if len(saved) >= coincidence_example_max_total:
+            break
         group_rows = sorted(grouped[(mode, day_id, state, event_detection_method)], key=_coincidence_row_sort_key)
         written = 0
         for row in group_rows:
-            if written >= coincidence_example_top_n:
+            if written >= coincidence_example_top_n or len(saved) >= coincidence_example_max_total:
                 break
             expid = str(row.get("expid") or "").strip()
             if not expid:
@@ -751,7 +791,7 @@ def _generate_coincidence_example_figures(
                 continue
             pair_unit_id = str(row.get("pair_unit_id") or "pair")
             path = build_coincidence_example_figure_path(
-                result_root / "figures",
+                result_root,
                 expid=expid,
                 mode=row_mode,
                 day_id=day_id,
@@ -791,6 +831,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "shuffle_n": int(config.get("shuffle_n", 200)),
         "event_detection_method": str(event_detection_method),
+        "transition_analysis": dict(config.get("transition_analysis") or {}),
         "visual_response_metric": str(visual_response_metric),
         "visual_response_cohort": str(visual_response_cohort),
         "visual_response_trial_types": list(VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
@@ -836,14 +877,84 @@ def _analysis_results_cache_path(config: Mapping[str, Any], repo_root: Path, res
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
 
 
+def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
+    """Return the canonical figure root for comparison-preset runs.
+
+    Comparison presets already have a branch-first `pooled/all` leaf, so the
+    shared summary figures can live there instead of creating a separate
+    top-level `figures/` tree that mirrors the same content.
+    """
+
+    branch_root_value = config.get("branch_first_output_root")
+    return comparison_leaf_root(
+        result_root,
+        branch_root=resolve_repo_path(branch_root_value, repo_root) if branch_root_value else None,
+    )
+
+
+
+def _state_plot_rows_for_branch(
+    leaf_roi_split: Mapping[str, Any] | None,
+    fallback_rows: Sequence[Mapping[str, Any]],
+    cohort_name: str,
+    *,
+    prefer_subject_rows: bool = True,
+    require_split: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return state rows with split membership attached for every cohort."""
+    split_rows = [
+        dict(row)
+        for row in (leaf_roi_split or {}).get("subject_state_rows", [])
+        if isinstance(row, Mapping)
+    ]
+    if require_split:
+        require_split_groups(split_rows, branch=str((leaf_roi_split or {}).get("branch_name") or "split"), basis=str((leaf_roi_split or {}).get("basis_name") or "all"))
+    if prefer_subject_rows and cohort_name == "all" and any(str(row.get("split_group") or "").strip() for row in split_rows):
+        return split_rows
+    rows = [dict(row) for row in fallback_rows if isinstance(row, Mapping)]
+    membership_rows = (leaf_roi_split or {}).get("membership_rows", [])
+    if not rows or not membership_rows:
+        return rows
+    context = {
+        "roi_type": str((leaf_roi_split or {}).get("roi_type") or "").strip(),
+        "branch_name": str((leaf_roi_split or {}).get("branch_name") or "").strip(),
+        "basis_name": str((leaf_roi_split or {}).get("basis_name") or "").strip(),
+        "split_name": str((leaf_roi_split or {}).get("split_name") or "").strip(),
+        "split_mode": str((leaf_roi_split or {}).get("split_mode") or "").strip(),
+    }
+    scoped_rows = []
+    for row in rows:
+        payload = dict(row)
+        for key, value in context.items():
+            if value and not str(payload.get(key) or "").strip():
+                payload[key] = value
+        scoped_rows.append(payload)
+    return annotate_rows_with_split_group(scoped_rows, membership_rows)
+
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
-    result_root = resolve_repo_path(config["result_root"], repo_root)
+    pipeline_started = time.perf_counter()
+    layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
+    result_root = layout.analysis_root
     preset_name = str(config.get("comparison_preset_name") or "default")
+    if config.get("branch_first_figures"):
+        # Comparison presets always use their canonical pooled/all leaf; a
+        # legacy top-level figure_output_dir must not override that contract.
+        figure_root = _comparison_figure_root(config, repo_root, result_root)
+    else:
+        figure_root = resolve_repo_path(config["figure_output_dir"], repo_root) if config.get("figure_output_dir") else layout.figure_root
+    general_output_root = resolve_repo_path(config.get("general_output_root"), repo_root) if config.get("general_output_root") else None
+    generate_shared_general_outputs = bool(config.get("generate_shared_general_outputs", False))
+    generate_shared_general_figures = bool(config.get("generate_shared_general_figures", False))
+    shared_general_root = general_output_root if generate_shared_general_figures else None
+    general_csv_root = (general_output_root / "csv") if general_output_root is not None else (result_root / "csv")
+    write_general_tables = general_output_root is None or generate_shared_general_outputs
+    if general_output_root is not None and write_general_tables:
+        ensure_dir(general_csv_root)
     _stage("run preset", f"{preset_name} -> {result_root}")
     ensure_dir(result_root)
     ensure_dir(result_root / "csv")
-    ensure_dir(result_root / "figures")
+    ensure_dir(figure_root)
     ensure_dir(result_root / "cache")
     ensure_dir(result_root / "summary")
 
@@ -877,11 +988,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     lag_rows: List[Dict[str, Any]] = []
     visual_response_rows: List[Dict[str, Any]] = []
     coincidence_rows: List[Dict[str, Any]] = []
+    transition_contexts: List[ExperimentContext] = []
+    transition_results: Dict[str, Any] = {"event_rows": [], "summary_rows": [], "figure_paths": [], "alerts": []}
     coincidence_example_figures: List[str] = []
     selected_states_by_mode: Dict[str, List[str]] = {mode: list(resolve_analysis_state_selections(config, mode)) for mode in state_modes}
     selected_states_by_mode_payload = {mode: list(states) for mode, states in selected_states_by_mode.items()}
     day_groups = build_day_groups(expids_by_mode)
     coincidence_example_top_n = int(config.get("coincidence_example_top_n", DEFAULT_CONFIG["coincidence_example_top_n"]))
+    coincidence_example_max_total = int(config.get("coincidence_example_max_total", DEFAULT_CONFIG["coincidence_example_max_total"]))
     analysis_results_meta = _soma_analysis_results_meta(
         config,
         selected_states_by_mode,
@@ -957,9 +1071,39 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 }
             )
             _stage("cache load", f"reused analysis-results cache at {analysis_results_cache_file}")
+            if bool(config.get("plots_only")):
+                table_cache = load_npz_cache(analysis_tables_cache_file) if analysis_tables_cache_file.exists() else {}
+                table_rows = table_cache.get("analysis_tables", {}) if isinstance(table_cache, dict) else {}
+                if isinstance(table_rows, dict):
+                    experiment_rows = list(table_rows.get("experiment_rows", []))
+                    activity_rows = list(table_rows.get("activity_rows", []))
+                    correlation_rows = list(table_rows.get("correlation_rows", []))
+                    lag_rows = list(table_rows.get("lag_rows", []))
+                    visual_response_rows = list(table_rows.get("visual_response_rows", []))
+                    coincidence_rows = list(table_rows.get("coincidence_rows", []))
+                    transition_results = {"event_rows": list(table_rows.get("state_transition_event_rows", [])), "summary_rows": list(table_rows.get("state_transition_summary_rows", [])), "figure_paths": [], "alerts": []}
+                    selected_states_by_mode = dict(table_rows.get("selected_states_by_mode", selected_states_by_mode))
+                    state_modes = list(table_rows.get("state_modes", state_modes))
             if bool(config.get("poster_ready_only")):
                 config = dict(config)
                 config["plots_only"] = True
+            def _load_pairwise_family_rows_from_csv(root: Path) -> Dict[str, List[Dict[str, Any]]] | None:
+                csv_root = root / "csv"
+                sources = {
+                    "correlation_rows": csv_root / "bouton_soma_correlation_by_roi.csv",
+                    "soma_pairwise_rows": csv_root / "soma_pairwise_correlation_by_roi.csv",
+                    "bouton_pairwise_rows": csv_root / "bouton_pairwise_correlation_by_roi.csv",
+                }
+                loaded: Dict[str, List[Dict[str, Any]]] = {}
+                found_any = False
+                for key, csv_path in sources.items():
+                    if csv_path.exists():
+                        loaded[key] = read_csv_rows(csv_path)
+                        found_any = True
+                    else:
+                        loaded[key] = []
+                return loaded if found_any else None
+
             if not bool(config.get("plots_only")) and pairwise_family_rows is None:
                 pairwise_family_rows = _load_pairwise_family_rows_from_csv(result_root)
                 if pairwise_family_rows is not None:
@@ -975,10 +1119,56 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if not bool(config.get("plots_only")) and pairwise_family_rows is not None:
                 return manifest
 
+    union_cache_path = resolve_repo_path(config.get("shared_union_rows_cache_path"), repo_root) if config.get("shared_union_rows_cache_path") else None
+    union_cache_enabled = union_cache_path is not None and bool(config.get("union_state_labels_by_mode"))
+    union_states_by_mode = {
+        str(mode): list(states)
+        for mode, states in (config.get("union_state_labels_by_mode") or {}).items()
+    }
+    union_rows_meta_payload = union_rows_meta(
+        source_signature=analysis_cache_meta_hash({
+            "movie_expids": list(expids_by_mode.get("movie", [])),
+            "sleep_expids": list(expids_by_mode.get("sleep", [])),
+            "soma_channel": int(config.get("soma_channel", 1)),
+            "bouton_channel": int(config.get("bouton_channel", 0)),
+        }),
+        union_states_by_mode=union_states_by_mode,
+        parameters={
+            "soma_channel": int(config.get("soma_channel", 1)),
+            "bouton_channel": int(config.get("bouton_channel", 0)),
+            "event_detection_method": event_detection_method,
+            "visual_response_metric": visual_response_metric,
+            "lag_window_s": float(config.get("lag_window_s", 2.0)),
+            "lag_step_s": float(config.get("lag_step_s", 0.1)),
+        },
+    )
+    union_rows_payload = None
+    union_rows_cache_status = "disabled"
+    union_rows_cache_elapsed_s = 0.0
+    if union_cache_enabled and not bool(config.get("union_rows_cache_builder")):
+        union_rows_payload, union_rows_cache_status, union_rows_cache_elapsed_s = load_union_rows_cache(
+            union_cache_path,
+            expected_meta=union_rows_meta_payload,
+        )
+        if isinstance(union_rows_payload, dict):
+            activity_rows = list(union_rows_payload.get("activity_rows", []))
+            correlation_rows = list(union_rows_payload.get("correlation_rows", []))
+            soma_pairwise_rows = list(union_rows_payload.get("soma_pairwise_rows", []))
+            bouton_pairwise_rows = list(union_rows_payload.get("bouton_pairwise_rows", []))
+            lag_rows = list(union_rows_payload.get("lag_rows", []))
+            coincidence_rows = list(union_rows_payload.get("coincidence_rows", []))
+            visual_response_rows = list(union_rows_payload.get("visual_response_rows", []))
+            transition_results = dict(union_rows_payload.get("transition_results", transition_results))
     for mode in state_modes:
         selected_states = list(selected_states_by_mode.get(mode, []))
+        row_states = list(union_states_by_mode.get(mode, selected_states)) if union_cache_enabled else selected_states
         _stage("state selection", f"{mode}: {', '.join(selected_states) if selected_states else 'none'}")
         for expid in expids_by_mode.get(mode, []):
+            # Figure-only runs consume the validated analysis-results cache;
+            # constructing raw experiment contexts here can unnecessarily
+            # deserialize incompatible legacy source pickles.
+            if config.get("plots_only"):
+                continue
             ctx = build_experiment_context(
                 expid=expid,
                 mode=mode,
@@ -987,26 +1177,27 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 repo_root=repo_root,
             )
             experiment_rows.append(experiment_summary_row(ctx))
-            if config.get("plots_only"):
+            transition_contexts.append(ctx)
+            if config.get("plots_only") or isinstance(union_rows_payload, dict):
                 continue
-            state_masks = state_masks_for_context(ctx, selected_states)
-            activity_rows.extend(activity_rows_for_context(ctx, selected_states, state_masks=state_masks))
+            state_masks = state_masks_for_context(ctx, row_states)
+            activity_rows.extend(activity_rows_for_context(ctx, row_states, state_masks=state_masks))
             coincidence_rows.extend(
                 _build_coincidence_rows_for_context(
                     ctx,
-                    selected_states,
+                    row_states,
                     state_masks,
                     event_detection_method=event_detection_method,
                 )
             )
             if pairwise_family_rows is None:
-                correlation_rows.extend(bouton_soma_correlation_rows(ctx, selected_states, state_masks=state_masks))
-                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
-                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, selected_states, state_masks=state_masks))
+                correlation_rows.extend(bouton_soma_correlation_rows(ctx, row_states, state_masks=state_masks))
+                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks))
+                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks))
             lag_rows.extend(
                 lag_scan_rows(
                     ctx,
-                    selected_states,
+                    row_states,
                     lag_window_s=float(config.get("lag_window_s", 2.0)),
                     lag_step_s=float(config.get("lag_step_s", 0.1)),
                     state_masks=state_masks,
@@ -1038,8 +1229,76 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
 
+    movie_activity_count = sum(1 for row in activity_rows if str(row.get("mode") or "") == "movie")
+    if expids_by_mode.get("movie") and movie_activity_count == 0:
+        logger.error(
+            "Movie state selection produced zero movie activity rows for %s; selected states=%s",
+            ", ".join(str(expid) for expid in expids_by_mode["movie"]),
+            selected_states_by_mode.get("movie", []),
+        )
+
+    union_rows_for_shared_output = None
+    if union_cache_enabled:
+        union_rows_for_shared_output = {
+            "activity_rows": list(activity_rows),
+            "correlation_rows": list(correlation_rows),
+            "soma_pairwise_rows": list(soma_pairwise_rows),
+            "bouton_pairwise_rows": list(bouton_pairwise_rows),
+            "lag_rows": list(lag_rows),
+            "coincidence_rows": list(coincidence_rows),
+            "visual_response_rows": list(visual_response_rows),
+        }
+        if bool(config.get("union_rows_cache_builder")) and union_cache_path is not None:
+            union_rows_cache_elapsed_s = save_union_rows_cache(
+                union_cache_path,
+                union_rows_for_shared_output,
+                meta=union_rows_meta_payload,
+            )
+            union_rows_cache_status = "built"
+        selected_state_rows = {
+            family: filter_rows_by_states(rows, selected_states_by_mode)
+            for family, rows in union_rows_for_shared_output.items()
+        }
+        activity_rows = selected_state_rows["activity_rows"]
+        correlation_rows = selected_state_rows["correlation_rows"]
+        soma_pairwise_rows = selected_state_rows["soma_pairwise_rows"]
+        bouton_pairwise_rows = selected_state_rows["bouton_pairwise_rows"]
+        lag_rows = selected_state_rows["lag_rows"]
+        coincidence_rows = selected_state_rows["coincidence_rows"]
+        visual_response_rows = selected_state_rows["visual_response_rows"]
+        if write_general_tables and union_rows_for_shared_output:
+            ensure_dir(general_csv_root)
+            for filename, family in (
+                ("state_activity_by_experiment.csv", "activity_rows"),
+                ("bouton_soma_correlation_by_roi.csv", "correlation_rows"),
+                ("soma_pairwise_correlation_by_roi.csv", "soma_pairwise_rows"),
+                ("bouton_pairwise_correlation_by_roi.csv", "bouton_pairwise_rows"),
+                ("bouton_soma_lag_scan_by_roi.csv", "lag_rows"),
+                ("soma_bouton_coincidence_by_roi.csv", "coincidence_rows"),
+                ("visual_response_by_roi.csv", "visual_response_rows"),
+            ):
+                rows = union_rows_for_shared_output.get(family, [])
+                if rows:
+                    write_csv_rows(general_csv_root / filename, rows, sorted({key for row in rows for key in row.keys()}))
+            write_csv_rows(
+                general_csv_root / "experiments.csv",
+                experiment_rows,
+                sorted({key for row in experiment_rows for key in row.keys()}) if experiment_rows else ["expid"],
+            )
+            write_general_tables = False
+
+    if not config.get("plots_only"):
+        transition_results = run_transition_analysis(
+            transition_contexts,
+            selected_states_by_mode,
+            config.get("transition_analysis"),
+            event_detection_method=event_detection_method,
+            output_root=figure_root,
+        )
+
     activity_rows, correlation_rows, soma_pairwise_rows, bouton_pairwise_rows, lag_rows, visual_response_rows, coincidence_rows = _reload_plot_rows_from_csv(
         result_root,
+        str(config.get("comparison_preset_name") or result_root.name),
         plots_only=bool(config.get("plots_only")),
         activity_rows=activity_rows,
         correlation_rows=correlation_rows,
@@ -1138,36 +1397,64 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 analysis_state_order.append(state_key)
                 seen_analysis_states.add(state_key)
 
+
     roi_split_bundles: List[Dict[str, Any]] = []
-    for roi_type, compartment, subject_key in (("soma", "soma", "global_soma_id"), ("bouton", "bouton", "global_bouton_id")):
+    split_basis_names = ("all", "nrem", "rem")
+    split_specs = (
+        ("activity_split", "activity", "binary"),
+        ("frequency_split", "frequency", "binary"),
+        ("activity_frequency_split", "activity_frequency", "quadrant"),
+    )
+    for roi_type, compartment, subject_key, response_columns in (
+        ("soma", "soma", "global_soma_id", ("mean", "event_frequency_per_min")),
+        ("bouton", "bouton", "global_bouton_id", ("mean", "event_frequency_per_min")),
+    ):
         compartment_rows = [row for row in activity_rows if str(row.get("compartment") or "") == compartment]
         if not compartment_rows:
             continue
-        for split_name, score_column in (("activity", "mean"), ("event_frequency", "event_frequency_per_min")):
-            bundle = build_roi_split_results(
-                compartment_rows,
-                roi_type=roi_type,
-                split_name=split_name,
-                score_column=score_column,
-                response_columns=("mean", "event_frequency_per_min"),
-                subject_key=subject_key,
-                compartment=compartment,
-                selected_states=analysis_state_order,
-                state_order=analysis_state_order,
-                shuffle_n=shuffle_n,
-            )
-            if bundle.get("counts", {}).get("n_subject_state_rows", 0):
-                roi_split_bundles.append(bundle)
+        primary_score_column = response_columns[0]
+        secondary_score_column = response_columns[1]
+        for branch_name, split_name, split_mode in split_specs:
+            score_column = secondary_score_column if branch_name == "frequency_split" else primary_score_column
+            split_secondary_score = secondary_score_column if branch_name == "activity_frequency_split" else None
+            for basis_name in split_basis_names:
+                bundle = build_roi_split_results(
+                    compartment_rows,
+                    roi_type=roi_type,
+                    split_name=split_name,
+                    branch_name=branch_name,
+                    basis_name=basis_name,
+                    score_column=score_column,
+                    secondary_score_column=split_secondary_score,
+                    response_columns=response_columns,
+                    subject_key=subject_key,
+                    compartment=compartment,
+                    selected_states=analysis_state_order,
+                    state_order=analysis_state_order,
+                    shuffle_n=shuffle_n,
+                    split_mode=split_mode,
+                    sleep_expids=config.get("sleep_expids"),
+                )
+                if bundle.get("counts", {}).get("n_membership_rows", 0):
+                    roi_split_bundles.append(bundle)
     roi_split_subject_state_rows: List[Dict[str, Any]] = []
-    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str]] = set()
+    seen_roi_split_subject_state_keys: set[tuple[str, str, str, str, str, str]] = set()
     for bundle in roi_split_bundles:
         for row in bundle.get("subject_state_rows", []):
-            key = (str(row.get("roi_type") or ""), str(row.get("compartment") or ""), str(row.get("subject_id") or ""), str(row.get("state") or ""))
+            key = (
+                str(row.get("branch_name") or ""),
+                str(row.get("basis_name") or ""),
+                str(row.get("roi_type") or ""),
+                str(row.get("compartment") or ""),
+                str(row.get("subject_id") or ""),
+                str(row.get("state") or ""),
+            )
             if key in seen_roi_split_subject_state_keys:
                 continue
             seen_roi_split_subject_state_keys.add(key)
             roi_split_subject_state_rows.append(dict(row))
     roi_split_results = {
+        "branches": {},
         "bundles": roi_split_bundles,
         "subject_state_rows": roi_split_subject_state_rows,
         "membership_rows": [row for bundle in roi_split_bundles for row in bundle.get("membership_rows", [])],
@@ -1178,8 +1465,72 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "membership_rows": int(sum(len(bundle.get("membership_rows", [])) for bundle in roi_split_bundles)),
             "comparison_rows": int(sum(len(bundle.get("comparison_rows", [])) for bundle in roi_split_bundles)),
             "summary_rows": int(sum(len(bundle.get("summary_rows", [])) for bundle in roi_split_bundles)),
+            "bundles": int(len(roi_split_bundles)),
+            "branches": int(len({str(bundle.get("branch_name") or "") for bundle in roi_split_bundles if str(bundle.get("branch_name") or "")})),
+            "basis_leaves": int(len({(str(bundle.get("branch_name") or ""), str(bundle.get("basis_name") or "")) for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") and str(bundle.get("basis_name") or "")})),
         },
     }
+    for bundle in roi_split_bundles:
+        branch_key = str(bundle.get("branch_name") or bundle.get("split_name") or "").strip() or "split"
+        basis_key = str(bundle.get("basis_name") or "all").strip() or "all"
+        roi_split_results["branches"].setdefault(branch_key, {})[basis_key] = bundle
+
+    split_membership_rows = roi_split_results.get("membership_rows", []) if isinstance(roi_split_results, dict) else []
+    if split_membership_rows:
+        activity_rows_with_cohort = annotate_rows_with_split_group(activity_rows_with_cohort, split_membership_rows)
+        correlation_rows_with_cohort = annotate_rows_with_split_group(correlation_rows_with_cohort, split_membership_rows)
+        lag_rows_with_cohort = annotate_rows_with_split_group(lag_rows_with_cohort, split_membership_rows)
+        soma_pairwise_rows_with_cohort = annotate_rows_with_split_group(soma_pairwise_rows_with_cohort, split_membership_rows)
+        bouton_pairwise_rows_with_cohort = annotate_rows_with_split_group(bouton_pairwise_rows_with_cohort, split_membership_rows)
+        coincidence_rows_with_cohort = annotate_rows_with_split_group(coincidence_rows_with_cohort, split_membership_rows)
+    correlation_summary = correlation_summary_rows(correlation_rows_with_cohort)
+    soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows_with_cohort)
+    bouton_pairwise_summary = pairwise_correlation_summary_rows(bouton_pairwise_rows_with_cohort)
+    lag_summary = lag_summary_rows(lag_rows_with_cohort)
+    movie_activity_rows_with_cohort = [row for row in activity_rows_with_cohort if str(row.get("mode") or "") == "movie"]
+    sleep_activity_rows_with_cohort = [row for row in activity_rows_with_cohort if str(row.get("mode") or "") == "sleep"]
+    movie_state_groups = build_state_comparison_row_groups(movie_activity_rows_with_cohort, selected_states_by_mode.get("movie", []))
+    sleep_state_groups = build_state_comparison_row_groups(sleep_activity_rows_with_cohort, selected_states_by_mode.get("sleep", []))
+    state_comparison_summary_rows = state_comparison_rows(
+        movie_activity_rows_with_cohort,
+        selected_states_by_mode.get("movie", []),
+        shuffle_n,
+        grouped_rows=movie_state_groups,
+    )
+    sleep_state_comparison_summary_rows = state_comparison_rows(
+        sleep_activity_rows_with_cohort,
+        selected_states_by_mode.get("sleep", []),
+        shuffle_n,
+        grouped_rows=sleep_state_groups,
+    )
+    state_event_comparison_summary_rows = state_comparison_rows(
+        movie_activity_rows_with_cohort,
+        selected_states_by_mode.get("movie", []),
+        shuffle_n,
+        metric_col="event_frequency_per_min",
+        grouped_rows=movie_state_groups,
+    )
+    sleep_state_event_comparison_summary_rows = state_comparison_rows(
+        sleep_activity_rows_with_cohort,
+        selected_states_by_mode.get("sleep", []),
+        shuffle_n,
+        metric_col="event_frequency_per_min",
+        grouped_rows=sleep_state_groups,
+    )
+    if pairwise_family_rows is None:
+        save_family_results_cache(
+            pairwise_family_cache_file,
+            "pairwise_correlation",
+            {
+                "correlation_rows": correlation_rows_with_cohort,
+                "soma_pairwise_rows": soma_pairwise_rows_with_cohort,
+                "bouton_pairwise_rows": bouton_pairwise_rows_with_cohort,
+                "correlation_summary_rows": correlation_summary,
+                "soma_pairwise_summary_rows": soma_pairwise_summary,
+                "bouton_pairwise_summary_rows": bouton_pairwise_summary,
+            },
+            base_meta=pairwise_family_meta,
+        )
 
     cohort_activity_rows = split_rows_by_cohort(activity_rows_with_cohort)
     cohort_correlation_rows = split_rows_by_cohort(correlation_rows_with_cohort)
@@ -1235,28 +1586,39 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     ) if isinstance(mixed_model_results, dict) else 0
     _stage(
         "summary counts",
-        f"activity={len(activity_summary_rows)}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, roi_split={len(roi_split_results.get('comparison_rows', []))}, correlation={len(correlation_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
+        f"activity={len(activity_summary_rows)}, transition_events={len(transition_results.get('event_rows', []))}, transition_comparisons={len(transition_results.get('summary_rows', []))}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, roi_split={len(roi_split_results.get('comparison_rows', []))}, correlation={len(correlation_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
     )
 
     poster_ready_only = bool(config.get("poster_ready_only"))
 
-    _stage("writing csv", "experiments")
-    write_csv_rows(result_root / "csv" / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
-    if activity_rows:
-        _stage("writing csv", "state_activity_by_experiment")
-        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
-    if correlation_rows:
+    if write_general_tables:
+        _stage("writing csv", "general experiments")
+        write_csv_rows(general_csv_root / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
+    if activity_rows and write_general_tables:
+        _stage("writing csv", "general state_activity_by_experiment")
+        write_csv_rows(general_csv_root / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "split_group", "split_group_display", "split_group_color", "split_group_rank", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
+    if correlation_rows and write_general_tables:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
-        write_csv_rows(result_root / "csv" / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
-    if soma_pairwise_rows:
+        write_csv_rows(general_csv_root / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
+    if soma_pairwise_rows and write_general_tables:
         _stage("writing csv", "soma_pairwise_correlation_by_roi")
-        write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_roi.csv", soma_pairwise_rows, list(soma_pairwise_rows[0].keys()))
-    if bouton_pairwise_rows:
+        write_csv_rows(general_csv_root / "soma_pairwise_correlation_by_roi.csv", soma_pairwise_rows, list(soma_pairwise_rows[0].keys()))
+    if bouton_pairwise_rows and write_general_tables:
         _stage("writing csv", "bouton_pairwise_correlation_by_roi")
-        write_csv_rows(result_root / "csv" / "bouton_pairwise_correlation_by_roi.csv", bouton_pairwise_rows, list(bouton_pairwise_rows[0].keys()))
-    if lag_rows:
+        write_csv_rows(general_csv_root / "bouton_pairwise_correlation_by_roi.csv", bouton_pairwise_rows, list(bouton_pairwise_rows[0].keys()))
+    if lag_rows and write_general_tables:
         _stage("writing csv", "bouton_soma_lag_scan_by_roi")
-        write_csv_rows(result_root / "csv" / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
+        write_csv_rows(general_csv_root / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
+    for table_name, rows in (("events", transition_results.get("event_rows", [])), ("comparisons", transition_results.get("summary_rows", []))):
+        grouped_rows = {}
+        for row in rows:
+            key = (str(row.get("scope") or "all_states"), str(row.get("window_mode") or "strict"))
+            grouped_rows.setdefault(key, []).append(row)
+        for (scope, window_mode), grouped in sorted(grouped_rows.items()):
+            _stage("writing csv", f"state_transition_{table_name}_{scope}_{window_mode}")
+            path = result_root / "csv" / f"state_transition_{table_name}_{scope}_{window_mode}.csv"
+            write_csv_rows(path, grouped, sorted({key for row in grouped for key in row.keys()}))
+
     if activity_summary_rows:
         _stage("writing csv", "state_activity_by_day")
         write_csv_rows(result_root / "csv" / "state_activity_by_day.csv", activity_summary_rows, list(activity_summary_rows[0].keys()))
@@ -1323,9 +1685,9 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort_lag_summary_rows = lag_summary_rows(cohort_rows)
             if cohort_lag_summary_rows:
                 write_csv_rows(cohort_csv_dir / "bouton_soma_lag_summary_by_day.csv", cohort_lag_summary_rows, list(cohort_lag_summary_rows[0].keys()))
-    if coincidence_rows:
-        _stage("writing csv", "soma_bouton_coincidence_by_roi")
-        write_csv_rows(result_root / "csv" / "soma_bouton_coincidence_by_roi.csv", coincidence_rows, list(coincidence_rows[0].keys()))
+    if coincidence_rows and write_general_tables:
+        _stage("writing csv", "general soma_bouton_coincidence_by_roi")
+        write_csv_rows(general_csv_root / "soma_bouton_coincidence_by_roi.csv", coincidence_rows, list(coincidence_rows[0].keys()))
     if coincidence_summary_rows:
         _stage("writing csv", "soma_bouton_coincidence_by_day")
         write_csv_rows(result_root / "csv" / "soma_bouton_coincidence_by_day.csv", coincidence_summary_rows, list(coincidence_summary_rows[0].keys()))
@@ -1335,12 +1697,12 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
             write_csv_rows(cohort_csv_dir / "soma_bouton_coincidence_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
-    if visual_response_rows:
-        _stage("writing csv", "visual_response_by_roi")
-        write_csv_rows(result_root / "csv" / "visual_response_by_roi.csv", visual_response_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "response_metric", "event_detection_method", "source_label", "source_path", "available", "comparison", "statistic", "raw_pvalue", "adjusted_pvalue", "n_visual_values", "n_blank_values", "mean_visual", "mean_blank", "delta", "paired_stimulus_values", "blank_reference_values", "visual_trial_labels", "blank_trial_labels", "significant", "star", "responsive", "cohort", "cohort_requested"])
-    if visual_response_day_rows:
-        _stage("writing csv", "visual_response_by_day")
-        write_csv_rows(result_root / "csv" / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
+    if visual_response_rows and write_general_tables:
+        _stage("writing csv", "general visual_response_by_roi")
+        write_csv_rows(general_csv_root / "visual_response_by_roi.csv", visual_response_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "response_metric", "event_detection_method", "source_label", "source_path", "available", "comparison", "statistic", "raw_pvalue", "adjusted_pvalue", "n_visual_values", "n_blank_values", "mean_visual", "mean_blank", "delta", "paired_stimulus_values", "blank_reference_values", "visual_trial_labels", "blank_trial_labels", "significant", "star", "responsive", "cohort", "cohort_requested"])
+    if visual_response_day_rows and write_general_tables:
+        _stage("writing csv", "general visual_response_by_day")
+        write_csv_rows(general_csv_root / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))
 
     if not poster_ready_only:
         _stage("plotting", "state activity")
@@ -1348,41 +1710,49 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort_rows = cohort_activity_rows.get(cohort_name, [])
             if not cohort_rows:
                 continue
+            cohort_plot_rows = _state_plot_rows_for_branch(roi_split_results, cohort_rows, cohort_name)
+            if not cohort_plot_rows:
+                continue
             plot_state_activity(
-                cohort_rows,
-                result_root,
+                cohort_plot_rows,
+                figure_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
+                state_order=analysis_state_order,
             )
             _stage("plotting", f"state event frequency - {cohort_name}")
             plot_state_event_frequency(
-                cohort_rows,
-                result_root,
+                cohort_plot_rows,
+                figure_root,
                 comparison_rows=cohort_state_event_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
+                state_order=analysis_state_order,
             )
             _stage("plotting", f"axon-soma correlation - {cohort_name}")
             plot_state_correlation(
-                cohort_correlation_summary.get(cohort_name, []),
-                result_root,
+                _state_plot_rows_for_branch(roi_split_results, cohort_correlation_summary.get(cohort_name, []), cohort_name, prefer_subject_rows=False),
+                figure_root,
                 comparison_rows=cohort_state_comparison_rows.get(cohort_name, []),
                 cohort_label=cohort_name,
+                state_order=analysis_state_order,
                 title="Axon-soma correlation",
                 output_stem="axon_soma_state_summary_boxplots_correlation",
             )
             _stage("plotting", f"soma-soma correlation - {cohort_name}")
             plot_state_correlation(
-                cohort_soma_pairwise_summary.get(cohort_name, []),
-                result_root,
+                _state_plot_rows_for_branch(roi_split_results, cohort_soma_pairwise_summary.get(cohort_name, []), cohort_name, prefer_subject_rows=False),
+                figure_root,
                 cohort_label=cohort_name,
+                state_order=analysis_state_order,
                 title="Soma-soma correlation",
                 output_stem="soma_pairwise_state_summary_boxplots_correlation",
             )
             _stage("plotting", f"axon-axon correlation - {cohort_name}")
             plot_state_correlation(
-                cohort_bouton_pairwise_summary.get(cohort_name, []),
-                result_root,
+                _state_plot_rows_for_branch(roi_split_results, cohort_bouton_pairwise_summary.get(cohort_name, []), cohort_name, prefer_subject_rows=False),
+                figure_root,
                 cohort_label=cohort_name,
+                state_order=analysis_state_order,
                 title="Axon-axon correlation",
                 output_stem="axon_axon_state_summary_boxplots_correlation",
             )
@@ -1391,7 +1761,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if not cohort_rows:
                 continue
             _stage("plotting", f"lag heatmap - {cohort_name}")
-            plot_lag_heatmap(cohort_rows, result_root, cohort_label=cohort_name)
+            lag_rows = annotate_rows_with_split_group(cohort_rows, roi_split_results.get("membership_rows", []))
+            plot_lag_heatmap(lag_rows, figure_root, cohort_label=cohort_name)
         from analysis.shared.plots.roi_split import plot_roi_split_bundle_figure
 
         roi_split_bundles = roi_split_results.get("bundles", []) if isinstance(roi_split_results, dict) else []
@@ -1405,23 +1776,24 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             try:
                 figure_bundle = dict(bundle)
                 figure_bundle["compartment"] = ""
-                plot_roi_split_bundle_figure(figure_bundle, result_root)
+                plot_roi_split_bundle_figure(figure_bundle, figure_root)
             except Exception as exc:
                 logger.exception("Failed to create roi split figure %s/%s/%s", roi_type, compartment, split_name)
                 continue
-        if coincidence_rows:
+        if coincidence_rows and (general_output_root is None or generate_shared_general_figures):
             _stage("plotting", "soma-bouton coincidence examples")
             coincidence_example_figures = _generate_coincidence_example_figures(
                 coincidence_rows,
-                result_root=result_root,
+                result_root=(shared_general_root or figure_root),
                 repo_root=repo_root,
                 coincidence_example_top_n=coincidence_example_top_n,
+                coincidence_example_max_total=coincidence_example_max_total,
                 soma_channel=int(config["soma_channel"]),
                 bouton_channel=int(config["bouton_channel"]),
                 default_event_detection_method=event_detection_method,
             )
-        if visual_response_rows:
-            visual_response_fig_dir = ensure_dir(result_root / "figures" / "visual_response")
+        if visual_response_rows and (general_output_root is None or generate_shared_general_figures):
+            visual_response_fig_dir = ensure_dir((shared_general_root or figure_root) / "visual_response")
             for compartment in ("soma", "bouton"):
                 compartment_rows = [row for row in visual_response_rows if str(row.get("compartment") or "") == compartment]
                 if not compartment_rows:
@@ -1440,14 +1812,15 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         cohort_label=cohort,
                         kind=compartment,
                     )
-                    render_visual_response_entity_figures(
+                    if bool(config.get("generate_visual_response_entity_figures", True)):
+                        render_visual_response_entity_figures(
                         cohort_rows,
                         cohort_dir / "entities",
                         cohort_label=cohort,
                         kind=compartment,
                     )
         if not poster_ready_only and mixed_model_results:
-            mixed_model_fig_dir = ensure_dir(result_root / "figures" / "mixed_model")
+            mixed_model_fig_dir = ensure_dir(figure_root / "mixed_model")
             for cohort_name, cohort_results in mixed_model_results.items():
                 if not isinstance(cohort_results, dict) or not cohort_results:
                     continue
@@ -1580,44 +1953,48 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 "states": list(dict.fromkeys(state_keys)),
                 "cohorts": list(dict.fromkeys(cohort_keys)),
             }
-        poster_state_order = ["quiet_awake_blank", "quiet_awake_movies", "quiet_awake", "nrem", "rem"]
+        poster_state_order = list(analysis_state_order)
         blank_state_order = ["quiet_awake_blank", "nrem_blank", "rem_blank"]
         movie_state_order = ["quiet_awake_movies", "nrem_movies", "rem_movies"]
         mixed_model_contrast_p_source = str(config.get("mixed_model_contrast_p_source") or "classical")
-        preset_result_root = Path(config.get("result_root") or DEFAULT_CONFIG["result_root"])
+        preset_result_root = Path(
+            config.get("comparison_output_root")
+            or config.get("result_root")
+            or DEFAULT_CONFIG["result_root"]
+        )
         if not preset_result_root.is_absolute():
             preset_result_root = REPO_ROOT / preset_result_root
-        if preset_result_root.name != "all_requested_comparisons" and not (preset_result_root / "blank_state_comparisons").exists() and (preset_result_root.parent / "blank_state_comparisons").exists():
-            preset_result_root = preset_result_root.parent
 
         def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
-            candidate_paths = []
-            for root in (preset_result_root, preset_result_root.parent):
-                candidate_paths.append(root / preset_name / "csv" / csv_name)
-                if root.name == "all_requested_comparisons":
-                    candidate_paths.append(root / "csv" / csv_name)
-            for csv_path in candidate_paths:
-                if csv_path.exists():
-                    return read_csv_rows(csv_path)
-            logger.warning("Missing preset CSV %s; tried %s", csv_name, ", ".join(str(path) for path in candidate_paths))
-            return []
+            return load_comparison_preset_csv_rows(preset_result_root, preset_name, csv_name, logger=logger)
 
         def _load_all_requested_comparison_rows(csv_name: str) -> List[Dict[str, Any]]:
-            candidate_paths = []
-            for root in (preset_result_root, preset_result_root.parent):
-                if root.name == "all_requested_comparisons":
-                    candidate_paths.append(root / "csv" / csv_name)
-                candidate_paths.append(root / "all_requested_comparisons" / "csv" / csv_name)
-            for csv_path in candidate_paths:
-                if csv_path.exists():
-                    return read_csv_rows(csv_path)
-            logger.warning("Missing all_requested_comparisons CSV %s; tried %s", csv_name, ", ".join(str(path) for path in candidate_paths))
-            return []
+            return load_all_requested_comparison_rows(preset_result_root, csv_name, logger=logger)
 
         blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
         movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
         blank_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
         movie_preset_comparison_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_comparisons_movie.csv"), visual_response_rows)
+        for source_name, source_preset, source_csv, source_rows in (
+            ("blank_activity", "blank_state_comparisons", "state_activity_by_experiment.csv", blank_preset_activity_rows),
+            ("movie_activity", "movies_state_comparisons", "state_activity_by_experiment.csv", movie_preset_activity_rows),
+            ("blank_comparisons", "blank_state_comparisons", "state_comparisons_movie.csv", blank_preset_comparison_rows),
+            ("movie_comparisons", "movies_state_comparisons", "state_comparisons_movie.csv", movie_preset_comparison_rows),
+        ):
+            logger.info(
+                "poster source contract: %s preset=%s csv=%s rows=%d",
+                source_name,
+                source_preset,
+                source_csv,
+                len(source_rows),
+            )
+            if not source_rows:
+                logger.warning(
+                    "poster source contract unavailable: %s preset=%s csv=%s",
+                    source_name,
+                    source_preset,
+                    source_csv,
+                )
 
         for compartment in ("soma", "bouton"):
             compartment_root = ensure_dir(poster_output_dir / compartment)
@@ -1664,8 +2041,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     state_order=poster_state_order,
                     output_stem=f"{compartment}_state_mixed_model_poster_ready",
                     title="Quiet blank vs sleep states",
-                    preferred_response_keys=(("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity")),
-                    mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                    preferred_response_keys=("mean_activity", "mean"),
+                    mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
                 )
                 if mixed_path:
                     poster_ready_figures.append(str(mixed_path))
@@ -1675,7 +2052,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 ("responsive", mixed_model_results.get("responsive", {}).get(compartment, {}).get("selected_state", {}), responsive_significant_states),
                 ("nonresponsive", mixed_model_results.get("nonresponsive", {}).get(compartment, {}).get("selected_state", {}), nonresponsive_significant_states),
             ):
-                selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_dendrite_activity", "mean") if compartment == "soma" else ("mean_spine_activity_per_dendrite", "mean", "mean_dendrite_activity"))
+                selected_rows = _select_mixed_model_rows(source, preferred_response_keys=("mean_activity", "mean"))
                 target.update(_poster_mixed_model_significant_states(selected_rows))
             responsive_comparison_rows = [
                 row for row in cohort_state_comparison_rows.get("responsive", [])
@@ -1815,6 +2192,242 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 if combined_path:
                     poster_ready_figures.append(str(combined_path))
 
+    comparison_preset_name = str(config.get("comparison_preset_name") or "default")
+    if not poster_ready_only and bool(config.get("branch_first_figures", True)):
+        branch_root = Path(config.get("branch_first_output_root") or result_root)
+        branch_results_source = {
+            "analysis_state_selection": {
+                "state_comparison_states": list(analysis_state_order),
+                "basal_apical_states": list(analysis_state_order),
+                "compartment_states": list(analysis_state_order),
+                "comparison_preset_name": comparison_preset_name,
+                "state_modes": list(state_modes),
+                "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
+            },
+            "roi_split": roi_split_results,
+        }
+
+        def render_branch_first_leaf_figures(branch_name: str, basis_name: str) -> None:
+            leaf_root = branch_leaf_root(branch_root, branch_name, basis_name)
+            leaf_results = scoped_branch_results(branch_results_source, branch_name=branch_name, basis_name=basis_name, sleep_expids=config.get("sleep_expids"))
+            basis_sleep_expids = config.get("sleep_expids")
+            basis_activity_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_activity_rows.items()}
+            basis_state_comparison_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_state_comparison_rows.items()}
+            basis_state_event_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_state_event_comparison_rows.items()}
+            basis_correlation_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_correlation_summary.items()}
+            basis_soma_pairwise_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_soma_pairwise_summary.items()}
+            basis_bouton_pairwise_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_bouton_pairwise_summary.items()}
+            basis_lag_rows = {cohort: scope_rows_for_basis(rows, basis_name, sleep_expids=basis_sleep_expids) for cohort, rows in cohort_lag_rows.items()}
+            basis_visual_rows = scope_rows_for_basis(visual_response_rows, basis_name, sleep_expids=basis_sleep_expids)
+            branch_first_mixed_model_results: Dict[str, Any] = {}
+            leaf_roi_split = leaf_results.get("roi_split", {})
+            if not isinstance(leaf_roi_split, dict):
+                leaf_roi_split = {}
+            roi_split_membership_rows = leaf_roi_split.get("membership_rows", [])
+            if branch_name in SPLIT_BRANCHES and roi_split_membership_rows:
+                require_split_groups(roi_split_membership_rows, branch=branch_name, basis=basis_name)
+            leaf_split_metadata = {
+                "roi_type": str(leaf_roi_split.get("roi_type") or "").strip(),
+                "branch_name": str(leaf_roi_split.get("branch_name") or branch_name).strip(),
+                "basis_name": str(leaf_roi_split.get("basis_name") or basis_name).strip(),
+                "split_name": str(leaf_roi_split.get("split_name") or "").strip(),
+                "split_mode": str(leaf_roi_split.get("split_mode") or "").strip(),
+            }
+
+            def _leaf_state_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+                if not rows:
+                    return []
+                if branch_name in SPLIT_BRANCHES and not roi_split_membership_rows:
+                    raise ValueError(f"{branch_name}/{basis_name} has no split membership rows")
+                if not roi_split_membership_rows:
+                    return [dict(row) for row in rows]
+                scoped_rows = []
+                for row in rows:
+                    payload = dict(row)
+                    for key, value in leaf_split_metadata.items():
+                        if value and not str(payload.get(key) or "").strip():
+                            payload[key] = value
+                    scoped_rows.append(payload)
+                return annotate_rows_with_split_group(scoped_rows, roi_split_membership_rows)
+
+            def _leaf_split_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+                if not rows:
+                    return []
+                tagged_rows: List[Dict[str, Any]] = []
+                for row in rows:
+                    payload = dict(row)
+                    payload.update(leaf_split_metadata)
+                    tagged_rows.append(payload)
+                return tagged_rows
+
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                mixed_model_rows = cohort_activity_rows.get(cohort_name, [])
+                if not mixed_model_rows:
+                    continue
+                cohort_results: Dict[str, Any] = {}
+                for compartment_key in ("soma", "bouton"):
+                    compartment_rows = [row for row in mixed_model_rows if str(row.get("compartment") or "") == compartment_key]
+                    if not compartment_rows:
+                        continue
+                    split_result = run_split_family(
+                        _leaf_split_rows(compartment_rows),
+                        roi_split_membership_rows,
+                        response_columns=("mean_activity", "event_frequency_per_min"),
+                        state_comparison_states=list(analysis_state_order),
+                        shuffle_n=shuffle_n,
+                        mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source") or "classical"),
+                        state_filter=list(analysis_state_order),
+                        vc_level_keys=("unit_id",),
+                    )
+                    if split_result.get("available"):
+                        cohort_results[compartment_key] = {"selected_state": split_result}
+                if cohort_results:
+                    branch_first_mixed_model_results[cohort_name] = cohort_results
+
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                cohort_rows = basis_activity_rows.get(cohort_name, [])
+                plot_rows = _state_plot_rows_for_branch(leaf_roi_split, cohort_rows, cohort_name, require_split=branch_name in SPLIT_BRANCHES)
+                if not plot_rows:
+                    continue
+                plot_state_activity(
+                    plot_rows,
+                    leaf_root,
+                    comparison_rows=basis_state_comparison_rows.get(cohort_name, []),
+                    cohort_label=cohort_name,
+                    state_order=analysis_state_order,
+                )
+                plot_state_event_frequency(
+                    plot_rows,
+                    leaf_root,
+                    comparison_rows=basis_state_event_rows.get(cohort_name, []),
+                    cohort_label=cohort_name,
+                    state_order=analysis_state_order,
+                )
+                plot_state_correlation(
+                    _leaf_state_rows(basis_correlation_rows.get(cohort_name, [])),
+                    leaf_root,
+                    comparison_rows=basis_state_comparison_rows.get(cohort_name, []),
+                    cohort_label=cohort_name,
+                    state_order=analysis_state_order,
+                    title="Axon-soma correlation",
+                    output_stem="axon_soma_state_summary_boxplots_correlation",
+                )
+                plot_state_correlation(
+                    _leaf_state_rows(basis_soma_pairwise_rows.get(cohort_name, [])),
+                    leaf_root,
+                    cohort_label=cohort_name,
+                    state_order=analysis_state_order,
+                    title="Soma-soma correlation",
+                    output_stem="soma_pairwise_state_summary_boxplots_correlation",
+                )
+                plot_state_correlation(
+                    _leaf_state_rows(basis_bouton_pairwise_rows.get(cohort_name, [])),
+                    leaf_root,
+                    cohort_label=cohort_name,
+                    state_order=analysis_state_order,
+                    title="Axon-axon correlation",
+                    output_stem="axon_axon_state_summary_boxplots_correlation",
+                )
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                cohort_rows = basis_lag_rows.get(cohort_name, [])
+                if not cohort_rows:
+                    continue
+                plot_lag_heatmap(_leaf_state_rows(cohort_rows), leaf_root, cohort_label=cohort_name)
+
+            roi_split_bundles = leaf_results.get("roi_split", {}).get("bundles", []) if isinstance(leaf_results.get("roi_split", {}), dict) else []
+            for bundle in roi_split_bundles:
+                if not isinstance(bundle, dict) or not bundle:
+                    continue
+                roi_type = str(bundle.get("roi_type") or "roi").strip().lower() or "roi"
+                split_name = str(bundle.get("split_name") or "split").strip().lower() or "split"
+                compartment = str(bundle.get("compartment") or "").strip().lower() or "all"
+                _stage("plotting", f"branch-first roi split figures - {branch_name} - {basis_name} - {roi_type} - {compartment} - {split_name}")
+                try:
+                    figure_bundle = dict(bundle)
+                    figure_bundle["compartment"] = ""
+                    plot_roi_split_bundle_figure(figure_bundle, leaf_root)
+                except Exception as exc:
+                    logger.exception("Failed to create branch-first roi split figure %s/%s/%s/%s/%s", branch_name, basis_name, roi_type, compartment, split_name)
+                    continue
+
+            if basis_visual_rows and general_output_root is None:
+                visual_response_fig_dir = ensure_dir(leaf_root / "visual_response")
+                for compartment in ("soma", "bouton"):
+                    compartment_rows = [row for row in basis_visual_rows if str(row.get("compartment") or "") == compartment]
+                    if not compartment_rows:
+                        continue
+                    compartment_dir = ensure_dir(visual_response_fig_dir / compartment)
+                    for cohort in ("all", "responsive", "nonresponsive"):
+                        cohort_rows = compartment_rows if cohort == "all" else [row for row in compartment_rows if str(row.get("cohort") or "nonresponsive") == cohort]
+                        if not cohort_rows:
+                            continue
+                        cohort_dir = ensure_dir(compartment_dir / cohort)
+                        plot_visual_response_boxplot_figure(
+                            {"rows": cohort_rows},
+                            cohort_dir,
+                            output_name="visual_response_movie_vs_blank.svg",
+                            title=f"{compartment.capitalize()} visual response - {cohort.capitalize()}",
+                            cohort_label=cohort,
+                            kind=compartment,
+                            max_trace_points=config.get("visual_response_entity_max_trace_points"),
+                        )
+                        if bool(config.get("generate_visual_response_entity_figures", True)):
+                            render_visual_response_entity_figures(
+                            cohort_rows,
+                            cohort_dir / "entities",
+                            cohort_label=cohort,
+                            kind=compartment,
+                            max_trace_points=config.get("visual_response_entity_max_trace_points"),
+                        )
+
+            if branch_first_mixed_model_results:
+                mixed_model_fig_dir = ensure_dir(leaf_root / "mixed_model")
+                for cohort_name, cohort_results in branch_first_mixed_model_results.items():
+                    if not isinstance(cohort_results, dict) or not cohort_results:
+                        continue
+                    cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
+                    for compartment_key, compartment_results in cohort_results.items():
+                        if not isinstance(compartment_results, dict) or not compartment_results:
+                            continue
+                        compartment_dir = ensure_dir(cohort_dir / compartment_key)
+                        for scope_key in ("selected_state",):
+                            branch = compartment_results.get(scope_key, {})
+                            scope_label = scope_key.replace("_", " ")
+                            if not isinstance(branch, dict) or not branch:
+                                continue
+                            mixed_model_payload = {
+                                "analysis_state_selection": dict(leaf_results.get("analysis_state_selection", {})),
+                                "analysis_compartment": compartment_key,
+                                "mixed_model": branch,
+                            }
+                            plot_mixed_model_forest_figure(
+                                mixed_model_payload,
+                                compartment_dir,
+                                output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_forest.svg",
+                                title=f"Mixed-model fixed effects - {cohort_name} - {compartment_key} - {scope_label}",
+                                model_key="mixed_model",
+                            )
+                            plot_mixed_model_predicted_means_figure(
+                                mixed_model_payload,
+                                compartment_dir,
+                                output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_predicted_means.svg",
+                                title=f"Mixed-model predicted means - {cohort_name} - {compartment_key} - {scope_label}",
+                                model_key="mixed_model",
+                            )
+                            plot_mixed_model_contrasts_checkpoint(
+                                mixed_model_payload,
+                                compartment_dir,
+                                scope=scope_key,
+                                output_name=f"mixed_model_{cohort_name}_{compartment_key}_{scope_key}_contrasts.svg",
+                                title=f"Mixed-model contrasts - {cohort_name} - {compartment_key} - {scope_label}",
+                                model_key="mixed_model",
+                            )
+
+        for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
+            if figure_root != result_root and branch_name == "pooled" and basis_name == "all":
+                continue
+            render_branch_first_leaf_figures(branch_name, basis_name)
+
     canonical_visual_response_lookup = _canonical_visual_response_cohort_map(visual_response_rows)
     missing_visual_response_global_ids = [
         row for row in visual_response_rows
@@ -1903,12 +2516,22 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     manifest = {
         "config": dict(config),
         "comparison_preset_name": preset_name,
+        "job_spec": AnalysisJobSpec(
+            pipeline=str(config.get("analysis_name") or "soma_bouton_pipeline"),
+            split_type="batches",
+            state_basis="overall",
+            analysis_type=preset_name,
+            cohort="all",
+        ).as_dict(),
+        "output_artifacts": collect_output_artifacts(result_root),
         "selected_states_by_mode": selected_states_by_mode_payload,
         "state_modes": state_modes,
         "day_groups": day_groups,
         "counts": {
             "experiments": len(experiment_rows),
             "activity_rows": len(activity_rows),
+            "transition_event_rows": len(transition_results.get('event_rows', [])),
+            "transition_summary_rows": len(transition_results.get('summary_rows', [])),
             "state_comparison_rows_movie": len(state_comparison_summary_rows),
             "state_comparison_rows_sleep": len(sleep_state_comparison_summary_rows),
             "correlation_rows": len(correlation_rows),
@@ -1934,6 +2557,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "roi_split_membership_rows": len(roi_split_results.get("membership_rows", [])),
             "roi_split_comparison_rows": len(roi_split_results.get("comparison_rows", [])),
             "roi_split_summary_rows": len(roi_split_results.get("summary_rows", [])),
+            "roi_split_bundles": len(roi_split_results.get("bundles", [])),
+            "roi_split_branches": len(roi_split_results.get("branches", {})),
             "cohort_correlation_summary_rows": {
                 cohort_name: len(rows) for cohort_name, rows in cohort_correlation_summary.items()
             },
@@ -1976,6 +2601,33 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "mixed_model": mixed_model_results,
         "poster_ready_figures": list(poster_ready_figures),
         "coincidence_example_figures": list(coincidence_example_figures),
+        "state_transitions": transition_results,
+        "union_rows_cache": {
+            "path": str(union_cache_path) if union_cache_path is not None else None,
+            "status": union_rows_cache_status,
+            "elapsed_s": float(union_rows_cache_elapsed_s),
+            "union_state_labels_by_mode": union_states_by_mode,
+            "row_counts_before_filter": {
+                family: len(rows)
+                for family, rows in (union_rows_for_shared_output or {}).items()
+            },
+            "row_counts_after_filter": {
+                "activity_rows": len(activity_rows),
+                "correlation_rows": len(correlation_rows),
+                "soma_pairwise_rows": len(soma_pairwise_rows),
+                "bouton_pairwise_rows": len(bouton_pairwise_rows),
+                "lag_rows": len(lag_rows),
+                "coincidence_rows": len(coincidence_rows),
+                "visual_response_rows": len(visual_response_rows),
+            },
+        },
+        "cache_scopes": {
+            "source": "superset_reusable",
+            "analysis_tables": "superset_reusable_where_state_filterable",
+            "shuffle": "reusable_when_metadata_matches",
+            "analysis_results": "preset_specific",
+            "figures": "shared_only_when_inputs_match",
+        },
         "cache_summary": {
             "analysis_run_cache_path": str(analysis_run_cache_file),
             "analysis_results_cache_path": str(analysis_results_cache_file),
@@ -1987,8 +2639,16 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "source_cache_path": str(source_cache_file),
         },
         "output_root": str(result_root),
+        "pipeline_elapsed_s": float(time.perf_counter() - pipeline_started),
     }
     manifest_json = _json_safe(manifest)
+    timing_report_path = result_root / "timing_report.json"
+    timing_report_path.write_text(json.dumps({
+        "pipeline": "soma_bouton_pipeline",
+        "comparison_preset_name": preset_name,
+        "pipeline_elapsed_s": manifest_json.get("pipeline_elapsed_s"),
+    }, indent=2, sort_keys=True))
+    manifest_json["timing_report_path"] = str(timing_report_path)
     analysis_tables_payload = {
         "schema_version": ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
         "meta": analysis_results_meta,
@@ -2001,6 +2661,8 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "visual_response_rows": visual_response_rows,
             "coincidence_rows": coincidence_rows,
             "coincidence_summary_rows": coincidence_summary_rows,
+            "state_transition_event_rows": transition_results.get("event_rows", []),
+            "state_transition_summary_rows": transition_results.get("summary_rows", []),
             "activity_summary_rows": activity_summary_rows,
             "state_comparison_summary_rows": state_comparison_summary_rows,
             "sleep_state_comparison_summary_rows": sleep_state_comparison_summary_rows,
@@ -2021,7 +2683,14 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         },
     }
     save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
-    write_json_file(result_root / "summary" / "manifest.json", manifest_json)
+    write_manifest(result_root, manifest_json)
+    if general_output_root is not None and generate_shared_general_figures:
+        write_manifest(general_output_root, {
+            "pipeline": "soma_bouton_pipeline",
+            "generated_by_preset": preset_name,
+            "output_root": str(general_output_root),
+            "output_artifacts": collect_output_artifacts(general_output_root),
+        })
     save_analysis_results_cache(
         analysis_results_cache_file,
         {
@@ -2048,6 +2717,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
     parser.add_argument("--plots-only", action="store_true", help="Skip metric recomputation and regenerate plots from written CSVs only.")
+    parser.add_argument("--analysis-output-dir", type=Path, help="Stable analysis/statistics/cache directory override.")
+    parser.add_argument("--figure-output-dir", type=Path, help="Disposable figure directory override.")
     parser.add_argument(
         "--poster-ready-only",
         action="store_true",
@@ -2064,6 +2735,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["rebuild"] = True
     if args.plots_only:
         config["plots_only"] = True
+    if args.analysis_output_dir:
+        config["analysis_output_dir"] = str(args.analysis_output_dir)
+    if args.figure_output_dir:
+        config["figure_output_dir"] = str(args.figure_output_dir)
     if args.poster_ready_only:
         config["poster_ready_only"] = True
     if args.comparison_presets:

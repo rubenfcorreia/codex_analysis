@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from analysis.dendrites_pipeline.dendrites_pipeline import (
+from analysis.shared.analysis_families.common_helpers import (
     apply_bonferroni_correction,
     build_state_masks_movie,
     build_state_masks_sleep,
@@ -16,7 +16,7 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
 )
 from analysis.compartment_common import read_pickle
 from analysis.shared.roi_split import summarize_mask_duration
-from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
+from analysis.shared.state_utils import canonical_state_label, combined_movie_state_label, state_display_color, state_display_label
 from analysis.shared.shared_calcium_response import build_masked_event_summary
 
 from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id, shared_time_axis, summarize_activity
@@ -83,6 +83,21 @@ def _movie_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
         sleep_state if isinstance(sleep_state, Mapping) else None,
         locomotion_threshold,
     )
+    if isinstance(sleep_state, Mapping) and sleep_state.get("state_10hz_t") is not None:
+        sleep_masks, _ = build_state_masks_sleep(exp_time, sleep_state)
+        combined_masks = {"all": masks.get("all", np.ones(exp_time.shape, dtype=bool))}
+        for movie_label, movie_mask in masks.items():
+            if movie_label == "all":
+                continue
+            movie_type = movie_label.rsplit("_", 1)[-1] if "_" in movie_label else movie_label
+            if movie_type == "movie":
+                movie_type = "movies"
+            for sleep_label, sleep_mask in sleep_masks.items():
+                if sleep_label == "all":
+                    continue
+                combined_label = combined_movie_state_label(sleep_label, movie_type)
+                combined_masks[combined_label] = combined_masks.get(combined_label, np.zeros(exp_time.shape, dtype=bool)) | (movie_mask & sleep_mask)
+        return combined_masks
     return masks
 
 
@@ -277,51 +292,92 @@ def state_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
     if not rows:
         return []
     grouped: Dict[tuple, List[float]] = {}
+    grouped_rows: Dict[tuple, List[Mapping[str, Any]]] = {}
     meta: Dict[tuple, Dict[str, Any]] = {}
+    has_split_groups = any(_split_group_value(row) is not None for row in rows)
+    split_meta = _split_group_meta(rows) if has_split_groups else {}
     for row in rows:
+        split_group = _split_group_value(row) if has_split_groups else None
         key = (
-            row["day_id"],
-            row["mode"],
-            row["state"],
-            row["compartment"],
+            row['day_id'],
+            row['mode'],
+            row['state'],
+            row['compartment'],
+            split_group,
         )
-        grouped.setdefault(key, []).append(float(row["mean"]))
-        meta[key] = {
-            "day_id": row["day_id"],
-            "mode": row["mode"],
-            "state": row["state"],
-            "state_display": row["state_display"],
-            "state_color": row["state_color"],
-            "compartment": row["compartment"],
+        grouped.setdefault(key, []).append(float(row['mean']))
+        grouped_rows.setdefault(key, []).append(row)
+        payload = {
+            'day_id': row['day_id'],
+            'mode': row['mode'],
+            'state': row['state'],
+            'state_display': row['state_display'],
+            'state_color': row['state_color'],
+            'compartment': row['compartment'],
         }
+        if has_split_groups:
+            payload['split_group'] = split_group
+            payload['split_group_display'] = None
+            payload['split_group_color'] = None
+            payload['split_group_rank'] = None
+            if split_group is not None:
+                split_group_meta = split_meta.get(split_group, {})
+                if split_group_meta.get('split_group_display') is not None:
+                    payload['split_group_display'] = split_group_meta.get('split_group_display')
+                if split_group_meta.get('split_group_color') is not None:
+                    payload['split_group_color'] = split_group_meta.get('split_group_color')
+                if split_group_meta.get('split_group_rank') is not None:
+                    payload['split_group_rank'] = split_group_meta.get('split_group_rank')
+        meta[key] = payload
     summary_rows: List[Dict[str, Any]] = []
     for key, values in grouped.items():
         payload = meta[key].copy()
         arr = np.asarray(values, dtype=float)
         finite = arr[np.isfinite(arr)]
-        total_rois = int(arr.size)
+        group_rows = grouped_rows.get(key, [])
+        total_rois = int(len(group_rows))
+        unique_experiments = {
+            str(row.get('expid') or row.get('day_id') or '').strip()
+            for row in group_rows
+            if str(row.get('expid') or row.get('day_id') or '').strip()
+        }
+        unique_days = {
+            str(row.get('day_id') or '').strip()
+            for row in group_rows
+            if str(row.get('day_id') or '').strip()
+        }
+        unique_animals = {
+            str(row.get('animal_id') or '').strip()
+            for row in group_rows
+            if str(row.get('animal_id') or '').strip()
+        }
         if finite.size == 0:
             payload.update({
-                "n_experiments": int(arr.size),
-                "n_rois": total_rois,
-                "mean": float("nan"),
-                "median": float("nan"),
-                "std": float("nan"),
-                "min": float("nan"),
-                "max": float("nan"),
+                'n_experiments': int(len(unique_experiments)),
+                'n_days': int(len(unique_days)),
+                'n_animals': int(len(unique_animals)),
+                'n_rois': total_rois,
+                'mean': float('nan'),
+                'median': float('nan'),
+                'std': float('nan'),
+                'min': float('nan'),
+                'max': float('nan'),
             })
         else:
             payload.update({
-                "n_experiments": int(arr.size),
-                "n_rois": total_rois,
-                "mean": float(np.nanmean(finite)),
-                "median": float(np.nanmedian(finite)),
-                "std": float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
-                "min": float(np.nanmin(finite)),
-                "max": float(np.nanmax(finite)),
+                'n_experiments': int(len(unique_experiments)),
+                'n_days': int(len(unique_days)),
+                'n_animals': int(len(unique_animals)),
+                'n_rois': total_rois,
+                'mean': float(np.nanmean(finite)),
+                'median': float(np.nanmedian(finite)),
+                'std': float(np.nanstd(finite, ddof=1)) if finite.size > 1 else 0.0,
+                'min': float(np.nanmin(finite)),
+                'max': float(np.nanmax(finite)),
             })
         summary_rows.append(payload)
     return summary_rows
+
 
 
 def _state_values_by_subject(
@@ -344,6 +400,53 @@ def _state_values_by_subject(
         values_by_state.setdefault(state, {}).setdefault(subject_id, []).append(float(row.get(metric_col, float("nan"))))
     return values_by_state
 
+
+def _split_group_value(row: Mapping[str, Any]) -> str | None:
+    split_group = str(row.get("split_group") or "").strip()
+    return split_group or None
+
+
+def _split_group_order(rows: Sequence[Mapping[str, Any]]) -> List[str | None]:
+    split_groups: List[str | None] = []
+    has_unassigned = False
+    for row in rows:
+        split_group = _split_group_value(row)
+        if split_group is None:
+            has_unassigned = True
+            continue
+        if split_group not in split_groups:
+            split_groups.append(split_group)
+    if not split_groups:
+        return [None]
+    if has_unassigned:
+        split_groups.append(None)
+    return split_groups
+
+
+def _split_group_meta(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    meta: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        split_group = _split_group_value(row)
+        if split_group is None:
+            continue
+        payload = meta.setdefault(split_group, {})
+        display = str(row.get("split_group_display") or split_group).strip() or split_group
+        if display and "split_group_display" not in payload:
+            payload["split_group_display"] = display
+        color = str(row.get("split_group_color") or "").strip()
+        if color and "split_group_color" not in payload:
+            payload["split_group_color"] = color
+        rank_value = row.get("split_group_rank")
+        try:
+            rank_float = float(rank_value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(rank_float):
+            continue
+        current_rank = payload.get("split_group_rank")
+        if current_rank is None or rank_float < float(current_rank):
+            payload["split_group_rank"] = rank_float
+    return meta
 
 def build_state_comparison_row_groups(
     rows: Sequence[Mapping[str, Any]],
@@ -373,6 +476,8 @@ def build_state_comparison_row_groups(
     return grouped_rows
 
 
+
+
 def state_comparison_rows(
     rows: Sequence[Mapping[str, Any]],
     selected_states: Sequence[str],
@@ -384,35 +489,80 @@ def state_comparison_rows(
     selected = [state for state in selected_states if canonical_state_label(state)]
     if len(selected) < 2:
         return []
-    if grouped_rows is None:
-        grouped_rows = build_state_comparison_row_groups(rows, selected)
     comparisons: List[Dict[str, Any]] = []
-    for compartment in (None, "soma", "bouton"):
-        compartment_rows = grouped_rows.get(compartment, {})
-        if not any(compartment_rows.values()):
-            continue
-        values_by_state: Dict[str, Dict[str, List[float]]] = {
-            state: {
-                subject_id: [float(row.get(metric_col, float("nan"))) for row in member_rows]
-                for subject_id, member_rows in subject_rows.items()
+    has_split_groups = any(_split_group_value(row) is not None for row in rows)
+    split_groups = _split_group_order(rows) if has_split_groups else [None]
+    split_meta = _split_group_meta(rows) if has_split_groups else {}
+    if not has_split_groups:
+        if grouped_rows is None:
+            grouped_rows = build_state_comparison_row_groups(rows, selected)
+        for compartment in (None, "soma", "bouton"):
+            compartment_rows = grouped_rows.get(compartment, {})
+            if not any(compartment_rows.values()):
+                continue
+            values_by_state: Dict[str, Dict[str, List[float]]] = {
+                state: {
+                    subject_id: [float(row.get(metric_col, float("nan"))) for row in member_rows]
+                    for subject_id, member_rows in subject_rows.items()
+                }
+                for state, subject_rows in compartment_rows.items()
             }
-            for state, subject_rows in compartment_rows.items()
-        }
-        for idx, state_a in enumerate(selected):
-            for state_b in selected[idx + 1:]:
-                subjects_a = values_by_state.get(state_a, {})
-                subjects_b = values_by_state.get(state_b, {})
-                subjects = sorted(set(subjects_a).intersection(subjects_b))
-                if len(subjects) >= 2:
-                    result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
-                else:
-                    result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
-                result["comparison"] = "state_pair"
-                result["compartment"] = compartment or "all"
-                result["state_a_display"] = state_a
-                result["state_b_display"] = state_b
-                comparisons.append(result)
+            for idx, state_a in enumerate(selected):
+                for state_b in selected[idx + 1:]:
+                    subjects_a = values_by_state.get(state_a, {})
+                    subjects_b = values_by_state.get(state_b, {})
+                    subjects = sorted(set(subjects_a).intersection(subjects_b))
+                    if len(subjects) >= 2:
+                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                    else:
+                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                    result["comparison"] = "state_pair"
+                    result["compartment"] = compartment or "all"
+                    result["state_a_display"] = state_a
+                    result["state_b_display"] = state_b
+                    comparisons.append(result)
+        return comparisons
+    for split_group in split_groups:
+        split_rows = [row for row in rows if _split_group_value(row) == split_group]
+        if not split_rows:
+            continue
+        split_grouped_rows = build_state_comparison_row_groups(split_rows, selected)
+        for compartment in (None, "soma", "bouton"):
+            compartment_rows = split_grouped_rows.get(compartment, {})
+            if not any(compartment_rows.values()):
+                continue
+            values_by_state: Dict[str, Dict[str, List[float]]] = {
+                state: {
+                    subject_id: [float(row.get(metric_col, float("nan"))) for row in member_rows]
+                    for subject_id, member_rows in subject_rows.items()
+                }
+                for state, subject_rows in compartment_rows.items()
+            }
+            for idx, state_a in enumerate(selected):
+                for state_b in selected[idx + 1:]:
+                    subjects_a = values_by_state.get(state_a, {})
+                    subjects_b = values_by_state.get(state_b, {})
+                    subjects = sorted(set(subjects_a).intersection(subjects_b))
+                    if len(subjects) >= 2:
+                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                    else:
+                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                    result["comparison"] = "state_pair"
+                    result["compartment"] = compartment or "all"
+                    result["state_a_display"] = state_a
+                    result["state_b_display"] = state_b
+                    if split_group is not None:
+                        result["split_group"] = split_group
+                        meta = split_meta.get(split_group, {})
+                        if meta.get("split_group_display") is not None:
+                            result["split_group_display"] = meta.get("split_group_display")
+                        if meta.get("split_group_color") is not None:
+                            result["split_group_color"] = meta.get("split_group_color")
+                        if meta.get("split_group_rank") is not None:
+                            result["split_group_rank"] = meta.get("split_group_rank")
+                    comparisons.append(result)
     return comparisons
+
 
 
 def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> List[Dict[str, Any]]:
@@ -420,20 +570,37 @@ def basal_apical_comparison_rows(rows: Sequence[Mapping[str, Any]], selected_sta
     if not selected:
         return []
     comparisons: List[Dict[str, Any]] = []
-    for state in selected:
-        values_by_state = _state_values_by_subject(rows, [state])
-        if state not in values_by_state:
+    has_split_groups = any(_split_group_value(row) is not None for row in rows)
+    split_groups = _split_group_order(rows) if has_split_groups else [None]
+    split_meta = _split_group_meta(rows) if has_split_groups else {}
+    for split_group in split_groups:
+        split_rows = [row for row in rows if _split_group_value(row) == split_group] if has_split_groups else rows
+        if not split_rows:
             continue
-        result = {
-            "comparison": "state_summary",
-            "state": state,
-            "metric": "mean",
-            "n_subjects": len(values_by_state[state]),
-            "mean": float(np.nanmean([float(v) for values in values_by_state[state].values() for v in values])) if values_by_state[state] else float("nan"),
-        }
-        comparisons.append(result)
+        for state in selected:
+            values_by_state = _state_values_by_subject(split_rows, [state])
+            if state not in values_by_state:
+                continue
+            result = {
+                "comparison": "state_summary",
+                "state": state,
+                "metric": "mean",
+                "n_subjects": len(values_by_state[state]),
+                "mean": float(np.nanmean([float(v) for values in values_by_state[state].values() for v in values])) if values_by_state[state] else float("nan"),
+            }
+            if split_group is not None:
+                result["split_group"] = split_group
+                meta = split_meta.get(split_group, {})
+                if meta.get("split_group_display") is not None:
+                    result["split_group_display"] = meta.get("split_group_display")
+                if meta.get("split_group_color") is not None:
+                    result["split_group_color"] = meta.get("split_group_color")
+                if meta.get("split_group_rank") is not None:
+                    result["split_group_rank"] = meta.get("split_group_rank")
+            elif has_split_groups:
+                result["split_group"] = None
+            comparisons.append(result)
     return comparisons
-
 
 def build_state_family_results(rows: Sequence[Mapping[str, Any]], selected_states: Sequence[str], shuffle_n: int) -> Dict[str, Any]:
     summary_rows = state_summary_rows(rows)

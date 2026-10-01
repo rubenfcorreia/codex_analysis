@@ -28,7 +28,7 @@ ROOT_DIR = SCRIPT_DIR.parents[3]
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "results" / "dendrites_pipeline" / "demo"
 DEFAULT_REPO_SUBDIR = "demo_repository"
 DEFAULT_STIMULUS_SOURCE_ROOT = Path("/data/Remote_Repository/bv_resources/all_movie_clips_bv_sets")
-DEFAULT_ANALYSIS_FAMILIES = ["state", "basal_apical", "correlation", "matrix", "mixed_model"]
+DEFAULT_ANALYSIS_FAMILIES = ["state", "basal_apical", "correlation", "matrix_similarity", "mixed_model"]
 DEFAULT_CHANNEL = 0
 DEFAULT_HIGH_PASS_HZ = 0.02
 DEFAULT_SHUFFLES = 200
@@ -236,7 +236,7 @@ def canonical_analysis_families(values: Any) -> List[str]:
         "state_comparisons": "state",
         "basal_apical_comparisons": "basal_apical",
         "correlations": "correlation",
-        "matrix_similarity": "matrix",
+        "matrix": "matrix_similarity",
         "mixed_model_analysis": "mixed_model",
         "mixed-model": "mixed_model",
     }
@@ -1331,6 +1331,11 @@ def build_analysis_config(recipe: Dict[str, Any], manifest: Dict[str, Any], outp
         "rebuild": True,
         "output_dir": str(output_dir),
         "figure_output_dir": str(output_dir / "figures" / "demo"),
+        "general_output_root": str(output_dir / "general"),
+        "generate_shared_general_outputs": True,
+        "generate_shared_general_figures": True,
+        "generate_visual_response_entity_figures": True,
+        "generate_poster_ready_figures": False,
         "cache_path": str(output_dir / "sleep_dendrite_spine_cache.npz"),
         "analysis_families": canonical_analysis_families(recipe.get("analysis_families")),
         "stimulus_source_root": str(manifest["stimulus_source_root"]),
@@ -1520,8 +1525,28 @@ def run_pipeline_validation(recipe: Dict[str, Any], manifest: Dict[str, Any], ou
         "--config",
         str(config_path),
     ]
-    proc = subprocess.run(cmd, check=False)
-    return proc.returncode
+    first = subprocess.run(cmd, check=False)
+    if first.returncode != 0:
+        return first.returncode
+    reuse_config = dict(analysis_config)
+    reuse_config.update({
+        "rebuild": False,
+        "source_cache_rebuild": False,
+        "analysis_tables_rebuild": False,
+        "analysis_results_rebuild": False,
+        "shared_shuffle_cache_rebuild": False,
+        "source_cache_validate": False,
+    })
+    reuse_config_path = output_dir / "demo_analysis_reuse_config.json"
+    write_json(reuse_config_path, reuse_config)
+    reuse_cmd = [
+        sys.executable,
+        str(DENDRITES_PIPELINE_DIR / "dendrites_pipeline.py"),
+        "--config",
+        str(reuse_config_path),
+    ]
+    second = subprocess.run(reuse_cmd, check=False)
+    return second.returncode
 
 
 def build_command(args: argparse.Namespace) -> int:

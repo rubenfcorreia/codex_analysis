@@ -73,6 +73,7 @@ from poster_plotting import (
     save_figure,
     set_sparse_numeric_ticks,
 )
+from analysis.shared.result_layout import resolve_result_layout
 
 if plt is not None:
     configure_poster_matplotlib()
@@ -7781,7 +7782,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         config_payload["output_dir"] = str(args.output_dir)
 
     repo_base = Path(config_payload["repo_base"])
-    output_dir = Path(config_payload["output_dir"])
+    layout = resolve_result_layout(config_payload, root_key="output_dir", legacy_root_key="output_dir", repo_root=ROOT_DIR)
+    output_dir = layout.run_root
+    layout.ensure_stable()
+    layout.ensure_figures()
     ensure_dir(output_dir)
     if not repo_base.exists():
         raise SystemExit(f"Repository base does not exist: {repo_base}")

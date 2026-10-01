@@ -61,7 +61,7 @@ def test_same_day_sleep_expids_pool_and_sleep_start_uses_sleep_session_start(mon
         'sleep_b': (np.ones(60, dtype=int) * 2, np.arange(60, dtype=float) * 60.0),
     }
 
-    def fake_load_sleep_state_arrays(path):
+    def fake_load_sleep_state_arrays(path, **kwargs):
         key = Path(path).stem
         return arrays[key]
 
@@ -104,7 +104,7 @@ def test_within_day_sleep_state_fractions_uses_combined_movie_sleep_trace(tmp_pa
         'sleep_b': (np.ones(60, dtype=int) * 2, np.arange(60, dtype=float) * 60.0),
     }
 
-    def fake_load_sleep_state_arrays(path):
+    def fake_load_sleep_state_arrays(path, **kwargs):
         key = Path(path).stem
         return arrays[key]
 

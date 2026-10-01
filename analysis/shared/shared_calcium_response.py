@@ -9,7 +9,7 @@ from scipy import stats
 from analysis.compartment_common import find_first_key, read_pickle
 from analysis.shared.cache_utils import stable_hash
 from analysis.shared.state_utils import canonical_state_label
-from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
+from analysis.shared.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
     EVENT_DETECTION_METHODS,
@@ -23,7 +23,7 @@ from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     visual_response_metric_field,
     visual_response_metric_label,
 )
-from analysis.dendrites_pipeline.dendrites_pipeline import (
+from analysis.shared.analysis_families.common_helpers import (
     apply_bonferroni_correction,
     build_event_info,
     build_state_masks_movie,
@@ -32,7 +32,6 @@ from analysis.dendrites_pipeline.dendrites_pipeline import (
     trial_activity_means,
     welch_ttest_summary,
 )
-
 
 VISUAL_RESPONSE_VISUAL_TRIAL_TYPES = ("movies", "gratings", "zebras")
 VISUAL_RESPONSE_BLANK_TRIAL_TYPE = "blank"

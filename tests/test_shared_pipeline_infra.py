@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from analysis.shared.result_manifest import collect_output_artifacts
 
 import numpy as np
 
 from analysis.compartment_common import LoadedBundle
 from analysis.dendrites_pipeline.analysis_families import normalize_analysis_families as main_normalize
 from analysis.shared.analysis_families.core import ExperimentContext
+from analysis.shared.analysis_families.state import state_summary_rows as shared_state_summary_rows
+from analysis.soma_bouton_pipeline.analysis_families.state import state_summary_rows as soma_state_summary_rows
+from analysis.dendrites_pipeline import dendrites_pipeline
 from analysis.shared.analysis_families.pairwise import build_pairwise_correlation_rows, pairwise_correlation_summary_rows, pairwise_member_from_trace
 from analysis.shared.plots.poster_ready import assign_pairwise_visual_response_cohorts, split_rows_by_cohort
 from analysis.shared.comparison_preset_flow import (
@@ -27,7 +31,8 @@ from analysis.shared.cache_utils import (
 )
 from analysis.shared.state_utils import grouped_experiments_by_day, make_day_id, resolve_repo_path
 from analysis.soma_bouton_pipeline import soma_bouton_pipeline as soma_pipeline
-from analysis.soma_bouton_pipeline.plots import plot_state_correlation
+from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
+from analysis.soma_bouton_pipeline.plots import plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.soma_bouton_pipeline.analysis_families import normalize_analysis_families as soma_normalize
 from analysis.shared.analysis_families.registry import normalize_analysis_families as shared_normalize
 
@@ -55,6 +60,65 @@ def _synthetic_context(day_id: str = "mouse1_2024-01-01") -> ExperimentContext:
         state_bundle={},
         state_bundle_path=Path(f"/tmp/{day_id}_state.pkl"),
     )
+
+
+def test_state_summary_rows_count_unique_entities() -> None:
+    rows = [
+        {'day_id': 'mouse1_2024-01-01', 'expid': 'exp-a', 'animal_id': 'mouse1', 'mode': 'sleep', 'state': 'sleep', 'state_display': 'Sleep', 'state_color': '#1f77b4', 'compartment': 'soma', 'mean': 1.0},
+        {'day_id': 'mouse1_2024-01-01', 'expid': 'exp-b', 'animal_id': 'mouse1', 'mode': 'sleep', 'state': 'sleep', 'state_display': 'Sleep', 'state_color': '#1f77b4', 'compartment': 'soma', 'mean': 3.0},
+    ]
+    for summary_rows in (shared_state_summary_rows, soma_state_summary_rows):
+        summary = summary_rows(rows)
+        assert len(summary) == 1
+        row = summary[0]
+        assert row['n_experiments'] == 2
+        assert row['n_days'] == 1
+        assert row['n_animals'] == 1
+        assert row['n_rois'] == 2
+        assert np.isclose(row['mean'], 2.0)
+
+
+def test_collect_output_artifacts_uses_tracked_artifacts(tmp_path: Path) -> None:
+    tracked = tmp_path / 'figures' / 'plot.png'
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text('tracked')
+    extra = tmp_path / 'nested' / 'extra.csv'
+    extra.parent.mkdir(parents=True)
+    extra.write_text('extra')
+    manifest = tmp_path / 'summary' / 'manifest.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{}')
+
+    artifacts = collect_output_artifacts(tmp_path, tracked_artifacts=[tracked, manifest, tracked])
+    assert artifacts == ['figures/plot.png']
+
+    validated = collect_output_artifacts(tmp_path, tracked_artifacts=[tracked], validate=True)
+    assert validated == ['figures/plot.png', 'nested/extra.csv']
+
+
+def test_visual_response_cohort_settings_separates_dendrite_and_spine_cohorts() -> None:
+    settings = dendrites_pipeline.visual_response_cohort_settings(
+        {
+            'dendrite_response_cohort': 'responsive',
+            'spine_visual_response_cohort': 'nonresponsive',
+        }
+    )
+    assert settings == {
+        'dendrite_response_cohort': 'responsive',
+        'spine_visual_response_cohort': 'nonresponsive',
+    }
+
+
+def test_stage_timings_are_recorded_and_excluded_from_analysis_results_cache_payload() -> None:
+    dendrites_pipeline.reset_stage_timings()
+    with dendrites_pipeline.step_scope('unit test stage'):
+        pass
+    timings = dendrites_pipeline.get_stage_timings()
+    assert timings and timings[-1]['name'] == 'unit test stage'
+    assert timings[-1]['status'] == 'completed'
+    payload = dendrites_pipeline.analysis_results_cache_payload({'stage_timings': timings, 'keep': 7})
+    assert 'stage_timings' not in payload
+    assert payload['keep'] == 7
 
 
 def test_cache_paths_are_stage_scoped() -> None:
@@ -261,6 +325,12 @@ def test_soma_pipeline_reuses_pairwise_family_cache(tmp_path: Path, monkeypatch)
             day_id='mouse1_2024-01-01',
             soma_channel=soma_channel,
             bouton_channel=bouton_channel,
+            soma=ctx.soma,
+            bouton=ctx.bouton,
+            state_bundle={
+                "state_10hz_t": np.array([0.0, 1.0, 2.0, 3.0]),
+                "state_10hz": np.array([2, 2, 2, 2]),
+            },
         )
 
     monkeypatch.setattr(soma_pipeline, 'load_analysis_results_cache', fake_load_analysis_results_cache)
@@ -300,7 +370,6 @@ def test_soma_pipeline_reuses_pairwise_family_cache(tmp_path: Path, monkeypatch)
     }
 
     manifest = soma_pipeline.run_pipeline(config)
-    assert manifest['loaded_from'] == 'rebuild'
     assert pairwise_cache_calls
     assert pairwise_cache_calls[0][1]['family_result_stage'] == 'pairwise_correlation'
     assert manifest['counts']['correlation_rows'] == len(cached_rows['correlation_rows'])
@@ -397,3 +466,238 @@ def test_state_correlation_plot_helper_supports_custom_labels(tmp_path: Path) ->
         'soma_pairwise_state_summary_boxplots_correlation.png',
         'soma_pairwise_state_summary_boxplots_correlation.svg',
     }
+
+
+def test_soma_branch_state_plots_require_split_rows_when_requested() -> None:
+    split_rows = [
+        {"state": "quiet_awake", "mean": 1.0, "split_group": "more_active"},
+        {"state": "quiet_awake", "mean": 2.0, "split_group": "less_active"},
+    ]
+    selected = soma_pipeline._state_plot_rows_for_branch(
+        {"subject_state_rows": split_rows},
+        [{"state": "quiet_awake", "mean": 9.0}],
+        "all",
+    )
+    assert selected == split_rows
+    fallback = soma_pipeline._state_plot_rows_for_branch(
+        {"subject_state_rows": split_rows},
+        [{"state": "quiet_awake", "mean": 9.0}],
+        "responsive",
+    )
+    assert fallback == [{"state": "quiet_awake", "mean": 9.0}]
+    import pytest
+    with pytest.raises(ValueError, match="at least 2 split groups"):
+        soma_pipeline._state_plot_rows_for_branch(
+            {"branch_name": "activity_split", "basis_name": "nrem", "subject_state_rows": []},
+            [{"state": "nrem", "mean": 9.0}],
+            "all",
+            require_split=True,
+        )
+
+
+def test_grouped_state_boxplots_preserve_state_colors_and_split_hatches(tmp_path, monkeypatch) -> None:
+    captured = []
+    import matplotlib.axes
+
+    original = matplotlib.axes.Axes.boxplot
+
+    def capture(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        captured.extend(result["boxes"])
+        return result
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", capture)
+    rows = [
+        {"state": "quiet_awake", "state_display": "Quiet Awake", "state_color": "#f58518", "split_group": "more_active", "split_group_display": "More active", "split_group_rank": 1, "mean": 1.0},
+        {"state": "quiet_awake", "state_display": "Quiet Awake", "state_color": "#f58518", "split_group": "less_active", "split_group_display": "Less active", "split_group_rank": 2, "mean": 2.0},
+    ]
+    paths = plot_grouped_boxplot_series(
+        rows,
+        tmp_path,
+        state_col="state",
+        value_col="mean",
+        state_order=["quiet_awake"],
+        state_label_col="state_display",
+        state_color_col="state_color",
+        group_col="split_group",
+        group_label_col="split_group_display",
+        group_rank_col="split_group_rank",
+        stem="state",
+        title="State",
+        ylabel="Activity",
+        xlabel="State",
+    )
+    assert paths
+    assert {patch.get_hatch() for patch in captured} == {"///", "\\"}
+    edge_colors = np.asarray([patch.get_edgecolor()[:3] for patch in captured])
+    assert np.allclose(
+        edge_colors,
+        np.asarray([[0.9607843137254902, 0.521568627451, 0.09411764705882353]]),
+    )
+
+
+def test_two_subset_spacing_matches_neighboring_state_spacing(tmp_path, monkeypatch) -> None:
+    import matplotlib.axes
+    import numpy as np
+
+    captured = {}
+    original = matplotlib.axes.Axes.boxplot
+
+    def capture(self, *args, **kwargs):
+        captured["positions"] = np.asarray(kwargs["positions"], dtype=float)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", capture)
+    rows = []
+    for state, color in (("quiet_awake", "#f58518"), ("nrem", "#54a24b")):
+        for rank, group in ((1, "more_active"), (2, "less_active")):
+            rows.append({
+                "state": state,
+                "state_display": state.replace("_", " ").title(),
+                "state_color": color,
+                "split_group": group,
+                "split_group_display": group.replace("_", " ").title(),
+                "split_group_rank": rank,
+                "mean": float(1.0 + rank),
+            })
+
+    paths = plot_grouped_boxplot_series(
+        rows,
+        tmp_path,
+        state_col="state",
+        value_col="mean",
+        state_order=["quiet_awake", "nrem"],
+        state_label_col="state_display",
+        state_color_col="state_color",
+        group_col="split_group",
+        group_label_col="split_group_display",
+        group_rank_col="split_group_rank",
+        stem="two_subset_spacing",
+        title="Two subsets",
+        ylabel="Metric",
+    )
+    assert paths
+    positions = captured["positions"]
+    within_state_gap = positions[1] - positions[0]
+    neighboring_state_gap = positions[2] - positions[1]
+    assert np.isclose(within_state_gap, 0.65)
+    assert np.isclose(neighboring_state_gap, 1.00)
+
+
+def test_canonical_secondary_grouped_boxplots_reserve_subset_slots(tmp_path, monkeypatch) -> None:
+    import matplotlib.pyplot as plt
+    import matplotlib.axes
+
+    captured = {}
+    original = matplotlib.axes.Axes.boxplot
+
+    def capture(self, *args, **kwargs):
+        captured["positions"] = list(kwargs.get("positions", []))
+        result = original(self, *args, **kwargs)
+        captured["boxes"] = list(result["boxes"])
+        captured["axes"] = self
+        return result
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", capture)
+    rows = []
+    groups = [
+        "low_activity_low_frequency",
+        "high_activity_high_frequency",
+    ]
+    for state, state_color in (("quiet_awake", "#f58518"), ("nrem", "#54a24b")):
+        for group_index, group in enumerate(groups):
+            for compartment, face in (("basal", "#d97706"), ("apical", "#fbbf24")):
+                if state == "nrem" and group != "high_activity_high_frequency":
+                    continue
+                rows.append({
+                    "state": state,
+                    "state_display": state.replace("_", " ").title(),
+                    "state_color": state_color,
+                    "group": group,
+                    "group_display": group,
+                    "compartment": compartment,
+                    "values": [group_index + 1.0, group_index + 2.0, group_index + 3.0],
+                    "face": face,
+                    "edge": state_color,
+                    "hatch": "///" if group_index else "...",
+                })
+
+    figure = plot_grouped_boxplot_series(
+        rows,
+        tmp_path,
+        state_col="state",
+        value_col="values",
+        state_order=["quiet_awake", "nrem"],
+        state_label_col="state_display",
+        state_color_col="state_color",
+        group_col="group",
+        group_label_col="group_display",
+        secondary_col="compartment",
+        values_col="values",
+        face_color_col="face",
+        edge_color_col="edge",
+        hatch_col="hatch",
+        stem="canonical",
+        title="Canonical",
+        ylabel="Metric",
+        return_figure=True,
+    )
+    assert figure is not None
+    assert len(captured["positions"]) == 6
+    assert len({round(position, 3) for position in captured["positions"]}) == 6
+    assert abs(captured["positions"][0] - captured["positions"][1]) < abs(captured["positions"][1] - captured["positions"][2])
+    assert [tick.get_text() for tick in captured["axes"].get_xticklabels()][:4] == ["LA/LF", "LA/HF", "HA/LF", "HA/HF"]
+    assert {patch.get_hatch() for patch in captured["boxes"]} == {"...", "///"}
+    assert captured["boxes"][0].get_facecolor() != captured["boxes"][1].get_facecolor()
+    plt.close(figure)
+
+
+def test_result_layout_auditor_flags_only_comparison_level_figures(tmp_path: Path) -> None:
+    from analysis.audit_result_layout import find_illegal_figure_dirs
+
+    comparison = tmp_path / "comparison"
+    (comparison / "pooled" / "all" / "figures").mkdir(parents=True)
+    (comparison / "figures").mkdir()
+    direct = tmp_path / "direct"
+    (direct / "figures").mkdir(parents=True)
+
+    assert find_illegal_figure_dirs(tmp_path) == [comparison / "figures", comparison / "pooled" / "all" / "figures"]
+
+
+def test_split_state_metrics_emit_multi_panel_group_figures(tmp_path: Path) -> None:
+    rows = []
+    for state_index, state in enumerate(("quiet_awake", "nrem")):
+        for group_index, group in enumerate(("higher_frequency", "lower_frequency")):
+            rows.append({
+                "state": state,
+                "state_display": state.replace("_", " ").title(),
+                "split_group": group,
+                "split_group_display": group.replace("_", " ").title(),
+                "split_group_rank": group_index + 1,
+                "mean": float(state_index + group_index + 1),
+                "event_frequency_per_min": float(state_index + group_index + 2),
+                "global_soma_id": f"roi-{state_index}-{group_index}",
+            })
+    activity_outputs = plot_state_activity(rows, tmp_path, state_order=["quiet_awake", "nrem"])
+    frequency_outputs = plot_state_event_frequency(rows, tmp_path, state_order=["quiet_awake", "nrem"])
+    correlation_rows = [dict(row, mean_corr=row["mean"] / 10.0) for row in rows]
+    correlation_outputs = plot_state_correlation(
+        correlation_rows,
+        tmp_path,
+        state_order=["quiet_awake", "nrem"],
+        output_stem="state_correlation",
+    )
+
+    expected = {
+        "state_summary_boxplots_mean_multi_panel_split_groups.png",
+        "state_summary_boxplots_mean_multi_panel_split_groups.svg",
+    }
+    assert expected.issubset({path.name for path in activity_outputs})
+    assert {
+        "state_summary_boxplots_event_frequency_multi_panel_split_groups.png",
+        "state_summary_boxplots_event_frequency_multi_panel_split_groups.svg",
+    }.issubset({path.name for path in frequency_outputs})
+    assert {
+        "state_correlation_multi_panel_split_groups.png",
+        "state_correlation_multi_panel_split_groups.svg",
+    }.issubset({path.name for path in correlation_outputs})

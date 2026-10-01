@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import combinations
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 from scipy import stats
 
-from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
+from analysis.shared.state_utils import canonical_state_label, derive_animal_id, derive_date, make_day_id, state_display_color, state_display_label
 
 WINDOW_LABELS: Tuple[str, ...] = ('overall', 'nrem', 'rem')
 WINDOW_DISPLAY_LABELS = {
@@ -16,6 +17,44 @@ WINDOW_DISPLAY_LABELS = {
     'rem': 'REM',
 }
 
+ROI_SPLIT_BRANCHES: Tuple[str, ...] = (
+    'pooled',
+    'activity_split',
+    'frequency_split',
+    'activity_frequency_split',
+)
+ROI_SPLIT_BASES: Tuple[str, ...] = ('all', 'nrem', 'rem')
+ROI_SPLIT_ACTIVITY_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = (
+    ('more_active', 'More active', '#4c78a8'),
+    ('less_active', 'Less active', '#f58518'),
+)
+ROI_SPLIT_FREQUENCY_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = (
+    ('higher_frequency', 'Higher frequency', '#4c78a8'),
+    ('lower_frequency', 'Lower frequency', '#f58518'),
+)
+ROI_SPLIT_BINARY_GROUPS: Tuple[Tuple[str, str, str], ...] = ROI_SPLIT_ACTIVITY_BINARY_GROUPS
+ROI_SPLIT_QUADRANT_GROUPS: Tuple[Tuple[str, str, str], ...] = (
+    ('high_activity_high_frequency', 'High activity / high frequency', '#4c78a8'),
+    ('high_activity_low_frequency', 'High activity / low frequency', '#72b7b2'),
+    ('low_activity_high_frequency', 'Low activity / high frequency', '#f58518'),
+    ('low_activity_low_frequency', 'Low activity / low frequency', '#e45756'),
+)
+ROI_SPLIT_GROUP_HATCHES: Dict[str, str] = {
+    'high_activity_high_frequency': '///',
+    'high_activity_low_frequency': '\\',
+    'low_activity_high_frequency': 'xxx',
+    'low_activity_low_frequency': '...',
+    'more_active': '///',
+    'less_active': '\\',
+    'higher_frequency': '///',
+    'lower_frequency': '\\',
+}
+
+
+def split_group_hatch(group_name: Any) -> str:
+    group_key = canonical_state_label(group_name)
+    return ROI_SPLIT_GROUP_HATCHES.get(group_key, '///')
+
 
 def _as_float(value: Any) -> float:
     try:
@@ -23,6 +62,17 @@ def _as_float(value: Any) -> float:
     except (TypeError, ValueError):
         return float('nan')
     return float(result) if np.isfinite(result) else float('nan')
+
+
+def _normalize_basis_day_key(value: Any) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if '|' in text:
+        parts = [part for part in text.split('|') if part]
+        if len(parts) >= 2:
+            return make_day_id(parts[0], parts[1])
+    return make_day_id(derive_animal_id(text), derive_date(text))
 
 
 def estimate_frame_duration_seconds(time: Sequence[Any]) -> float:
@@ -130,6 +180,14 @@ def _state_matches_window(state: str, window: str) -> bool:
     if window_key == 'overall':
         return state_key != 'all'
     return _window_family_label(state_key) == window_key
+
+
+def _row_session_id(row: Mapping[str, Any]) -> str:
+    for key in ('expid', 'exp_id', 'day_id'):
+        normalized = _normalize_basis_day_key(row.get(key))
+        if normalized:
+            return normalized
+    return ''
 
 
 def _ordered_unique_states(states: Sequence[str], state_order: Sequence[str] | None = None) -> List[str]:
@@ -346,6 +404,129 @@ def _compare_independent_groups(
     }
 
 
+
+
+def _basis_label(basis_name: Any) -> str:
+    basis_key = canonical_state_label(basis_name)
+    if basis_key in {'all', 'overall'}:
+        return 'all'
+    if basis_key in {'nrem', 'rem'}:
+        return basis_key
+    return basis_key or 'all'
+
+
+def split_group_specs_for_branch(split_name: Any, split_mode: Any) -> List[Dict[str, str]]:
+    split_key = canonical_state_label(split_mode)
+    if split_key in {'activity_frequency', 'activity_frequency_split', 'quadrant'}:
+        return [
+            {'group': group, 'label': label, 'color': color, 'hatch': split_group_hatch(group)}
+            for group, label, color in ROI_SPLIT_QUADRANT_GROUPS
+        ]
+    split_name_key = canonical_state_label(split_name)
+    if split_name_key in {'frequency', 'frequency_split', 'event_frequency', 'event_frequency_split', 'firing_rate'}:
+        return [
+            {'group': group, 'label': label, 'color': color, 'hatch': split_group_hatch(group)}
+            for group, label, color in ROI_SPLIT_FREQUENCY_BINARY_GROUPS
+        ]
+    return [
+        {'group': group, 'label': label, 'color': color, 'hatch': split_group_hatch(group)}
+        for group, label, color in ROI_SPLIT_ACTIVITY_BINARY_GROUPS
+    ]
+
+
+def _group_display_map(group_specs: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, str]]:
+    return {
+        str(spec.get('group') or '').strip().lower(): {
+            'label': str(spec.get('label') or '').strip(),
+            'color': str(spec.get('color') or '#4c78a8').strip(),
+            'hatch': str(spec.get('hatch') or split_group_hatch(spec.get('group'))).strip(),
+        }
+        for spec in group_specs
+        if str(spec.get('group') or '').strip()
+    }
+
+
+def _group_summary_string(group_specs: Sequence[Mapping[str, Any]], group_counts: Mapping[str, int]) -> str:
+    parts: List[str] = []
+    for spec in group_specs:
+        group = str(spec.get('group') or '').strip()
+        if not group:
+            continue
+        parts.append(f"{group}:{int(group_counts.get(group, 0))}")
+    return ';'.join(parts)
+
+
+
+
+def _split_group_lookup_key(row: Mapping[str, Any]) -> Tuple[str, ...]:
+    return tuple(
+        str(row.get(field) or '').strip().lower()
+        for field in ('roi_type', 'compartment', 'branch_name', 'basis_name', 'split_name', 'split_mode', 'subject_id')
+    )
+
+
+def annotate_rows_with_split_group(
+    rows: Sequence[Mapping[str, Any]],
+    membership_rows: Sequence[Mapping[str, Any]],
+    *,
+    group_column: str = 'split_group',
+) -> List[Dict[str, Any]]:
+    membership_lookup: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+    for row in membership_rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        group = str(row.get('group') or '').strip()
+        key = _split_group_lookup_key(row)
+        if not any(key) or not group:
+            continue
+        membership_lookup[key] = {
+            'group': group,
+            'group_display': str(row.get('group_display') or group).strip(),
+            'group_color': str(row.get('group_color') or '').strip(),
+            'group_hatch': str(row.get('group_hatch') or '').strip(),
+            'group_rank': row.get('rank'),
+        }
+
+    annotated: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        payload = dict(row)
+        key = _split_group_lookup_key(
+            {
+                'roi_type': row.get('roi_type'),
+                'compartment': row.get('compartment'),
+                'branch_name': row.get('branch_name'),
+                'basis_name': row.get('basis_name'),
+                'split_name': row.get('split_name'),
+                'split_mode': row.get('split_mode'),
+                'subject_id': (
+                    row.get('subject_id')
+                    or row.get('unit_id')
+                    or row.get('global_soma_id')
+                    or row.get('global_bouton_id')
+                    or row.get('global_dendrite_id')
+                    or row.get('global_spine_id')
+                    or row.get('roi_id')
+                    or row.get('roi_key')
+                    or ''
+                ),
+            }
+        )
+        group_info = membership_lookup.get(key)
+        if group_info:
+            payload[group_column] = group_info['group']
+            payload[f'{group_column}_display'] = group_info['group_display']
+            if group_info['group_color']:
+                payload[f'{group_column}_color'] = group_info['group_color']
+            if group_info.get('group_hatch'):
+                payload[f'{group_column}_hatch'] = group_info['group_hatch']
+            group_rank = group_info.get('group_rank')
+            if group_rank is not None:
+                payload[f'{group_column}_rank'] = group_rank
+        annotated.append(payload)
+    return annotated
+
 def build_roi_split_results(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -362,13 +543,33 @@ def build_roi_split_results(
     n_frames_column: str = 'state_n_frames',
     shuffle_n: int = 1000,
     windows: Sequence[str] = WINDOW_LABELS,
+    sleep_expids: Sequence[str] | None = None,
+    branch_name: str | None = None,
+    basis_name: str = 'all',
+    secondary_score_column: str | None = None,
+    split_mode: str = 'binary',
 ) -> Dict[str, Any]:
     selected_state_set = {
         canonical_state_label(state)
         for state in (selected_states or [])
         if canonical_state_label(state)
     }
+    sleep_expid_set = {
+        key
+        for expid in (sleep_expids or [])
+        for key in [_normalize_basis_day_key(expid)]
+        if key
+    }
     compartment_label = str(compartment or '').strip().lower() or None
+    branch_label = canonical_state_label(branch_name)
+    basis_key = _basis_label(basis_name)
+    split_key = canonical_state_label(split_name) or 'split'
+    split_mode_key = canonical_state_label(split_mode) or 'binary'
+    group_specs = split_group_specs_for_branch(split_key, split_mode_key)
+    group_meta = _group_display_map(group_specs)
+    primary_response_columns = [str(column).strip() for column in response_columns if str(column).strip()]
+    aggregation_columns = list(dict.fromkeys(primary_response_columns + [column for column in [secondary_score_column] if column]))
+
     filtered_rows: List[Mapping[str, Any]] = []
     for row in rows:
         if compartment_label is not None and str(row.get('compartment') or '').strip().lower() != compartment_label:
@@ -386,261 +587,397 @@ def build_roi_split_results(
         roi_type=roi_type,
         compartment=compartment_label,
         score_column=score_column,
-        response_columns=response_columns,
+        response_columns=aggregation_columns,
         state_column=state_column,
         duration_column=duration_column,
         n_frames_column=n_frames_column,
     )
-    subject_state_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {
-        (str(row['subject_id']), str(row['state'])): dict(row)
-        for row in subject_state_rows
-    }
-    available_states = [str(row['state']) for row in subject_state_rows]
-    subject_ids = sorted({str(row['subject_id']) for row in subject_state_rows if str(row.get('subject_id') or '').strip()})
-
-
-    membership_rows: List[Dict[str, Any]] = []
-    comparison_rows: List[Dict[str, Any]] = []
-    summary_rows: List[Dict[str, Any]] = []
-    window_response_rows: List[Dict[str, Any]] = []
-    window_response_comparison_rows: List[Dict[str, Any]] = []
-
-    for window in windows:
-        window_key = canonical_state_label(window)
-        window_states = _window_state_labels(available_states, window_key, state_order=state_order)
-        if not window_states:
-            continue
-        ranked_subjects: List[Dict[str, Any]] = []
-        for subject_id in subject_ids:
-            state_rows = [subject_state_lookup.get((subject_id, state)) for state in window_states]
-            state_rows = [row for row in state_rows if row is not None]
-            if not state_rows:
-                continue
-            values: List[float] = []
-            weights: List[float] = []
-            for row in state_rows:
-                value = _as_float(row.get(score_column))
-                if not np.isfinite(value):
-                    continue
-                weight = _as_float(row.get('state_duration_s'))
-                if not np.isfinite(weight) or weight <= 0:
-                    weight = _as_float(row.get('state_n_frames'))
-                if not np.isfinite(weight) or weight <= 0:
-                    weight = 1.0
-                values.append(value)
-                weights.append(weight)
-            if not values:
-                continue
-            ranked_subjects.append(
-                {
-                    'subject_id': subject_id,
-                    'score': _weighted_mean(values, weights),
-                    'n_states': int(len(state_rows)),
-                    'state_duration_s': float(sum(weights)),
-                    'state_n_frames': int(sum(int(n_frames) for n_frames in [_as_float(row.get('state_n_frames')) for row in state_rows] if np.isfinite(n_frames) and n_frames > 0)),
-                }
-            )
-        ranked_subjects = [row for row in ranked_subjects if np.isfinite(_as_float(row.get('score')))]
-        ranked_subjects.sort(key=lambda row: (-_as_float(row.get('score')), str(row.get('subject_id'))))
-        n_ranked = len(ranked_subjects)
-        more_count = (n_ranked + 1) // 2
-        less_count = n_ranked - more_count
-        group_lookup: Dict[str, str] = {}
-        for rank, row in enumerate(ranked_subjects, start=1):
-            group = 'more_active' if rank <= more_count else 'less_active'
-            subject_id = str(row.get('subject_id'))
-            group_lookup[subject_id] = group
-            membership_rows.append(
-                {
-                    'roi_type': roi_type,
-                    'compartment': compartment_label or '',
-                    'split_name': split_name,
-                    'score_column': score_column,
-                    'window': window_key,
-                    'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
-                    'subject_id': subject_id,
-                    'group': group,
-                    'rank': int(rank),
-                    'score': float(row.get('score', float('nan'))),
-                    'n_states': int(row.get('n_states', 0)),
-                    'state_duration_s': float(row.get('state_duration_s', float('nan'))),
-                    'state_n_frames': int(row.get('state_n_frames', 0)),
-                    'n_subjects': int(n_ranked),
-                    'n_more_active': int(more_count),
-                    'n_less_active': int(less_count),
-                }
-            )
-
-        ranked_scores = [float(row.get('score', float('nan'))) for row in ranked_subjects if np.isfinite(_as_float(row.get('score')))]
-        summary_rows.append(
+    for row in subject_state_rows:
+        row.update(
             {
-                'roi_type': roi_type,
-                'compartment': compartment_label or '',
-                'split_name': split_name,
-                'score_column': score_column,
-                'window': window_key,
-                'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
-                'n_subjects': int(n_ranked),
-                'n_more_active': int(more_count),
-                'n_less_active': int(less_count),
-                'n_state_rows': int(sum(len([1 for state in window_states if (subject_id, state) in subject_state_lookup]) for subject_id in subject_ids)),
-                'n_states': int(len(window_states)),
-                'window_states': ','.join(window_states),
-                'mean_score': float(np.nanmean(ranked_scores)) if ranked_scores else float('nan'),
-                'median_score': float(np.nanmedian(ranked_scores)) if ranked_scores else float('nan'),
-                'std_score': float(np.nanstd(ranked_scores, ddof=1)) if len(ranked_scores) > 1 else 0.0 if ranked_scores else float('nan'),
-                'min_score': float(np.nanmin(ranked_scores)) if ranked_scores else float('nan'),
-                'max_score': float(np.nanmax(ranked_scores)) if ranked_scores else float('nan'),
+                'branch_name': branch_label or '',
+                'basis_name': basis_key,
+                'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+                'split_name': split_key,
+                'split_mode': split_mode_key,
             }
         )
 
+    ranking_rows = list(filtered_rows)
+    if basis_key in {'nrem', 'rem'} and sleep_expid_set:
+        ranking_rows = [row for row in ranking_rows if _row_session_id(row) in sleep_expid_set]
+    if basis_key not in {'all', 'overall', 'nrem', 'rem'}:
+        ranking_rows = [row for row in ranking_rows if canonical_state_label(row.get(state_column)) == basis_key]
+
+    ranking_subject_state_rows = _aggregate_subject_state_rows(
+        ranking_rows,
+        subject_key=subject_key,
+        roi_type=roi_type,
+        compartment=compartment_label,
+        score_column=score_column,
+        response_columns=aggregation_columns,
+        state_column=state_column,
+        duration_column=duration_column,
+        n_frames_column=n_frames_column,
+    )
+    ranking_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {
+        (str(row['subject_id']), str(row['state'])): dict(row)
+        for row in ranking_subject_state_rows
+    }
+    ranking_subject_ids = sorted({str(row['subject_id']) for row in ranking_subject_state_rows if str(row.get('subject_id') or '').strip()})
+    ranking_states = _window_state_labels([str(row['state']) for row in ranking_subject_state_rows], 'overall' if basis_key == 'all' else basis_key, state_order=state_order)
+
+    ranked_subjects: List[Dict[str, Any]] = []
+    for subject_id in ranking_subject_ids:
+        state_rows = [ranking_lookup.get((subject_id, state)) for state in ranking_states]
+        state_rows = [row for row in state_rows if row is not None]
+        if not state_rows:
+            continue
+        score_value, _ = _aggregate_metric(state_rows, score_column, duration_column, n_frames_column)
+        if not np.isfinite(score_value):
+            continue
+        n_frames_total = 0
+        duration_total = 0.0
+        for row in state_rows:
+            n_frames = _as_float(row.get(n_frames_column))
+            if np.isfinite(n_frames) and n_frames > 0:
+                n_frames_total += int(n_frames)
+            duration = _as_float(row.get(duration_column))
+            if np.isfinite(duration) and duration > 0:
+                duration_total += float(duration)
+            elif np.isfinite(n_frames) and n_frames > 0:
+                duration_total += float(n_frames)
+        payload: Dict[str, Any] = {
+            'subject_id': subject_id,
+            'score': float(score_value),
+            'n_states': int(len(state_rows)),
+            'state_duration_s': float(duration_total),
+            'state_n_frames': int(n_frames_total),
+        }
+        if secondary_score_column:
+            secondary_value, _ = _aggregate_metric(state_rows, secondary_score_column, duration_column, n_frames_column)
+            payload['secondary_score'] = float(secondary_value)
+        ranked_subjects.append(payload)
+
+    group_lookup: Dict[str, str] = {}
+    if len(group_specs) == 2:
+        ranked_subjects = [row for row in ranked_subjects if np.isfinite(_as_float(row.get('score')))]
+        ranked_subjects.sort(key=lambda row: (-_as_float(row.get('score')), str(row.get('subject_id'))))
+        more_count = (len(ranked_subjects) + 1) // 2
+        for index, row in enumerate(ranked_subjects, start=1):
+            group = str(group_specs[0]['group']) if index <= more_count else str(group_specs[1]['group'])
+            row['group'] = group
+            row['rank'] = int(index)
+            group_lookup[str(row['subject_id'])] = group
+    else:
+        ranked_subjects = [row for row in ranked_subjects if np.isfinite(_as_float(row.get('score'))) and np.isfinite(_as_float(row.get('secondary_score')))]
+        ranked_subjects.sort(key=lambda row: (-_as_float(row.get('score')), -_as_float(row.get('secondary_score')), str(row.get('subject_id'))))
+        if ranked_subjects:
+            score_median = float(np.nanmedian([_as_float(row.get('score')) for row in ranked_subjects]))
+            secondary_median = float(np.nanmedian([_as_float(row.get('secondary_score')) for row in ranked_subjects]))
+            for index, row in enumerate(ranked_subjects, start=1):
+                score_high = _as_float(row.get('score')) >= score_median
+                secondary_high = _as_float(row.get('secondary_score')) >= secondary_median
+                if score_high and secondary_high:
+                    group = str(group_specs[0]['group'])
+                elif score_high and not secondary_high:
+                    group = str(group_specs[1]['group'])
+                elif not score_high and secondary_high:
+                    group = str(group_specs[2]['group'])
+                else:
+                    group = str(group_specs[3]['group'])
+                row['group'] = group
+                row['rank'] = int(index)
+                group_lookup[str(row['subject_id'])] = group
+
+    group_counts: Dict[str, int] = {str(spec['group']): 0 for spec in group_specs}
+    for row in ranked_subjects:
+        group = str(row.get('group') or '')
+        if group in group_counts:
+            group_counts[group] += 1
+
+    membership_rows: List[Dict[str, Any]] = []
+    summary_rows: List[Dict[str, Any]] = []
+    window_response_rows: List[Dict[str, Any]] = []
+    window_response_comparison_rows: List[Dict[str, Any]] = []
+    comparison_rows: List[Dict[str, Any]] = []
+    pairwise_groups = [(str(left['group']), str(right['group'])) for left_index, left in enumerate(group_specs) for right in group_specs[left_index + 1:]]
+
+    for index, row in enumerate(ranked_subjects, start=1):
+        subject_id = str(row.get('subject_id'))
+        group = str(row.get('group') or '')
+        if not subject_id or not group:
+            continue
+        payload: Dict[str, Any] = {
+            'roi_type': roi_type,
+            'compartment': compartment_label or '',
+            'branch_name': branch_label or '',
+            'basis_name': basis_key,
+            'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+            'split_name': split_key,
+            'split_mode': split_mode_key,
+            'score_column': score_column,
+            'secondary_score_column': secondary_score_column or '',
+            'subject_id': subject_id,
+            'group': group,
+            'group_display': group_meta.get(group, {}).get('label', group),
+            'group_color': group_meta.get(group, {}).get('color', '#4c78a8'),
+            'group_hatch': group_meta.get(group, {}).get('hatch', split_group_hatch(group)),
+            'rank': int(index),
+            'score': float(row.get('score', float('nan'))),
+            'state_duration_s': float(row.get('state_duration_s', float('nan'))),
+            'state_n_frames': int(row.get('state_n_frames', 0)),
+            'n_states': int(row.get('n_states', 0)),
+            'n_groups': int(len(group_specs)),
+        }
+        if 'secondary_score' in row:
+            payload['secondary_score'] = float(row.get('secondary_score', float('nan')))
+        for spec in group_specs:
+            group_name = str(spec['group'])
+            payload[f'n_{group_name}'] = int(group_counts.get(group_name, 0))
+        membership_rows.append(payload)
+
+    for window in windows:
+        window_key = canonical_state_label(window)
+        window_rows = filtered_rows
+        if window_key in {'nrem', 'rem'} and sleep_expid_set:
+            window_rows = [row for row in filtered_rows if _row_session_id(row) in sleep_expid_set]
+        window_subject_state_rows = _aggregate_subject_state_rows(
+            window_rows,
+            subject_key=subject_key,
+            roi_type=roi_type,
+            compartment=compartment_label,
+            score_column=score_column,
+            response_columns=aggregation_columns,
+            state_column=state_column,
+            duration_column=duration_column,
+            n_frames_column=n_frames_column,
+        )
+        window_subject_state_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {
+            (str(row['subject_id']), str(row['state'])): dict(row)
+            for row in window_subject_state_rows
+        }
+        window_subject_ids = sorted({str(row['subject_id']) for row in window_subject_state_rows if str(row.get('subject_id') or '').strip()})
+        window_states = _window_state_labels([str(row['state']) for row in window_subject_state_rows], window_key, state_order=state_order)
+        if not window_states:
+            continue
         window_subject_rows: List[Dict[str, Any]] = []
-        for rank, row in enumerate(ranked_subjects, start=1):
-            subject_id = str(row.get('subject_id'))
-            state_rows = [subject_state_lookup.get((subject_id, state)) for state in window_states]
+        for index, ranked_row in enumerate(ranked_subjects, start=1):
+            subject_id = str(ranked_row.get('subject_id'))
+            group = group_lookup.get(subject_id)
+            if group not in group_meta:
+                continue
+            state_rows = [window_subject_state_lookup.get((subject_id, state)) for state in window_states]
             state_rows = [item for item in state_rows if item is not None]
             if not state_rows:
-                continue
-            group = group_lookup.get(subject_id)
-            if group not in {'more_active', 'less_active'}:
                 continue
             payload = _aggregate_subject_window_rows(
                 state_rows,
                 score_column=score_column,
-                response_columns=response_columns,
+                response_columns=aggregation_columns,
                 duration_column=duration_column,
                 n_frames_column=n_frames_column,
             )
             if not payload:
                 continue
+            if secondary_score_column:
+                secondary_value, _ = _aggregate_metric(state_rows, secondary_score_column, duration_column, n_frames_column)
+                payload[secondary_score_column] = float(secondary_value)
             payload.update(
                 {
                     'roi_type': roi_type,
                     'compartment': compartment_label or '',
-                    'split_name': split_name,
-                    'score_column': score_column,
-                    'window': window_key,
-                    'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                    'branch_name': branch_label or '',
+                    'basis_name': basis_key,
+                    'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+                    'split_name': split_key,
+                    'split_mode': split_mode_key,
                     'state': window_key,
                     'state_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
                     'state_color': state_display_color(window_key),
+                    'window': window_key,
+                    'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
                     'subject_id': subject_id,
                     'group': group,
-                    'rank': int(rank),
+                    'group_display': group_meta.get(group, {}).get('label', group),
+                    'group_color': group_meta.get(group, {}).get('color', '#4c78a8'),
+                    'rank': int(index),
                     'n_states': int(len(state_rows)),
-                    'window_n_subjects': int(n_ranked),
-                    'window_n_more_active': int(more_count),
-                    'window_n_less_active': int(less_count),
+                    'window_n_subjects': int(len(ranked_subjects)),
+                    'window_n_groups': int(len(group_specs)),
                 }
             )
+            for spec in group_specs:
+                group_name = str(spec['group'])
+                payload[f'n_{group_name}'] = int(group_counts.get(group_name, 0))
             window_subject_rows.append(payload)
             window_response_rows.append(dict(payload))
 
-        for response_column in response_columns:
-            more_values: List[float] = []
-            less_values: List[float] = []
-            for subject_row in window_subject_rows:
-                value = _as_float(subject_row.get(response_column))
-                if not np.isfinite(value):
-                    continue
-                group = str(subject_row.get('group') or '').strip().lower()
-                if group == 'more_active':
-                    more_values.append(value)
-                elif group == 'less_active':
-                    less_values.append(value)
-            comparison = _compare_independent_groups(more_values, less_values, metric_name=response_column, shuffle_n=shuffle_n)
-            comparison.update(
-                {
-                    'comparison': 'more_active_vs_less_active',
-                    'roi_type': roi_type,
-                    'compartment': compartment_label or '',
-                    'split_name': split_name,
-                    'score_column': score_column,
-                    'response_column': response_column,
-                    'window': window_key,
-                    'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
-                    'state': window_key,
-                    'state_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
-                    'state_color': state_display_color(window_key),
-                    'group_a': 'more_active',
-                    'group_b': 'less_active',
-                    'state_a': 'more_active',
-                    'state_b': 'less_active',
-                    'state_a_display': 'More Active',
-                    'state_b_display': 'Less Active',
-                    'n_more_active': int(len(more_values)),
-                    'n_less_active': int(len(less_values)),
-                    'window_n_subjects': int(n_ranked),
-                    'window_n_more_active': int(more_count),
-                    'window_n_less_active': int(less_count),
-                }
-            )
-            window_response_comparison_rows.append(comparison)
-
-        for response_column in response_columns:
-            for state in window_states:
-                more_values: List[float] = []
-                less_values: List[float] = []
-                for subject_id in subject_ids:
-                    row = subject_state_lookup.get((subject_id, state))
-                    if row is None:
-                        continue
-                    value = _as_float(row.get(response_column))
+        for response_column in primary_response_columns:
+            for group_a, group_b in pairwise_groups:
+                a_values: List[float] = []
+                b_values: List[float] = []
+                for subject_row in window_subject_rows:
+                    value = _as_float(subject_row.get(response_column))
                     if not np.isfinite(value):
                         continue
-                    group = group_lookup.get(subject_id)
-                    if group == 'more_active':
-                        more_values.append(value)
-                    elif group == 'less_active':
-                        less_values.append(value)
-                comparison = _compare_independent_groups(more_values, less_values, metric_name=response_column, shuffle_n=shuffle_n)
+                    group = str(subject_row.get('group') or '')
+                    if group == group_a:
+                        a_values.append(value)
+                    elif group == group_b:
+                        b_values.append(value)
+                comparison = _compare_independent_groups(a_values, b_values, metric_name=response_column, shuffle_n=shuffle_n)
                 comparison.update(
                     {
-                        'comparison': 'more_active_vs_less_active',
+                        'comparison': f'{group_a}_vs_{group_b}',
                         'roi_type': roi_type,
                         'compartment': compartment_label or '',
-                        'split_name': split_name,
+                        'branch_name': branch_label or '',
+                        'basis_name': basis_key,
+                        'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+                        'split_name': split_key,
+                        'split_mode': split_mode_key,
                         'score_column': score_column,
+                        'secondary_score_column': secondary_score_column or '',
                         'response_column': response_column,
                         'window': window_key,
                         'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
-                        'state': state,
-                        'state_display': state_display_label(state),
-                        'state_color': state_display_color(state),
-                        'group_a': 'more_active',
-                        'group_b': 'less_active',
-                        'n_more_active': int(len(more_values)),
-                        'n_less_active': int(len(less_values)),
-                        'window_n_subjects': int(n_ranked),
-                        'window_n_more_active': int(more_count),
-                        'window_n_less_active': int(less_count),
+                        'state': window_key,
+                        'state_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                        'state_color': state_display_color(window_key),
+                        'group_a': group_a,
+                        'group_b': group_b,
+                        'state_a': group_a,
+                        'state_b': group_b,
+                        'state_a_display': group_meta.get(group_a, {}).get('label', group_a),
+                        'state_b_display': group_meta.get(group_b, {}).get('label', group_b),
+                        'group_a_display': group_meta.get(group_a, {}).get('label', group_a),
+                        'group_b_display': group_meta.get(group_b, {}).get('label', group_b),
+                        'n_subjects': int(min(len(a_values), len(b_values))),
+                        'n_groups': int(len(group_specs)),
+                        'window_n_subjects': int(len(ranked_subjects)),
+                        'window_n_groups': int(len(group_specs)),
                     }
                 )
-                comparison_rows.append(comparison)
+                window_response_comparison_rows.append(comparison)
+
+        for response_column in primary_response_columns:
+            for state in window_states:
+                for group_a, group_b in pairwise_groups:
+                    a_values = []
+                    b_values = []
+                    for subject_id in window_subject_ids:
+                        row = window_subject_state_lookup.get((subject_id, state))
+                        if row is None:
+                            continue
+                        value = _as_float(row.get(response_column))
+                        if not np.isfinite(value):
+                            continue
+                        group = group_lookup.get(subject_id)
+                        if group == group_a:
+                            a_values.append(value)
+                        elif group == group_b:
+                            b_values.append(value)
+                    comparison = _compare_independent_groups(a_values, b_values, metric_name=response_column, shuffle_n=shuffle_n)
+                    comparison.update(
+                        {
+                            'comparison': f'{group_a}_vs_{group_b}',
+                            'roi_type': roi_type,
+                            'compartment': compartment_label or '',
+                            'branch_name': branch_label or '',
+                            'basis_name': basis_key,
+                            'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+                            'split_name': split_key,
+                            'split_mode': split_mode_key,
+                            'score_column': score_column,
+                            'secondary_score_column': secondary_score_column or '',
+                            'response_column': response_column,
+                            'window': window_key,
+                            'window_display': WINDOW_DISPLAY_LABELS.get(window_key, state_display_label(window_key)),
+                            'state': state,
+                            'state_display': state_display_label(state),
+                            'state_color': state_display_color(state),
+                            'group_a': group_a,
+                            'group_b': group_b,
+                            'state_a': group_a,
+                            'state_b': group_b,
+                            'state_a_display': group_meta.get(group_a, {}).get('label', group_a),
+                            'state_b_display': group_meta.get(group_b, {}).get('label', group_b),
+                            'group_a_display': group_meta.get(group_a, {}).get('label', group_a),
+                            'group_b_display': group_meta.get(group_b, {}).get('label', group_b),
+                            'n_subjects': int(min(len(a_values), len(b_values))),
+                            'n_groups': int(len(group_specs)),
+                            'window_n_subjects': int(len(ranked_subjects)),
+                            'window_n_groups': int(len(group_specs)),
+                        }
+                    )
+                    comparison_rows.append(comparison)
+
+        ranked_scores = [_as_float(row.get('score')) for row in ranked_subjects if np.isfinite(_as_float(row.get('score')))]
+        summary_row: Dict[str, Any] = {
+            'roi_type': roi_type,
+            'compartment': compartment_label or '',
+            'branch_name': branch_label or '',
+            'basis_name': basis_key,
+            'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+            'split_name': split_key,
+            'split_mode': split_mode_key,
+            'score_column': score_column,
+            'secondary_score_column': secondary_score_column or '',
+            'window': basis_key,
+            'window_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+            'n_subjects': int(len(ranked_subjects)),
+            'n_groups': int(len(group_specs)),
+            'group_labels': ','.join(str(spec['label']) for spec in group_specs),
+            'group_series': ','.join(str(spec['group']) for spec in group_specs),
+            'group_colors': ','.join(str(spec['color']) for spec in group_specs),
+            'group_counts': _group_summary_string(group_specs, group_counts),
+            'n_state_rows': int(sum(len([1 for state in window_states if (subject_id, state) in window_subject_state_lookup]) for subject_id in window_subject_ids)),
+            'n_states': int(len(window_states)),
+            'window_states': ','.join(window_states),
+            'mean_score': float(np.nanmean(ranked_scores)) if ranked_scores else float('nan'),
+            'median_score': float(np.nanmedian(ranked_scores)) if ranked_scores else float('nan'),
+            'std_score': float(np.nanstd(ranked_scores, ddof=1)) if len(ranked_scores) > 1 else 0.0 if ranked_scores else float('nan'),
+            'min_score': float(np.nanmin(ranked_scores)) if ranked_scores else float('nan'),
+            'max_score': float(np.nanmax(ranked_scores)) if ranked_scores else float('nan'),
+        }
+        for spec in group_specs:
+            group_name = str(spec['group'])
+            summary_row[f'n_{group_name}'] = int(group_counts.get(group_name, 0))
+        summary_rows.append(summary_row)
+    subject_state_rows = annotate_rows_with_split_group(subject_state_rows, membership_rows)
 
     sort_key = lambda row: (
+        row.get('branch_name', ''),
+        row.get('basis_name', ''),
         row.get('roi_type', ''),
         row.get('compartment', ''),
-        row.get('split_name', ''),
         row.get('window', ''),
         row.get('response_column', row.get('metric', '')),
         row.get('state', ''),
         row.get('subject_id', ''),
+        row.get('group', ''),
     )
-    subject_state_rows.sort(key=lambda row: (row.get('subject_id', ''), row.get('state', '')))
-    window_response_rows.sort(key=lambda row: (row.get('roi_type', ''), row.get('compartment', ''), row.get('split_name', ''), row.get('window', ''), row.get('subject_id', '')))
-    window_response_comparison_rows.sort(key=lambda row: (row.get('roi_type', ''), row.get('compartment', ''), row.get('split_name', ''), row.get('window', ''), row.get('response_column', '')))
+    subject_state_rows.sort(key=lambda row: (row.get('branch_name', ''), row.get('basis_name', ''), row.get('subject_id', ''), row.get('state', '')))
+    window_response_rows.sort(key=lambda row: (row.get('branch_name', ''), row.get('basis_name', ''), row.get('roi_type', ''), row.get('compartment', ''), row.get('window', ''), row.get('subject_id', '')))
+    window_response_comparison_rows.sort(key=lambda row: (row.get('branch_name', ''), row.get('basis_name', ''), row.get('roi_type', ''), row.get('compartment', ''), row.get('window', ''), row.get('response_column', ''), row.get('group_a', ''), row.get('group_b', '')))
     membership_rows.sort(key=sort_key)
     comparison_rows.sort(key=sort_key)
-    summary_rows.sort(key=lambda row: (row.get('roi_type', ''), row.get('compartment', ''), row.get('split_name', ''), row.get('window', '')))
+    summary_rows.sort(key=lambda row: (row.get('branch_name', ''), row.get('basis_name', ''), row.get('roi_type', ''), row.get('compartment', ''), row.get('window', '')))
     return {
         'roi_type': roi_type,
         'compartment': compartment_label or '',
-        'split_name': split_name,
-        'score_column': score_column,
-        'response_columns': list(response_columns),
+        'branch_name': branch_label or '',
+        'basis_name': basis_key,
+        'basis_display': WINDOW_DISPLAY_LABELS.get(basis_key, state_display_label(basis_key)),
+        'split_name': split_key,
+        'split_mode': split_mode_key,
+        'response_columns': list(primary_response_columns),
         'selected_states': list(selected_states or []),
         'state_order': list(state_order or []),
+        'group_labels': [str(spec['label']) for spec in group_specs],
+        'group_series': [str(spec['group']) for spec in group_specs],
+        'group_colors': [str(spec['color']) for spec in group_specs],
         'subject_state_rows': subject_state_rows,
         'window_response_rows': window_response_rows,
         'window_response_comparison_rows': window_response_comparison_rows,
@@ -649,20 +986,26 @@ def build_roi_split_results(
         'summary_rows': summary_rows,
         'counts': {
             'n_input_rows': int(len(filtered_rows)),
+            'n_basis_rows': int(len(ranking_rows)),
             'n_subject_state_rows': int(len(subject_state_rows)),
             'n_window_response_rows': int(len(window_response_rows)),
             'n_window_response_comparison_rows': int(len(window_response_comparison_rows)),
             'n_membership_rows': int(len(membership_rows)),
             'n_comparison_rows': int(len(comparison_rows)),
             'n_summary_rows': int(len(summary_rows)),
+            'n_groups': int(len(group_specs)),
         },
     }
 
 
 __all__ = [
+    'ROI_SPLIT_BASES',
+    'ROI_SPLIT_BRANCHES',
     'WINDOW_LABELS',
     'WINDOW_DISPLAY_LABELS',
     'build_roi_split_results',
     'estimate_frame_duration_seconds',
+    'split_group_specs_for_branch',
+    'split_group_hatch',
     'summarize_mask_duration',
 ]

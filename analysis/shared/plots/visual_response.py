@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -14,10 +15,11 @@ from scipy import stats
 
 from analysis.compartment_common import pick_state_bundle
 from analysis.shared.shared_calcium_response import load_visual_response_cut_data, visual_response_trial_group
-from analysis.dendrites_pipeline.dendrites_pipeline import (
-    plot_visual_response_boxplot_figure,
-    visual_response_figure_output_dir,
-)
+from analysis.shared.plots.figure_io import save_figure
+
+
+def visual_response_figure_output_dir(root: Path | str, kind: str, cohort_label: str) -> Path:
+    return Path(root) / "visual_response" / str(kind).strip().lower() / str(cohort_label).strip().lower()
 
 
 def _safe_filename_component(value: Any) -> str:
@@ -115,12 +117,20 @@ def _load_visual_response_plot_data(response_row: Mapping[str, Any], *, locomoti
     }
 
 
+def _plot_trace_points(time_values: np.ndarray, trace: np.ndarray, max_points: Optional[int]) -> tuple[np.ndarray, np.ndarray]:
+    if max_points is None or max_points <= 0 or time_values.size <= max_points:
+        return time_values, trace
+    indices = np.linspace(0, time_values.size - 1, int(max_points), dtype=int)
+    return time_values[indices], trace[indices]
+
+
 def plot_visual_response_entity_figure(
     response_row: Mapping[str, Any],
     fig_dir: Path | str,
     *,
     cohort_label: str = "all",
     kind: str = "soma",
+    max_trace_points: Optional[int] = None,
 ) -> Optional[str]:
     if plt is None:
         return None
@@ -144,8 +154,10 @@ def plot_visual_response_entity_figure(
     blank_ax, movie_ax, box_ax = axes
 
     for trace in blank_traces:
-        blank_ax.plot(cut_time, trace, color="#9AA0A6", linewidth=0.7, alpha=0.10, zorder=1)
-    blank_ax.plot(cut_time, blank_mean_trace, color="#7F8790", linewidth=2.6, zorder=3)
+        plot_time, plot_trace = _plot_trace_points(cut_time, trace, max_trace_points)
+        blank_ax.plot(plot_time, plot_trace, color="#9AA0A6", linewidth=0.7, alpha=0.10, zorder=1)
+    plot_time, plot_trace = _plot_trace_points(cut_time, blank_mean_trace, max_trace_points)
+    blank_ax.plot(plot_time, plot_trace, color="#7F8790", linewidth=2.6, zorder=3)
     blank_ax.set_title("Blank traces", fontsize=14)
     blank_ax.set_xlabel("Time (s)")
     blank_ax.set_ylabel("dF/F")
@@ -153,8 +165,10 @@ def plot_visual_response_entity_figure(
     blank_ax.text(0.02, 0.98, f"trials: blank={len(blank_traces)}", transform=blank_ax.transAxes, ha="left", va="top", fontsize=9, color="#444444")
 
     for trace in visual_traces:
-        movie_ax.plot(cut_time, trace, color="#F58518", linewidth=0.7, alpha=0.10, zorder=1)
-    movie_ax.plot(cut_time, visual_mean_trace, color="#D97706", linewidth=2.6, zorder=3)
+        plot_time, plot_trace = _plot_trace_points(cut_time, trace, max_trace_points)
+        movie_ax.plot(plot_time, plot_trace, color="#F58518", linewidth=0.7, alpha=0.10, zorder=1)
+    plot_time, plot_trace = _plot_trace_points(cut_time, visual_mean_trace, max_trace_points)
+    movie_ax.plot(plot_time, plot_trace, color="#D97706", linewidth=2.6, zorder=3)
     movie_ax.set_title("Movies traces", fontsize=14)
     movie_ax.set_xlabel("Time (s)")
     movie_ax.set_ylabel("dF/F")
@@ -208,7 +222,7 @@ def plot_visual_response_entity_figure(
     fig_dir = Path(fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
     output_path = fig_dir / f"{animal_slug}_{entity_slug}_{cohort_label}_blank_vs_movies.svg"
-    fig.savefig(output_path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, output_path, extra_formats=(), bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return str(output_path)
 
@@ -219,6 +233,8 @@ def render_visual_response_entity_figures(
     *,
     cohort_label: str = "all",
     kind: str = "soma",
+    batch_size: int = 32,
+    max_trace_points: Optional[int] = None,
 ) -> List[str]:
     deduped_rows: List[Mapping[str, Any]] = []
     seen_entities: set[str] = set()
@@ -231,11 +247,58 @@ def render_visual_response_entity_figures(
         seen_entities.add(entity_id)
         deduped_rows.append(row)
     saved: List[str] = []
-    for row in deduped_rows:
-        output = plot_visual_response_entity_figure(row, fig_dir, cohort_label=cohort_label, kind=kind)
-        if output:
-            saved.append(output)
+    safe_batch_size = max(1, int(batch_size))
+    for batch_start in range(0, len(deduped_rows), safe_batch_size):
+        batch = deduped_rows[batch_start : batch_start + safe_batch_size]
+        for row in batch:
+            output = plot_visual_response_entity_figure(
+                row,
+                fig_dir,
+                cohort_label=cohort_label,
+                kind=kind,
+                max_trace_points=max_trace_points,
+            )
+            if output:
+                saved.append(output)
+        del batch
+        gc.collect()
     return saved
+
+
+def plot_visual_response_boxplot_figure(
+    response_summary: Mapping[str, Any],
+    fig_dir: Path | str,
+    *,
+    output_name: str,
+    title: str,
+    cohort_label: str = "all",
+    kind: str = "dendrites",
+) -> Optional[str]:
+    rows = response_summary.get("rows", []) if isinstance(response_summary, Mapping) else []
+    values = []
+    for row in rows:
+        if not isinstance(row, Mapping) or (cohort_label != "all" and str(row.get("cohort") or "all") != cohort_label):
+            continue
+        try:
+            blank = float(row.get("mean_blank")); visual = float(row.get("mean_visual"))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(blank) and np.isfinite(visual):
+            values.append((blank, visual, bool(row.get("responsive"))))
+    if not values or plt is None:
+        return None
+    fig, ax = plt.subplots(figsize=(4.6, 4.7))
+    data = [np.asarray([item[0] for item in values]), np.asarray([item[1] for item in values])]
+    bp = ax.boxplot(data, positions=[1, 2], widths=0.58, patch_artist=True, showfliers=False)
+    for patch, color in zip(bp.get("boxes", []), ("#D9D9D9", "#4C78A8")):
+        patch.set_facecolor(color); patch.set_edgecolor("#444444")
+    for blank, visual, responsive in values:
+        ax.plot([1, 2], [blank, visual], color="#2F855A" if responsive else "#888888", alpha=0.2, linewidth=0.9)
+    ax.set_xticks([1, 2]); ax.set_xticklabels(["Blank", "Movies"]); ax.set_ylabel("Mean activity during cut stimulus"); ax.set_title(title); ax.grid(axis="y", alpha=0.2)
+    output = Path(fig_dir) / output_name
+    save_figure(fig, output, extra_formats=(), bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return str(output)
 
 
 __all__ = [

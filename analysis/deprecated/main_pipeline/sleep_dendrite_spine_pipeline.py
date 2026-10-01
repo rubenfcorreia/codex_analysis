@@ -5071,6 +5071,20 @@ def plot_state_summary_figure(
     **_compat_kwargs,
 ):
     """Backward-compatible public wrapper for the old state-summary API."""
+    if isinstance(results, dict) and isinstance(results.get("roi_split"), dict) and results["roi_split"].get("subject_state_rows"):
+        from analysis.dendrites_pipeline.dendrites_pipeline import plot_state_summary_figure as _grouped_state_summary_figure
+        return _grouped_state_summary_figure(
+            results,
+            output_dir,
+            output_name=output_name,
+            title=title,
+            state_labels=state_labels,
+            y_limits=y_limits,
+            comparison_rows=comparison_rows,
+            cohort_label=cohort_label,
+            state_group=state_group,
+            **_compat_kwargs,
+        )
     if isinstance(results, dict) and isinstance(results.get("state_summaries"), dict) and not isinstance(results.get("apical_results"), dict):
         state_order = list(state_labels) if state_labels is not None else list(DEFAULT_BASAL_APICAL_STATES)
         output_paths: List[Path] = []
@@ -6677,6 +6691,11 @@ def generate_analysis_figures(
     if plt is None:
         eprint("[ALERT] matplotlib is unavailable; skipping figure generation.")
         return []
+    from analysis.dendrites_pipeline.dendrites_pipeline import (
+        _filter_roi_split_by_entity_ids,
+        _restore_roi_split_from_analysis_tables,
+    )
+    _restore_roi_split_from_analysis_tables(results, cache)
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
     summary_fig_dir = state_summary_figure_dir(fig_dir)
     saved: List[str] = []
@@ -6794,7 +6813,10 @@ def generate_analysis_figures(
                         "compartment": compartment,
                         "output_name": f"state_summary_boxplots_{gallery_compartment_suffix(compartment)}_{cohort}.svg",
                         "title": f"Selected-state summary distributions - {gallery_compartment_title(compartment)} ({cohort_title})",
-                        "results": compartment_results,
+                        "results": {
+                            **compartment_results,
+                            "roi_split": _filter_roi_split_by_entity_ids(results.get("roi_split"), compartment_filter),
+                        },
                         "comparison_rows": cohort_metric_rows,
                         "cohort_label": cohort,
                     }
@@ -14904,8 +14926,6 @@ def write_poster_ready_figures(
 
     poster_output_dir = ensure_dir(ROOT_DIR / "results" / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
-    if not (poster_result_root / "blank_state_comparisons").exists() and (poster_result_root.parent / "blank_state_comparisons").exists():
-        poster_result_root = poster_result_root.parent
 
     def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
         csv_path = poster_result_root / preset_name / "csv" / csv_name

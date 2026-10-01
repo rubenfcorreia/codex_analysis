@@ -13,6 +13,7 @@ from matplotlib.lines import Line2D
 import numpy as np
 from scipy import stats
 
+from analysis.shared.plots.figure_io import save_figure
 from analysis.shared.shared_calcium_response import build_state_masks_movie, choose_locomotion_threshold, extract_cut_neural_bundle, find_first_key, load_visual_response_cut_data, read_pickle, visual_response_trial_group
 from analysis.compartment_common import pick_state_bundle
 from poster_plotting import (
@@ -22,7 +23,6 @@ from poster_plotting import (
     POSTER_NOTE_SIZE,
     POSTER_TITLE_SIZE,
     configure_poster_matplotlib,
-    save_figure,
 )
 
 if plt is not None:
@@ -579,13 +579,15 @@ def _boxplot(
     flags = list(significance_flags) if significance_flags is not None else None
     sig_extent = None
     ordered_states = list(state_order)[::-1] if horizontal else list(state_order)
+    tick_positions = [float(idx) for idx in range(1, len(ordered_states) + 1)]
+    tick_labels = [_state_display_label(state) for state in ordered_states]
     for idx, state in enumerate(ordered_states, start=1):
         arr = _finite_array(state_values.get(state, []))
         if arr.size == 0:
             continue
         present_states.append(state)
         labels.append(_state_display_label(state))
-        positions.append(float(len(present_states)))
+        positions.append(float(idx))
         colors.append(_poster_label_color(state))
         sample_counts.append(int(sample_sizes.get(state, int(arr.size)) if sample_sizes is not None else int(arr.size)))
         series.append(arr)
@@ -628,15 +630,15 @@ def _boxplot(
                     if is_sig:
                         ax.text(xpos, y, "*", ha="center", va="bottom", fontsize=FIGURE_NOTE_FS, color="#8b0000", fontweight="bold")
         if horizontal:
-            ax.set_ylim(0.5, max(float(len(present_states)) + 0.5, 1.5))
-            ax.set_yticks(positions)
-            ax.set_yticklabels(labels, fontsize=FIGURE_TICK_FS)
+            ax.set_ylim(0.5, max(float(len(ordered_states)) + 0.5, 1.5))
+            ax.set_yticks(tick_positions)
+            ax.set_yticklabels(tick_labels, fontsize=FIGURE_TICK_FS)
             ax.set_xlabel(ylabel, fontsize=FIGURE_LABEL_FS)
             ax.set_ylabel("")
         else:
-            ax.set_xlim(0.5, max(float(len(present_states)) + 0.5, 1.5))
-            ax.set_xticks(positions)
-            ax.set_xticklabels(labels, rotation=25, ha="right")
+            ax.set_xlim(0.5, max(float(len(ordered_states)) + 0.5, 1.5))
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels, rotation=25, ha="right")
             ax.set_ylabel(ylabel, fontsize=FIGURE_LABEL_FS)
     else:
         if horizontal:
@@ -1600,7 +1602,7 @@ def write_blank_movie_and_correlation_poster_figure(
         ax_corr.set_axis_off()
 
     output_path = out_dir / f"{stem}.svg"
-    fig.savefig(output_path, format="svg", dpi=300)
+    save_figure(fig, output_path, extra_formats=(), format="svg")
     if plt is not None:
         plt.close(fig)
     return str(output_path)
@@ -1610,7 +1612,10 @@ def _select_mixed_model_rows(mixed_model_branch: Any, preferred_response_keys: S
     if isinstance(mixed_model_branch, Mapping):
         summary_rows = mixed_model_branch.get("summary_rows")
         if isinstance(summary_rows, Mapping):
-            preferred_keys = tuple(str(key) for key in (preferred_response_keys or ("mean_dendrite_activity", "mean_spine_activity_per_dendrite", "mean")))
+            if preferred_response_keys is None:
+                preferred_keys = ("mean_activity", "mean_dendrite_activity", "mean_spine_activity_per_dendrite", "mean")
+            else:
+                preferred_keys = tuple(dict.fromkeys(("mean_activity",) + tuple(str(key) for key in preferred_response_keys)))
             for preferred in preferred_keys:
                 rows = summary_rows.get(preferred)
                 if isinstance(rows, list) and rows:
@@ -1959,19 +1964,14 @@ def write_state_mixed_model_poster_figure(
                 continue
             if base in candidate_order:
                 continue
-            if base in resp_basal or base in resp_apical or base in resp_other or base in nonresp_basal or base in nonresp_apical or base in nonresp_other:
-                candidate_order.append(base)
+            candidate_order.append(base)
         if not candidate_order:
             candidate_order = list(dict.fromkeys([_state_compare_key(state) for state in state_order]))
-        present_state_order = [state for state in candidate_order if _finite_array(resp_basal.get(state, [])).size or _finite_array(resp_apical.get(state, [])).size or _finite_array(nonresp_basal.get(state, [])).size or _finite_array(nonresp_apical.get(state, [])).size or _finite_array(resp_other.get(state, [])).size or _finite_array(nonresp_other.get(state, [])).size]
-        if not present_state_order:
-            present_state_order = candidate_order
+        present_state_order = list(dict.fromkeys(candidate_order))
     else:
-        resp = {state: resp[state] for state in base_states if state in resp}
-        nonresp = {state: nonresp[state] for state in base_states if state in nonresp}
-        present_state_order = [state for state in base_states if state in state_order or state in resp or state in nonresp]
+        present_state_order = list(dict.fromkeys([str(state) for state in state_order if str(state).strip()]))
         if not present_state_order:
-            present_state_order = list(dict.fromkeys([state for state in state_order if state in resp or state in nonresp]))
+            present_state_order = list(dict.fromkeys([state for state in list(resp.keys()) + list(nonresp.keys()) if str(state).strip()]))
         if not present_state_order:
             present_state_order = list(base_states)
 

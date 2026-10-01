@@ -127,5 +127,7 @@
 
 
   ],
-  "output_dir": "/home/rubencorreia/code/codex_analysis/results/sleep_state_across_days"
+  "output_dir": "/home/rubencorreia/code/codex_analysis/results/sleep_state_across_days",
+  "analysis_output_dir": "/home/rubencorreia/code/codex_analysis/results/sleep_state_across_days/analysis",
+  "figure_output_dir": "/home/rubencorreia/code/codex_analysis/results/sleep_state_across_days/figures"
 }

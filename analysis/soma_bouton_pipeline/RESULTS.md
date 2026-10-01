@@ -20,6 +20,8 @@ results/soma_bouton_pipeline/
   summary/
 ```
 
+Comparison preset runs keep the shared summary figures for the pooled branch under `results/soma_bouton_pipeline/<preset>/pooled/all/figures/` so the preset root does not need a duplicate top-level `figures/` tree.
+
 The day-level grouping uses the same `animal + date` logic as the rest of the
 analysis code so experiments recorded on the same day stay together.
 

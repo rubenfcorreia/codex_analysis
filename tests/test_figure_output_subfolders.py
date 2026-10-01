@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from analysis.dendrites_pipeline import dendrites_pipeline as pipeline
+from analysis.shared.plots import poster_ready
 
 
 def _write_dummy_svg(path: Path, label: str) -> Path:
@@ -189,8 +190,8 @@ def test_day_figure_helpers_use_family_subfolders(tmp_path: Path) -> None:
 
 
 def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    figure_root = tmp_path / "figures"
     output_dir = tmp_path / "results"
+    figure_root = output_dir
     cache = {"animals": {}, "experiments": {}, "config": {}, "alerts": []}
     results = {"state_comparisons": [{"state": "quiet_awake_movies"}]}
 
@@ -201,7 +202,11 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
 
     monkeypatch.setattr(pipeline, "generate_analysis_figures", lambda *args, **kwargs: [_write_dummy(figure_root / "analysis" / "figure.svg", "analysis")])
     monkeypatch.setattr(pipeline, "generate_review_figures", lambda *args, **kwargs: [_write_dummy(figure_root / "review" / "figure.svg", "review")])
-    monkeypatch.setattr(pipeline, "generate_checkpoint_gallery", lambda *args, **kwargs: {"manifest_path": str(_write_dummy(output_dir / "checkpoint" / "manifest.json", "checkpoint")), "entries": [], "files": [str(_write_dummy(output_dir / "checkpoint" / "figure.svg", "checkpoint"))]})
+    checkpoint_call = {}
+    def _fake_checkpoint_gallery(*args, **kwargs):
+        checkpoint_call.update(kwargs)
+        return {"manifest_path": str(_write_dummy(output_dir / "checkpoint" / "manifest.json", "checkpoint")), "entries": [], "files": [str(_write_dummy(output_dir / "checkpoint" / "figure.svg", "checkpoint"))]}
+    monkeypatch.setattr(pipeline, "generate_checkpoint_gallery", _fake_checkpoint_gallery)
     monkeypatch.setattr(pipeline, "generate_event_detection_example_gallery", lambda *args, **kwargs: [str(_write_dummy(figure_root / "event_examples" / "figure.svg", "event"))])
     monkeypatch.setattr(pipeline, "write_text_report", lambda *args, **kwargs: pytest.fail("report should not be written in plots_only mode"))
     monkeypatch.setattr(pipeline, "write_csv_rows", lambda *args, **kwargs: pytest.fail("csv should not be written in plots_only mode"))
@@ -214,7 +219,204 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
     assert written
     assert (figure_root / "analysis" / "figure.svg").exists()
     assert (figure_root / "review" / "figure.svg").exists()
+    assert checkpoint_call["gallery_root"] == figure_root
     assert (output_dir / "checkpoint" / "figure.svg").exists()
     assert not (output_dir / "analysis_results.json").exists()
     assert not (output_dir / "state_comparisons.csv").exists()
     assert not (output_dir / "analysis_report.txt").exists()
+
+
+def test_comparison_figure_root_uses_pooled_all_leaf(tmp_path: Path) -> None:
+    branch_root = tmp_path / "comparison"
+    root = pipeline.comparison_figure_root(
+        {"branch_first_output_root": str(branch_root), "branch_first_figures": True},
+        tmp_path,
+        tmp_path / "result",
+    )
+    assert root == branch_root / "pooled" / "all"
+
+
+def test_comparison_figure_root_preserves_direct_run_fallback(tmp_path: Path) -> None:
+    assert pipeline.comparison_figure_root({}, tmp_path, tmp_path / "result") is None
+
+
+def test_mixed_model_row_selector_prefers_mean_activity() -> None:
+    branch = {
+        "summary_rows": {
+            "mean_dendrite_activity": [{"term": "state[nrem]", "estimate": 2.0}],
+            "mean_activity": [{"term": "state[nrem]", "estimate": 1.0}],
+            "event_frequency_per_min": [{"term": "state[nrem]", "estimate": 3.0}],
+        }
+    }
+
+    rows = poster_ready._select_mixed_model_rows(branch)
+
+    assert [row["estimate"] for row in rows] == [1.0]
+
+
+class _FakeAxes:
+    def __init__(self) -> None:
+        self.boxplot_positions = None
+        self.boxplot_data = None
+        self.xticks = None
+        self.xticklabels = None
+        self.yticks = None
+        self.yticklabels = None
+        self.xlim = (0.0, 0.0)
+        self.ylim = (0.0, 0.0)
+        self.transAxes = object()
+
+    def boxplot(self, data, positions, **kwargs):
+        self.boxplot_positions = list(positions)
+        self.boxplot_data = [list(series) for series in data]
+        return {"boxes": [], "whiskers": [], "caps": [], "medians": []}
+
+    def scatter(self, *args, **kwargs):
+        return None
+
+    def set_xlim(self, left, right):
+        self.xlim = (float(left), float(right))
+
+    def get_xlim(self):
+        return self.xlim
+
+    def set_ylim(self, bottom, top):
+        self.ylim = (float(bottom), float(top))
+
+    def get_ylim(self):
+        return self.ylim
+
+    def set_xticks(self, ticks):
+        self.xticks = [float(tick) for tick in ticks]
+
+    def set_yticks(self, ticks):
+        self.yticks = [float(tick) for tick in ticks]
+
+    def set_xticklabels(self, labels, **kwargs):
+        self.xticklabels = [str(label) for label in labels]
+
+    def set_yticklabels(self, labels, **kwargs):
+        self.yticklabels = [str(label) for label in labels]
+
+    def set_xlabel(self, *args, **kwargs):
+        return None
+
+    def set_ylabel(self, *args, **kwargs):
+        return None
+
+    def set_title(self, *args, **kwargs):
+        return None
+
+    def grid(self, *args, **kwargs):
+        return None
+
+    def text(self, *args, **kwargs):
+        return None
+
+    def plot(self, *args, **kwargs):
+        return None
+
+
+def test_boxplot_keeps_empty_state_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeAxes()
+    state_order = [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+    ]
+
+    monkeypatch.setattr(poster_ready, "_style_axes", lambda ax: None)
+
+    poster_ready._boxplot(
+        fake,
+        {"quiet_awake_blank": [1.0, 2.0], "rem_blank": [3.0]},
+        state_order,
+        title="Mixed model",
+        ylabel="Mean response",
+        significance_flags=[False, False, False, False],
+        sample_sizes={"quiet_awake_blank": 2, "nrem_blank": 0, "rem_blank": 1, "quiet_awake_movies": 0},
+    )
+
+    assert fake.boxplot_positions == [1.0, 3.0]
+    assert fake.xticks == [1.0, 2.0, 3.0, 4.0]
+    assert fake.xticklabels == [poster_ready._state_display_label(state) for state in state_order]
+    assert fake.xlim[0] == 0.5
+    assert fake.xlim[1] >= 4.5
+
+
+def test_state_mixed_model_poster_figure_keeps_full_state_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: list[tuple[tuple[str, ...], str | None]] = []
+
+    def _capture_boxplot(ax, state_values, state_order, **kwargs):
+        captured.append((tuple(state_order), str(kwargs.get("cohort_label"))))
+
+    monkeypatch.setattr(poster_ready, "_boxplot", _capture_boxplot)
+    monkeypatch.setattr(poster_ready, "_forest_panel", lambda *args, **kwargs: None)
+
+    state_order = [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
+        "quiet_awake",
+        "nrem",
+        "rem",
+    ]
+    state_values = {"nrem": [1.0, 2.0], "rem": [3.0]}
+    mixed_rows = {
+        "responsive": {
+            "summary_rows": {
+                "mean_activity": [
+                    {"term": "state[quiet_awake_blank]", "estimate": 0.1, "p_value": 0.01},
+                    {"term": "state[nrem]", "estimate": 0.2, "p_value": 0.2},
+                ]
+            }
+        },
+        "nonresponsive": {
+            "summary_rows": {
+                "mean_activity": [
+                    {"term": "state[quiet_awake_blank]", "estimate": 0.3, "p_value": 0.01},
+                    {"term": "state[nrem]", "estimate": 0.4, "p_value": 0.2},
+                ]
+            }
+        },
+    }
+
+    output = poster_ready.write_state_mixed_model_poster_figure(
+        output_dir=tmp_path,
+        entity_label="soma",
+        responsive_state_values=state_values,
+        nonresponsive_state_values=state_values,
+        mixed_model_rows=mixed_rows,
+        state_order=state_order,
+        preferred_response_keys=("mean_activity", "mean"),
+        mixed_model_contrast_p_source="classical",
+    )
+
+    assert output is not None
+    assert [order for order, _ in captured] == [tuple(state_order), tuple(state_order)]
+    assert {cohort for _, cohort in captured} == {"responsive", "nonresponsive"}
+
+
+def test_audit_detects_nested_and_missing_manifest_artifacts(tmp_path: Path) -> None:
+    from analysis.audit_result_layout import audit_roots
+    nested = tmp_path / "activity_split" / "nrem" / "figures"
+    nested.mkdir(parents=True)
+    (nested / "plot.svg").write_text("svg")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"output_root": ".", "output_artifacts": ["missing.svg"]}')
+    findings = audit_roots([tmp_path])
+    assert any("figures" in finding for finding in findings)
+    assert any("missing.svg" in finding for finding in findings)
+
+
+def test_split_guard_requires_two_groups() -> None:
+    with pytest.raises(RuntimeError, match="fewer than two"):
+        pipeline._require_split_rows_for_branch({
+            "analysis_branch_name": "activity_frequency_split",
+            "analysis_basis_name": "nrem",
+            "roi_split": {"subject_state_rows": [{"split_group": "low"}]},
+        })
