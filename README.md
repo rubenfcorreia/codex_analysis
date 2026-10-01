@@ -18,6 +18,15 @@ This directory is organized by workflow.
 | [docs/methods/README.md](docs/methods/README.md) | Repo-wide methods page for metrics, calculations, and statistical tests. |
 | [docs/sleep_state_across_days/README.md](docs/sleep_state_across_days/README.md) | Sleep-state-only across-days notes. |
 
+## Paired State Summary Figures
+
+Comparison-preset runs also generate paired-only state-summary figures. These use only entities observed in every requested state and include:
+
+- Quiet Awake vs NREM
+- Quiet Awake vs NREM vs REM
+
+Outputs are written under each poster-ready entity's paired_state_summary/ directory. Dendrite figures contain separate Basal and Apical panels; spine, soma, and bouton figures remain single-panel.
+
 ## Configs
 
 | File | Purpose |

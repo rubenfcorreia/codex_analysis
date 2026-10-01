@@ -43,6 +43,31 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 - Visual-response metrics use the stimulus-period cut activity from `cut_intertrials/` when available, with `cut_with_intertrials/` as a fallback.
 - If both `cut_intertrials/` and `cut_with_intertrials/` are missing, the pipeline prints an alert instead of silently mixing in a different cut bundle.
 
+## Progression and State-Transition Outputs
+
+When `progression_analysis.enabled` is true, the pipeline writes dendrite and spine mean dF/F progression outputs under `results/dendrites_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial-time and sleep-expID progression panels. Blank trials are aligned to onset and summarized in one-second bins by default; sleep sessions are ordered chronologically by expID. The spine output includes both raw-spine dF/F and the spine-specific residual signal; all plotted values are means.
+
+State-transition CSVs and figures are kept under `results/dendrites_pipeline/general/state_transitions/`. Their scope, window mode, and metric selection remain controlled by `transition_analysis`.
+\n## State-transition analysis
+
+The transition family analyzes dendrite, spine-specific, event-frequency, coincident, and noncoincident metrics around within-recording state changes. It uses the shared implementation in `analysis/shared/state_transitions.py`, so its aggregation rules match the soma/bouton pipeline.
+
+Primary transition results use `aggregation_level=expday`. Repeated transitions are first averaged within each dendrite or spine and experiment-day, then entities are averaged within that experiment-day. Each `expID/day` contributes one paired before/after summary and one aligned trace. Figures show experiment-day traces and the grand mean ± SEM, with counts for experiment-days, animals, entities, and raw transitions.
+
+The transition CSV outputs are grouped by state scope and window mode:
+
+- `state_transition_events_<scope>_<window_mode>.csv` preserves raw entity-by-transition rows.
+- `state_transition_comparisons_<scope>_<window_mode>.csv` contains experiment-day-balanced summaries and paired statistics.
+- `state_transition_pooled_comparisons_<scope>_<window_mode>.csv` contains event-pooled diagnostic summaries.
+
+Figures are written under `state_transitions/<scope>/<window_mode>/`; aligned trace filenames end in `_expday_trace.svg`. Primary paired statistics use experiment-days as the independent replicates.
+
+## Paired State Summary Figures
+
+Blank and movie comparison presets generate paired-only state summaries for Quiet Awake vs NREM and Quiet Awake vs NREM vs REM. The paired intersection is calculated independently for each ROI and state set, and duplicate entity/state observations are averaged before plotting.
+
+Dendrite outputs are written under the poster-ready paired_state_summary/ directory with separate Basal and Apical panels. Spine outputs use the same paired-state filtering but remain single-panel.
+
 ## ROI Split Figures
 
 - The main pipeline writes ROI split figures under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split`, `basis` is one of `all`, `nrem`, or `rem`, and the same split membership is also carried into the mixed-model leaf fits.

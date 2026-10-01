@@ -25,6 +25,35 @@ The default example config uses:
 
 Outputs are written under `results/soma_bouton_pipeline/` by default.
 
+## Progression and State-Transition Outputs
+
+When `progression_analysis.enabled` is true, the pipeline writes bouton and soma mean dF/F progression outputs under `results/soma_bouton_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial-time and sleep-expID progression panels. Blank trials are aligned to onset and summarized in one-second bins by default; sleep sessions are ordered chronologically by expID. Values are averaged per experiment before group means and SEM are calculated.
+
+State-transition CSVs and figures are kept under `results/soma_bouton_pipeline/general/state_transitions/`. The existing `transition_analysis` settings continue to control scopes, window modes, and metrics.
+\n## State-transition analysis
+
+When `transition_analysis.enabled` is true, the pipeline detects within-recording state changes and analyzes soma and bouton activity and event frequency around those transitions. The same transition outputs are also used by the comparison-preset runs.
+
+Primary transition figures and comparison tables use `aggregation_level=expday`: repeated transitions are averaged within each entity and experiment-day, then entities are averaged within the experiment-day. Each `expID/day` therefore contributes one paired before/after summary and one aligned trace. The aligned figures show faint experiment-day traces plus the grand mean ± SEM; their annotations report experiment-days, animals, entities, and raw transitions.
+
+Transition outputs are written under the relevant result root:
+
+- `state_transition_events_<scope>_<window_mode>.csv` contains the raw entity-by-transition rows for auditing.
+- `state_transition_comparisons_<scope>_<window_mode>.csv` contains the primary experiment-day-balanced summaries and paired statistics.
+- `state_transition_pooled_comparisons_<scope>_<window_mode>.csv` contains the event-pooled diagnostic summaries.
+- `state_transitions/<scope>/<window_mode>/` contains paired before/after figures and aligned `*_expday_trace.svg` figures.
+
+The primary paired tests are calculated across experiment-days, not across individual transitions or ROIs.
+
+
+## Paired State Summary Figures
+
+Blank and movie comparison presets generate paired-only state summaries for soma and bouton ROIs. Only entities present in every plotted state are included for:
+
+- Quiet Awake vs NREM
+- Quiet Awake vs NREM vs REM
+
+These figures are written under the poster-ready paired_state_summary/ directory and remain single-panel per entity.
 
 ## Coincidence Outputs
 

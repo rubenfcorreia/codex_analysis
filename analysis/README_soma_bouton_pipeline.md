@@ -10,3 +10,5 @@ Primary files:
 - `soma_bouton_pipeline/RESULTS.md`
 - `soma_bouton_pipeline/soma_bouton_pipeline_config.json`
 
+
+Progression analysis is enabled with `progression_analysis.enabled` in the config. It writes mean bouton and soma dF/F blank-trial and sleep-expID summaries under `results/soma_bouton_pipeline/general/progression/`; state-transition outputs are under `results/soma_bouton_pipeline/general/state_transitions/`.

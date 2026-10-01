@@ -24,6 +24,9 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
    - This produces the `all`, `responsive`, and `nonresponsive` cohorts that downstream families can reuse immediately.
    - Runs that only ask for a family such as `spine_coactivity` skip this cut-bundle work entirely, while `state` and `mixed_model` runs still prepare the cohorts because they need them.
 6. Run the analysis families through the top-level driver.
+   - The optional state-transition family covers dendrite, spine-specific, event-frequency, coincident, and noncoincident metrics.
+   - Transition figures and primary statistics use `aggregation_level=expday`: transitions are averaged within entity and experiment-day, then entities are averaged within the experiment-day.
+   - The primary paired replicate is one `expID/day`; raw entity-by-transition rows remain available for auditing, and event-pooled summaries are written separately.
    - Each family reads the normalized day-level cache rather than raw source files.
    - Family-specific summaries, comparisons, and figures operate on the already-pooled units and selected cohorts.
 7. Write the CSV tables, JSON summaries, SVG figures, checkpoint gallery, and run report.
@@ -39,7 +42,12 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 | `analysis/dendrites_pipeline/posters/` | Poster-generation scripts and shared poster helpers. |
 | `analysis/dendrites_pipeline/analysis_families/` | Family-specific analysis runners and shared dispatcher logic. |
 
-## Visual Response
+## Progression and State-Transition Outputs
+
+When `progression_analysis.enabled` is true, the pipeline writes dendrite and spine mean dF/F progression outputs under `results/dendrites_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial-time and sleep-expID progression panels. Blank trials are aligned to onset and summarized in one-second bins by default; sleep sessions are ordered chronologically by expID. The spine output includes both raw-spine dF/F and the spine-specific residual signal; all plotted values are means.
+
+State-transition CSVs and figures are kept under `results/dendrites_pipeline/general/state_transitions/`. Their scope, window mode, and metric selection remain controlled by `transition_analysis`.
+\n## Visual Response
 
 - The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/<branch>/<basis>/figures/visual_response/`, where `branch` is one of `pooled`, `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
 - ROI split figures are written under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
