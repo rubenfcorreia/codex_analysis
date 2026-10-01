@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
@@ -10,13 +13,13 @@ from analysis.shared.state_utils import canonical_state_label
 
 
 DEFAULT_RESULTS_DEPTH = 8
+CATALOG_CACHE_VERSION = 5
+CATALOG_CACHE_NAME = "catalog.json"
 IMAGE_SUFFIXES = {".png", ".svg"}
 KNOWN_COHORTS = {
     "all",
     "responsive",
     "nonresponsive",
-    "basal",
-    "apical",
     "nrem",
     "rem",
     "quiet_awake",
@@ -26,15 +29,108 @@ KNOWN_COHORTS = {
     "mixed",
 }
 KNOWN_COMPARTMENTS = {
-    "all",
-    "basal",
-    "apical",
     "soma",
     "bouton",
     "dendrite",
     "spine",
     "axon",
 }
+
+KNOWN_COMPARTMENT_ALIASES = {
+    "dendrites": "dendrite",
+    "spines": "spine",
+    "somas": "soma",
+    "boutons": "bouton",
+    "axons": "axon",
+}
+
+KNOWN_DENDRITE_REGIONS = {
+    "basal",
+    "apical",
+    "basal_vs_apical",
+}
+
+KNOWN_REGION_TYPES = {
+    "dendritic",
+    "pairwise",
+}
+
+
+def catalog_cache_path(repo_root: Path | str) -> Path:
+    return Path(repo_root).resolve() / ".figure_viewer" / CATALOG_CACHE_NAME
+
+
+def _record_from_cache(payload: Mapping[str, Any]) -> FigureRecord | None:
+    try:
+        preview_path = Path(str(payload["preview_path"]))
+        source_paths = tuple(Path(str(path)) for path in payload.get("source_paths", []))
+        return FigureRecord(
+            figure_key=str(payload["figure_key"]),
+            display_label=str(payload.get("display_label", "")),
+            title=str(payload.get("title", "")),
+            preview_path=preview_path,
+            comparison_key=str(payload.get("comparison_key", "")),
+            comparison_label=str(payload.get("comparison_label", "")),
+            source_paths=source_paths,
+            source_kinds=tuple(str(kind) for kind in payload.get("source_kinds", [])),
+            pipeline=str(payload.get("pipeline", "")),
+            preset=str(payload.get("preset", "")),
+            split=str(payload.get("split", "")),
+            basis=str(payload.get("basis", "")),
+            family=str(payload.get("family", "")),
+            cohort=str(payload.get("cohort", "")),
+            scope=str(payload.get("scope", "")),
+            compartment=str(payload.get("compartment", "")),
+            dendrite_region=str(payload.get("dendrite_region", "")),
+            region_type=str(payload.get("region_type", "")),
+            metric=str(payload.get("metric", "")),
+            variant=str(payload.get("variant", "")),
+            source_root=str(payload.get("source_root", "")),
+            manifest_path=str(payload.get("manifest_path", "")),
+            metadata=dict(payload.get("metadata", {})),
+            search_text=str(payload.get("search_text", "")),
+            sort_key=tuple(str(item) for item in payload.get("sort_key", [])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def load_catalog_cache(repo_root: Path | str) -> List[FigureRecord]:
+    path = catalog_cache_path(repo_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") != CATALOG_CACHE_VERSION:
+            return []
+        records = [_record_from_cache(item) for item in payload.get("records", [])]
+        if not records or any(record is None for record in records):
+            return []
+        return [record for record in records if record is not None and record.preview_path.exists()]
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        return []
+
+
+def save_catalog_cache(repo_root: Path | str, records: Sequence[FigureRecord]) -> None:
+    path = catalog_cache_path(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": CATALOG_CACHE_VERSION,
+        "records": [record.as_context() | {
+            "search_text": record.search_text,
+            "sort_key": list(record.sort_key),
+        } for record in records],
+    }
+    fd, temporary_name = tempfile.mkstemp(prefix="catalog-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, ensure_ascii=True, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
 
 
 @dataclass(frozen=True)
@@ -75,6 +171,31 @@ def _result_parts(path: Path, repo_root: Path) -> List[str]:
     return parts
 
 
+def _metric_from_filename(filename: str, context: Mapping[str, str]) -> str:
+    stem = canonical_state_label(Path(filename).stem)
+    for prefix in ("state_summary_boxplots", "state_summary", "summary_boxplots"):
+        if stem.startswith(prefix + "_"):
+            stem = stem[len(prefix) + 1:]
+            break
+    # Remove compound region labels before tokenizing so `basal_vs_apical`
+    # cannot leave a stray `vs` in the metric name.
+    for region in sorted(KNOWN_DENDRITE_REGIONS, key=len, reverse=True):
+        stem = stem.replace(region, "_")
+    tokens = [token for token in stem.split("_") if token]
+    excluded = (
+        {canonical_state_label(value) for value in KNOWN_COHORTS}
+        | {canonical_state_label(value) for value in KNOWN_COMPARTMENTS}
+        | {canonical_state_label(value) for value in KNOWN_COMPARTMENT_ALIASES}
+        | {canonical_state_label(value) for value in KNOWN_DENDRITE_REGIONS}
+        | {canonical_state_label(context.get("cohort"))}
+        | {canonical_state_label(context.get("compartment"))}
+        | {canonical_state_label(context.get("dendrite_region"))}
+        | {"state_summary", "boxplots"}
+    )
+    tokens = [token for token in tokens if token not in excluded]
+    return "_".join(tokens)
+
+
 def _path_context(path: Path, repo_root: Path) -> Dict[str, str]:
     parts = _result_parts(path, repo_root)
     context = {
@@ -86,51 +207,80 @@ def _path_context(path: Path, repo_root: Path) -> Dict[str, str]:
         "cohort": "",
         "scope": "",
         "compartment": "",
+        "dendrite_region": "",
+        "region_type": "",
+        "metric": "",
         "variant": "",
     }
     if not parts:
         return context
-    if len(parts) >= 1:
-        context["pipeline"] = str(parts[0])
+
+    context["pipeline"] = str(parts[0])
     if len(parts) >= 2:
         context["preset"] = str(parts[1])
 
+    filename = Path(parts[-1]).stem
     if parts[0] == "review_figures":
-        if len(parts) >= 4:
-            context["split"] = str(parts[2])
-        if len(parts) >= 5:
-            context["basis"] = str(parts[3])
-        if len(parts) >= 2:
-            context["family"] = str(parts[1])
-        scope_parts = list(parts[2:-1])
+        context["family"] = str(parts[1]) if len(parts) >= 2 else ""
+        semantic_parts = list(parts[2:-1])
     elif "figures" in parts:
         figures_index = parts.index("figures")
-        if figures_index + 1 < len(parts):
-            context["family"] = str(parts[figures_index + 1])
-        scope_parts = list(parts[figures_index + 2 : -1])
+        context["split"] = str(parts[2]) if len(parts) >= 3 else ""
+        context["basis"] = str(parts[3]) if len(parts) >= 4 else ""
+        context["family"] = str(parts[figures_index + 1]) if figures_index + 1 < len(parts) - 1 else ""
+        semantic_parts = list(parts[figures_index + 2 : -1])
     elif "checkpoint_examples" in parts:
         checkpoint_index = parts.index("checkpoint_examples")
-        if checkpoint_index + 1 < len(parts):
-            context["family"] = str(parts[checkpoint_index + 1])
-        scope_parts = list(parts[checkpoint_index + 2 : -1])
+        context["split"] = str(parts[2]) if len(parts) >= 3 else ""
+        context["basis"] = str(parts[3]) if len(parts) >= 4 else ""
+        context["family"] = str(parts[checkpoint_index + 1]) if checkpoint_index + 1 < len(parts) - 1 else ""
+        semantic_parts = list(parts[checkpoint_index + 2 : -1])
+    elif parts[0] == "poster_ready":
+        context["family"] = str(parts[2]) if len(parts) >= 3 else ""
+        semantic_parts = list(parts[3:-1])
     else:
-        if len(parts) >= 3 and parts[2] not in {"figures", "checkpoint_examples"}:
-            context["split"] = str(parts[2])
-        if len(parts) >= 4 and parts[3] not in {"figures", "checkpoint_examples"}:
-            context["basis"] = str(parts[3])
-        scope_parts = list(parts[1:-1])
+        context["split"] = str(parts[2]) if len(parts) >= 3 else ""
+        context["basis"] = str(parts[3]) if len(parts) >= 4 else ""
+        semantic_parts = list(parts[4:-1])
+        if semantic_parts:
+            first = canonical_state_label(semantic_parts[0])
+            if first not in KNOWN_COHORTS and first not in KNOWN_COMPARTMENTS:
+                context["family"] = str(semantic_parts.pop(0))
 
-    if scope_parts:
-        context["scope"] = "/".join(scope_parts)
-        for item in scope_parts:
-            label = canonical_state_label(item)
-            if not context["cohort"] and label in KNOWN_COHORTS:
-                context["cohort"] = label
-            if not context["compartment"] and label in KNOWN_COMPARTMENTS:
+    remaining: List[str] = []
+    for item in semantic_parts:
+        label = canonical_state_label(item)
+        label = KNOWN_COMPARTMENT_ALIASES.get(label, label)
+        if not context["cohort"] and label in KNOWN_COHORTS:
+            context["cohort"] = label
+        elif not context["compartment"] and label in KNOWN_COMPARTMENTS:
+            context["compartment"] = label
+        elif not context["dendrite_region"] and label in KNOWN_DENDRITE_REGIONS:
+            context["dendrite_region"] = label
+        elif not context["region_type"] and label in KNOWN_REGION_TYPES:
+            context["region_type"] = label
+        else:
+            remaining.append(str(item))
+    context["scope"] = "/".join(remaining)
+
+    normalized_filename = canonical_state_label(filename)
+    if not context["compartment"]:
+        for label in sorted(KNOWN_COMPARTMENTS, key=len, reverse=True):
+            if canonical_state_label(label) in normalized_filename:
                 context["compartment"] = label
-        context["variant"] = canonical_state_label(scope_parts[-1])
-    if not context["variant"]:
-        context["variant"] = canonical_state_label(Path(parts[-1]).stem)
+                break
+    if not context["dendrite_region"]:
+        for label in sorted(KNOWN_DENDRITE_REGIONS, key=len, reverse=True):
+            if canonical_state_label(label) in normalized_filename:
+                context["dendrite_region"] = label
+                break
+    if not context["region_type"]:
+        for label in sorted(KNOWN_REGION_TYPES, key=len, reverse=True):
+            if canonical_state_label(label) in normalized_filename:
+                context["region_type"] = label
+                break
+    context["metric"] = _metric_from_filename(filename, context)
+    context["variant"] = canonical_state_label(semantic_parts[-1] if semantic_parts else filename)
     return context
 
 
@@ -145,6 +295,9 @@ def _context_from_output_root(output_root: Path, repo_root: Path) -> Dict[str, s
         "cohort": "",
         "scope": "",
         "compartment": "",
+        "dendrite_region": "",
+        "region_type": "",
+        "metric": "",
         "variant": "",
     }
     if len(parts) >= 1:
@@ -168,12 +321,16 @@ def _summary_context(manifest: Mapping[str, Any], output_root: Path, repo_root: 
     analysis_scope = manifest.get("analysis_scope") if isinstance(manifest.get("analysis_scope"), Mapping) else {}
 
     if isinstance(job_spec, Mapping):
-        if job_spec.get("pipeline") and not context["pipeline"]:
+        if job_spec.get("pipeline"):
             context["pipeline"] = str(job_spec.get("pipeline"))
-        if job_spec.get("analysis_type") and not context["preset"]:
+        if job_spec.get("analysis_type"):
             context["preset"] = str(job_spec.get("analysis_type"))
-        if job_spec.get("cohort") and not context["cohort"]:
+        if job_spec.get("cohort"):
             context["cohort"] = str(job_spec.get("cohort"))
+
+    for field_name in ("pipeline", "preset", "split", "basis", "family", "cohort", "scope", "compartment", "dendrite_region", "region_type", "metric"):
+        if manifest.get(field_name):
+            context[field_name] = str(manifest[field_name])
 
     branch_name = manifest.get("analysis_branch_name") or analysis_scope.get("branch_name")
     basis_name = manifest.get("analysis_basis_name") or analysis_scope.get("basis_name")
@@ -286,13 +443,15 @@ def _depth_within_figures(relative_text: str) -> int:
     return len(parts) - parts.index("figures") - 1
 
 
-def _summary_candidates(manifest: Mapping[str, Any], output_root: Path, depth_limit: int) -> Iterable[Tuple[Path, Path, str]]:
+def _summary_candidates(manifest: Mapping[str, Any], output_root: Path, depth_limit: int) -> Iterable[Tuple[Path, Path, str, Dict[str, Any]]]:
     artifacts = manifest.get("output_artifacts", [])
     if not isinstance(artifacts, Sequence):
         return []
     grouped: Dict[str, Dict[str, Path]] = {}
+    artifact_metadata: Dict[str, Dict[str, Any]] = {}
     for artifact in artifacts:
-        rel_text = _normalize_path_text(artifact)
+        artifact_payload = artifact if isinstance(artifact, Mapping) else {}
+        rel_text = _normalize_path_text(artifact_payload.get("file") if artifact_payload else artifact)
         if not rel_text.lower().endswith(tuple(IMAGE_SUFFIXES)):
             continue
         if "figures" not in rel_text.split("/"):
@@ -302,11 +461,14 @@ def _summary_candidates(manifest: Mapping[str, Any], output_root: Path, depth_li
         path = _candidate_path(output_root, rel_text)
         if path.suffix.lower() not in IMAGE_SUFFIXES:
             continue
-        grouped.setdefault(path.with_suffix("").resolve().as_posix(), {})[path.suffix.lower()] = path
-    for renditions in grouped.values():
+        key = path.with_suffix("").resolve().as_posix()
+        grouped.setdefault(key, {})[path.suffix.lower()] = path
+        if artifact_payload:
+            artifact_metadata.setdefault(key, {}).update(artifact_payload)
+    for key, renditions in grouped.items():
         preview_path = renditions.get(".svg") or renditions.get(".png") or next(iter(renditions.values()))
         for path in renditions.values():
-            yield path, preview_path, "summary_manifest"
+            yield path, preview_path, "summary_manifest", artifact_metadata.get(key, {})
 
 
 def _checkpoint_candidates(checkpoint_root: Path, manifest: Mapping[str, Any], repo_root: Path) -> Iterable[Tuple[Path, Path, str, Dict[str, str], Dict[str, Any]]]:
@@ -332,6 +494,15 @@ def _checkpoint_candidates(checkpoint_root: Path, manifest: Mapping[str, Any], r
         compartment = str(entry.get("compartment") or "").strip()
         if compartment:
             context["compartment"] = canonical_state_label(compartment)
+        dendrite_region = str(entry.get("dendrite_region") or entry.get("dendrite_type") or "").strip()
+        if dendrite_region:
+            context["dendrite_region"] = canonical_state_label(dendrite_region)
+        region_type = str(entry.get("region_type") or entry.get("orientation") or "").strip()
+        if region_type:
+            context["region_type"] = canonical_state_label(region_type)
+        metric = str(entry.get("metric") or entry.get("analysis_type") or "").strip()
+        if metric:
+            context["metric"] = canonical_state_label(metric)
         cohort = str(entry.get("cohort") or entry.get("variant") or "").strip()
         if cohort and not context.get("cohort"):
             context["cohort"] = canonical_state_label(cohort)
@@ -404,7 +575,6 @@ def discover_figure_records(
                 path.is_file()
                 and path.suffix.lower() in IMAGE_SUFFIXES
                 and not {part.lower() for part in path.parts} & {"cache", "entities", "statistics", "reports", "manifests"}
-                and ({part.lower() for part in path.parts} & {"figures", "checkpoint_examples", "poster_ready"})
             )
         )
 
@@ -417,7 +587,7 @@ def discover_figure_records(
         output_root = Path(manifest.get("output_root") or manifest_file.parent.parent)
         manifested_paths.update(
             source_path.resolve()
-            for source_path, _, _ in _summary_candidates(
+            for source_path, _, _, _ in _summary_candidates(
                 manifest,
                 output_root,
                 summary_depth_limit,
@@ -460,8 +630,12 @@ def discover_figure_records(
                 "analysis_basis_name": manifest.get("analysis_basis_name"),
                 "job_spec": dict(manifest.get("job_spec", {})) if isinstance(manifest.get("job_spec"), Mapping) else {},
             }
-            for source_path, preview_path, source_kind in _summary_candidates(manifest, output_root, summary_depth_limit):
+            for source_path, preview_path, source_kind, artifact_metadata in _summary_candidates(manifest, output_root, summary_depth_limit):
                 context = dict(output_context)
+                for field_name in ("pipeline", "preset", "split", "basis", "family", "cohort", "compartment", "dendrite_region", "region_type", "metric"):
+                    value = artifact_metadata.get(field_name) or artifact_metadata.get("analysis_type" if field_name == "metric" else field_name)
+                    if value:
+                        context[field_name] = canonical_state_label(value)
                 try:
                     rel_parts = list(source_path.resolve().relative_to(results_root.resolve()).parts)
                 except Exception:
@@ -470,6 +644,11 @@ def discover_figure_records(
                 for key, value in path_context.items():
                     if value:
                         context[key] = value
+                # Explicit artifact metadata has precedence over path inference.
+                for field_name in ("pipeline", "preset", "split", "basis", "family", "cohort", "compartment", "dendrite_region", "region_type", "metric"):
+                    value = artifact_metadata.get(field_name) or artifact_metadata.get("analysis_type" if field_name == "metric" else field_name)
+                    if value:
+                        context[field_name] = canonical_state_label(value)
                 title = _figure_title_from_path(source_path)
                 key = source_path.with_suffix("").resolve().as_posix()
                 _merge_builder(
@@ -610,6 +789,9 @@ def discover_figure_records(
             cohort=str(builder.get("cohort", "")),
             scope=str(builder.get("scope", "")),
             compartment=str(builder.get("compartment", "")),
+            dendrite_region=str(builder.get("dendrite_region", "")),
+            region_type=str(builder.get("region_type", "")),
+            metric=str(builder.get("metric", "")),
             variant=str(builder.get("variant", "")),
             source_root=str(builder.get("metadata", {}).get("output_root", "") or builder.get("metadata", {}).get("review_root", "")),
             manifest_path=str(builder.get("metadata", {}).get("manifest_path", "")),
@@ -648,6 +830,12 @@ def filter_records(records: Sequence[FigureRecord], filters: FigureFilterState) 
         if normalized.family and record.family != normalized.family:
             continue
         if normalized.compartment and record.compartment != normalized.compartment:
+            continue
+        if normalized.dendrite_region and record.dendrite_region != normalized.dendrite_region:
+            continue
+        if normalized.region_type and record.region_type != normalized.region_type:
+            continue
+        if normalized.metric and record.metric != normalized.metric:
             continue
         if normalized.cohort and record.cohort != normalized.cohort:
             continue

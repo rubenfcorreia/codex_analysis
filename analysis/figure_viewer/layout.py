@@ -14,8 +14,9 @@ HIERARCHY_FIELDS: Tuple[str, ...] = (
     "basis",
     "family",
     "compartment",
+    "dendrite_region",
     "cohort",
-    "scope",
+    "metric",
 )
 
 FIELD_LABELS: Mapping[str, str] = {
@@ -25,8 +26,9 @@ FIELD_LABELS: Mapping[str, str] = {
     "basis": "Basis",
     "family": "Family",
     "compartment": "Compartment",
+    "dendrite_region": "Dendrite Region",
     "cohort": "Cohort",
-    "scope": "Scope",
+    "metric": "Metric / Analysis Type",
 }
 
 
@@ -38,6 +40,9 @@ class SlotSelection:
     basis: str = ""
     family: str = ""
     compartment: str = ""
+    dendrite_region: str = ""
+    region_type: str = ""
+    metric: str = ""
     cohort: str = ""
     scope: str = ""
     figure_key: str = ""
@@ -51,6 +56,9 @@ class SlotSelection:
             basis=str(self.basis or "").strip(),
             family=str(self.family or "").strip(),
             compartment=str(self.compartment or "").strip(),
+            dendrite_region=str(self.dendrite_region or "").strip(),
+            region_type=str(self.region_type or "").strip(),
+            metric=str(self.metric or "").strip(),
             cohort=str(self.cohort or "").strip(),
             scope=str(self.scope or "").strip(),
             figure_key=str(self.figure_key or "").strip(),
@@ -65,6 +73,10 @@ class SlotSelection:
             split=normalized.split,
             basis=normalized.basis,
             family=normalized.family,
+            compartment=normalized.compartment,
+            dendrite_region=normalized.dendrite_region,
+            region_type=normalized.region_type,
+            metric=normalized.metric,
             cohort=normalized.cohort,
             scope=normalized.scope,
         )
@@ -147,6 +159,9 @@ def selection_from_record(record: FigureRecord) -> SlotSelection:
         basis=record.basis,
         family=record.family,
         compartment=record.compartment,
+        dendrite_region=record.dendrite_region,
+        region_type=record.region_type,
+        metric=record.metric,
         cohort=record.cohort,
         scope=record.scope,
         figure_key=record.figure_key,
@@ -169,8 +184,11 @@ def selection_with_field(selection: SlotSelection, field_name: str, value: str) 
         basis=values["basis"],
         family=values["family"],
         compartment=values["compartment"],
+        dendrite_region=values["dendrite_region"],
+        region_type=selection.region_type,
+        metric=values["metric"],
         cohort=values["cohort"],
-        scope=values["scope"],
+        scope=selection.scope,
         figure_key="",
         initialized=True,
     )
@@ -194,7 +212,6 @@ def resolve_selection(
         if current_value not in options:
             break
         cleaned_values[field_name] = current_value
-
     candidate_records = filter_records(records, FigureFilterState(**cleaned_values))
     selected_record: FigureRecord | None = None
     if preserve_figure_key:
@@ -207,6 +224,8 @@ def resolve_selection(
     return (
         SlotSelection(
             **cleaned_values,
+            region_type=selection.region_type,
+            scope=selection.scope,
             figure_key=selected_record.figure_key if selected_record else "",
             initialized=bool(selection.initialized or selection.figure_key or cleaned_values or selected_record is not None),
         ),

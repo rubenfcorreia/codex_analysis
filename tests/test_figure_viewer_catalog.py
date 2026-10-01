@@ -9,7 +9,16 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from analysis.figure_viewer.app import FigureViewerApp
-from analysis.figure_viewer.catalog import discover_figure_records, filter_records, group_records, unique_values
+from analysis.figure_viewer.catalog import (
+    CATALOG_CACHE_VERSION,
+    catalog_cache_path,
+    discover_figure_records,
+    filter_records,
+    group_records,
+    load_catalog_cache,
+    save_catalog_cache,
+    unique_values,
+)
 from analysis.figure_viewer.layout import SlotSelection, browser_children, build_results_index, comparison_signature, resolve_selection, selection_from_record, selection_with_field
 from analysis.figure_viewer.models import FigureFilterState, FigureRecord
 
@@ -571,3 +580,117 @@ def test_add_slot_honors_requested_side_when_arranging_new_panels() -> None:
         assert len(refresh_calls) == 3
     finally:
         viewer_app.SlotView = original_slot_view
+
+
+def test_catalog_cache_round_trip_preserves_record_context(tmp_path: Path) -> None:
+    record = FigureRecord(
+        figure_key=str(tmp_path / "figure"),
+        display_label="Soma summary",
+        title="Soma summary",
+        preview_path=_write_svg(tmp_path / "results" / "soma.svg", "soma"),
+        source_paths=(tmp_path / "results" / "soma.svg",),
+        source_kinds=("results_filesystem",),
+        pipeline="soma_bouton_pipeline",
+        preset="all_states",
+        split="activity_split",
+        basis="nrem",
+        family="state_activity",
+        compartment="soma",
+        cohort="responsive",
+        scope="state_activity/all",
+        variant="responsive",
+        metadata={"animal_id": "A1"},
+        search_text="soma summary",
+        sort_key=("soma_bouton_pipeline", "all_states"),
+    )
+    save_catalog_cache(tmp_path, [record])
+    loaded = load_catalog_cache(tmp_path)
+    assert catalog_cache_path(tmp_path).exists()
+    assert len(loaded) == 1
+    assert loaded[0].preview_path == record.preview_path
+    assert loaded[0].compartment == "soma"
+    assert loaded[0].metadata == {"animal_id": "A1"}
+    assert loaded[0].sort_key == record.sort_key
+
+
+def test_catalog_cache_ignores_invalid_or_unsupported_payload(tmp_path: Path) -> None:
+    cache_path = catalog_cache_path(tmp_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text("not json")
+    assert load_catalog_cache(tmp_path) == []
+    cache_path.write_text(json.dumps({"version": CATALOG_CACHE_VERSION + 1, "records": []}))
+    assert load_catalog_cache(tmp_path) == []
+
+
+def test_direct_result_path_assigns_family_compartment_and_cohort(tmp_path: Path) -> None:
+    result = (
+        tmp_path
+        / "results"
+        / "soma_bouton_pipeline"
+        / "all_requested_comparisons"
+        / "activity_split"
+        / "all"
+        / "state_activity"
+        / "nonresponsive"
+        / "Soma_state_summary_boxplots_mean.svg"
+    )
+    _write_svg(result, "soma")
+    records = discover_figure_records(repo_root=tmp_path, include_review_figures=False)
+    assert len(records) == 1
+    record = records[0]
+    assert record.pipeline == "soma_bouton_pipeline"
+    assert record.preset == "all_requested_comparisons"
+    assert record.split == "activity_split"
+    assert record.basis == "all"
+    assert record.family == "state_activity"
+    assert record.compartment == "soma"
+    assert record.cohort == "nonresponsive"
+    assert record.scope == ""
+
+
+def test_state_summary_metrics_and_cohorts_are_separate(tmp_path: Path) -> None:
+    root = tmp_path / "results" / "demo_pipeline" / "demo_preset" / "activity_split" / "all"
+    paths = [
+        root / "figures" / "state_summary" / "dendrites" / "selected_states" / "responsive" / "state_summary_boxplots_basal_vs_apical_responsive_dendrite_event_frequency_per_min.svg",
+        root / "figures" / "state_summary" / "dendrites" / "selected_states" / "nonresponsive" / "state_summary_boxplots_basal_vs_apical_nonresponsive_dendrite_event_frequency_per_min.svg",
+        root / "figures" / "state_summary" / "spines" / "selected_states" / "responsive" / "state_summary_boxplots_basal_vs_apical_responsive_spine_specific_mean.svg",
+    ]
+    for path in paths:
+        _write_svg(path, "metric")
+
+    records = discover_figure_records(repo_root=tmp_path)
+    assert {record.cohort for record in records} == {"responsive", "nonresponsive"}
+    assert {record.compartment for record in records} == {"dendrite", "spine"}
+    assert {record.dendrite_region for record in records} == {"basal_vs_apical"}
+    assert {record.metric for record in records} == {"event_frequency_per_min", "specific_mean"}
+    assert all(record.region_type == "" for record in records)
+
+
+def test_manifest_metric_overrides_filename_inference(tmp_path: Path) -> None:
+    output_root = tmp_path / "results" / "demo_pipeline" / "demo_preset" / "activity_split" / "all"
+    figure = _write_svg(
+        output_root / "figures" / "state_summary" / "dendrites" / "selected_states" / "responsive" / "state_summary_boxplots_basal_responsive_dendrite_mean.svg",
+        "metric",
+    )
+    _write_manifest(
+        output_root / "summary" / "manifest.json",
+        {
+            "output_root": str(output_root),
+            "analysis_branch_name": "activity_split",
+            "analysis_basis_name": "all",
+            "job_spec": {"pipeline": "demo_pipeline", "analysis_type": "demo_preset"},
+            "output_artifacts": [
+                {
+                    "file": "figures/state_summary/dendrites/selected_states/responsive/state_summary_boxplots_basal_responsive_dendrite_mean.svg",
+                    "metric": "Dendrite event frequency per min",
+                    "compartment": "dendrite",
+                    "dendrite_region": "basal",
+                    "cohort": "responsive",
+                }
+            ],
+        },
+    )
+    record = next(record for record in discover_figure_records(repo_root=tmp_path) if record.preview_path == figure)
+    assert record.metric == "dendrite_event_frequency_per_min"
+    assert record.compartment == "dendrite"
+    assert record.dendrite_region == "basal"

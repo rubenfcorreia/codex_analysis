@@ -13,6 +13,9 @@ class FigureFilterState:
     basis: str = ""
     family: str = ""
     compartment: str = ""
+    dendrite_region: str = ""
+    region_type: str = ""
+    metric: str = ""
     cohort: str = ""
     scope: str = ""
     search: str = ""
@@ -25,6 +28,9 @@ class FigureFilterState:
             basis=str(self.basis).strip(),
             family=str(self.family).strip(),
             compartment=str(self.compartment).strip(),
+            dendrite_region=str(self.dendrite_region).strip(),
+            region_type=str(self.region_type).strip(),
+            metric=str(self.metric).strip(),
             cohort=str(self.cohort).strip(),
             scope=str(self.scope).strip(),
             search=str(self.search).strip(),
@@ -49,6 +55,9 @@ class FigureRecord:
     cohort: str = ""
     scope: str = ""
     compartment: str = ""
+    dendrite_region: str = ""
+    region_type: str = ""
+    metric: str = ""
     variant: str = ""
     source_root: str = ""
     manifest_path: str = ""
@@ -74,6 +83,9 @@ class FigureRecord:
             "cohort": self.cohort,
             "scope": self.scope,
             "compartment": self.compartment,
+            "dendrite_region": self.dendrite_region,
+            "region_type": self.region_type,
+            "metric": self.metric,
             "variant": self.variant,
             "source_root": self.source_root,
             "manifest_path": self.manifest_path,

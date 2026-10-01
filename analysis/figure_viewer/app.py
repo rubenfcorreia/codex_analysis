@@ -12,7 +12,13 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from analysis.figure_viewer.catalog import CatalogScanProgress, DEFAULT_RESULTS_DEPTH, discover_figure_records
+from analysis.figure_viewer.catalog import (
+    CatalogScanProgress,
+    DEFAULT_RESULTS_DEPTH,
+    discover_figure_records,
+    load_catalog_cache,
+    save_catalog_cache,
+)
 from analysis.figure_viewer.layout import (
     FIELD_LABELS,
     HIERARCHY_FIELDS,
@@ -83,6 +89,35 @@ def _record_summary(record: FigureRecord | None) -> str:
     return record.display_label or record.title or record.preview_path.name
 
 
+def _record_semantic_summary(record: FigureRecord | None) -> str:
+    if record is None:
+        return ""
+    values = [
+        record.family,
+        record.compartment,
+        record.dendrite_region,
+        record.region_type,
+        record.metric,
+        record.cohort,
+    ]
+    return " / ".join(value for value in values if value)
+
+
+def _compact_record_title(record: FigureRecord | None, limit: int = 88) -> str:
+    if record is None:
+        return "No figure selected"
+    return _truncate(record.title or record.preview_path.name, limit)
+
+
+def _metric_display(record: FigureRecord | None, limit: int = 88) -> str:
+    if record is None:
+        return ""
+    metric = str(record.metric or record.title or record.preview_path.stem).replace("_", " ").strip()
+    if record.compartment and record.compartment.lower() not in metric.lower():
+        metric = f"{record.compartment.title()} {metric}"
+    return _truncate(metric, limit)
+
+
 def _record_details(record: FigureRecord | None, repo_root: Path) -> str:
     if record is None:
         return "Select a figure leaf in the explorer or choose a path in a slot."
@@ -104,6 +139,8 @@ def _record_details(record: FigureRecord | None, repo_root: Path) -> str:
         "cohort",
         "scope",
         "compartment",
+        "dendrite_region",
+        "region_type",
         "variant",
         "source_root",
         "manifest_path",
@@ -126,12 +163,12 @@ def _record_details(record: FigureRecord | None, repo_root: Path) -> str:
 
 
 def _figure_choice_label(record: FigureRecord, index: int, seen: set[str]) -> str:
-    base = record.display_label or record.title or record.preview_path.name
-    label = f"{index + 1}. {_truncate(base, 96)}"
+    metric = str(record.metric or record.title or record.preview_path.stem).replace("_", " ").strip()
+    if record.compartment and record.compartment.lower() not in metric.lower():
+        metric = f"{record.compartment.title()} {metric}"
+    label = f"{index + 1}. {_truncate(metric, 88)}"
     if label in seen:
         label = f"{label} [{record.preview_path.name}]"
-    if label in seen:
-        label = f"{label} [{_truncate(record.preview_path.as_posix(), 60)}]"
     return label
 
 
@@ -449,7 +486,7 @@ class SlotView:
         self.zoom_var = tk.StringVar(value="100%")
         self.frame = ttk.LabelFrame(parent, text=self._header_text(), padding=10)
         self.frame.columnconfigure(0, weight=1)
-        self.frame.rowconfigure(2, weight=1)
+        self.frame.rowconfigure(6, weight=1)
 
         self._build_header()
         self._build_controls()
@@ -469,39 +506,38 @@ class SlotView:
         header = ttk.Frame(self.frame)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.title_var, wraplength=640, justify="left", font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, sticky="w")
         button_row = ttk.Frame(header)
-        button_row.grid(row=0, column=1, sticky="e")
+        button_row.grid(row=0, column=0, sticky="e")
         ttk.Button(button_row, text="Reset", command=self.reset).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(button_row, text="Remove", command=lambda: self.app.remove_slot(self)).grid(row=0, column=1)
-        ttk.Label(self.frame, textvariable=self.selection_var, wraplength=640, justify="left", foreground="#555555").grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        ttk.Label(self.frame, textvariable=self.source_var, wraplength=640, justify="left", foreground="#555555").grid(row=2, column=0, sticky="ew", pady=(2, 8))
+        ttk.Button(button_row, text="Copy Slot", command=lambda: self.app.copy_slot(self)).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_row, text="Remove", command=lambda: self.app.remove_slot(self)).grid(row=0, column=2)
 
     def _build_controls(self) -> None:
         controls = ttk.Frame(self.frame)
-        controls.grid(row=3, column=0, sticky="ew")
+        controls.grid(row=1, column=0, sticky="ew")
         for column in range(4):
             controls.columnconfigure(column, weight=1)
 
         for index, field_name in enumerate(HIERARCHY_FIELDS):
-            row = 0 if index < 4 else 2
+            row = (index // 4) * 2
             column = index % 4
             ttk.Label(controls, text=FIELD_LABELS[field_name]).grid(row=row, column=column, sticky="w")
             combo = ttk.Combobox(controls, textvariable=self.field_vars[field_name], state="disabled", width=20)
-            combo.grid(row=row + 1, column=column, sticky="ew", padx=(0, 8), pady=(0, 8))
-            combo.bind("<<ComboboxSelected>>", lambda _event, field_name=field_name: self._on_field_selected(field_name))
+            combo.grid(row=row + 1, column=column, sticky="ew", padx=(0, 8), pady=(0, 5))
+            if field_name == "metric":
+                combo.bind("<<ComboboxSelected>>", lambda _event: self._on_figure_selected())
+            else:
+                combo.bind(
+                    "<<ComboboxSelected>>",
+                    lambda _event, field_name=field_name: self._on_field_selected(field_name),
+                )
             combo.bind("<FocusIn>", lambda _event: self.app.set_active_slot(self.index), add="+")
             self.field_widgets[field_name] = combo
-
-        ttk.Label(controls, text="Figure").grid(row=2, column=3, sticky="w")
-        self.figure_combo = ttk.Combobox(controls, textvariable=self.figure_var, state="disabled", width=28)
-        self.figure_combo.grid(row=3, column=3, sticky="ew", padx=(0, 8), pady=(0, 8))
-        self.figure_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_figure_selected())
-        self.figure_combo.bind("<FocusIn>", lambda _event: self.app.set_active_slot(self.index), add="+")
+        self.figure_combo = self.field_widgets["metric"]
 
     def _build_preview(self) -> None:
         preview_frame = ttk.Frame(self.frame)
-        preview_frame.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
+        preview_frame.grid(row=6, column=0, sticky="nsew", pady=(0, 5))
         preview_frame.columnconfigure(0, weight=1)
         preview_frame.rowconfigure(1, weight=1)
         zoom_row = ttk.Frame(preview_frame)
@@ -519,17 +555,26 @@ class SlotView:
         self.preview_canvas.grid(row=1, column=0, sticky="nsew")
         yscroll.grid(row=1, column=1, sticky="ns")
         xscroll.grid(row=2, column=0, sticky="ew")
+        self.preview_canvas.bind("<Button-1>", self._focus_preview, add="+")
+        self.preview_canvas.bind("<MouseWheel>", self._on_preview_scroll_wheel, add="+")
+        self.preview_canvas.bind("<Shift-MouseWheel>", self._on_preview_horizontal_wheel, add="+")
         self.preview_canvas.bind("<Control-MouseWheel>", self._on_preview_zoom_wheel, add="+")
+        self.preview_canvas.bind("<Button-4>", self._on_preview_button_scroll, add="+")
+        self.preview_canvas.bind("<Button-5>", self._on_preview_button_scroll, add="+")
+        self.preview_canvas.bind("<Shift-Button-4>", self._on_preview_button_horizontal_scroll, add="+")
+        self.preview_canvas.bind("<Shift-Button-5>", self._on_preview_button_horizontal_scroll, add="+")
         self.preview_canvas.bind("<Control-Button-4>", lambda _event: self.adjust_zoom(10), add="+")
         self.preview_canvas.bind("<Control-Button-5>", lambda _event: self.adjust_zoom(-10), add="+")
+        self.preview_canvas.bind("<Button-2>", self._begin_preview_pan, add="+")
+        self.preview_canvas.bind("<B2-Motion>", self._drag_preview_pan, add="+")
 
     def _build_notes(self) -> None:
         self.notes_frame = ttk.LabelFrame(self.frame, text=self.notes_title_var.get(), padding=8)
         self.notes_title_var.trace_add("write", lambda *_: self.notes_frame.configure(text=self.notes_title_var.get()))
-        self.notes_frame.grid(row=5, column=0, sticky="ew")
+        self.notes_frame.grid(row=7, column=0, sticky="ew")
         self.notes_frame.columnconfigure(0, weight=1)
         self.notes_frame.rowconfigure(1, weight=1)
-        self.notes_text = tk.Text(self.notes_frame, height=7, wrap="word", state="disabled", background="#fcfcfc", relief="flat")
+        self.notes_text = tk.Text(self.notes_frame, height=4, wrap="word", state="disabled", background="#fcfcfc", relief="flat")
         self.notes_text.grid(row=0, column=0, sticky="ew")
         notes_scroll = ttk.Scrollbar(self.notes_frame, orient="vertical", command=self.notes_text.yview)
         self.notes_text.configure(yscrollcommand=notes_scroll.set)
@@ -551,18 +596,46 @@ class SlotView:
         bits = [f"Slot {self.index + 1}"]
         if self.app.active_slot_index == self.index:
             bits.append("active")
-        if self.record is not None:
-            bits.append(_truncate(_record_summary(self.record), 60))
-        elif self.selection.initialized or any(getattr(self.selection, field) for field in HIERARCHY_FIELDS):
-            path_text = _selection_path_text(self.selection)
-            if path_text:
-                bits.append(_truncate(path_text, 60))
-        else:
+        if self.record is None and not self.selection.initialized and not any(getattr(self.selection, field) for field in HIERARCHY_FIELDS):
             bits.append("empty")
         return " - ".join(bits)
 
     def refresh_header(self) -> None:
         self.frame.configure(text=self._header_text())
+
+    def _focus_preview(self, _event: tk.Event) -> None:
+        self.preview_canvas.focus_set()
+
+    def _on_preview_scroll_wheel(self, event: tk.Event) -> str:
+        if getattr(event, "state", 0) & 0x0004:
+            return "break"
+        delta = -1 if getattr(event, "delta", 0) > 0 else 1
+        if getattr(event, "delta", 0) == 0:
+            delta = -1 if getattr(event, "num", None) == 4 else 1
+        self.preview_canvas.yview_scroll(delta * 3, "units")
+        return "break"
+
+    def _on_preview_horizontal_wheel(self, event: tk.Event) -> str:
+        delta = -1 if getattr(event, "delta", 0) > 0 else 1
+        if getattr(event, "delta", 0) == 0:
+            delta = -1 if getattr(event, "num", None) == 4 else 1
+        self.preview_canvas.xview_scroll(delta * 3, "units")
+        return "break"
+
+    def _on_preview_button_scroll(self, event: tk.Event) -> str:
+        self.preview_canvas.yview_scroll((-1 if event.num == 4 else 1) * 3, "units")
+        return "break"
+
+    def _on_preview_button_horizontal_scroll(self, event: tk.Event) -> str:
+        self.preview_canvas.xview_scroll((-1 if event.num == 4 else 1) * 3, "units")
+        return "break"
+
+    def _begin_preview_pan(self, event: tk.Event) -> None:
+        self.preview_canvas.focus_set()
+        self.preview_canvas.scan_mark(event.x, event.y)
+
+    def _drag_preview_pan(self, event: tk.Event) -> None:
+        self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
 
     def _set_canvas_message(self, message: str) -> None:
         self.base_image = None
@@ -630,7 +703,7 @@ class SlotView:
         self._set_combo(self.field_widgets["pipeline"], self.field_vars["pipeline"], pipeline_options, "", bool(pipeline_options))
         for field_name in HIERARCHY_FIELDS[1:]:
             self._set_combo(self.field_widgets[field_name], self.field_vars[field_name], [], "", False)
-        self._set_combo(self.figure_combo, self.figure_var, [], "", False)
+        self._set_combo(self.figure_combo, self.field_vars["metric"], [], "", False)
         self.record = None
         self.title_var.set("No figure selected")
         self.selection_var.set("Choose a pipeline to start.")
@@ -642,7 +715,7 @@ class SlotView:
         self.refresh_header()
 
     def _render_loading_state(self) -> None:
-        self._set_combo(self.figure_combo, self.figure_var, [], "", False)
+        self._set_combo(self.figure_combo, self.field_vars["metric"], [], "", False)
         for field_name in HIERARCHY_FIELDS:
             self._set_combo(self.field_widgets[field_name], self.field_vars[field_name], [], "", False)
         self.record = None
@@ -656,7 +729,7 @@ class SlotView:
         self.refresh_header()
 
     def _render_empty_catalog_state(self) -> None:
-        self._set_combo(self.figure_combo, self.figure_var, [], "", False)
+        self._set_combo(self.figure_combo, self.field_vars["metric"], [], "", False)
         for field_name in HIERARCHY_FIELDS:
             self._set_combo(self.field_widgets[field_name], self.field_vars[field_name], [], "", False)
         self.record = None
@@ -671,7 +744,7 @@ class SlotView:
 
     def _render_no_match_state(self, records: Sequence[FigureRecord], resolved: SlotSelection) -> None:
         self._render_path_controls(records, resolved)
-        self._set_combo(self.figure_combo, self.figure_var, [], "", False)
+        self._set_combo(self.figure_combo, self.field_vars["metric"], [], "", False)
         self._figure_label_to_record = {}
         self.record = None
         self.title_var.set("No figure matched the current path")
@@ -689,7 +762,7 @@ class SlotView:
         self.title_var.set("Multiple figures match the current path")
         self.selection_var.set(path_text or "Choose a figure from the dropdown.")
         self.source_var.set("")
-        self.figure_var.set("")
+        self.field_vars["metric"].set("")
         self._figure_label_to_record = {}
         labels: List[str] = []
         seen: set[str] = set()
@@ -698,7 +771,7 @@ class SlotView:
             seen.add(label)
             labels.append(label)
             self._figure_label_to_record[label] = record
-        self._set_combo(self.figure_combo, self.figure_var, labels, "", bool(labels))
+        self._set_combo(self.figure_combo, self.field_vars["metric"], labels, "", bool(labels))
         self._set_canvas_message(path_text or "Choose a figure from the dropdown.")
         self._render_image_notes([])
         self.add_note_button.configure(state="disabled")
@@ -714,6 +787,8 @@ class SlotView:
                 basis=prefix_values.get("basis", ""),
                 family=prefix_values.get("family", ""),
                 compartment=prefix_values.get("compartment", ""),
+                dendrite_region=prefix_values.get("dendrite_region", ""),
+                region_type=prefix_values.get("region_type", ""),
                 cohort=prefix_values.get("cohort", ""),
                 scope=prefix_values.get("scope", ""),
                 initialized=bool(prefix_values),
@@ -776,10 +851,10 @@ class SlotView:
                 self._render_no_match_state(records, resolved)
             return
 
-        self.title_var.set(_record_summary(current_record))
-        self.selection_var.set(_selection_path_text(resolved) or "")
-        self.source_var.set(_relative_path_text(current_record.preview_path, self.app.repo_root))
-        self.figure_var.set("")
+        self.title_var.set(_compact_record_title(current_record))
+        self.selection_var.set("")
+        self.source_var.set("")
+        self.field_vars["metric"].set("")
         self._figure_label_to_record = {}
         labels: List[str] = []
         seen: set[str] = set()
@@ -789,7 +864,7 @@ class SlotView:
             labels.append(label)
             self._figure_label_to_record[label] = record
         current_label = next((label for label, record in self._figure_label_to_record.items() if record.figure_key == current_record.figure_key), labels[0] if labels else "")
-        self._set_combo(self.figure_combo, self.figure_var, labels, current_label, bool(labels))
+        self._set_combo(self.figure_combo, self.field_vars["metric"], labels, current_label, bool(labels))
         image = image_for_preview(current_record.preview_path)
         self._set_canvas_image(image)
         self._refresh_image_notes()
@@ -808,7 +883,7 @@ class SlotView:
     def _on_figure_selected(self) -> None:
         if self._ui_guard:
             return
-        label = self.figure_var.get().strip()
+        label = self.field_vars["metric"].get().strip()
         record = self._figure_label_to_record.get(label)
         if record is None:
             return
@@ -887,20 +962,22 @@ class ComparisonNotesPanel:
             self.add_button.configure(state="disabled")
             return
 
-        label = comparison_label(records)
+        label = _truncate(" / ".join(_metric_display(record, 56) for record in records), 120)
         signature = comparison_signature(records)
         notes = self.app.notes_store.list_notes(scope=COMPARISON_NOTE_SCOPE, scope_key=signature)
-        lines: List[str] = [f"Comparison: {label}", f"Signature: {signature}", "", "Selected figures:"]
+        lines: List[str] = [f"Comparison: {label}", f"{len(records)} selected figure(s)", "", "Selected figures:"]
         for index, record in enumerate(records, start=1):
-            lines.append(f"{index}. {_record_summary(record)}")
-            lines.append(f"   {_relative_path_text(record.preview_path, self.app.repo_root)}")
+            semantic = _record_semantic_summary(record)
+            lines.append(f"{index}. {_metric_display(record, 88)}")
+            if semantic:
+                lines.append(f"   {semantic}")
         lines.append("")
         if notes:
             lines.append(f"Notes ({len(notes)}):")
             lines.extend(f"- {_note_line(note)}" for note in notes)
         else:
             lines.append("No comparison notes yet.")
-        self.title_var.set(f"Comparison Notes - {label}")
+        self.title_var.set(f"Comparison Notes - {_truncate(label, 80)}")
         _set_text(self.summary_text, "\n".join(lines))
         self.add_button.configure(state="normal")
 
@@ -939,6 +1016,7 @@ class FigureViewerApp:
         self.records: List[FigureRecord] = []
         self.browser_root: BrowserNode | None = None
         self.catalog_loading = True
+        self.catalog_progress_visible = True
         self.catalog_generation = 0
         self.closing = False
         self.active_slot_index: int | None = None
@@ -964,7 +1042,23 @@ class FigureViewerApp:
         self.startup_loading_window = StartupProgressWindow(self.root)
         self.startup_loading_window.begin_scan(detail="Preparing the startup scan...")
         self.root.after(50, self._drain_ui_queue)
-        self.root.after_idle(self.refresh_catalog)
+
+        cached_records = load_catalog_cache(self.repo_root)
+        has_cached_catalog = bool(cached_records)
+        if cached_records:
+            self._catalog_loaded(
+                0,
+                cached_records,
+                build_results_index(cached_records, self.repo_root),
+                from_cache=True,
+            )
+            self.catalog_status_var.set(
+                f"Loaded {len(cached_records):,} cached figures; refreshing in background..."
+            )
+            self.set_status(self.catalog_status_var.get())
+            if self.startup_loading_window is not None:
+                self.startup_loading_window.hide()
+        self.root.after_idle(lambda: self.refresh_catalog(show_progress=not has_cached_catalog))
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -1105,13 +1199,16 @@ class FigureViewerApp:
     def _catalog_progress(self, generation: int, progress: CatalogScanProgress) -> None:
         if self.closing or generation != self.catalog_generation:
             return
-        self._update_startup_progress(progress)
+        if self.catalog_progress_visible:
+            self._update_startup_progress(progress)
 
-    def refresh_catalog(self) -> None:
+    def refresh_catalog(self, *, show_progress: bool = True) -> None:
         self.catalog_generation += 1
         generation = self.catalog_generation
         self.catalog_loading = True
-        self._show_startup_loading(detail="Scanning results/ in the background...")
+        self.catalog_progress_visible = show_progress
+        if show_progress:
+            self._show_startup_loading(detail="Scanning results/ in the background...")
         self.catalog_status_var.set("Scanning results/ in the background...")
         self.set_status("Scanning results/ in the background...")
 
@@ -1126,6 +1223,7 @@ class FigureViewerApp:
                     summary_depth_limit=self.summary_depth_limit,
                     progress_callback=on_progress,
                 )
+                save_catalog_cache(self.repo_root, records)
                 browser_root = build_results_index(records, self.repo_root)
             except Exception as exc:  # pragma: no cover - error path depends on local data
                 self._schedule_ui(lambda exc=exc, generation=generation: self._catalog_failed(generation, exc))
@@ -1147,16 +1245,28 @@ class FigureViewerApp:
             slot.sync_to_records()
         self.comparison_panel.refresh()
 
-    def _catalog_loaded(self, generation: int, records: Sequence[FigureRecord], browser_root: BrowserNode | None) -> None:
+    def _catalog_loaded(
+        self,
+        generation: int,
+        records: Sequence[FigureRecord],
+        browser_root: BrowserNode | None,
+        *,
+        from_cache: bool = False,
+    ) -> None:
         if self.closing or generation != self.catalog_generation:
             return
-        self.catalog_loading = False
-        if self.startup_loading_window is not None:
-            self.startup_loading_window.hide()
+        if not from_cache:
+            self.catalog_loading = False
+            if self.startup_loading_window is not None:
+                self.startup_loading_window.hide()
         self.records = list(records)
         self.browser_root = browser_root
-        self.catalog_status_var.set(f"{len(records)} figures indexed under results/")
-        self.set_status(f"Loaded {len(records)} figures from results/")
+        if from_cache:
+            status = f"Loaded {len(records):,} cached figures; refreshing in background..."
+        else:
+            status = f"Loaded {len(records):,} figures from results/"
+        self.catalog_status_var.set(status)
+        self.set_status(status)
         self.explorer_panel.set_catalog(browser_root, len(records))
         for slot in self.slots:
             slot.sync_to_records(preserve_figure_key=slot.record.figure_key if slot.record is not None else "")
@@ -1249,6 +1359,19 @@ class FigureViewerApp:
             slot.load_record(initial_record)
         self.comparison_panel.refresh()
         return slot
+
+    def copy_slot(self, source: SlotView | None = None) -> SlotView:
+        source = source or self.active_slot()
+        if source is None:
+            return self.add_slot()
+        copied = self.add_slot()
+        copied.selection = source.selection
+        copied.sync_to_records(preserve_figure_key=source.record.figure_key if source.record is not None else "")
+        copied.set_zoom_percent(source.zoom_percent)
+        self.set_active_slot(copied.index)
+        self.slot_did_change(copied)
+        self.set_status(f"Copied Slot {source.index + 1} to Slot {copied.index + 1}.")
+        return copied
 
     def remove_slot(self, slot: SlotView) -> None:
         location = self._slot_location(slot)
