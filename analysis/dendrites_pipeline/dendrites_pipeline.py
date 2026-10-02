@@ -44,6 +44,7 @@ from analysis.shared.union_rows import (
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results, split_group_hatch
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.plots.dendrite_plot_support import plot_state_summary_figure as _shared_plot_state_summary_figure
+from analysis.shared.plots.dff_heatmaps import records_from_dendrite_cache, render_dff_heatmaps
 from analysis.shared.plots.dendrite_plot_support import plot_state_summary_compartment_comparison_figure as _shared_plot_state_summary_compartment_comparison_figure
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.shared.analysis_families.splits import require_split_groups, scope_split_rows
@@ -465,6 +466,10 @@ USER_EDITABLE_DEFAULTS = {
     "generate_poster_ready_figures": True,
     "generate_shared_general_outputs": False,
     "generate_shared_general_figures": True,
+    "generate_dff_heatmaps": True,
+    "dff_heatmap_max_rois_per_class": 10,
+    "dff_heatmap_max_trace_points": None,
+    "dff_heatmap_output_formats": ["svg", "png"],
     "progression_analysis": {
         "enabled": False,
         "blank_bin_s": 1.0,
@@ -15816,6 +15821,24 @@ def write_analysis_outputs(
             for path in event_example_gallery:
                 written_artifacts.append(report_relative_path(path, output_dir))
             step_message("event detection example gallery complete: %d file(s)" % len(event_example_gallery))
+            if bool(run_params.get("generate_dff_heatmaps", True)):
+                step_message("dF/F heatmap generation starting")
+                roi_split = results.get("roi_split", {}) if isinstance(results.get("roi_split"), dict) else {}
+                split_rows = roi_split.get("subject_state_rows", []) if isinstance(roi_split, dict) else []
+                heatmap_states = sorted({str(state) for meta in (source_cache.get("experiments", {}) or {}).values() if isinstance(meta, dict) for state in (meta.get("state_masks", {}) or {}).keys()})
+                heatmap_records = records_from_dendrite_cache(source_cache, heatmap_states, split_rows, str(run_params.get("event_detection_method") or "derivative"))
+                dff_heatmap_files = render_dff_heatmaps(
+                    heatmap_records,
+                    (Path(configured_general_root) if configured_general_root else shared_general_root.parent) / "dff_heatmaps",
+                    event_detection_method=str(run_params.get("event_detection_method") or "derivative"),
+                    max_rois_per_class=int(run_params.get("dff_heatmap_max_rois_per_class", 10)),
+                    max_trace_points=run_params.get("dff_heatmap_max_trace_points"),
+                    output_formats=tuple(run_params.get("dff_heatmap_output_formats") or ("svg", "png")),
+                )
+                results["dff_heatmap_files"] = dff_heatmap_files
+                for path in dff_heatmap_files:
+                    written_artifacts.append(report_relative_path(path, output_dir))
+                step_message("dF/F heatmap generation complete: %d file(s)" % len(dff_heatmap_files))
         else:
             results["visual_response_figure_files"] = []
             results["event_example_gallery"] = []
@@ -18216,6 +18239,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "comparison_leaf": list(config.get("comparison_leaf") or []) if config.get("comparison_leaf") else None,
         "generate_shared_general_figures": bool(config.get("generate_shared_general_figures", True)),
         "generate_shared_general_outputs": bool(config.get("generate_shared_general_outputs", False)),
+        "generate_dff_heatmaps": bool(config.get("generate_dff_heatmaps", True)),
+        "dff_heatmap_max_rois_per_class": int(config.get("dff_heatmap_max_rois_per_class", 10)),
+        "dff_heatmap_max_trace_points": config.get("dff_heatmap_max_trace_points"),
+        "dff_heatmap_output_formats": list(config.get("dff_heatmap_output_formats") or ["svg", "png"]),
         "generate_visual_response_entity_figures": bool(config.get("generate_visual_response_entity_figures", True)),
         "union_rows_cache": dict(analysis_cache.get("union_rows", {})),
         "cache_scopes": {

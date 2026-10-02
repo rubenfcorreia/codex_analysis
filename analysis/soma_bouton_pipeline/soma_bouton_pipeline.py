@@ -87,6 +87,7 @@ from analysis.shared.plots.poster_ready import (
 from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, run_family as run_coincidence_family
 from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
+from analysis.shared.plots.dff_heatmaps import records_from_soma_contexts, render_dff_heatmaps
 from analysis.shared.analysis_cache import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
@@ -150,6 +151,10 @@ DEFAULT_CONFIG = {
     "shared_union_rows_cache_path": None,
     "union_state_labels_by_mode": None,
     "generate_shared_general_figures": False,
+    "generate_dff_heatmaps": True,
+    "dff_heatmap_max_rois_per_class": 10,
+    "dff_heatmap_max_trace_points": None,
+    "dff_heatmap_output_formats": ["svg", "png"],
     "progression_analysis": {
         "enabled": False,
         "blank_bin_s": 1.0,
@@ -1841,6 +1846,23 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         cohort_label=cohort,
                         kind=compartment,
                     )
+        if bool(config.get("generate_dff_heatmaps", True)) and transition_contexts and (general_output_root is None or generate_shared_general_figures):
+            _stage("plotting", "soma/bouton dF/F heatmaps")
+            heatmap_records = records_from_soma_contexts(
+                transition_contexts,
+                [state for states in selected_states_by_mode.values() for state in states],
+                [row for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") == "activity_frequency_split" for row in bundle.get("subject_state_rows", []) if isinstance(row, Mapping)],
+                event_detection_method,
+            )
+            dff_heatmap_files = render_dff_heatmaps(
+                heatmap_records,
+                (shared_general_root or figure_root) / "dff_heatmaps",
+                event_detection_method=event_detection_method,
+                max_rois_per_class=int(config.get("dff_heatmap_max_rois_per_class", 10)),
+                max_trace_points=config.get("dff_heatmap_max_trace_points"),
+                output_formats=tuple(config.get("dff_heatmap_output_formats") or ("svg", "png")),
+            )
+            results["dff_heatmap_files"] = dff_heatmap_files
         if not poster_ready_only and mixed_model_results:
             mixed_model_fig_dir = ensure_dir(figure_root / "mixed_model")
             for cohort_name, cohort_results in mixed_model_results.items():
