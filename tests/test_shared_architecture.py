@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 from analysis.shared.analysis_families import require_split_groups, scope_split_rows
-from analysis.shared.analysis_families.common_helpers import build_state_masks_movie
+from analysis.shared.analysis_families.common_helpers import build_state_masks_movie, classify_movie_name, movie_trial_type_suffix
 from analysis.shared.figure_paths import (
     comparison_leaf_figure_root,
     shared_figure_root,
@@ -44,8 +44,8 @@ def test_movie_masks_accept_time_duration_and_f1_type() -> None:
         {"state_10hz_t": np.array([0.0, 40.0]), "state_10hz": np.array([1.0, 1.0])},
         0.0,
     )
-    assert metadata[0]["state_label"] == "movies"
-    assert masks["movies"].sum() == 6
+    assert metadata[0]["state_label"] == "nrem_movies"
+    assert masks["nrem_movies"].sum() == 6
 
 
 def test_split_rows_normalize_roi_membership_group() -> None:
@@ -115,3 +115,34 @@ def test_analysis_family_dispatch_preserves_scope() -> None:
     assert result.family == "calcium_events"
     assert result.scope == scope
     assert result.metadata["contract_version"]
+
+
+def test_movie_name_categories_and_suffixes() -> None:
+    assert classify_movie_name(r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000") == "blank"
+    assert classify_movie_name(r"D:\bonsai_resources\all_movie_clips_bv_sets\007\01007") == "grating"
+    assert classify_movie_name(r"D:\bonsai_resources\all_movie_clips_bv_sets\007\02001") == "zebra"
+    assert classify_movie_name(r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00303") == "movies"
+    assert movie_trial_type_suffix("grating") == "gratings"
+    assert movie_trial_type_suffix("zebra") == "zebras"
+
+
+def test_movie_masks_assign_wheel_based_quiet_and_active_labels() -> None:
+    import numpy as np
+
+    rows = [
+        {"time": 0, "duration": 4, "F1_type": "movie", "F1_name": r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"},
+        {"time": 5, "duration": 4, "F1_type": "movie", "F1_name": r"D:\bonsai_resources\all_movie_clips_bv_sets\007\02001"},
+    ]
+    masks, metadata, _ = build_state_masks_movie(
+        np.arange(0.0, 10.0),
+        rows,
+        list(rows[0]),
+        np.arange(0.0, 10.0),
+        np.array([0.1, 0.1, 0.1, 0.1, 0.1, 2.0, 2.0, 2.0, 2.0, 0.1]),
+        None,
+        1.0,
+    )
+    assert metadata[0]["state_label"] == "quiet_awake_blank"
+    assert metadata[1]["state_label"] == "active_awake_zebras"
+    assert masks["quiet_awake_blank"].sum() == 5
+    assert masks["active_awake_zebras"].sum() == 5

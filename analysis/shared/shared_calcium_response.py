@@ -138,6 +138,9 @@ def visual_response_trial_group(state_label: Any) -> Optional[str]:
     canonical = canonical_state_label(state_label)
     if not canonical:
         return None
+    canonical = canonical.replace("_grating", "_gratings").replace("_zebra", "_zebras")
+    if canonical in {"grating", "zebra"}:
+        canonical = {"grating": "gratings", "zebra": "zebras"}[canonical]
     if canonical == VISUAL_RESPONSE_BLANK_TRIAL_TYPE or canonical.endswith("_blank"):
         return "blank"
     if canonical in VISUAL_RESPONSE_VISUAL_TRIAL_TYPES or any(

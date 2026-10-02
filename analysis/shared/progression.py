@@ -217,8 +217,9 @@ def _plot_outputs(root: Path, blank_rows: Sequence[Mapping[str, Any]], sleep_row
         axes[1].set(title="Sleep expID progression", xlabel="Chronological sleep expID order", ylabel="Mean dF/F")
         for axis in axes:
             axis.grid(alpha=0.2)
-            if signals:
-                axis.legend(frameon=False)
+            handles, labels = axis.get_legend_handles_labels()
+            if handles:
+                axis.legend(handles=handles, labels=labels, frameon=False)
         path = figure_root / f"{compartment}_progression.svg"
         fig.savefig(path, format="svg")
         plt.close(fig)

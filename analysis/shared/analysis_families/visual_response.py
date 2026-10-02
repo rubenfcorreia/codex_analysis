@@ -87,9 +87,9 @@ def visual_response_day_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str
                 "n_rois": int(len(members)),
                 "n_responsive": int(responsive),
                 "responsive_fraction": float(responsive / len(members)) if members else float("nan"),
-                "mean_visual": float(np.nanmean(visual)) if visual.size else float("nan"),
-                "mean_blank": float(np.nanmean(blank)) if blank.size else float("nan"),
-                "mean_delta": float(np.nanmean(delta)) if delta.size else float("nan"),
+                "mean_visual": float(np.nanmean(visual)) if np.isfinite(visual).any() else float("nan"),
+                "mean_blank": float(np.nanmean(blank)) if np.isfinite(blank).any() else float("nan"),
+                "mean_delta": float(np.nanmean(delta)) if np.isfinite(delta).any() else float("nan"),
             }
         )
     return summary_rows

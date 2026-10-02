@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -8,6 +9,52 @@ from scipy import stats
 
 from analysis.compartment_common import find_first_key, read_pickle
 from analysis.shared.state_utils import canonical_state_label, combined_movie_state_label
+
+
+BLANK_MOVIE_PATH = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"
+GRATING_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\01"
+ZEBRA_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\02"
+LOCOMOTION_THRESHOLD_FRACTION = 3.0
+
+
+def movie_feature_blocks(row: Mapping[str, Any], columns: Sequence[str]) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    prefixes = sorted({match.group(1) for column in columns if (match := re.match(r"^(F\d+)_", str(column)))}, key=lambda value: int(value[1:]))
+    for prefix in prefixes:
+        if str(row.get(f"{prefix}_type") or "").strip().lower() != "movie":
+            continue
+        name = row.get(f"{prefix}_name")
+        if name:
+            blocks.append({"prefix": prefix, "name": str(name)})
+    return blocks
+
+
+def classify_movie_name(feature_name: Any) -> str:
+    name = str(feature_name or "").strip().replace("/", "\\").lower()
+    if name == BLANK_MOVIE_PATH.lower():
+        return "blank"
+    if name.startswith(GRATING_PREFIX.lower()):
+        return "grating"
+    if name.startswith(ZEBRA_PREFIX.lower()):
+        return "zebra"
+    return "movies"
+
+
+def movie_trial_type_suffix(trial_type: Any) -> str:
+    return {"blank": "blank", "grating": "gratings", "zebra": "zebras", "movies": "movies", "movie": "movies"}.get(canonical_state_label(trial_type), canonical_state_label(trial_type) or "movies")
+
+
+def _robust_sigma(values: np.ndarray) -> float:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return float("nan")
+    median = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - median)))
+    if np.isfinite(mad) and mad > 0:
+        return 1.4826 * mad
+    std = float(np.std(finite))
+    return std if np.isfinite(std) and std > 0 else 1.0
 
 
 def interpolate_series(target_t: np.ndarray, source_t: np.ndarray, source_y: np.ndarray) -> np.ndarray:
@@ -51,7 +98,8 @@ def choose_locomotion_threshold(explicit_threshold: Optional[float], thresholds:
     if finite:
         return float(np.median(finite))
     if wheel is not None and np.isfinite(wheel).any():
-        return float(np.nanmedian(np.abs(wheel)))
+        wheel_abs = np.abs(np.asarray(wheel, dtype=float))
+        return float(np.nanmedian(wheel_abs) + LOCOMOTION_THRESHOLD_FRACTION * _robust_sigma(wheel_abs))
     return 0.0
 
 
@@ -70,16 +118,37 @@ def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any]
     return masks, {"state_labels": labels, "state_codes_on_calcium_time": codes}
 
 
-def build_state_masks_movie(exp_time: np.ndarray, trial_rows: Sequence[Mapping[str, Any]], columns: Sequence[str], wheel_time: Optional[np.ndarray], wheel_speed: Optional[np.ndarray], sleep_state: Optional[Mapping[str, Any]], locomotion_threshold: float) -> Tuple[Dict[str, np.ndarray], List[Dict[str, Any]], Optional[np.ndarray]]:
-    del columns
+def build_state_masks_movie(
+    exp_time: np.ndarray,
+    trial_rows: Sequence[Mapping[str, Any]],
+    columns: Sequence[str],
+    wheel_time: Optional[np.ndarray],
+    wheel_speed: Optional[np.ndarray],
+    sleep_state: Optional[Mapping[str, Any]],
+    locomotion_threshold: float,
+) -> Tuple[Dict[str, np.ndarray], List[Dict[str, Any]], Optional[np.ndarray]]:
     time = np.asarray(exp_time, dtype=float)
     wheel = interpolate_series(time, wheel_time, wheel_speed) if wheel_time is not None and wheel_speed is not None else None
     masks: Dict[str, np.ndarray] = {"all": np.ones(time.shape, dtype=bool)}
     metadata: List[Dict[str, Any]] = []
+    sleep_codes_on_time = None
+    if isinstance(sleep_state, Mapping):
+        state_time = np.asarray(sleep_state.get("state_10hz_t", []), dtype=float)
+        state_codes = np.asarray(sleep_state.get("state_10hz", []), dtype=float)
+        if state_time.size and state_codes.size:
+            sleep_codes_on_time = np.full(time.shape, -1, dtype=int)
+            inside = (time >= state_time.min()) & (time <= state_time.max())
+            if inside.any():
+                sleep_codes_on_time[inside] = np.rint(np.interp(time[inside], state_time, state_codes)).astype(int)
+    sleep_labels = {0: "quiet_awake", 1: "nrem", 2: "rem", 3: "active_awake"}
     for index, row in enumerate(trial_rows):
-        label = canonical_state_label(row.get("state_label") or row.get("state") or row.get("trial_type") or row.get("F1_type") or "movies")
-        if label == "movie":
-            label = "movies"
+        blocks = movie_feature_blocks(row, columns)
+        if len(blocks) > 1:
+            metadata.append({"trial_index": index, "warning": "multiple movie features detected; trial skipped", "trial_row": dict(row)})
+            continue
+        category = classify_movie_name(blocks[0]["name"]) if blocks else canonical_state_label(row.get("state_label") or row.get("state") or row.get("trial_type") or row.get("F1_type") or "movies")
+        if category == "movie":
+            category = "movies"
         start = row.get("start", row.get("onset", row.get("trial_start", row.get("time"))))
         end = row.get("end", row.get("trial_end"))
         if end is None and row.get("duration") is not None:
@@ -92,13 +161,36 @@ def build_state_masks_movie(exp_time: np.ndarray, trial_rows: Sequence[Mapping[s
             end_value = float(end) if end is not None else start_value
         except (TypeError, ValueError):
             continue
+        if end_value <= start_value:
+            continue
         mask = (time >= start_value) & (time <= end_value)
-        key = label or "movies"
+        trial_wheel = wheel[mask] if wheel is not None else np.asarray([], dtype=float)
+        wheel_score = float(np.nanmedian(np.abs(trial_wheel))) if np.isfinite(trial_wheel).any() else float("nan")
+        sleep_label = None
+        if sleep_codes_on_time is not None and np.any(mask):
+            codes = sleep_codes_on_time[mask]
+            codes = codes[codes >= 0]
+            if codes.size:
+                values, counts = np.unique(codes, return_counts=True)
+                sleep_label = sleep_labels.get(int(values[int(np.argmax(counts))]))
+        if sleep_label is None:
+            sleep_label = "quiet_awake" if not np.isfinite(wheel_score) or wheel_score < locomotion_threshold else "active_awake"
+        key = combined_movie_state_label(sleep_label, category) or "quiet_awake_movies"
         masks.setdefault(key, np.zeros(time.shape, dtype=bool))
         masks[key] |= mask
-        metadata.append({"trial_index": index, "state_label": key, "start": start_value, "end": end_value, "locomotion_threshold": locomotion_threshold})
+        metadata.append({
+            "trial_index": index,
+            "state_label": key,
+            "category": category,
+            "movie_trial_type": category,
+            "sleep_state_label": sleep_label,
+            "wheel_score": wheel_score,
+            "start": start_value,
+            "end": end_value,
+            "duration": end_value - start_value,
+            "locomotion_threshold": locomotion_threshold,
+        })
     return masks, metadata, wheel
-
 
 def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int) -> Dict[str, Any]:
     del shuffle_n

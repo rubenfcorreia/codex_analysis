@@ -67,8 +67,10 @@ def state_display_color(label: Any) -> str:
 
 
 def combined_movie_state_label(sleep_label: Any, trial_type: Any) -> str:
-    parts = [canonical_state_label(sleep_label), canonical_state_label(trial_type)]
-    return "_".join(part for part in parts if part)
+    sleep = canonical_state_label(sleep_label)
+    movie = canonical_state_label(trial_type)
+    movie = {"blank": "blank", "grating": "gratings", "zebra": "zebras", "movie": "movies"}.get(movie, movie)
+    return "_".join(part for part in (sleep, movie) if part)
 
 
 def make_day_id(animal_id: str, date: str) -> str:
