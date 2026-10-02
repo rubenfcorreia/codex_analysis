@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import datetime as dt
 import json
 import logging
 import sys
@@ -99,17 +98,26 @@ from analysis.shared.analysis_cache import (
 )
 from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
 from analysis.shared.progression import run_soma_bouton_progression
+from analysis.shared.pipeline_logging import (
+    get_stage_timings,
+    reset_stage_timings,
+    step_message,
+    step_scope,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 def _stage(label: str, detail: str | None = None) -> None:
-    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # CSV output is intentionally summarized once; detailed filenames remain in
+    # the manifest and report instead of flooding the terminal.
+    if label == "writing csv":
+        detail = None
+    message = f"TASK {label}"
     if detail:
-        logger.info("%s %s: %s", stamp, label, detail)
-    else:
-        logger.info("%s %s", stamp, label)
+        message = f"{message}: {detail}"
+    step_message(message)
 
 
 def _json_safe(value: Any) -> Any:
@@ -946,7 +954,7 @@ def _state_plot_rows_for_branch(
         scoped_rows.append(payload)
     return annotate_rows_with_split_group(scoped_rows, membership_rows)
 
-def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
+def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     repo_root = resolve_repo_root(Path(__file__))
     pipeline_started = time.perf_counter()
     layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
@@ -1006,6 +1014,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     transition_contexts: List[ExperimentContext] = []
     transition_results: Dict[str, Any] = {"event_rows": [], "summary_rows": [], "figure_paths": [], "alerts": []}
     coincidence_example_figures: List[str] = []
+    dff_heatmap_files: List[str] = []
     selected_states_by_mode: Dict[str, List[str]] = {mode: list(resolve_analysis_state_selections(config, mode)) for mode in state_modes}
     selected_states_by_mode_payload = {mode: list(states) for mode, states in selected_states_by_mode.items()}
     day_groups = build_day_groups(expids_by_mode)
@@ -1862,7 +1871,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 max_trace_points=config.get("dff_heatmap_max_trace_points"),
                 output_formats=tuple(config.get("dff_heatmap_output_formats") or ("svg", "png")),
             )
-            results["dff_heatmap_files"] = dff_heatmap_files
+            dff_heatmap_files = list(dff_heatmap_files)
         if not poster_ready_only and mixed_model_results:
             mixed_model_fig_dir = ensure_dir(figure_root / "mixed_model")
             for cohort_name, cohort_results in mixed_model_results.items():
@@ -2602,6 +2611,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "selected_states_by_mode": selected_states_by_mode_payload,
         "state_modes": state_modes,
         "day_groups": day_groups,
+        "dff_heatmap_files": dff_heatmap_files,
         "counts": {
             "experiments": len(experiment_rows),
             "activity_rows": len(activity_rows),
@@ -2783,6 +2793,50 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         for figure_path in poster_ready_figures:
             print(f"  - {figure_path}")
     _stage("completed", f"{preset_name} with {len(experiment_rows)} experiments")
+    return manifest
+
+
+def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """Run one soma preset with isolated task timing and report metadata."""
+    preset_name = str(config.get("comparison_preset_name") or "default")
+    reset_stage_timings(pipeline="soma_bouton_pipeline", preset=preset_name)
+    step_message(
+        f"RUN pipeline=soma_bouton_pipeline preset={preset_name} "
+        f"plots_only={bool(config.get('plots_only'))} rebuild={bool(config.get('rebuild'))}"
+    )
+    with step_scope(
+        "pipeline run",
+        task="soma_bouton_pipeline",
+        metadata={"comparison_preset_name": preset_name},
+    ):
+        manifest = _run_pipeline(config)
+
+    stages = get_stage_timings()
+    manifest["stage_timings"] = stages
+    result_root = Path(str(manifest.get("output_root") or config.get("result_root") or DEFAULT_CONFIG["result_root"]))
+    if not result_root.is_absolute():
+        result_root = REPO_ROOT / result_root
+    timing_report_path = result_root / "timing_report.json"
+    timing_payload: Dict[str, Any] = {}
+    if timing_report_path.exists():
+        try:
+            timing_payload = json.loads(timing_report_path.read_text())
+        except (OSError, TypeError, ValueError):
+            timing_payload = {}
+    timing_payload.update(
+        {
+            "pipeline": "soma_bouton_pipeline",
+            "comparison_preset_name": preset_name,
+            "stages": stages,
+        }
+    )
+    timing_report_path.write_text(json.dumps(timing_payload, indent=2, sort_keys=True))
+    manifest["timing_report_path"] = str(timing_report_path)
+    write_manifest(result_root, manifest)
+    step_message(
+        f"SUMMARY pipeline=soma_bouton_pipeline preset={preset_name} "
+        f"stages={len(stages)} timing_report={timing_report_path}"
+    )
     return manifest
 
 

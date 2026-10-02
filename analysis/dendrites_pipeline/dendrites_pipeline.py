@@ -35,6 +35,16 @@ from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.pipeline_logging import (
+    current_step_prefix as shared_current_step_prefix,
+    eprint as shared_eprint,
+    get_stage_timings as shared_get_stage_timings,
+    info as shared_info,
+    reset_stage_timings as shared_reset_stage_timings,
+    step_message as shared_step_message,
+    step_progress as shared_step_progress,
+    step_scope as shared_step_scope,
+)
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.union_rows import (
@@ -579,6 +589,17 @@ def step_progress(current: int, total: int, label: Optional[str] = None) -> None
     else:
         print(f"PROGRESS {detail}", file=sys.stderr)
 
+
+# Keep the historical helper names available to the pipeline while using
+# the shared task-aware implementation.
+current_step_prefix = shared_current_step_prefix
+eprint = shared_eprint
+get_stage_timings = shared_get_stage_timings
+info = shared_info
+reset_stage_timings = shared_reset_stage_timings
+step_message = shared_step_message
+step_progress = shared_step_progress
+step_scope = shared_step_scope
 
 def visual_response_cohort_settings(config: Mapping[str, Any]) -> Dict[str, str]:
     return {
@@ -17818,7 +17839,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "expected_alphas": demo_config["expected_alphas"],
             "expected_mixed_model_contrasts": demo_config["expected_mixed_model_contrasts"],
         }
-    with step_scope("config / path setup"):
+    reset_stage_timings(
+        pipeline="dendrites_pipeline",
+        preset=str(config.get("comparison_preset_name") or "default"),
+    )
+    step_message(
+        f"RUN pipeline=dendrites_pipeline preset={config.get('comparison_preset_name') or 'default'} "
+        f"plots_only={bool(config.get('plots_only'))} rebuild={bool(config.get('rebuild'))}"
+    )
+    with step_scope("config / path setup", task="configuration"):
         # These expID lists define the source sessions that will be pooled into the analysis cache.
         user_id = config.get("user_id")
         if not user_id:

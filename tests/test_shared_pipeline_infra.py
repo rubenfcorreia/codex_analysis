@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from analysis.shared.result_manifest import collect_output_artifacts
+from analysis.shared.pipeline_logging import get_stage_timings, reset_stage_timings, step_progress, step_scope
 
 import numpy as np
 
@@ -701,3 +702,46 @@ def test_split_state_metrics_emit_multi_panel_group_figures(tmp_path: Path) -> N
         "state_correlation_multi_panel_split_groups.png",
         "state_correlation_multi_panel_split_groups.svg",
     }.issubset({path.name for path in correlation_outputs})
+
+
+def test_shared_pipeline_logging_supports_pipeline_specific_tasks_and_metadata(capsys) -> None:
+    reset_stage_timings(pipeline="soma_bouton_pipeline", preset="coincidence")
+    with step_scope(
+        "event metrics",
+        task="coincidence",
+        metadata={"compartment": "soma", "analysis_family": "coincidence"},
+    ):
+        with step_scope("ROI split", task="roi_split", index=1, total=2):
+            step_progress(1, 2, label="subject-1")
+
+    stages = get_stage_timings()
+    assert len(stages) == 2
+    assert stages[0]["pipeline"] == "soma_bouton_pipeline"
+    assert stages[0]["comparison_preset_name"] == "coincidence"
+    assert stages[0]["task"] == "roi_split"
+    assert "metadata" not in stages[0]
+    assert stages[1]["task"] == "coincidence"
+    assert stages[1]["metadata"] == {"compartment": "soma", "analysis_family": "coincidence"}
+    output = capsys.readouterr().err
+    assert "soma_bouton_pipeline/coincidence" in output
+    assert "PROGRESS 1/2 subject-1" in output
+
+
+def test_shared_pipeline_logging_captures_failure_and_resets() -> None:
+    reset_stage_timings(pipeline="dendrites_pipeline", preset="default")
+    try:
+        with step_scope("mixed model", task="mixed_model"):
+            raise RuntimeError("synthetic failure")
+    except RuntimeError:
+        pass
+    failed = get_stage_timings()
+    assert failed[-1]["status"] == "failed"
+    assert failed[-1]["error"] == "synthetic failure"
+
+    reset_stage_timings(pipeline="dendrites_pipeline", preset="poster")
+    assert get_stage_timings() == []
+    with step_scope("poster outputs", task="poster"):
+        pass
+    stage = get_stage_timings()[0]
+    assert stage["comparison_preset_name"] == "poster"
+    assert stage["status"] == "completed"
