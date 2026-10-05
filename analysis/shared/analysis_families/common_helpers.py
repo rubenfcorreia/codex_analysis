@@ -112,10 +112,29 @@ def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any]
         inside = (time >= state_time.min()) & (time <= state_time.max())
         if inside.any():
             codes[inside] = np.rint(np.interp(time[inside], state_time, state_codes)).astype(int)
-    labels = {0: "quiet_awake", 1: "nrem", 2: "rem", 3: "active_awake"}
+    labels = {0: "active_awake", 1: "quiet_awake", 2: "nrem", 3: "rem"}
     masks = {label: codes == code for code, label in labels.items()}
     masks["all"] = np.ones(time.shape, dtype=bool)
     return masks, {"state_labels": labels, "state_codes_on_calcium_time": codes}
+
+
+def _movie_state_segments(time: np.ndarray, trial_mask: np.ndarray, sleep_codes: Optional[np.ndarray], sleep_labels: Mapping[int, str]) -> List[Tuple[np.ndarray, Optional[str], Optional[int]]]:
+    indices = np.flatnonzero(trial_mask)
+    if indices.size == 0 or sleep_codes is None:
+        return [(trial_mask, None, None)]
+    codes = np.asarray(sleep_codes, dtype=int)
+    values = codes[indices]
+    segments: List[Tuple[np.ndarray, Optional[str], Optional[int]]] = []
+    start = 0
+    for offset in range(1, indices.size + 1):
+        if offset < indices.size and values[offset] == values[start]:
+            continue
+        segment_mask = np.zeros(trial_mask.shape, dtype=bool)
+        segment_mask[indices[start:offset]] = True
+        code = int(values[start])
+        segments.append((segment_mask, sleep_labels.get(code) if code >= 0 else None, code if code >= 0 else None))
+        start = offset
+    return segments
 
 
 def build_state_masks_movie(
@@ -140,11 +159,11 @@ def build_state_masks_movie(
             inside = (time >= state_time.min()) & (time <= state_time.max())
             if inside.any():
                 sleep_codes_on_time[inside] = np.rint(np.interp(time[inside], state_time, state_codes)).astype(int)
-    sleep_labels = {0: "quiet_awake", 1: "nrem", 2: "rem", 3: "active_awake"}
+    sleep_labels = {0: "active_awake", 1: "quiet_awake", 2: "nrem", 3: "rem"}
     for index, row in enumerate(trial_rows):
         blocks = movie_feature_blocks(row, columns)
         if len(blocks) > 1:
-            metadata.append({"trial_index": index, "warning": "multiple movie features detected; trial skipped", "trial_row": dict(row)})
+            metadata.append({"trial_index": index, "parent_trial_index": index, "warning": "multiple movie features detected; trial skipped", "trial_row": dict(row)})
             continue
         category = classify_movie_name(blocks[0]["name"]) if blocks else canonical_state_label(row.get("state_label") or row.get("state") or row.get("trial_type") or row.get("F1_type") or "movies")
         if category == "movie":
@@ -163,33 +182,32 @@ def build_state_masks_movie(
             continue
         if end_value <= start_value:
             continue
-        mask = (time >= start_value) & (time <= end_value)
-        trial_wheel = wheel[mask] if wheel is not None else np.asarray([], dtype=float)
+        trial_mask = (time >= start_value) & (time <= end_value)
+        trial_wheel = wheel[trial_mask] if wheel is not None else np.asarray([], dtype=float)
         wheel_score = float(np.nanmedian(np.abs(trial_wheel))) if np.isfinite(trial_wheel).any() else float("nan")
-        sleep_label = None
-        if sleep_codes_on_time is not None and np.any(mask):
-            codes = sleep_codes_on_time[mask]
-            codes = codes[codes >= 0]
-            if codes.size:
-                values, counts = np.unique(codes, return_counts=True)
-                sleep_label = sleep_labels.get(int(values[int(np.argmax(counts))]))
-        if sleep_label is None:
-            sleep_label = "quiet_awake" if not np.isfinite(wheel_score) or wheel_score < locomotion_threshold else "active_awake"
-        key = combined_movie_state_label(sleep_label, category) or "quiet_awake_movies"
-        masks.setdefault(key, np.zeros(time.shape, dtype=bool))
-        masks[key] |= mask
-        metadata.append({
-            "trial_index": index,
-            "state_label": key,
-            "category": category,
-            "movie_trial_type": category,
-            "sleep_state_label": sleep_label,
-            "wheel_score": wheel_score,
-            "start": start_value,
-            "end": end_value,
-            "duration": end_value - start_value,
-            "locomotion_threshold": locomotion_threshold,
-        })
+        segments = _movie_state_segments(time, trial_mask, sleep_codes_on_time, sleep_labels)
+        if sleep_codes_on_time is None or not any(label is not None for _, label, _ in segments):
+            fallback = "quiet_awake" if not np.isfinite(wheel_score) or wheel_score < locomotion_threshold else "active_awake"
+            segments = [(trial_mask, fallback, None)]
+        for segment_index, (segment_mask, sleep_label, sleep_code) in enumerate(segments):
+            if not np.any(segment_mask):
+                continue
+            sleep_label = sleep_label or ("quiet_awake" if not np.isfinite(wheel_score) or wheel_score < locomotion_threshold else "active_awake")
+            key = combined_movie_state_label(sleep_label, category) or "quiet_awake_movies"
+            masks.setdefault(key, np.zeros(time.shape, dtype=bool))
+            masks[key] |= segment_mask
+            segment_times = time[segment_mask]
+            segment_start = float(np.min(segment_times))
+            segment_end = float(np.max(segment_times))
+            metadata.append({
+                "trial_index": index, "parent_trial_index": index, "segment_index": segment_index,
+                "parent_start": start_value, "parent_end": end_value,
+                "state_label": key, "category": category, "movie_trial_type": category,
+                "sleep_state_label": sleep_label, "sleep_state": sleep_label, "sleep_code": sleep_code,
+                "movie_state_label": key, "wheel_score": wheel_score,
+                "start": segment_start, "end": segment_end, "duration": segment_end - segment_start,
+                "segment_duration": segment_end - segment_start, "locomotion_threshold": locomotion_threshold,
+            })
     return masks, metadata, wheel
 
 def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int) -> Dict[str, Any]:

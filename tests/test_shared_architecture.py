@@ -5,6 +5,7 @@ from pathlib import Path
 
 from analysis.shared.analysis_families import require_split_groups, scope_split_rows
 from analysis.shared.analysis_families.common_helpers import build_state_masks_movie, classify_movie_name, movie_trial_type_suffix
+from analysis.shared.state_utils import resolve_analysis_state_selections
 from analysis.shared.figure_paths import (
     comparison_leaf_figure_root,
     shared_figure_root,
@@ -44,8 +45,8 @@ def test_movie_masks_accept_time_duration_and_f1_type() -> None:
         {"state_10hz_t": np.array([0.0, 40.0]), "state_10hz": np.array([1.0, 1.0])},
         0.0,
     )
-    assert metadata[0]["state_label"] == "nrem_movies"
-    assert masks["nrem_movies"].sum() == 6
+    assert metadata[0]["state_label"] == "quiet_awake_movies"
+    assert masks["quiet_awake_movies"].sum() == 6
 
 
 def test_split_rows_normalize_roi_membership_group() -> None:
@@ -146,3 +147,25 @@ def test_movie_masks_assign_wheel_based_quiet_and_active_labels() -> None:
     assert metadata[1]["state_label"] == "active_awake_zebras"
     assert masks["quiet_awake_blank"].sum() == 5
     assert masks["active_awake_zebras"].sum() == 5
+
+
+def test_default_sleep_state_selection_uses_canonical_labels() -> None:
+    assert resolve_analysis_state_selections({}, "sleep") == ["nrem", "rem", "quiet_awake", "active_awake", "all"]
+
+
+def test_movie_trial_is_split_at_sleep_state_boundary() -> None:
+    import numpy as np
+
+    masks, metadata, _ = build_state_masks_movie(
+        np.arange(5.0),
+        [{"time": 0, "duration": 4, "F1_type": "movie", "F1_name": r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00303"}],
+        ["time", "duration", "F1_type", "F1_name"],
+        None,
+        None,
+        {"state_10hz_t": np.array([0.0, 2.0, 4.0]), "state_10hz": np.array([1.0, 2.0, 2.0])},
+        0.0,
+    )
+    assert [row["sleep_state_label"] for row in metadata] == ["quiet_awake", "nrem"]
+    assert [row["parent_trial_index"] for row in metadata] == [0, 0]
+    assert masks["quiet_awake_movies"].sum() == 1
+    assert masks["nrem_movies"].sum() == 4

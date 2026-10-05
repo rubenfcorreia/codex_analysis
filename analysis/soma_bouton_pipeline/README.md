@@ -27,7 +27,7 @@ Outputs are written under `results/soma_bouton_pipeline/` by default.
 
 ## Progression and State-Transition Outputs
 
-When `progression_analysis.enabled` is true, the pipeline writes bouton and soma mean dF/F progression outputs under `results/soma_bouton_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial-time and sleep-expID progression panels. Blank trials are aligned to onset and summarized in one-second bins by default; sleep sessions are ordered chronologically by expID. Values are averaged per experiment before group means and SEM are calculated.
+When `progression_analysis.enabled` is true, the pipeline writes bouton and soma mean dF/F progression outputs under `results/soma_bouton_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial and continuous sleep-time panels. Blank trials are aligned to onset and summarized in one-second bins by default. Same-day sleep expIDs are concatenated into one animal-day replicate, interpolated at `sleep_time_step_s` (one second by default), and truncated to the shortest valid day; group values are means with SEM across animal-days.
 
 State-transition CSVs and figures are kept under `results/soma_bouton_pipeline/general/state_transitions/`. The existing `transition_analysis` settings continue to control scopes, window modes, and metrics.
 \n## State-transition analysis

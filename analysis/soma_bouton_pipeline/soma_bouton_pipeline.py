@@ -166,6 +166,8 @@ DEFAULT_CONFIG = {
     "progression_analysis": {
         "enabled": False,
         "blank_bin_s": 1.0,
+        "sleep_time_step_s": 1.0,
+        "max_sleep_duration_s": None,
         "max_blank_duration_s": None,
         "spine_signals": ["raw", "spine_specific"],
     },

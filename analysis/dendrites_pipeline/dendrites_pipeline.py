@@ -47,6 +47,7 @@ from analysis.shared.pipeline_logging import (
 )
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
+from analysis.shared.analysis_families.common_helpers import build_state_masks_movie as shared_build_state_masks_movie
 from analysis.shared.union_rows import (
     filter_table_rows_by_states, load_union_rows_cache, save_union_rows_cache,
     union_rows_meta, union_state_labels,
@@ -483,6 +484,8 @@ USER_EDITABLE_DEFAULTS = {
     "progression_analysis": {
         "enabled": False,
         "blank_bin_s": 1.0,
+        "sleep_time_step_s": 1.0,
+        "max_sleep_duration_s": None,
         "max_blank_duration_s": None,
         "spine_signals": ["raw", "spine_specific"],
     },
@@ -1351,6 +1354,38 @@ def _visual_response_trial_metric_values(
     )
 
 
+def _deduplicate_parent_trial_segments(trial_meta: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep one representative segment for trial-level statistics.
+
+    State masks use every segment; trial-level visual-response statistics must not
+    count a trial crossing a state boundary multiple times. The longest segment
+    preserves the historical majority-state assignment for those statistics.
+    """
+    grouped: Dict[int, List[Mapping[str, Any]]] = defaultdict(list)
+    passthrough: List[Dict[str, Any]] = []
+    for meta in trial_meta:
+        if not isinstance(meta, Mapping):
+            continue
+        trial_index = as_int(meta.get("parent_trial_index", meta.get("trial_index")))
+        if trial_index is None or "segment_index" not in meta:
+            passthrough.append(dict(meta))
+        else:
+            grouped[trial_index].append(meta)
+    selected: List[Dict[str, Any]] = []
+    for rows in grouped.values():
+        row = dict(max(rows, key=lambda item: float(as_float(item.get("segment_duration", item.get("duration", 0.0))) or 0.0)))
+        # Movie-versus-blank statistics are parent-trial analyses, not
+        # substate analyses: restore the complete original trial window.
+        parent_start = as_float(row.get("parent_start"))
+        parent_end = as_float(row.get("parent_end"))
+        if parent_start is not None and parent_end is not None and parent_end > parent_start:
+            row["start"] = parent_start
+            row["end"] = parent_end
+            row["duration"] = parent_end - parent_start
+        selected.append(row)
+    return passthrough + selected
+
+
 def _collect_visual_response_trial_rows(
     source_cache: Optional[Dict[str, Any]],
     exp_id: str,
@@ -1371,6 +1406,7 @@ def _collect_visual_response_trial_rows(
     cut_neural = np.asarray(cut_data.get("cut_neural"), dtype=float)
     cut_time = np.asarray(cut_data.get("cut_time"), dtype=float)
     trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
+    trial_meta = _deduplicate_parent_trial_segments(trial_meta)
     if roi_index < 0 or roi_index >= cut_neural.shape[0] or cut_time.size == 0:
         return []
     if kind == "spine":
@@ -2320,6 +2356,7 @@ def _visual_response_entity_plot_data(
     cut_neural = np.asarray(cut_data.get("cut_neural"), dtype=float)
     cut_time = np.asarray(cut_data.get("cut_time"), dtype=float)
     trial_meta = cut_data.get("trial_meta", []) if isinstance(cut_data, dict) else []
+    trial_meta = _deduplicate_parent_trial_segments(trial_meta)
     if roi_index < 0 or roi_index >= cut_neural.shape[0] or cut_time.size == 0:
         return None
     if kind == "spine":
@@ -9382,70 +9419,11 @@ def build_state_masks_movie(
     sleep_state: Optional[Dict[str, Any]],
     locomotion_threshold: float,
 ) -> Tuple[Dict[str, np.ndarray], List[Dict[str, Any]], Optional[np.ndarray]]:
-    masks = {label: np.zeros(exp_time.shape, dtype=bool) for label in MOVIE_STATE_LABELS}
-    wheel_interp = None
-    sleep_codes_on_time: Optional[np.ndarray] = None
-    if sleep_state is not None:
-        sleep_t = np.asarray(sleep_state["state_10hz_t"], dtype=float)
-        sleep_codes = np.asarray(sleep_state["state_10hz"], dtype=float)
-        sleep_inside = (exp_time >= sleep_t.min()) & (exp_time <= sleep_t.max())
-        sleep_codes_on_time = np.full(exp_time.shape, -1, dtype=int)
-        if sleep_inside.any():
-            interpolated_sleep = np.interp(exp_time[sleep_inside], sleep_t, sleep_codes)
-            sleep_codes_on_time[sleep_inside] = np.rint(interpolated_sleep).astype(int)
-    if sleep_codes_on_time is None:
-        sleep_codes_on_time = np.full(exp_time.shape, -1, dtype=int)
-    if wheel_time is not None and wheel_speed is not None:
-        wheel_interp = interpolate_series(exp_time, wheel_time, wheel_speed)
-    trial_meta: List[Dict[str, Any]] = []
-    for trial_index, row in enumerate(trial_rows):
-        category, state_label, debug = detect_trial_state_label(row, columns, exp_time, wheel_interp, locomotion_threshold)
-        start = debug.get("trial_start")
-        end = debug.get("trial_end")
-        if state_label is None or start is None or end is None:
-            if debug.get("ambiguous"):
-                trial_meta.append(
-                    {
-                        "trial_index": trial_index,
-                        "warning": "multiple movie features detected; trial skipped",
-                        "trial_row": row,
-                    }
-                )
-            continue
-        trial_mask = interval_mask(exp_time, start, end)
-        sleep_state_label = None
-        if sleep_codes_on_time.size and np.any(trial_mask):
-            trial_codes = sleep_codes_on_time[trial_mask]
-            trial_codes = trial_codes[np.isfinite(trial_codes)]
-            if trial_codes.size:
-                codes, counts = np.unique(trial_codes.astype(int), return_counts=True)
-                best = int(codes[int(np.argmax(counts))])
-                sleep_state_label = SLEEP_STATE_MAP.get(best)
-        if sleep_state_label is None:
-            sleep_state_label = "quiet_awake" if str(state_label).startswith("quiet") else "active_awake"
-        movie_type = category or "movies"
-        combined_label = combined_movie_state_label(sleep_state_label, movie_type)
-        if combined_label not in masks:
-            masks[combined_label] = np.zeros(exp_time.shape, dtype=bool)
-        masks[combined_label] |= trial_mask
-        trial_meta.append(
-            {
-                "trial_index": trial_index,
-                "category": movie_type,
-                "sleep_state_label": sleep_state_label,
-                "state_label": combined_label,
-                "movie_state_label": combined_label,
-                "sleep_state": sleep_state_label,
-                "movie_trial_type": movie_type,
-                "sleep_code": int(next((code for code, label in SLEEP_STATE_MAP.items() if label == sleep_state_label), -1)),
-                "wheel_score": debug.get("wheel_score"),
-                "locomotion_threshold": locomotion_threshold,
-                "start": start,
-                "end": end,
-                "duration": debug.get("trial_end", 0.0) - debug.get("trial_start", 0.0) if start is not None and end is not None else None,
-            }
-        )
-    return masks, trial_meta, wheel_interp
+    """Use the shared movie detector and split trials at sleep-state boundaries."""
+    return shared_build_state_masks_movie(
+        exp_time, trial_rows, columns, wheel_time, wheel_speed, sleep_state, locomotion_threshold
+    )
+
 def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     sleep_t = np.asarray(sleep_state["state_10hz_t"], dtype=float)
     sleep_codes = np.asarray(sleep_state["state_10hz"], dtype=float)

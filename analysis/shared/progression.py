@@ -11,11 +11,15 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from analysis.shared.analysis_families.common_helpers import classify_movie_name, movie_feature_blocks
+
 
 DEFAULT_PROGRESSION_CONFIG = {
     "enabled": False,
     "blank_bin_s": 1.0,
+    "sleep_time_step_s": 1.0,
     "max_blank_duration_s": None,
+    "max_sleep_duration_s": None,
     "spine_signals": ["raw", "spine_specific"],
 }
 
@@ -41,11 +45,15 @@ def _as_float(value: Any) -> float | None:
 
 
 def _trial_label(row: Mapping[str, Any]) -> str:
-    value = row.get("state_label") or row.get("state") or row.get("trial_type") or row.get("F1_type") or row.get("category")
-    text = str(value or "").strip().lower()
-    if "blank" in text:
+    # Use the same movie-feature classification used by the shared/dendrite
+    # state detector, while also accepting already-normalized state labels.
+    values = [row.get("state_label"), row.get("state"), row.get("trial_type"), row.get("category")]
+    if any("blank" in str(value or "").strip().lower() for value in values):
         return "blank"
-    return text
+    blocks = movie_feature_blocks(row, list(row.keys()))
+    if len(blocks) == 1 and classify_movie_name(blocks[0].get("name")) == "blank":
+        return "blank"
+    return str(next((value for value in values if value not in (None, "")), "")).strip().lower()
 
 
 def _trial_interval(row: Mapping[str, Any]) -> tuple[float, float] | None:
@@ -71,6 +79,12 @@ def _normalise_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
         merged["blank_bin_s"] = 1.0
     max_duration = _as_float(merged.get("max_blank_duration_s"))
     merged["max_blank_duration_s"] = max_duration if max_duration and max_duration > 0 else None
+    try:
+        merged["sleep_time_step_s"] = max(float(merged.get("sleep_time_step_s", 1.0)), 1e-6)
+    except (TypeError, ValueError):
+        merged["sleep_time_step_s"] = 1.0
+    max_sleep_duration = _as_float(merged.get("max_sleep_duration_s"))
+    merged["max_sleep_duration_s"] = max_sleep_duration if max_sleep_duration and max_sleep_duration > 0 else None
     signals = merged.get("spine_signals", ["raw", "spine_specific"])
     if isinstance(signals, str):
         signals = [part.strip() for part in signals.split(",") if part.strip()]
@@ -103,18 +117,75 @@ def _trace_matrix_mean(matrix: Any, time: Any, start: float, end: float) -> tupl
     return (_finite_mean(finite), int(values.shape[0]), int(finite.size)) if finite.size else (float("nan"), int(values.shape[0]), 0)
 
 
-def _session_sleep_rows(*, pipeline: str, expid: str, animal_id: Any, date: Any, time: Any, traces: Mapping[tuple[str, str], Sequence[Any]]) -> list[dict[str, Any]]:
+def _expid_sort_key(expid: Any) -> tuple[str, int, str]:
+    text = str(expid)
+    match = re.match(r"(\d{4}-\d{2}-\d{2})_(\d+)", text)
+    return (match.group(1), int(match.group(2)), text) if match else (text, 0, text)
+
+
+def _sleep_rows_from_segments(*, pipeline: str, segments: Mapping[tuple[str, str, str, str], Sequence[Mapping[str, Any]]], time_step_s: float, max_duration_s: float | None) -> list[dict[str, Any]]:
+    """Concatenate same-day segments and interpolate animal-days to a shared grid."""
+    day_traces: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for (compartment, signal_type, animal_id, date), source_segments in segments.items():
+        elapsed = 0.0
+        trace_parts, time_parts, boundaries, source_expids = [], [], [], []
+        for segment in sorted(source_segments, key=lambda item: _expid_sort_key(item.get("expid", ""))):
+            axis = np.asarray(segment.get("time", []), dtype=float).reshape(-1)
+            matrix = np.asarray(segment.get("matrix", []), dtype=float)
+            if matrix.ndim == 1:
+                matrix = matrix[None, :]
+            usable = min(axis.size, matrix.shape[1] if matrix.ndim == 2 else 0)
+            if usable == 0:
+                continue
+            axis, matrix = axis[:usable], matrix[:, :usable]
+            valid_axis = np.isfinite(axis)
+            if not np.any(valid_axis):
+                continue
+            axis, matrix = axis[valid_axis], matrix[:, valid_axis]
+            order = np.argsort(axis)
+            axis, matrix = axis[order], matrix[:, order]
+            finite = np.isfinite(matrix)
+            counts = finite.sum(axis=0)
+            trace = np.full(axis.size, np.nan)
+            good = counts > 0
+            if np.any(good):
+                trace[good] = np.nansum(matrix[:, good], axis=0) / counts[good]
+            if not np.any(np.isfinite(trace)):
+                continue
+            local = axis - float(axis[0])
+            duration = float(local[-1]) if local.size > 1 else 0.0
+            boundaries.append({"expid": str(segment.get("expid", "")), "start_s": elapsed, "end_s": elapsed + duration, "n_rois": int(matrix.shape[0]), "n_frames": int(np.sum(np.isfinite(trace)))})
+            trace_parts.append(trace)
+            time_parts.append(local + elapsed)
+            source_expids.append(str(segment.get("expid", "")))
+            elapsed += duration
+        if trace_parts:
+            day_traces[(compartment, signal_type, animal_id, date)] = {"time": np.concatenate(time_parts), "trace": np.concatenate(trace_parts), "source_expids": source_expids, "boundaries": boundaries, "duration": elapsed}
+    by_series: dict[tuple[str, str], list[tuple[tuple[str, str, str, str], dict[str, Any]]]] = defaultdict(list)
+    for key, value in day_traces.items():
+        by_series[(key[0], key[1])].append((key, value))
     rows: list[dict[str, Any]] = []
-    for (compartment, signal_type), matrix in sorted(traces.items()):
-        values = np.asarray(matrix, dtype=float)
-        if values.ndim == 1:
-            values = values[None, :]
-        finite = values[np.isfinite(values)]
-        if not finite.size:
-            continue
-        row = _base_row(pipeline=pipeline, compartment=compartment, signal_type=signal_type, expid=expid, animal_id=animal_id, date=date)
-        row.update({"session_order": None, "mean_dff": _finite_mean(finite), "n_rois": int(values.shape[0]), "n_trials": 0, "n_frames": int(finite.size), "status": "ok"})
-        rows.append(row)
+    for (compartment, signal_type), days in by_series.items():
+        duration = min(value["duration"] for _, value in days)
+        if max_duration_s is not None:
+            duration = min(duration, max_duration_s)
+        grid = np.arange(0.0, duration + time_step_s * 0.5, time_step_s) if duration > 0 else np.asarray([0.0])
+        for (compartment, signal_type, animal_id, date), value in days:
+            axis, trace = np.asarray(value["time"]), np.asarray(value["trace"])
+            valid = np.isfinite(axis) & np.isfinite(trace)
+            if not np.any(valid):
+                continue
+            x, y = axis[valid], trace[valid]
+            unique, indices = np.unique(x, return_index=True)
+            y = y[indices]
+            interpolated = np.interp(grid, unique, y, left=np.nan, right=np.nan)
+            for elapsed_time, mean in zip(grid, interpolated):
+                if not np.isfinite(mean):
+                    continue
+                first_expid = value["source_expids"][0] if value["source_expids"] else ""
+                row = _base_row(pipeline=pipeline, compartment=compartment, signal_type=signal_type, expid=first_expid, animal_id=animal_id, date=date)
+                row.update({"day_id": f"{animal_id}_{date}", "source_expids": json.dumps(value["source_expids"]), "segment_boundaries": json.dumps(value["boundaries"]), "elapsed_time_s": float(elapsed_time), "mean_dff": float(mean), "n_rois": int(max((item["n_rois"] for item in value["boundaries"]), default=0)), "n_trials": 0, "n_frames": int(np.sum(np.abs(axis - elapsed_time) <= time_step_s / 2)), "status": "ok"})
+                rows.append(row)
     return rows
 
 
@@ -157,7 +228,7 @@ def _add_summary_rows(blank_rows: Sequence[Mapping[str, Any]], sleep_rows: Seque
     for row in blank_rows:
         grouped[("blank_trial", str(row.get("compartment")), str(row.get("signal_type")), str(row.get("time_bin_s")), None)].append(float(row.get("mean_dff", np.nan)))
     for row in sleep_rows:
-        grouped[("sleep_expid", str(row.get("compartment")), str(row.get("signal_type")), "", row.get("session_order"))].append(float(row.get("mean_dff", np.nan)))
+        grouped[("sleep_progression", str(row.get("compartment")), str(row.get("signal_type")), str(row.get("elapsed_time_s")), None)].append(float(row.get("mean_dff", np.nan)))
     result: list[dict[str, Any]] = []
     for (analysis, compartment, signal_type, time_bin, session_order), values in sorted(grouped.items(), key=lambda item: str(item[0])):
         finite = [value for value in values if np.isfinite(value)]
@@ -192,43 +263,58 @@ def _plot_outputs(root: Path, blank_rows: Sequence[Mapping[str, Any]], sleep_row
     import matplotlib.pyplot as plt
 
     paths: list[str] = []
-    for compartment in sorted({str(row.get("compartment")) for row in [*blank_rows, *sleep_rows]}):
+    compartments = sorted({str(row.get("compartment")) for row in [*blank_rows, *sleep_rows]})
+    for compartment in compartments:
         comp_root = root / compartment
         figure_root = comp_root / "figures"
         figure_root.mkdir(parents=True, exist_ok=True)
-        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
         signals = sorted({str(row.get("signal_type")) for row in [*blank_rows, *sleep_rows] if str(row.get("compartment")) == compartment})
-        for signal in signals:
-            b = [row for row in blank_rows if row.get("compartment") == compartment and row.get("signal_type") == signal]
-            s = [row for row in sleep_rows if row.get("compartment") == compartment and row.get("signal_type") == signal]
-            if b:
-                grouped: dict[float, list[float]] = defaultdict(list)
-                for row in b:
-                    grouped[float(row["time_bin_s"])].append(float(row["mean_dff"]))
-                x = sorted(grouped)
-                y = [_finite_mean(grouped[value]) for value in x]
-                e = [_finite_sem(grouped[value]) for value in x]
-                axes[0].plot(x, y, marker="o", label=signal)
-                axes[0].fill_between(x, np.asarray(y) - np.asarray(e), np.asarray(y) + np.asarray(e), alpha=0.15)
-            if s:
-                ordered = sorted(s, key=lambda row: int(row.get("session_order") or 0))
-                axes[1].plot([row["session_order"] for row in ordered], [row["mean_dff"] for row in ordered], marker="o", label=signal)
-        axes[0].set(title="Blank-trial progression", xlabel="Time from blank onset (s)", ylabel="Mean dF/F")
-        axes[1].set(title="Sleep expID progression", xlabel="Chronological sleep expID order", ylabel="Mean dF/F")
-        for axis in axes:
-            axis.grid(alpha=0.2)
-            handles, labels = axis.get_legend_handles_labels()
-            if handles:
-                axis.legend(handles=handles, labels=labels, frameon=False)
-        path = figure_root / f"{compartment}_progression.svg"
-        fig.savefig(path, format="svg")
-        plt.close(fig)
-        paths.append(str(path))
+        figure_specs = [(signals, f"{compartment}_progression.svg")]
+        if compartment == "spine":
+            figure_specs.extend(([signal], f"spine_{signal}_progression.svg") for signal in signals)
+        for figure_signals, filename in figure_specs:
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
+            for signal in figure_signals:
+                b = [row for row in blank_rows if row.get("compartment") == compartment and row.get("signal_type") == signal]
+                s = [row for row in sleep_rows if row.get("compartment") == compartment and row.get("signal_type") == signal]
+                if b:
+                    grouped: dict[float, list[float]] = defaultdict(list)
+                    for row in b:
+                        grouped[float(row["time_bin_s"])].append(float(row["mean_dff"]))
+                    x = sorted(grouped)
+                    y = [_finite_mean(grouped[value]) for value in x]
+                    e = [_finite_sem(grouped[value]) for value in x]
+                    axes[0].plot(x, y, marker="o", label=signal)
+                    axes[0].fill_between(x, np.asarray(y) - np.asarray(e), np.asarray(y) + np.asarray(e), alpha=0.15)
+                if s:
+                    grouped_sleep: dict[float, list[float]] = defaultdict(list)
+                    by_day: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+                    for row in s:
+                        grouped_sleep[float(row.get("elapsed_time_s", 0.0))].append(float(row["mean_dff"]))
+                        by_day[str(row.get("day_id", row.get("animal_id", "")))].append(row)
+                    for day_rows in by_day.values():
+                        day_rows = sorted(day_rows, key=lambda row: float(row.get("elapsed_time_s", 0.0)))
+                        axes[1].plot([float(row.get("elapsed_time_s", 0.0)) / 60.0 for row in day_rows], [float(row["mean_dff"]) for row in day_rows], color="0.5", alpha=0.22, linewidth=0.8)
+                    x = sorted(grouped_sleep)
+                    y = [_finite_mean(grouped_sleep[value]) for value in x]
+                    e = [_finite_sem(grouped_sleep[value]) for value in x]
+                    axes[1].plot(np.asarray(x) / 60.0, y, linewidth=2.2, label=signal)
+                    axes[1].fill_between(np.asarray(x) / 60.0, np.asarray(y) - np.asarray(e), np.asarray(y) + np.asarray(e), alpha=0.15)
+            axes[0].set(title="Blank-trial progression", xlabel="Time from blank onset (s)", ylabel="Mean dF/F")
+            axes[1].set(title="Sleep progression", xlabel="Elapsed sleep time (min)", ylabel="Mean dF/F")
+            for axis in axes:
+                axis.grid(alpha=0.2)
+                handles, labels = axis.get_legend_handles_labels()
+                if handles:
+                    axis.legend(handles=handles, labels=labels, frameon=False)
+            path = figure_root / filename
+            fig.savefig(path, format="svg")
+            plt.close(fig)
+            paths.append(str(path))
     return paths
 
 
 def _finalize(root: Path, blank_rows: list[dict[str, Any]], sleep_rows: list[dict[str, Any]], config: Mapping[str, Any], pipeline: str) -> dict[str, Any]:
-    _session_order(sleep_rows)
     for compartment in sorted({str(row.get("compartment")) for row in [*blank_rows, *sleep_rows]}):
         comp_root = root / compartment
         _write_rows(comp_root / "blank_trial_progression.csv", [row for row in blank_rows if row.get("compartment") == compartment])
@@ -246,18 +332,21 @@ def run_soma_bouton_progression(contexts: Iterable[Any], output_root: Path, conf
     if not cfg.get("enabled"):
         return {"pipeline": "soma_bouton_pipeline", "disabled": True}
     blank_rows: list[dict[str, Any]] = []
-    sleep_rows: list[dict[str, Any]] = []
+    sleep_segments: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for ctx in contexts:
-        time = ctx.soma.t if ctx.soma.t.size >= ctx.bouton.t.size else ctx.bouton.t
         traces = {
-            ("soma", "raw"): np.asarray(ctx.soma.matrix(), dtype=float),
-            ("bouton", "raw"): np.asarray(ctx.bouton.matrix(), dtype=float),
+            ("soma", "raw"): (np.asarray(ctx.soma.matrix(), dtype=float), np.asarray(ctx.soma.t, dtype=float)),
+            ("bouton", "raw"): (np.asarray(ctx.bouton.matrix(), dtype=float), np.asarray(ctx.bouton.t, dtype=float)),
         }
         if ctx.mode == "movie":
             trial_rows = list(ctx.state_bundle.get("rows", [])) if isinstance(ctx.state_bundle, Mapping) else []
-            blank_rows.extend(_blank_rows_for_traces(pipeline="soma_bouton_pipeline", expid=ctx.expid, animal_id=ctx.animal_id, date=ctx.date, time=time, trial_rows=trial_rows, traces=traces, bin_s=float(cfg["blank_bin_s"]), max_duration_s=cfg["max_blank_duration_s"]))
+            for (compartment, signal_type), (matrix, time) in traces.items():
+                blank_rows.extend(_blank_rows_for_traces(pipeline="soma_bouton_pipeline", expid=ctx.expid, animal_id=ctx.animal_id, date=ctx.date, time=time, trial_rows=trial_rows, traces={(compartment, signal_type): matrix}, bin_s=float(cfg["blank_bin_s"]), max_duration_s=cfg["max_blank_duration_s"]))
         elif ctx.mode == "sleep":
-            sleep_rows.extend(_session_sleep_rows(pipeline="soma_bouton_pipeline", expid=ctx.expid, animal_id=ctx.animal_id, date=ctx.date, time=time, traces=traces))
+            for (compartment, signal_type), (matrix, time) in traces.items():
+                key = (compartment, signal_type, str(ctx.animal_id or ""), str(ctx.date or ""))
+                sleep_segments[key].append({"expid": str(ctx.expid), "time": time, "matrix": matrix})
+    sleep_rows = _sleep_rows_from_segments(pipeline="soma_bouton_pipeline", segments=sleep_segments, time_step_s=float(cfg["sleep_time_step_s"]), max_duration_s=cfg["max_sleep_duration_s"])
     return _finalize(Path(output_root), blank_rows, sleep_rows, cfg, "soma_bouton_pipeline")
 
 
@@ -267,17 +356,16 @@ def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root:
         return {"pipeline": "dendrites_pipeline", "disabled": True}
     raw = source_cache.get("animals", {}) if isinstance(source_cache, Mapping) else {}
     experiments = source_cache.get("experiments", {}) if isinstance(source_cache, Mapping) else {}
-    movie_expids = {str(value) for value in (source_cache.get("config", {}).get("movie_expids", []) if isinstance(source_cache.get("config", {}), Mapping) else [])}
-    sleep_expids = {str(value) for value in (source_cache.get("config", {}).get("sleep_expids", []) if isinstance(source_cache.get("config", {}), Mapping) else [])}
+    config_data = source_cache.get("config", {}) if isinstance(source_cache, Mapping) else {}
+    movie_expids = {str(value) for value in (config_data.get("movie_expids", []) if isinstance(config_data, Mapping) else [])}
+    sleep_expids = {str(value) for value in (config_data.get("sleep_expids", []) if isinstance(config_data, Mapping) else [])}
     blank_rows: list[dict[str, Any]] = []
-    sleep_rows: list[dict[str, Any]] = []
     grouped: dict[tuple[str, str], dict[str, list[np.ndarray]]] = defaultdict(lambda: defaultdict(list))
     times: dict[str, np.ndarray] = {}
     animals_by_expid: dict[str, str] = {}
     dates_by_expid: dict[str, str] = {}
     for animal_id, animal in raw.items() if isinstance(raw, Mapping) else []:
         for dendrite in animal.get("dendrites", {}).values() if isinstance(animal, Mapping) else []:
-            compartment = "dendrite"
             for expid, obs in dendrite.get("observations", {}).items():
                 expid = str(expid)
                 if expid not in movie_expids and expid not in sleep_expids:
@@ -295,40 +383,29 @@ def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root:
                     for signal, key in (("raw", "trace"), ("spine_specific", "spine_specific")):
                         if signal in cfg["spine_signals"]:
                             grouped[(expid, "spine")][signal].append(np.asarray(s_obs.get(key, []), dtype=float))
+    sleep_segments: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for expid in sorted(movie_expids):
         exp_meta = experiments.get(expid, {}) if isinstance(experiments, Mapping) else {}
         trial_meta = exp_meta.get("trial_meta", []) if isinstance(exp_meta, Mapping) else []
-        intervals = []
-        for meta in trial_meta if isinstance(trial_meta, Sequence) else []:
-            if str(meta.get("state_label", "")).lower().find("blank") < 0:
-                continue
-            interval = _trial_interval(meta)
-            if interval is not None:
-                intervals.append(interval)
-        trial_rows = [{"state_label": "blank", "start": start, "end": end} for start, end in intervals]
+        # Keep the original movie metadata: blank trials may be identified by
+        # F1_name (the canonical ...\00000 clip) rather than state_label.
+        trial_rows = [dict(meta) for meta in trial_meta if isinstance(meta, Mapping)]
         for (group_expid, compartment), signals in grouped.items():
             if group_expid != expid or expid not in times:
                 continue
             for signal, matrices in signals.items():
                 valid = [matrix for matrix in matrices if matrix.size]
-                if not valid:
-                    continue
-                blank_rows.extend(_blank_rows_for_traces(
-                    pipeline="dendrites_pipeline", expid=expid, animal_id=animals_by_expid.get(expid, ""),
-                    date=dates_by_expid.get(expid, ""), time=times[expid], trial_rows=trial_rows,
-                    traces={(compartment, signal): np.vstack(valid)}, bin_s=float(cfg["blank_bin_s"]),
-                    max_duration_s=cfg["max_blank_duration_s"],
-                ))
+                if valid:
+                    blank_rows.extend(_blank_rows_for_traces(pipeline="dendrites_pipeline", expid=expid, animal_id=animals_by_expid.get(expid, ""), date=dates_by_expid.get(expid, ""), time=times[expid], trial_rows=trial_rows, traces={(compartment, signal): np.vstack(valid)}, bin_s=float(cfg["blank_bin_s"]), max_duration_s=cfg["max_blank_duration_s"]))
     for (expid, compartment), signals in grouped.items():
-        if expid not in sleep_expids:
+        if expid not in sleep_expids or expid not in times:
             continue
-        exp_meta = experiments.get(expid, {}) if isinstance(experiments, Mapping) else {}
+        animal_id, date = animals_by_expid.get(expid, ""), dates_by_expid.get(expid, "")
         for signal, matrices in signals.items():
-            finite = np.concatenate([matrix[np.isfinite(matrix)] for matrix in matrices if matrix.size], axis=0) if matrices else np.array([])
-            if finite.size:
-                row = _base_row(pipeline="dendrites_pipeline", compartment=compartment, signal_type=signal, expid=expid, animal_id=animals_by_expid.get(expid, exp_meta.get("animal_id", "")), date=dates_by_expid.get(expid, exp_meta.get("date", "")))
-                row.update({"session_order": None, "mean_dff": _finite_mean(finite), "n_rois": len(matrices), "n_trials": 0, "n_frames": int(finite.size), "status": "ok"})
-                sleep_rows.append(row)
+            valid = [matrix for matrix in matrices if matrix.size]
+            if valid:
+                sleep_segments[(compartment, signal, animal_id, date)].append({"expid": expid, "time": times[expid], "matrix": np.vstack(valid)})
+    sleep_rows = _sleep_rows_from_segments(pipeline="dendrites_pipeline", segments=sleep_segments, time_step_s=float(cfg["sleep_time_step_s"]), max_duration_s=cfg["max_sleep_duration_s"])
     return _finalize(Path(output_root), blank_rows, sleep_rows, cfg, "dendrites_pipeline")
 
 

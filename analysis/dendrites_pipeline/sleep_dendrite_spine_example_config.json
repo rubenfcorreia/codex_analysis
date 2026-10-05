@@ -244,6 +244,8 @@
   "progression_analysis": {
     "enabled": true,
     "blank_bin_s": 1.0,
+    "sleep_time_step_s": 1.0,
+    "max_sleep_duration_s": null,
     "max_blank_duration_s": null,
     "spine_signals": [
       "raw",

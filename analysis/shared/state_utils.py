@@ -108,7 +108,7 @@ def resolve_analysis_state_selections(config: Mapping[str, Any], mode: str) -> L
         return [str(state) for state in states if str(state)]
     if mode == "movie":
         return list(config.get("movie_states", ["running", "still", "all"]))
-    return list(config.get("sleep_states", ["nrem", "rem", "wake", "all"]))
+    return list(config.get("sleep_states", ["nrem", "rem", "quiet_awake", "active_awake", "all"]))
 
 
 __all__ = [
