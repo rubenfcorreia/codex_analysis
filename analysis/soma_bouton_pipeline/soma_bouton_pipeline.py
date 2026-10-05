@@ -61,7 +61,7 @@ from analysis.shared.shared_calcium_response import (
 from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
 from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows
 from analysis.shared.analysis_families.soma_transitions import run_transition_analysis
-from analysis.shared.state_transitions import aggregate_transition_rows_expday, paired_transition_summaries
+from analysis.shared.state_transitions import aggregate_transition_rows_expday, paired_transition_summaries, plot_transition_summaries
 from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
@@ -1107,6 +1107,13 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     coincidence_rows = list(table_rows.get("coincidence_rows", []))
                     cached_transition_events = list(table_rows.get("state_transition_event_rows", []))
                     transition_results = {"event_rows": cached_transition_events, "pooled_summary_rows": paired_transition_summaries(cached_transition_events), "summary_rows": paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events)), "figure_paths": [], "alerts": []}
+                    if cached_transition_events:
+                        transition_figure_root = (general_output_root if general_output_root is not None and generate_shared_general_outputs else figure_root)
+                        transition_results["figure_paths"] = plot_transition_summaries(
+                            cached_transition_events,
+                            Path(transition_figure_root),
+                            pipeline_name="soma_bouton",
+                        )
                     selected_states_by_mode = dict(table_rows.get("selected_states_by_mode", selected_states_by_mode))
                     state_modes = list(table_rows.get("state_modes", state_modes))
             if bool(config.get("poster_ready_only")):
@@ -1322,7 +1329,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             selected_states_by_mode,
             config.get("transition_analysis"),
             event_detection_method=event_detection_method,
-            output_root=((general_output_root / "state_transitions" / "figures") if general_output_root is not None and generate_shared_general_outputs else figure_root),
+            output_root=(general_output_root if general_output_root is not None and generate_shared_general_outputs else figure_root),
         )
 
     progression_enabled = bool((config.get("progression_analysis") or {}).get("enabled", False))
