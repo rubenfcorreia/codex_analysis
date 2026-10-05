@@ -15845,9 +15845,8 @@ def write_analysis_outputs(
             if bool(run_params.get("generate_dff_heatmaps", True)):
                 step_message("dF/F heatmap generation starting")
                 roi_split = results.get("roi_split", {}) if isinstance(results.get("roi_split"), dict) else {}
-                split_rows = roi_split.get("subject_state_rows", []) if isinstance(roi_split, dict) else []
-                heatmap_states = sorted({str(state) for meta in (source_cache.get("experiments", {}) or {}).values() if isinstance(meta, dict) for state in (meta.get("state_masks", {}) or {}).keys()})
-                heatmap_records = records_from_dendrite_cache(source_cache, heatmap_states, split_rows, str(run_params.get("event_detection_method") or "derivative"))
+                split_rows = roi_split.get("membership_rows", []) if isinstance(roi_split, dict) else []
+                heatmap_records = records_from_dendrite_cache(source_cache, (), split_rows, str(run_params.get("event_detection_method") or "derivative"))
                 dff_heatmap_files = render_dff_heatmaps(
                     heatmap_records,
                     (Path(configured_general_root) if configured_general_root else shared_general_root.parent) / "dff_heatmaps",

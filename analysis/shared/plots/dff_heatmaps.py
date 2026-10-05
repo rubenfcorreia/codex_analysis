@@ -160,14 +160,15 @@ def render_dff_heatmaps(
     max_trace_points: int | None = None,
     output_formats: Sequence[str] = ("svg", "png"),
 ) -> list[str]:
-    """Render one state-aware heatmap per compartment and write JSON metadata."""
+    """Render one full-day heatmap per compartment/day with onset markers."""
     prepared: list[dict[str, Any]] = []
     for raw in records:
         metrics = _record_metrics(raw, event_detection_method)
         if metrics is None:
             continue
         metrics["compartment"] = str(metrics.get("compartment") or "other").strip().lower()
-        metrics["state"] = canonical_state_label(metrics.get("state") or "all") or "all"
+        metrics["day_id"] = _safe_id(metrics.get("day_id") or "all_days")
+        metrics["state"] = "full_day"
         prepared.append(metrics)
     if not prepared:
         return []
@@ -177,8 +178,8 @@ def render_dff_heatmaps(
     saved: list[str] = []
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for record in prepared:
-        grouped[(record["compartment"], record["state"])].append(record)
-    for (compartment, state), group_records in sorted(grouped.items()):
+        grouped[(record["compartment"], record["day_id"])].append(record)
+    for (compartment, day_id), group_records in sorted(grouped.items()):
         selected: list[dict[str, Any]] = []
         for class_name in CLASS_ORDER:
             candidates = [row for row in group_records if row.get("split_group") == class_name]
@@ -222,7 +223,7 @@ def render_dff_heatmaps(
                     ax.vlines(onset, row_index - 0.32, row_index + 0.32, color="white", linewidth=1.0, alpha=0.95)
         ax.set_xlabel("Time (s)", fontsize=11)
         ax.set_ylabel("Representative ROI", fontsize=11)
-        ax.set_title(f"{compartment.capitalize()} dF/F heatmap — {state_display_label(state)}", fontsize=14, pad=12)
+        ax.set_title(f"{compartment.capitalize()} dF/F heatmap — Full experimental day: {day_id}", fontsize=14, pad=12)
         ax.text(0.0, -0.13, "Rows sorted by class, event frequency ↓, mean dF/F ↓, ROI ID", transform=ax.transAxes, fontsize=9, va="top")
         cursor = 0
         for class_name in CLASS_ORDER:
@@ -235,16 +236,17 @@ def render_dff_heatmaps(
         cbar.set_label("dF/F", fontsize=11)
         fig.text(0.01, 0.01, f"White ticks = detected calcium-event onsets ({event_detection_method}); cyan lines = class boundaries", fontsize=8.5)
         fig.subplots_adjust(left=0.08, right=0.78, bottom=0.13, top=0.91)
-        directory = output_root / _safe_filename(compartment)
+        directory = output_root / _safe_filename(compartment) / _safe_filename(day_id)
         directory.mkdir(parents=True, exist_ok=True)
-        stem = f"dff_heatmap_{_safe_filename(state)}"
+        stem = "dff_heatmap_full_day"
         for output_format in output_formats:
             output_path = directory / f"{stem}.{output_format}"
             save_figure(fig, output_path, extra_formats=())
             saved.append(str(output_path))
         metadata = {
             "compartment": compartment,
-            "state": state,
+            "day_id": day_id,
+            "state_scope": "full_day",
             "event_detection_method": event_detection_method,
             "sorting": ["class", "event_frequency_per_min_desc", "mean_dff_desc", "roi_id_asc"],
             "color_scale": {"vmin": float(low), "vmax": float(high)},
@@ -252,7 +254,6 @@ def render_dff_heatmaps(
                 {
                     "roi_id": _safe_id(row.get("roi_id") or row.get("roi_key") or row.get("unit_id")),
                     "class": row.get("split_group"),
-                    "state": row.get("state"),
                     "event_frequency_per_min": row.get("event_frequency_per_min"),
                     "mean_dff": row.get("mean_dff"),
                     "event_onsets_s": np.asarray(row.get("event_onsets", []), dtype=float).tolist(),
@@ -267,59 +268,55 @@ def render_dff_heatmaps(
     return saved
 
 
-def records_from_soma_contexts(contexts: Sequence[Any], states: Sequence[str], split_rows: Sequence[Mapping[str, Any]], event_detection_method: str) -> list[dict[str, Any]]:
+def records_from_soma_contexts(
+    contexts: Sequence[Any],
+    states: Sequence[str],
+    split_rows: Sequence[Mapping[str, Any]],
+    event_detection_method: str,
+) -> list[dict[str, Any]]:
+    del states, event_detection_method
     lookup = _class_lookup(split_rows)
     records: list[dict[str, Any]] = []
-    from analysis.shared.analysis_families.state import state_masks_for_context
     for ctx in contexts:
         time = shared_time_axis(ctx)
-        masks = state_masks_for_context(ctx, states)
         for compartment, entity in (("soma", ctx.soma), ("bouton", ctx.bouton)):
             matrix = np.asarray(entity.matrix(), dtype=float)
             ids = list(entity.roi_ids()) if hasattr(entity, "roi_ids") else list(range(matrix.shape[0]))
             for roi_index, trace in enumerate(matrix):
                 roi_id = ids[roi_index] if roi_index < len(ids) else roi_index
-                unit_id = (make_global_soma_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.soma_channel, roi_id=roi_id) if compartment == "soma" else make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.bouton_channel, roi_id=roi_id))
-                for state, mask in masks.items():
-                    usable = min(time.size, trace.size, np.asarray(mask).size)
-                    masked_trace = np.asarray(trace[:usable], dtype=float).copy()
-                    masked_trace[~np.asarray(mask[:usable], dtype=bool)] = np.nan
-                    state_key = canonical_state_label(state)
-                    group = lookup.get((compartment, unit_id, state_key), lookup.get((compartment, unit_id, ""), ""))
-                    records.append({"compartment": compartment, "state": state_key, "roi_id": unit_id, "time": time[:usable], "trace": masked_trace, "split_group": group})
+                unit_id = (
+                    make_global_soma_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.soma_channel, roi_id=roi_id)
+                    if compartment == "soma"
+                    else make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.bouton_channel, roi_id=roi_id)
+                )
+                usable = min(time.size, trace.size)
+                records.append({"compartment": compartment, "day_id": ctx.day_id, "state": "full_day", "roi_id": unit_id, "time": time[:usable], "trace": np.asarray(trace[:usable], dtype=float), "split_group": lookup.get((compartment, unit_id, ""), "")})
     return records
 
 
-def records_from_dendrite_cache(cache: Mapping[str, Any], states: Sequence[str], split_rows: Sequence[Mapping[str, Any]], event_detection_method: str) -> list[dict[str, Any]]:
+def records_from_dendrite_cache(
+    cache: Mapping[str, Any],
+    states: Sequence[str],
+    split_rows: Sequence[Mapping[str, Any]],
+    event_detection_method: str,
+) -> list[dict[str, Any]]:
+    del states, event_detection_method
     lookup = _class_lookup(split_rows)
     records: list[dict[str, Any]] = []
     for animal_id, animal in (cache.get("animals", {}) or {}).items():
         for dendrite_id, dendrite in (animal.get("dendrites", {}) or {}).items():
             for exp_id, obs in (dendrite.get("observations", {}) or {}).items():
-                exp_meta = (cache.get("experiments", {}) or {}).get(exp_id, {})
-                masks = exp_meta.get("state_masks", {}) if isinstance(exp_meta, Mapping) else {}
-                for compartment, roi_id, source in [("dendrite", dendrite_id, obs)]:
-                    records.extend(_dendrite_observation_records(source, compartment, roi_id, masks, states, lookup, event_detection_method))
+                day_id = str(exp_id or f"{animal_id}_day").strip()
+                records.append({"compartment": "dendrite", "day_id": day_id, "state": "full_day", "roi_id": dendrite_id, "time": obs.get("time"), "trace": obs.get("trace"), "split_group": lookup.get(("dendrite", _safe_id(dendrite_id), ""), "")})
                 for spine_id, spine in (dendrite.get("spines", {}) or {}).items():
                     spine_obs = (spine.get("observations", {}) or {}).get(exp_id)
-                    if spine_obs is not None:
-                        records.extend(_dendrite_observation_records(spine_obs, "spine", spine_id, masks, states, lookup, event_detection_method))
+                    if spine_obs is None:
+                        continue
+                    trace = spine_obs.get("spine_specific")
+                    if trace is None:
+                        trace = spine_obs.get("trace")
+                    records.append({"compartment": "spine", "day_id": day_id, "state": "full_day", "roi_id": spine_id, "time": spine_obs.get("time"), "trace": trace, "split_group": lookup.get(("spine", _safe_id(spine_id), ""), "")})
     return records
-
-
-def _dendrite_observation_records(source: Mapping[str, Any], compartment: str, roi_id: str, masks: Mapping[str, Any], states: Sequence[str], lookup: Mapping[tuple[str, str, str], str], event_detection_method: str) -> list[dict[str, Any]]:
-    trace = source.get("spine_specific") if compartment == "spine" and source.get("spine_specific") is not None else source.get("trace")
-    time = np.asarray(source.get("time", []), dtype=float).reshape(-1)
-    trace = np.asarray(trace if trace is not None else [], dtype=float).reshape(-1)
-    usable = min(time.size, trace.size)
-    rows: list[dict[str, Any]] = []
-    for state in states:
-        state_key = canonical_state_label(state)
-        mask = np.asarray(masks.get(state_key, np.ones(usable, dtype=bool)), dtype=bool)[:usable]
-        masked_trace = trace[:usable].copy()
-        masked_trace[~mask] = np.nan
-        rows.append({"compartment": compartment, "state": state_key, "roi_id": roi_id, "time": time[:usable], "trace": masked_trace, "event_info": source.get("event_info"), "split_group": lookup.get((compartment, _safe_id(roi_id), state_key), lookup.get((compartment, _safe_id(roi_id), ""), ""))})
-    return rows
 
 
 __all__ = ["render_dff_heatmaps", "records_from_soma_contexts", "records_from_dendrite_cache"]

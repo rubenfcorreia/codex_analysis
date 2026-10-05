@@ -1860,7 +1860,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             heatmap_records = records_from_soma_contexts(
                 transition_contexts,
                 [state for states in selected_states_by_mode.values() for state in states],
-                [row for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") == "activity_frequency_split" for row in bundle.get("subject_state_rows", []) if isinstance(row, Mapping)],
+                [row for bundle in roi_split_bundles if str(bundle.get("branch_name") or "") == "activity_frequency_split" for row in bundle.get("membership_rows", []) if isinstance(row, Mapping)],
                 event_detection_method,
             )
             dff_heatmap_files = render_dff_heatmaps(
