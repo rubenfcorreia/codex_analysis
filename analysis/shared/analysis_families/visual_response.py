@@ -19,7 +19,8 @@ def _visual_response_entity_id(row: Mapping[str, Any]) -> str:
     elif compartment == "bouton":
         value = row.get("global_bouton_id")
     else:
-        value = row.get("global_soma_id") or row.get("global_bouton_id")
+        value = (row.get("global_soma_id") or row.get("global_bouton_id")
+                 or row.get("global_dendrite_id") or row.get("global_spine_id"))
     return str(value).strip() if value is not None else ""
 
 
@@ -38,16 +39,23 @@ def _coerce_visual_response_bool(value: Any) -> bool:
 
 
 def _canonicalize_visual_response_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    """Deduplicate within analysis scope, never across modes or days."""
+    grouped: Dict[tuple[str, str, str, str], List[Dict[str, Any]]] = {}
     for row in rows:
         if not isinstance(row, Mapping):
             continue
         entity_id = _visual_response_entity_id(row)
         if not entity_id:
             continue
-        grouped.setdefault(entity_id, []).append(dict(row))
+        key = (
+            str(row.get("day_id") or row.get("expid") or ""),
+            str(row.get("mode") or ""),
+            str(row.get("compartment") or ""),
+            entity_id,
+        )
+        grouped.setdefault(key, []).append(dict(row))
     canonical_rows: List[Dict[str, Any]] = []
-    for entity_id, members in grouped.items():
+    for (_, _, _, entity_id), members in grouped.items():
         row = dict(members[0])
         responsive = any(_coerce_visual_response_bool(member.get("responsive", False)) or str(member.get("cohort") or "").strip().lower() == "responsive" for member in members)
         row["responsive"] = responsive
@@ -56,6 +64,35 @@ def _canonicalize_visual_response_rows(rows: Sequence[Mapping[str, Any]]) -> Lis
         canonical_rows.append(row)
     return canonical_rows
 
+
+def _apply_bh_fdr(rows: List[Dict[str, Any]]) -> None:
+    """Apply Benjamini-Hochberg correction independently per response family."""
+    families: Dict[tuple[str, str, str], List[int]] = {}
+    for index, row in enumerate(rows):
+        try:
+            p_value = float(row.get("raw_pvalue", float("nan")))
+        except (TypeError, ValueError):
+            p_value = float("nan")
+        if np.isfinite(p_value):
+            key = (str(row.get("mode") or ""), str(row.get("compartment") or ""), str(row.get("response_metric") or ""))
+            families.setdefault(key, []).append(index)
+    for indices in families.values():
+        ordered = sorted(indices, key=lambda index: float(rows[index]["raw_pvalue"]))
+        m = len(ordered)
+        adjusted = [1.0] * m
+        running = 1.0
+        for rank in range(m, 0, -1):
+            p_value = float(rows[ordered[rank - 1]]["raw_pvalue"])
+            running = min(running, p_value * m / rank)
+            adjusted[rank - 1] = min(running, 1.0)
+        for index, adjusted_p in zip(ordered, adjusted):
+            row = rows[index]
+            delta = float(row.get("delta", float("nan")))
+            row["adjusted_pvalue"] = float(adjusted_p)
+            row["significant"] = bool(adjusted_p < 0.05)
+            row["responsive"] = bool(row["significant"] and np.isfinite(delta) and delta > 0)
+            row["cohort"] = "responsive" if row["responsive"] else "nonresponsive"
+            row["star"] = "*" if row["significant"] else ""
 
 
 def visual_response_day_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -103,6 +140,7 @@ def build_visual_response_family_results(
 ) -> Dict[str, Any]:
     row_list = [dict(row) for row in rows if isinstance(row, Mapping)]
     deduped_rows = _canonicalize_visual_response_rows(row_list)
+    _apply_bh_fdr(deduped_rows)
     summary = summarize_visual_response_entity_rows(deduped_rows)
     metric = get_active_visual_response_metric(response_metric or summary.get("response_metric"))
 
@@ -160,6 +198,13 @@ def build_visual_response_family_results(
     }
 
 
+def apply_visual_response_fdr(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Return ROI rows with family-wise BH-FDR classification applied."""
+    output = [dict(row) for row in rows if isinstance(row, Mapping)]
+    _apply_bh_fdr(output)
+    return output
+
+
 def run_family(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -170,6 +215,7 @@ def run_family(
 
 
 __all__ = [
+    "apply_visual_response_fdr",
     "build_visual_response_family_results",
     "run_family",
     "visual_response_day_rows",

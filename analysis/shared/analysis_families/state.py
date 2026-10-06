@@ -232,13 +232,12 @@ def activity_rows_for_context(
     for state, mask in masks.items():
         mask = np.asarray(mask, dtype=bool)
         state_n_frames, state_duration_s = summarize_mask_duration(time, mask)
-        soma_summary = summarize_activity(soma_matrix, mask)
-        bouton_summary = summarize_activity(bouton_matrix, mask)
-        for compartment, summary, matrix, roi_ids in (("soma", soma_summary, soma_matrix, soma_roi_ids), ("bouton", bouton_summary, bouton_matrix, bouton_roi_ids)):
+        for compartment, matrix, roi_ids in (("soma", soma_matrix, soma_roi_ids), ("bouton", bouton_matrix, bouton_roi_ids)):
             if matrix.size == 0:
                 continue
             for roi_index in range(matrix.shape[0]):
                 trace = np.asarray(matrix[roi_index], dtype=float)
+                summary = _summarize_roi_trace(trace, mask)
                 events = _event_summary_for_trace(trace, time, mask)
                 roi_id = roi_ids[roi_index] if roi_index < len(roi_ids) else roi_index
                 channel = ctx.soma_channel if compartment == "soma" else ctx.bouton_channel

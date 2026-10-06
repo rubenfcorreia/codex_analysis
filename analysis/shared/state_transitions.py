@@ -245,12 +245,20 @@ def paired_transition_summaries(rows: Sequence[Mapping[str, Any]]) -> list[dict[
             try:
                 from scipy import stats
 
-                test = stats.ttest_rel(post, pre, nan_policy="omit")
-                payload["paired_statistic"] = float(test.statistic)
-                payload["paired_pvalue"] = float(test.pvalue)
-            except Exception:
+                if np.allclose(post, pre, equal_nan=True):
+                    payload["paired_statistic"] = 0.0
+                    payload["paired_pvalue"] = 1.0
+                    payload["paired_test_status"] = "identical_values"
+                else:
+                    test = stats.ttest_rel(post, pre, nan_policy="omit")
+                    payload["paired_statistic"] = float(test.statistic)
+                    payload["paired_pvalue"] = float(test.pvalue)
+                    payload["paired_test_status"] = "ok"
+            except Exception as exc:
                 payload["paired_statistic"] = float("nan")
                 payload["paired_pvalue"] = float("nan")
+                payload["paired_test_status"] = "failed"
+                payload["paired_test_warning"] = str(exc)
         else:
             payload["paired_statistic"] = float("nan")
             payload["paired_pvalue"] = float("nan")

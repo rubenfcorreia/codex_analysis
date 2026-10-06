@@ -47,7 +47,7 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 When `progression_analysis.enabled` is true, the pipeline writes dendrite and spine mean dF/F progression outputs under `results/dendrites_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial and continuous sleep-time panels. Blank trials are aligned to onset and summarized in one-second bins by default. Sleep expIDs from the same `(animal_id, date)` are ordered and concatenated without gaps into one animal-day replicate; traces are interpolated at `sleep_time_step_s` (one second by default) and truncated to the shortest valid day. The spine output includes separate raw-spine dF/F and spine-specific residual signals; plotted values are means with SEM across animal-days.
 
 State-transition CSVs and figures are kept under `results/dendrites_pipeline/general/state_transitions/`. Their scope, window mode, and metric selection remain controlled by `transition_analysis`.
-\n## Visual Response
+## Visual Response
 
 - The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/<branch>/<basis>/figures/visual_response/`, where `branch` is one of `pooled`, `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
 - ROI split figures are written under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
@@ -220,7 +220,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 - Uses same-day SpinesGUI conversion fallback when needed.
 - Computes spine-specific activity with robust regression.
 - Splits movie data into quiet and active states.
-- Fits the mixed-model summaries when the design is well-behaved, and falls back to a fixed-effect least-squares approximation when the mixed-model design is singular or the optimizer cannot converge cleanly.
+- Fits animal-clustered mixed models when the design is supported. Failed, singular, or diagnostic-warning fits are marked as non-inferential rather than being reported as converged mixed models; active mixed-model contrasts do not run shuffles.
 - Builds branch-aware ROI split comparisons from the pooled day-level observations, using both activity-derived and event-frequency-derived rankings plus the exploratory activity×frequency quadrant split.
 - Uses `sleep_state.pickle` for sleep analysis and never uses `sleep_state_sim.pickle`.
 - Alerts and skips sleep-state analysis if `sleep_state.pickle` is missing.
@@ -253,7 +253,7 @@ It covers the preprocessing, state comparisons, ROI split comparisons, correlati
    - fit a single all-state model with state, compartment, and state × compartment terms
    - use the interaction terms as the primary basal-vs-apical test
    - keep shuffle-based p-values as a robustness check for the post-fit contrasts
-   - choose `mixed_model_contrast_p_source: classical` for the faster model p-values, or `shuffle` to restore shuffle-refit contrasts
+   - mixed-model contrasts use model-based Wald p-values; shuffle-refit inference is not used for mixed-model contrasts
    - the spine-coactivity mixed model is optional and is controlled by `fit_spine_coactivity_mixed_model`
    - `spine_coactivity_only: true` (or `--spine-coactivity-only`) skips the main state/correlation/matrix analyses and reruns just the spine coactivity branch from the cache
    - `mixed_model_only: true` (or `--mixed-model-only`) skips the other analyses and reruns just the main mixed-model branch from the cache

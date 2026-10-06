@@ -210,6 +210,14 @@ def build_pairwise_correlation_rows(
                         "state_display": state_display_label(state),
                         "state_color": state_display_color(state),
                         "corr": corr,
+                        "effect_size": corr,
+                        "lower_ci": None,
+                        "upper_ci": None,
+                        "p_value": None,
+                        "p_value_source": "none_descriptive",
+                        "inferential_status": "descriptive",
+                        "inferential_unit": "day_pair",
+                        "correction_family": None,
                         "n_timepoints": int(n_timepoints),
                     }
                 )
@@ -302,6 +310,14 @@ def pairwise_correlation_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List
                 "std_corr": float(np.nanstd(arr, ddof=1)) if arr.size > 1 else 0.0,
                 "min_corr": float(np.nanmin(arr)),
                 "max_corr": float(np.nanmax(arr)),
+                "effect_size": float(np.nanmean(arr)),
+                "lower_ci": None,
+                "upper_ci": None,
+                "p_value": None,
+                "p_value_source": "none_descriptive",
+                "inferential_status": "descriptive",
+                "inferential_unit": "day_pair",
+                "correction_family": None,
             }
         )
         summary_rows.append(payload)

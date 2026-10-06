@@ -3,7 +3,7 @@
 Use `analysis/main_pipeline/sleep_dendrite_spine_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
 The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces.
 
-Deprecated archive. See the current workflow in [../../../docs/dendrites_pipeline/README.md](../../../docs/dendrites_pipeline/README.md) and the repo map in [../../../README.md](../../../README.md).
+Deprecated archive. Its historical implementation and statistical behavior are retained for provenance only and are not part of the active pipeline. See the current workflow in [../../../docs/dendrites_pipeline/README.md](../../../docs/dendrites_pipeline/README.md) and the repo map in [../../../README.md](../../../README.md).
 
 ## Current Workflow
 
@@ -202,7 +202,7 @@ Demo figures are saved under `figures/demo/` inside the chosen output directory.
 - Uses same-day SpinesGUI conversion fallback when needed.
 - Computes spine-specific activity with robust regression.
 - Splits movie data into quiet and active states.
-- Fits the mixed-model summaries when the design is well-behaved, and falls back to a fixed-effect least-squares approximation when the mixed-model design is singular or the optimizer cannot converge cleanly.
+- Historical behavior: this archived implementation could fall back to a fixed-effect least-squares approximation. The active pipeline instead reports failed or diagnostic-warning fits as non-inferential.
 - Uses `sleep_state.pickle` for sleep analysis and never uses `sleep_state_sim.pickle`.
 - Alerts and skips sleep-state analysis if `sleep_state.pickle` is missing.
 - Saves a reloadable source cache, analysis-table cache, analysis-results cache, and shared shuffle cache.
@@ -234,7 +234,7 @@ It covers the preprocessing, state comparisons, correlations, spine coactivity, 
    - fit a single all-state model with state, compartment, and state × compartment terms
    - use the interaction terms as the primary basal-vs-apical test
    - keep shuffle-based p-values as a robustness check for the post-fit contrasts
-   - choose `mixed_model_contrast_p_source: classical` for the faster model p-values, or `shuffle` to restore shuffle-refit contrasts
+   - Historical option only: the archived implementation exposed `mixed_model_contrast_p_source`; the active pipeline uses model-based Wald inference and does not run shuffle-refit mixed-model contrasts.
    - the spine-coactivity mixed model is optional and is controlled by `fit_spine_coactivity_mixed_model`
    - `spine_coactivity_only: true` (or `--spine-coactivity-only`) skips the main state/correlation/matrix analyses and reruns just the spine coactivity branch from the cache
    - `mixed_model_only: true` (or `--mixed-model-only`) skips the other analyses and reruns just the main mixed-model branch from the cache

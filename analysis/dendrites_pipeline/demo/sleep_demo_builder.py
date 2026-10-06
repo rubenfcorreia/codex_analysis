@@ -1135,7 +1135,7 @@ def build_experiment(
         trial_start = as_float(row.get("time")) or 0.0
         trial_duration = as_float(row.get("duration")) or 5.0
         absolute_time = trial_start + cut_t
-        cut_wheel[trial_index] = np.interp(absolute_time, t, wheel_speed)
+        cut_wheel[trial_index] = np.interp(absolute_time, t, wheel_speed, left=np.nan, right=np.nan)
         for roi_index in range(traces.shape[0]):
             cut_neural[roi_index, trial_index] = np.interp(absolute_time, t, traces[roi_index])
     write_pickle(

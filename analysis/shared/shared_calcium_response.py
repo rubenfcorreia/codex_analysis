@@ -223,7 +223,7 @@ def load_visual_response_cut_data(
         if common_len >= 2:
             wheel_time_arr = wheel_time_arr[:common_len]
             wheel_speed_arr = wheel_speed_arr[:common_len]
-            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr), dtype=float)
+            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr, left=np.nan, right=np.nan), dtype=float)
     threshold = choose_locomotion_threshold(
         locomotion_threshold,
         [],
@@ -326,7 +326,8 @@ def summarize_visual_response_trials(rows: Sequence[Mapping[str, Any]]) -> Dict[
     delta = mean_visual - mean_blank if visual_arr.size and blank_arr.size else float("nan")
     blank = welch_ttest_summary(visual_arr, blank_arr)
     if blank.get("available"):
-        apply_bonferroni_correction([blank])
+        blank["correction_method"] = "none_single_comparison"
+        blank["adjusted_pvalue"] = float(blank.get("raw_pvalue", float("nan")))
     responsive = bool(blank.get("significant", False) and np.isfinite(delta) and float(delta) > 0)
     return {
         "available": bool(visual_arr.size and blank_arr.size),

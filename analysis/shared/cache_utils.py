@@ -15,6 +15,7 @@ ANALYSIS_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 1
 SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 1
+METHODOLOGY_VERSION = "2026-10-06-statistics-v3"
 
 FAMILY_RESULT_CACHE_STAGES = (
     "visual_response",
@@ -53,6 +54,11 @@ def ensure_numpy_pickle_compatibility() -> None:
 
 
 def load_npz_cache(path: Path) -> Dict[str, Any]:
+    """Load a trusted-input object cache.
+
+    NPZ caches may contain pickled Python objects because the active pipeline
+    stores nested dictionaries. Never load these files from untrusted sources.
+    """
     ensure_numpy_pickle_compatibility()
     try:
         loaded = np.load(path, allow_pickle=True)
@@ -198,6 +204,7 @@ def analysis_day_cache_meta(
     return {
         "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
         "analysis_unit": str(analysis_unit),
+        "methodology_version": METHODOLOGY_VERSION,
         "source_config_hash": str(source_cache.get("config_hash", "")),
         "source_signature": source_cache_signature(source_cache),
         "analysis_config_hash": stable_hash({**source_config, "analysis_unit": str(analysis_unit)}),
@@ -266,6 +273,12 @@ def build_shared_shuffle_cache_key(
     vector_length: int,
     state_label: Optional[str] = None,
     mask_signature: Optional[str] = None,
+    correlation_method: str = "pearson",
+    correlation_inference: str = "circular_shift",
+    shuffle_n: Optional[int] = None,
+    shuffle_seed: Optional[int] = None,
+    min_shift_frames: Optional[int] = None,
+    null_model: Optional[str] = None,
 ) -> str:
     return shared_shuffle_key(
         {
@@ -278,6 +291,12 @@ def build_shared_shuffle_cache_key(
             "vector_length": int(vector_length),
             "state_label": state_label,
             "mask_signature": mask_signature,
+            "correlation_method": str(correlation_method),
+            "correlation_inference": str(correlation_inference),
+            "shuffle_n": None if shuffle_n is None else int(shuffle_n),
+            "shuffle_seed": None if shuffle_seed is None else int(shuffle_seed),
+            "min_shift_frames": None if min_shift_frames is None else int(min_shift_frames),
+            "null_model": str(null_model or correlation_inference),
         }
     )
 
@@ -331,6 +350,7 @@ __all__ = [
     "ANALYSIS_TABLE_CACHE_SCHEMA_VERSION",
     "FAMILY_RESULT_CACHE_STAGES",
     "SHARED_SHUFFLE_CACHE_SCHEMA_VERSION",
+    "METHODOLOGY_VERSION",
     "analysis_cache_meta_hash",
     "analysis_day_cache_meta",
     "analysis_day_cache_path",

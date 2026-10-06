@@ -45,7 +45,7 @@ from analysis.shared.analysis_families.state import (
     state_masks_for_context,
     state_summary_rows,
 )
-from analysis.shared.analysis_families.visual_response import run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
+from analysis.shared.analysis_families.visual_response import apply_visual_response_fdr, run_family as run_visual_response_family, visual_response_day_rows as shared_visual_response_day_rows
 from analysis.shared.shared_calcium_response import (
     DEFAULT_VISUAL_RESPONSE_COHORT,
     VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
@@ -96,7 +96,7 @@ from analysis.shared.analysis_cache import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
+from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
@@ -145,6 +145,11 @@ DEFAULT_CONFIG = {
     "lag_window_s": 2.0,
     "lag_step_s": 0.1,
     "shuffle_n": 200,
+    "correlation_method": "pearson",
+    "correlation_inference": "circular_shift",
+    "correlation_shuffle_n": 1000,
+    "correlation_shuffle_seed": 12345,
+    "correlation_min_shift_frames": 1,
     "rebuild": False,
     "cache_path": None,
     "analysis_results_cache_path": None,
@@ -404,6 +409,10 @@ def _visual_response_entity_rows(
             "available": bool(summary.get("available", False)),
             "comparison": summary.get("comparison", "visual_response_movie_vs_blank"),
             "statistic": float(summary.get("statistic", float("nan"))),
+            "test_choice": str(summary.get("test_choice", "unknown")),
+            "effect_size": float(summary.get("effect_size", summary.get("delta", float("nan")))),
+            "lower_ci": float(summary.get("lower_ci", float("nan"))),
+            "upper_ci": float(summary.get("upper_ci", float("nan"))),
             "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
             "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
             "n_visual_values": int(summary.get("n_visual_values", 0)),
@@ -850,11 +859,17 @@ def _generate_coincidence_example_figures(
 
 def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str, coincidence_example_top_n: int) -> Dict[str, Any]:
     return {
+        "methodology_version": METHODOLOGY_VERSION,
         "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "state_modes": list(state_modes),
         "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "shuffle_n": int(config.get("shuffle_n", 200)),
+        "correlation_method": str(config.get("correlation_method", "pearson")),
+        "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
+        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 1000)),
+        "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
+        "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
         "event_detection_method": str(event_detection_method),
         "transition_analysis": dict(config.get("transition_analysis") or {}),
         "visual_response_metric": str(visual_response_metric),
@@ -1358,6 +1373,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     bouton_pairwise_rows = _normalize_scoped_unit_ids(bouton_pairwise_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     lag_rows = _normalize_scoped_unit_ids(lag_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     visual_response_rows = _normalize_scoped_unit_ids(visual_response_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    visual_response_rows = apply_visual_response_fdr(visual_response_rows)
 
     coincidence_family_results = run_coincidence_family(coincidence_rows)
     coincidence_summary_rows = list(coincidence_family_results.get("summary_rows", []))
@@ -1744,7 +1760,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             write_csv_rows(cohort_csv_dir / "soma_bouton_coincidence_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
     if visual_response_rows and write_general_tables:
         _stage("writing csv", "general visual_response_by_roi")
-        write_csv_rows(general_csv_root / "visual_response_by_roi.csv", visual_response_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "response_metric", "event_detection_method", "source_label", "source_path", "available", "comparison", "statistic", "raw_pvalue", "adjusted_pvalue", "n_visual_values", "n_blank_values", "mean_visual", "mean_blank", "delta", "paired_stimulus_values", "blank_reference_values", "visual_trial_labels", "blank_trial_labels", "significant", "star", "responsive", "cohort", "cohort_requested"])
+        write_csv_rows(general_csv_root / "visual_response_by_roi.csv", visual_response_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "compartment", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "response_metric", "event_detection_method", "test_choice", "source_label", "source_path", "available", "comparison", "statistic", "effect_size", "lower_ci", "upper_ci", "raw_pvalue", "adjusted_pvalue", "n_visual_values", "n_blank_values", "mean_visual", "mean_blank", "delta", "paired_stimulus_values", "blank_reference_values", "visual_trial_labels", "blank_trial_labels", "significant", "star", "responsive", "cohort", "cohort_requested"])
     if visual_response_day_rows and write_general_tables:
         _stage("writing csv", "general visual_response_by_day")
         write_csv_rows(general_csv_root / "visual_response_by_day.csv", visual_response_day_rows, list(visual_response_day_rows[0].keys()))

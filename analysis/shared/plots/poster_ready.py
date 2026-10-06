@@ -961,7 +961,7 @@ def _load_visual_response_cut_data_from_source_cache(
         if common_len >= 2:
             wheel_time_arr = wheel_time_arr[:common_len]
             wheel_speed_arr = wheel_speed_arr[:common_len]
-            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr), dtype=float)
+            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr, left=np.nan, right=np.nan), dtype=float)
     trial_meta = [dict(meta) for meta in exp_meta.get("trial_meta", []) if isinstance(meta, Mapping)]
     payload = {
         "cut_time": np.asarray(cut_time, dtype=float),
@@ -1245,8 +1245,7 @@ def _single_exemplar_panel(
             p_value = candidate_f
             break
     if p_value is None:
-        ttest = stats.ttest_ind(np.asarray(visual_values, dtype=float), np.asarray(blank_values, dtype=float), equal_var=False, nan_policy="omit")
-        p_value = float(ttest.pvalue) if np.isfinite(ttest.pvalue) else float("nan")
+        p_value = float("nan")
     if bool(response_row.get("significant", False)) or (np.isfinite(p_value) and p_value < 0.05):
         finite = np.concatenate([blank_values, visual_values])
         finite = finite[np.isfinite(finite)]

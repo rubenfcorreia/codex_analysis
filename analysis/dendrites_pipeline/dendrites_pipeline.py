@@ -31,6 +31,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
+from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation as _canonical_correlation_analysis, validate_correlation_settings
+from analysis.shared.analysis_families.matrix_similarity import shuffle_matrix_similarity as _canonical_matrix_similarity
+from analysis.shared.analysis_families.mixed_model import run_mixed_model_family as _canonical_mixed_model_family
+from analysis.shared.statistics import apply_bh_fdr_rows, resolve_inferential_p_value
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
@@ -47,6 +51,7 @@ from analysis.shared.pipeline_logging import (
 )
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
+from analysis.shared.cache_utils import METHODOLOGY_VERSION
 from analysis.shared.analysis_families.common_helpers import build_state_masks_movie as shared_build_state_masks_movie
 from analysis.shared.union_rows import (
     filter_table_rows_by_states, load_union_rows_cache, save_union_rows_cache,
@@ -55,6 +60,8 @@ from analysis.shared.union_rows import (
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results, split_group_hatch
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.plots.dendrite_plot_support import plot_state_summary_figure as _shared_plot_state_summary_figure
+from analysis.shared.plots.dendrite_plot_support import summarize_state_values, summarize_state_values_by_dendrite
+from analysis.shared.plots.dendrite_plot_support import _collect_state_summary_values
 from analysis.shared.plots.dff_heatmaps import records_from_dendrite_cache, render_dff_heatmaps
 from analysis.shared.plots.dendrite_plot_support import plot_state_summary_compartment_comparison_figure as _shared_plot_state_summary_compartment_comparison_figure
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
@@ -504,6 +511,11 @@ USER_EDITABLE_DEFAULTS = {
     "demo": False,
     "channel": DEFAULT_CHANNEL,
     "shuffle_n": DEFAULT_SHUFFLES,
+    "correlation_method": "pearson",
+    "correlation_inference": "circular_shift",
+    "correlation_shuffle_n": DEFAULT_SHUFFLES,
+    "correlation_shuffle_seed": 12345,
+    "correlation_min_shift_frames": 1,
     "cpu_thread_limit": DEFAULT_CPU_THREAD_LIMIT,
     "locomotion_threshold": None,
     "rebuild": False,
@@ -950,9 +962,14 @@ def format_report_list(values: Any, max_items: int = 10) -> str:
     shown = ", ".join(items[:max_items])
     return f"{shown}, ... (+{len(items) - max_items} more)"
 def is_significant_row(row: Dict[str, Any], alpha: float = REPORT_SIGNIFICANCE_ALPHA, p_key: str = "shuffle_p") -> bool:
+    source = str(row.get("p_value_source") or "").strip().lower()
+    if source and p_key == "shuffle_p" and source not in {"shuffle", "circular_shift"}:
+        return False
+    if source and p_key in {"p_value", "classical_p"} and source not in {"classical", "model_wald", "vector_label_permutation"}:
+        return False
     try:
         p_value = float(row.get(p_key, float("nan")))
-    except Exception:
+    except (TypeError, ValueError):
         return False
     return bool(np.isfinite(p_value) and p_value < alpha)
 def selected_matrix_state_labels(results: Dict[str, Any]) -> List[str]:
@@ -1149,26 +1166,29 @@ def trial_activity_means(trace: np.ndarray, t: np.ndarray, duration_s: Optional[
 
 
 def apply_bonferroni_correction(test_records: List[Dict[str, Any]]) -> int:
+    """Compatibility wrapper implementing the canonical BH-FDR correction."""
     valid_records = [record for record in test_records if record.get("available") and np.isfinite(as_float(record.get("raw_pvalue")))]
-    valid_ids = {id(record) for record in valid_records}
     n_tests = int(len(valid_records))
     if n_tests == 0:
         for record in test_records:
             record["adjusted_pvalue"] = float("nan")
+            record["correction_method"] = "bh_fdr"
             record["significant"] = False
             record["star"] = ""
         return 0
-    for record in valid_records:
-        raw_pvalue = float(record.get("raw_pvalue"))
-        adjusted_pvalue = min(raw_pvalue * n_tests, 1.0)
+    ordered = sorted(valid_records, key=lambda record: float(record["raw_pvalue"]))
+    running = 1.0
+    adjusted_by_id = {}
+    for rank in range(n_tests, 0, -1):
+        record = ordered[rank - 1]
+        running = min(running, float(record["raw_pvalue"]) * n_tests / rank)
+        adjusted_by_id[id(record)] = min(running, 1.0)
+    for record in test_records:
+        adjusted_pvalue = adjusted_by_id.get(id(record), float("nan"))
         record["adjusted_pvalue"] = float(adjusted_pvalue)
+        record["correction_method"] = "bh_fdr"
         record["significant"] = bool(np.isfinite(adjusted_pvalue) and adjusted_pvalue < REPORT_SIGNIFICANCE_ALPHA)
         record["star"] = "*" if record["significant"] else ""
-    for record in test_records:
-        if id(record) not in valid_ids:
-            record["adjusted_pvalue"] = float("nan")
-            record["significant"] = False
-            record["star"] = ""
     return n_tests
 
 
@@ -2179,12 +2199,12 @@ def build_state_summary_gallery_results(
             "noncoincident_event_frequency_per_min": summarize_state_values(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
         },
         "state_dendrite_summaries": {
-            "dendrite_mean": summarize_state_values_by_dendrite(cache, "dendrite_mean", state_labels, compartment_filter, dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
-            "spine_specific_mean": summarize_state_values_by_dendrite(cache, "spine_specific_mean", state_labels, compartment_filter, dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
-            "dendrite_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
-            "spine_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "spine_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
-            "coincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
-            "noncoincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "dendrite_mean": summarize_state_values_by_dendrite(cache, "dendrite_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "spine_specific_mean": summarize_state_values_by_dendrite(cache, "spine_specific_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "dendrite_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "spine_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "spine_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "coincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "noncoincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "noncoincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
         },
     }
     _STATE_SUMMARY_GALLERY_RESULTS_CACHE[cache_key] = result
@@ -2321,8 +2341,14 @@ def plot_visual_response_boxplot_figure(
     all_values = np.concatenate(data)
     _pad_boxplot_ylim(ax, [all_values])
     annotate_sample_size(ax, 0.02, 0.98, f"n={len(blank_values)} ROI pairs", ha="left", va="top", fontsize=POSTER_NOTE_SIZE - 1, transform=ax.transAxes)
-    ttest = stats.ttest_ind(np.asarray(visual_values, dtype=float), np.asarray(blank_values, dtype=float), equal_var=False, nan_policy="omit")
-    p_value = float(ttest.pvalue) if np.isfinite(ttest.pvalue) else float("nan")
+    p_value = float("nan")
+    for row in rows:
+        try:
+            candidate = float(row.get("adjusted_pvalue", float("nan")))
+        except (TypeError, ValueError):
+            candidate = float("nan")
+        if np.isfinite(candidate):
+            p_value = min(p_value, candidate) if np.isfinite(p_value) else candidate
     if np.isfinite(p_value) and p_value < REPORT_SIGNIFICANCE_ALPHA:
         finite = np.concatenate([blank_values, visual_values])
         finite = finite[np.isfinite(finite)]
@@ -2982,8 +3008,8 @@ def spine_coactivity_quiet_anchor_selected(row: Dict[str, Any], abs_threshold: O
 
     shuffle_significant = _coerce_boolish(row.get("shuffle_significant"))
     if shuffle_significant is None:
-        shuffle_p = as_float(row.get("shuffle_p"))
-        shuffle_significant = bool(shuffle_p is not None and np.isfinite(shuffle_p) and float(shuffle_p) < REPORT_SIGNIFICANCE_ALPHA)
+        shuffle_p, _ = resolve_inferential_p_value(row)
+        shuffle_significant = bool(np.isfinite(shuffle_p) and shuffle_p < REPORT_SIGNIFICANCE_ALPHA)
 
     coactivity_r = as_float(row.get("coactivity_r"))
     return bool(shuffle_significant and coactivity_r is not None and np.isfinite(coactivity_r) and abs(float(coactivity_r)) >= threshold)
@@ -3278,7 +3304,7 @@ def plot_matrix_similarity_distribution(
             class_data = {label: [] for label in class_styles}
             for row in matched_rows:
                 r_value = as_float(row.get("matrix_similarity_r"))
-                p_value = as_float(row.get("shuffle_p"))
+                p_value, _ = resolve_inferential_p_value(row)
                 if r_value is None or not np.isfinite(r_value):
                     continue
                 if p_value is None or not np.isfinite(p_value):
@@ -3784,7 +3810,7 @@ def _mixed_model_contrast_label(row: Dict[str, Any]) -> str:
     contrast_name = str(row.get("contrast_name", "contrast"))
     p_source = normalize_mixed_model_contrast_p_source(row.get("p_value_source"))
     p_label = mixed_model_contrast_p_label(p_source)
-    active_p = row.get("shuffle_p") if p_source == "shuffle" else row.get("shuffle_p", row.get("classical_p"))
+    active_p, _ = resolve_inferential_p_value(row)
     return f"{contrast_name}\n{p_label}={format_report_pvalue(active_p)}"
 def _spine_coactivity_state_subject_values(
     rows: Sequence[Dict[str, Any]],
@@ -4011,7 +4037,7 @@ def plot_spine_coactivity_tendency_figure(
                 continue
             comparison = paired_comparison(values_by_state, state_a, state_b, "coactivity_r", shuffle_n)
             if value_kind == "shuffle_p":
-                value = as_float(comparison.get("shuffle_p"))
+                value, _ = resolve_inferential_p_value(comparison)
             else:
                 value = as_float(comparison.get("effect_size"))
             if value is None or not np.isfinite(value):
@@ -5283,7 +5309,7 @@ def plot_mixed_model_contrasts_checkpoint(
                     if np.isfinite(ci):
                         ax_est.errorbar(estimate, y_pos, xerr=ci, fmt="none", ecolor=color, elinewidth=1.5, capsize=3, zorder=1)
                     ax_est.scatter(estimate, y_pos, s=56, color=color, edgecolor="#222222", linewidth=0.8, zorder=2)
-                p_value = as_float(row_data.get("shuffle_p"))
+                p_value, _ = resolve_inferential_p_value(row_data)
                 if p_value is not None and np.isfinite(p_value) and p_value > 0:
                     neglog = -np.log10(np.clip(p_value, 1e-300, 1.0))
                     ax_sig.barh(y_pos, neglog, color=color, alpha=0.88)
@@ -5292,7 +5318,7 @@ def plot_mixed_model_contrasts_checkpoint(
         ax_est.set_yticklabels(subset_labels)
         for tick_label, row in zip(ax_est.get_yticklabels(), subset):
             row_data = subset_lookup.get(str(row.get("contrast_name")), {})
-            active_p = as_float(row_data.get("shuffle_p"))
+            active_p, _ = resolve_inferential_p_value(row_data)
             if active_p is not None and np.isfinite(active_p) and active_p < REPORT_SIGNIFICANCE_ALPHA:
                 tick_label.set_fontweight("bold")
                 tick_label.set_color("#8b0000")
@@ -8806,7 +8832,7 @@ def interpolate_series(target_t: np.ndarray, source_t: np.ndarray, source_y: np.
     source_y = source_y[order]
     if source_t.size == 1:
         return np.full(target_t.shape, float(source_y[0]), dtype=float)
-    return np.interp(target_t, source_t, source_y, left=float(source_y[0]), right=float(source_y[-1]))
+    return np.interp(target_t, source_t, source_y, left=np.nan, right=np.nan)
 def estimate_sampling_rate(t: np.ndarray) -> Optional[float]:
     t = np.asarray(t, dtype=float)
     if t.size < 3:
@@ -9425,8 +9451,21 @@ def build_state_masks_movie(
     )
 
 def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-    sleep_t = np.asarray(sleep_state["state_10hz_t"], dtype=float)
-    sleep_codes = np.asarray(sleep_state["state_10hz"], dtype=float)
+    sleep_t = np.asarray(sleep_state["state_10hz_t"], dtype=float).reshape(-1)
+    sleep_codes = np.asarray(sleep_state["state_10hz"], dtype=float).reshape(-1)
+    n = min(sleep_t.size, sleep_codes.size)
+    sleep_t = sleep_t[:n]
+    sleep_codes = sleep_codes[:n]
+    valid = np.isfinite(sleep_t) & np.isfinite(sleep_codes)
+    sleep_t = sleep_t[valid]
+    sleep_codes = sleep_codes[valid]
+    order = np.argsort(sleep_t, kind="mergesort")
+    sleep_t = sleep_t[order]
+    sleep_codes = sleep_codes[order]
+    if sleep_t.size == 0:
+        codes = np.full(exp_time.shape, -1, dtype=int)
+        masks = {label: codes == code for code, label in SLEEP_STATE_MAP.items()}
+        return masks, {"sleep_state_keys": sorted(list(sleep_state.keys())), "state_labels": dict(SLEEP_STATE_MAP), "state_10hz_t": sleep_t, "state_10hz": sleep_codes, "state_codes_on_calcium_time": codes, "state_mapping_status": "no_valid_samples"}
     inside = (exp_time >= sleep_t.min()) & (exp_time <= sleep_t.max())
     codes = np.full(exp_time.shape, -1, dtype=int)
     if inside.any():
@@ -10161,6 +10200,12 @@ def build_shared_shuffle_cache_key(
     vector_length: int,
     state_label: Optional[str] = None,
     mask_signature: Optional[str] = None,
+    correlation_method: str = "pearson",
+    correlation_inference: str = "circular_shift",
+    shuffle_n: Optional[int] = None,
+    shuffle_seed: Optional[int] = None,
+    min_shift_frames: Optional[int] = None,
+    null_model: Optional[str] = None,
 ) -> str:
     return shared_shuffle_key(
         {
@@ -10173,6 +10218,12 @@ def build_shared_shuffle_cache_key(
             "vector_length": int(vector_length),
             "state_label": state_label,
             "mask_signature": mask_signature,
+            "correlation_method": str(correlation_method),
+            "correlation_inference": str(correlation_inference),
+            "shuffle_n": None if shuffle_n is None else int(shuffle_n),
+            "shuffle_seed": None if shuffle_seed is None else int(shuffle_seed),
+            "min_shift_frames": None if min_shift_frames is None else int(min_shift_frames),
+            "null_model": str(null_model or correlation_inference),
         }
     )
 def build_shared_shuffle_entry(key: str, vector_length: int, shuffle_n: int) -> Dict[str, Any]:
@@ -10229,7 +10280,7 @@ def build_shared_shuffle_cache(
                 if d_trace.size > 1 and np.any(np.isfinite(d_trace)):
                     key = build_shared_shuffle_cache_key(
                         family="correlation",
-                        signal="dendrite_trace",
+                        signal="wheel",
                         analysis_unit=analysis_unit,
                         animal_id=str(animal_id),
                         day_id=day_id,
@@ -10245,7 +10296,7 @@ def build_shared_shuffle_cache(
                     if spine_trace.size > 1 and np.any(np.isfinite(spine_trace)):
                         key = build_shared_shuffle_cache_key(
                             family="correlation",
-                            signal="spine_trace",
+                            signal="spine_raw",
                             analysis_unit=analysis_unit,
                             animal_id=str(animal_id),
                             day_id=day_id,
@@ -11707,84 +11758,20 @@ def upper_triangle_values(matrix: np.ndarray) -> np.ndarray:
         return np.array([], dtype=float)
     idx = np.triu_indices_from(matrix, k=1)
     return np.asarray(matrix[idx], dtype=float)
-def shuffle_matrix_similarity(vectors_a: List[np.ndarray], vectors_b: List[np.ndarray], shuffle_n: int) -> Tuple[float, float, float]:
-    matrix_a = correlation_matrix(vectors_a)
-    matrix_b = correlation_matrix(vectors_b)
-    if matrix_a is None or matrix_b is None:
-        return float("nan"), float("nan"), float("nan")
-    tri_a = upper_triangle_values(matrix_a)
-    tri_b = upper_triangle_values(matrix_b)
-    mask = np.isfinite(tri_a) & np.isfinite(tri_b)
-    if mask.sum() < 2:
-        return float("nan"), float("nan"), float("nan")
-    observed = float(stats.pearsonr(tri_a[mask], tri_b[mask]).statistic)
-    combined = vectors_a + vectors_b
-    n_a = len(vectors_a)
-    rng = np.random.default_rng(12345)
-    null = []
-    for _ in range(shuffle_n):
-        perm = rng.permutation(len(combined))
-        group_a = [combined[i] for i in perm[:n_a]]
-        group_b = [combined[i] for i in perm[n_a:]]
-        m_a = correlation_matrix(group_a)
-        m_b = correlation_matrix(group_b)
-        if m_a is None or m_b is None:
-            continue
-        tri_a_s = upper_triangle_values(m_a)
-        tri_b_s = upper_triangle_values(m_b)
-        mask_s = np.isfinite(tri_a_s) & np.isfinite(tri_b_s)
-        if mask_s.sum() < 2:
-            continue
-        null.append(float(stats.pearsonr(tri_a_s[mask_s], tri_b_s[mask_s]).statistic))
-    shuffle_p = float((np.sum(np.abs(null) >= abs(observed)) + 1) / (len(null) + 1)) if null else float("nan")
-    return observed, shuffle_p, float(np.nanmean(null)) if null else float("nan")
+def shuffle_matrix_similarity(vectors_a, vectors_b, shuffle_n, *, shuffle_seed=12345):
+    return _canonical_matrix_similarity(vectors_a, vectors_b, shuffle_n, shuffle_seed=shuffle_seed)
 def correlation_analysis_for_observation(
-    trace_a: np.ndarray,
-    trace_b: np.ndarray,
-    shuffle_n: int,
-    use_circular_shift: bool = True,
-    shared_shuffle_cache: Optional[Dict[str, Any]] = None,
-    shared_shuffle_key: Optional[str] = None,
-) -> Dict[str, Any]:
-    a = np.asarray(trace_a, dtype=float)
-    b = np.asarray(trace_b, dtype=float)
-    mask = np.isfinite(a) & np.isfinite(b)
-    a = a[mask]
-    b = b[mask]
-    if a.size < 3 or b.size < 3:
-        return {"r": float("nan"), "classical_p": float("nan"), "shuffle_p": float("nan"), "n": int(a.size)}
-    classical = stats.pearsonr(a, b)
-    observed = float(classical.statistic)
-    classical_p = float(classical.pvalue)
-    null = []
-    shifts = None
-    if use_circular_shift and shared_shuffle_cache is not None and shared_shuffle_key is not None:
-        entry = ensure_shared_shuffle_entry(shared_shuffle_cache, shared_shuffle_key, int(b.size), int(shuffle_n))
-        if entry is not None:
-            shifts = np.asarray(entry.get("shifts"), dtype=np.int32)
-    if use_circular_shift and b.size > 3:
-        if shifts is not None and shifts.size > 0:
-            for shift in shifts:
-                shifted = np.roll(b, int(shift))
-                null.append(float(stats.pearsonr(a, shifted).statistic))
-        else:
-            rng = np.random.default_rng(12345)
-            for _ in range(shuffle_n):
-                shift = int(rng.integers(1, b.size))
-                shifted = np.roll(b, shift)
-                null.append(float(stats.pearsonr(a, shifted).statistic))
-    else:
-        rng = np.random.default_rng(12345)
-        for _ in range(shuffle_n):
-            perm = rng.permutation(b.size)
-            null.append(float(stats.pearsonr(a, b[perm]).statistic))
-    shuffle_p = float((np.sum(np.abs(null) >= abs(observed)) + 1) / (len(null) + 1))
-    return {
-        "r": observed,
-        "classical_p": classical_p,
-        "shuffle_p": shuffle_p,
-        "n": int(a.size),
-    }
+    trace_a, trace_b, shuffle_n, use_circular_shift=True,
+    shared_shuffle_cache=None, shared_shuffle_key=None, *,
+    correlation_method="pearson", correlation_inference=None,
+    shuffle_seed=12345, min_shift_frames=1,
+):
+    return _canonical_correlation_analysis(
+        trace_a, trace_b, shuffle_n, use_circular_shift=use_circular_shift,
+        shared_shuffle_cache=shared_shuffle_cache, shared_shuffle_key=shared_shuffle_key,
+        correlation_method=correlation_method, correlation_inference=correlation_inference,
+        shuffle_seed=shuffle_seed, min_shift_frames=min_shift_frames,
+    )
 def _spine_coactivity_pair_id(day_id: str, global_dendrite_id: str, global_spine_id_1: str, global_spine_id_2: str) -> str:
     return f"{day_id}|{global_dendrite_id}|{global_spine_id_1}|{global_spine_id_2}"
 def _spine_coactivity_compute_pair_row(
@@ -11971,6 +11958,14 @@ def build_spine_coactivity_table(
                         "global_spine_id_1": spine_id_1,
                         "global_spine_id_2": spine_id_2,
                         "global_pair_id": pair_id,
+                        "p_value_source": "circular_shift",
+                        "null_model": "circular_shift",
+                        "correlation_method": "pearson",
+                        "effect_size": float("nan"),
+                        "lower_ci": float("nan"),
+                        "upper_ci": float("nan"),
+                        "inferential_unit": "temporal_circular_shift",
+                        "correction_family": "coactivity_by_state_compartment",
                     }
                     if trace_a is None or trace_b is None:
                         rows.append({**base_row, "n_frames": 0, "coactivity_r": float("nan"), "coactivity_z": float("nan"), "coactive": False, "status": "missing_spine_observation", "skip_reason": "missing_spine_observation"})
@@ -11995,6 +11990,12 @@ def build_spine_coactivity_table(
                         continue
                     rows.append({**base_row, "n_frames": n_frames, "coactivity_r": r_value, "coactivity_z": z_value, "coactive": bool(r_value > 0.0), "shuffle_significant": bool(np.isfinite(shuffle_p) and shuffle_p < REPORT_SIGNIFICANCE_ALPHA), "status": "ok", "skip_reason": None, "classical_p": classical_p, "shuffle_p": shuffle_p, "shuffle_n_requested": int(shuffle_n), "shuffle_n_success": int(shuffle_n) if shuffle_n > 0 else 0})
                     valid_pairs += 1
+    apply_bh_fdr_rows(rows, p_key="shuffle_p")
+    for row in rows:
+        adjusted = row.get("adjusted_pvalue")
+        row["shuffle_significant"] = bool(
+            adjusted is not None and np.isfinite(float(adjusted)) and float(adjusted) < REPORT_SIGNIFICANCE_ALPHA
+        )
     table_checks = {
         "n_rows": int(len(rows)),
         "n_ok_rows": int(sum(1 for row in rows if row.get("status") == "ok")),
@@ -13510,7 +13511,7 @@ def make_variance_component_dict(rows: List[Dict[str, Any]], level_key: str, gro
 class FixedEffectFallbackResult:
     fe_params: np.ndarray
     cov_matrix: np.ndarray
-    converged: bool = True
+    converged: bool = False
     method_name: str = "ols_fallback"
     fallback_reason: str = ""
     def cov_params(self) -> np.ndarray:
@@ -13549,14 +13550,15 @@ def build_fixed_effect_fallback_result(design: Dict[str, Any], reason: str) -> D
     result = FixedEffectFallbackResult(
         fe_params=np.asarray(beta, dtype=float),
         cov_matrix=np.asarray(cov_matrix, dtype=float),
-        converged=True,
+        converged=False,
         method_name="ols_fallback",
         fallback_reason=reason,
     )
     return {
         "result": result,
         "fit_method": "ols_fallback",
-        "converged": True,
+        "converged": False,
+        "fallback_used": True,
         "warning_messages": [],
         "warning_count": 0,
         "fallback_reason": reason,
@@ -13903,13 +13905,11 @@ def run_mixed_model_family(
     if scope not in {"all_state", "selected_state"}:
         raise ValueError(f"Unknown mixed-model scope: {scope}")
     requested_p_value_source = normalize_mixed_model_contrast_p_source(p_value_source)
-    effective_p_value_source = requested_p_value_source
-    if requested_p_value_source == "shuffle" and int(shuffle_n) <= 0:
-        if alerts is not None:
-            alerts.append(
-                f"[ALERT] Mixed-model shuffle p-values were requested for {response} ({scope}) but shuffle_n <= 0; using classical p-values instead."
-            )
-        effective_p_value_source = "classical"
+    effective_p_value_source = "classical"
+    if requested_p_value_source == "shuffle" and alerts is not None:
+        alerts.append(
+            f"[ALERT] Mixed-model shuffle p-values are disabled for {response} ({scope}); using model-based classical p-values."
+        )
     working_rows = list(table_rows)
     if state_filter is not None:
         state_filter_set = {str(state).strip() for state in state_filter if state is not None and str(state).strip()}
@@ -14087,6 +14087,9 @@ def run_mixed_model_family(
             for contrast_spec in valid_contrast_specs
         ],
     }
+
+# Active callers use the shared animal-clustered implementation; the legacy definition above remains only for compatibility provenance.
+run_mixed_model_family = _canonical_mixed_model_family
 
 def run_mixed_model_analysis(
     cache: Dict[str, Any],
@@ -14353,6 +14356,14 @@ def process_cached_analysis(
         "spine_coactivity_model": {},
     }
     analysis_unit = str(cache.get("analysis_unit", "day"))
+    correlation_config = cache.get("config", {}) if isinstance(cache.get("config", {}), dict) else {}
+    correlation_method, correlation_inference = validate_correlation_settings(
+        correlation_config.get("correlation_method", "pearson"),
+        correlation_config.get("correlation_inference", "circular_shift"),
+    )
+    correlation_shuffle_n = int(correlation_config.get("correlation_shuffle_n", shuffle_n))
+    correlation_seed = int(correlation_config.get("correlation_shuffle_seed", 12345))
+    correlation_min_shift = int(correlation_config.get("correlation_min_shift_frames", 1))
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
     visual_response_summary = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
@@ -14523,19 +14534,28 @@ def process_cached_analysis(
             if wheel["interpolated"] is not None:
                 wheel_key = build_shared_shuffle_cache_key(
                     family="correlation",
-                    signal="dendrite_trace",
+                    signal="wheel",
                     analysis_unit=analysis_unit,
                     animal_id=animal_id,
                     day_id=exp_id,
                     source_id=dendrite_id,
                     vector_length=int(np.asarray(d_obs["trace"], dtype=float).size),
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_n=correlation_shuffle_n,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 corr = correlation_analysis_for_observation(
                     d_obs["trace"],
                     wheel["interpolated"],
-                    shuffle_n,
+                    correlation_shuffle_n,
                     shared_shuffle_cache=shared_shuffle_cache,
                     shared_shuffle_key=wheel_key,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 results["correlations"].append(
                     {
@@ -14554,19 +14574,28 @@ def process_cached_analysis(
                     pupil_interp = interpolate_series(d_obs["time"], pupil["time"], pupil["series"])
                 pupil_key = build_shared_shuffle_cache_key(
                     family="correlation",
-                    signal="dendrite_trace",
+                    signal="pupil",
                     analysis_unit=analysis_unit,
                     animal_id=animal_id,
                     day_id=exp_id,
                     source_id=dendrite_id,
                     vector_length=int(np.asarray(d_obs["trace"], dtype=float).size),
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_n=correlation_shuffle_n,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 corr = correlation_analysis_for_observation(
                     d_obs["trace"],
                     pupil_interp,
-                    shuffle_n,
+                    correlation_shuffle_n,
                     shared_shuffle_cache=shared_shuffle_cache,
                     shared_shuffle_key=pupil_key,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 results["correlations"].append(
                     {
@@ -14585,12 +14614,17 @@ def process_cached_analysis(
                     continue
                 spine_raw_key = build_shared_shuffle_cache_key(
                     family="correlation",
-                    signal="spine_trace",
+                    signal="spine_raw",
                     analysis_unit=analysis_unit,
                     animal_id=animal_id,
                     day_id=exp_id,
                     source_id=spine_id,
                     vector_length=int(np.asarray(s_obs["trace_hp"], dtype=float).size),
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_n=correlation_shuffle_n,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 spine_specific_key = build_shared_shuffle_cache_key(
                     family="correlation",
@@ -14600,20 +14634,33 @@ def process_cached_analysis(
                     day_id=exp_id,
                     source_id=spine_id,
                     vector_length=int(np.asarray(s_obs["spine_specific"], dtype=float).size),
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_n=correlation_shuffle_n,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 corr_raw = correlation_analysis_for_observation(
                     s_obs["trace_hp"],
                     d_obs["trace"],
-                    shuffle_n,
+                    correlation_shuffle_n,
                     shared_shuffle_cache=shared_shuffle_cache,
                     shared_shuffle_key=spine_raw_key,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 corr_specific = correlation_analysis_for_observation(
                     s_obs["spine_specific"],
                     d_obs["trace"],
-                    shuffle_n,
+                    correlation_shuffle_n,
                     shared_shuffle_cache=shared_shuffle_cache,
                     shared_shuffle_key=spine_specific_key,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_seed=correlation_seed,
+                    min_shift_frames=correlation_min_shift,
                 )
                 results["correlations"].append(
                     {
@@ -14674,7 +14721,7 @@ def process_cached_analysis(
                 if len(vectors) >= 2:
                     state_vectors[state_label] = vectors
             for state_a, state_b in combinations(sorted(state_vectors), 2):
-                observed, shuffle_p, null_mean = shuffle_matrix_similarity(state_vectors[state_a], state_vectors[state_b], shuffle_n)
+                observed, shuffle_p, null_mean, shuffle_success, n_matrix_pairs, lower_ci, upper_ci = shuffle_matrix_similarity(state_vectors[state_a], state_vectors[state_b], shuffle_n, shuffle_seed=correlation_seed)
                 results["matrix_similarity"].append(
                     {
                         "animal_id": animal_id,
@@ -14685,8 +14732,21 @@ def process_cached_analysis(
                         "state_a": state_a,
                         "state_b": state_b,
                         "matrix_similarity_r": observed,
+                        "effect_size": observed,
+                        "lower_ci": lower_ci,
+                        "upper_ci": upper_ci,
+                        "classical_p": float("nan"),
                         "shuffle_p": shuffle_p,
+                        "p_value": shuffle_p,
+                        "p_value_source": "vector_label_permutation",
+                        "null_model": "vector_label_permutation",
+                        "shuffle_seed": int(correlation_seed),
+                        "shuffle_n_requested": int(shuffle_n),
+                        "shuffle_n_success": int(shuffle_success),
+                        "inferential_unit": "dendrite_day",
+                        "correction_family": "matrix_similarity_by_state_compartment",
                         "shuffle_null_mean": null_mean,
+                        "n_matrix_pairs": int(n_matrix_pairs),
                         "n_spines": int(len(state_vectors[state_a])),
                     }
                 )
@@ -14918,7 +14978,7 @@ def write_analysis_report(
             non_significant = 0
             for row in grouped_rows:
                 r_value = as_float(row.get("matrix_similarity_r"))
-                p_value = as_float(row.get("shuffle_p"))
+                p_value, _ = resolve_inferential_p_value(row)
                 if r_value is None or p_value is None or not np.isfinite(r_value) or not np.isfinite(p_value):
                     continue
                 tested_rows.append(row)
@@ -18022,6 +18082,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     source_signature = source_cache_signature(source_cache)
     visual_response_cohort_metadata = visual_response_cohort_settings(config)
     analysis_results_meta = {
+        "methodology_version": METHODOLOGY_VERSION,
         "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
         "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
         "source_config_hash": str(source_cache.get("config_hash", "")),
@@ -18040,6 +18101,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "analysis_families": list(config.get("analysis_families") or []),
         "shuffle_n": int(shuffle_n),
+        "correlation_method": str(config.get("correlation_method", "pearson")),
+        "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
+        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", shuffle_n)),
+        "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
+        "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "comparison_leaf": list(config.get("comparison_leaf") or []) if config.get("comparison_leaf") else None,
         **visual_response_cohort_metadata,

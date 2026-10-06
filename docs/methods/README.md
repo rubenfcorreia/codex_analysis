@@ -54,7 +54,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - Spine coactivity computes Pearson `r` for every unordered spine-pair within each dendrite and within each state.
 - The model-facing response is named `coactivity_r`, while the pair table also keeps `Fisher z` values as `coactivity_z` for optional transformed analyses.
 - The coactivity summaries use `coactive = r > 0` as a descriptive persistence label.
-- The mixed-model inference layer for coactivity is optional and only runs when `fit_spine_coactivity_mixed_model` is enabled. Its contrast p-values follow `mixed_model_contrast_p_source`, which defaults to `classical` and can be switched to `shuffle` when you want the shuffle-refit null instead.
+- The mixed-model inference layer for coactivity is optional and only runs when `fit_spine_coactivity_mixed_model` is enabled. Its contrast p-values use model-based Wald inference. Shuffle-refit inference is not used for mixed-model contrasts because it is unnecessarily expensive and is not the canonical inferential method.
 
 ### Statistical Tests
 
@@ -68,11 +68,14 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - ROI split comparisons use independent-group tests on the branch-specific binary ROI groups: Welch's t-test when both groups look approximately normal, Mann-Whitney U otherwise, plus a shuffle null from permuting the group labels. The 4-way activity-by-frequency branch keeps the same comparison machinery but uses the quadrant groups instead of a binary pair.
 - Correlation analyses use Pearson `r` plus:
   - the classical `pearsonr` p-value
-  - a shuffle p-value from circular-shift or permutation nulls
+  - a circular-shift p-value for time-series inference when `correlation_inference` is `circular_shift`
+- Classical correlation p-values are retained as diagnostics for time-series analyses, not as the primary inferential result.
+- Correlation rows record the method, p-value source, null model, requested and successful shuffle counts, seed, valid-sample count, effect size, Fisher confidence interval, inferential unit, and correction family.
 - The circular-shift nulls used by the trace-based correlation and coactivity families are built from a shared cache so the same surrogate shifts can be reused across those analyses.
 - Spine-spine matrix similarity uses Pearson `r` between the upper triangles of state-specific correlation matrices, with a shuffle null made by reassigning spine vectors across the two state groups.
 - Spine coactivity uses Pearson `r` on state-masked `spine_specific` traces and a circular-shift shuffle null.
-- The repository treats `shuffle_p < 0.05` as the primary significance rule for the state, ROI split, correlation, matrix, and coactivity families.
+- Multiple-testing correction is defined by analysis family. ROI visual-response classification uses BH-FDR across its declared ROI family; matrix similarity uses vector-label permutation with its own correction family; coactivity and temporal correlation use their declared circular-shift families; mixed-model contrasts use model-derived p-values and their declared correction family.
+- A plot or report uses only the p-value named by `p_value_source`. If the source is missing or incompatible, significance is unavailable rather than inferred from another p-value field.
 - For visual-response boxplots, compare the mean cut-period activity during blank trials against the mean cut-period activity during movie trials, and only use the `cut_with_intertrials/` bundle for that metric.
 
 ### Mixed-Model Layer
@@ -88,10 +91,9 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
   - state × compartment interaction
   - any additional covariates carried by the design
 - The random-effects structure starts with an animal intercept and then tries richer structures with day/session and dendrite terms when the design supports them.
-- If `MixedLM` is unavailable or the fit fails to converge cleanly, the pipeline falls back to a fixed-effect least-squares approximation.
+- If `MixedLM` is unavailable or the fit fails, the result is explicitly marked as unavailable or fallback, with `converged=False`; it is not reported as a successfully converged mixed model and inferential mixed-model claims are suppressed.
 - Fixed-effect rows in `mixed_model_summary_*.csv` and `mixed_model_selected_state_summary_*.csv` report the estimate, standard error, z score, and classical p-value.
-- Contrast rows in `mixed_model_contrasts.csv` and `mixed_model_contrasts_selected_state.csv` use the classical p-value as the primary test and add a shuffle p-value as robustness check. When the coactivity mixed model is disabled, those contrast files are simply not written.
-- The mixed-model shuffle procedure permutes state labels within animal × day blocks before refitting the same model. The same state-label shuffle is used for both the `all_state` and `selected_state` branches.
+- Contrast rows in `mixed_model_contrasts.csv` and `mixed_model_contrasts_selected_state.csv` use model-derived Wald p-values and confidence intervals. They include fit method, convergence, warning/diagnostic status, inferential unit, and p-value source. When the coactivity mixed model is disabled, those contrast files are simply not written.
 
 ### ROI Split And Split-First Mixed Models
 
@@ -133,13 +135,29 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - The workflow writes CSV tables plus stacked-area, probability-vs-time, REM-latency, REM-fraction, and composition figures.
 - This workflow is descriptive rather than inferential: it summarizes sleep-state structure and transitions rather than running the main pipeline's hypothesis tests.
 
+## Correlation Configuration and Cache Provenance
+
+The active correlation defaults are:
+
+`@json
+{
+  "correlation_method": "pearson",
+  "correlation_inference": "circular_shift",
+  "correlation_shuffle_n": 1000,
+  "correlation_shuffle_seed": 12345,
+  "correlation_min_shift_frames": 1
+}
+`@
+
+Pearson is currently the only supported correlation method; unsupported methods are rejected. Circular shifts preserve the original time axis and missing-frame mask. Shuffle caches are separated by signal identity and include the method, inference mode, null-model settings, seed, shuffle count, and shift configuration. Changing methodology or statistical settings invalidates old active caches. NPZ/pickle object caches are trusted-input formats and must not be loaded from untrusted sources.
+
 ## How The Pipeline Treats Significance
 
-- Use `shuffle_p < 0.05` for the state comparisons, correlations, matrix similarity, and spine coactivity families.
+- Use the stored `p_value_source` for every inferential result. Time-series correlation and coactivity use circular-shift p-values; matrix similarity uses vector-label permutation; mixed models use model-based Wald p-values; descriptive pairwise soma/bouton correlations do not make population-level significance claims.
 - When `movie_expids` are present, `movie_trial_types` should be set explicitly so the compare-state list can include the intended movie categories.
 - Use classical p-values for mixed-model fixed effects and mixed-model contrasts in both mixed-model branches.
 - Treat `coactive = r > 0` as a descriptive flag only.
-- Reuse the shared circular-shift null cache for the correlation/coactivity families, but keep state comparisons, mixed models, and matrix similarity on their own null models.
+- Reuse the shared circular-shift null cache for the correlation/coactivity families, but keep state comparisons, mixed models, and matrix similarity on their own null models. Multiple comparisons are corrected only within explicitly declared families.
 - Keep the metric choice and the null model together when interpreting a figure:
   - Pearson `r` shows effect direction and strength
   - classical p-values come from the parametric test

@@ -14,7 +14,7 @@ import numpy as np
 
 from analysis.shared.roi_split import split_group_hatch
 from analysis.shared.state_utils import state_display_color
-from analysis.shared.statistics import is_significant_row
+from analysis.shared.statistics import is_significant_row, resolve_inferential_p_value
 from analysis.shared.plots.figure_io import save_figure
 
 
@@ -24,6 +24,10 @@ FIGURE_TITLE_FS = 12
 FIGURE_LABEL_FS = 11
 FIGURE_TICK_FS = 9
 FIGURE_NOTE_FS = 9
+
+
+def _declared_p_value(row: Mapping[str, Any]) -> float:
+    return float(resolve_inferential_p_value(dict(row))[0])
 
 
 def _hatch_contrast_color(color: Any) -> str:
@@ -207,7 +211,7 @@ def _render_normalized_grouped_boxplot(
         y0, y1 = ax.get_ylim()
         y_range = max(float(y1 - y0), 1e-6)
         for index, row in enumerate(comparison_rows):
-            if not is_significant_row(dict(row), p_key="shuffle_p"):
+            if not np.isfinite(_declared_p_value(row)) and _declared_p_value(row) < 0.05:
                 continue
             x1, x2 = row.get("x1"), row.get("x2")
             if x1 is None or x2 is None:
@@ -224,7 +228,7 @@ def _render_normalized_grouped_boxplot(
                         x2 = position_lookup.get((state_a, group, other), x1)
             if x1 is None or x2 is None:
                 continue
-            star = _boxplot_significance_stars(row.get("shuffle_p"))
+            star = _boxplot_significance_stars(_declared_p_value(row))
             if not star:
                 continue
             y = min(y1 - 0.04 * y_range, y0 + (0.88 + 0.035 * (index % 3)) * y_range)
@@ -282,7 +286,7 @@ def _draw_boxplot_significance_annotations(
     if not annotation_rows:
         return
     for index, row in enumerate(annotation_rows):
-        significant = bool(row.get("significant", False)) or is_significant_row(dict(row), p_key="adjusted_pvalue") or is_significant_row(dict(row), p_key="shuffle_p")
+        significant = bool(row.get("significant", False)) or is_significant_row(dict(row), p_key="adjusted_pvalue") or np.isfinite(_declared_p_value(row)) and _declared_p_value(row) < 0.05
         if not significant:
             continue
         label = str(row.get("star") or "*")
@@ -379,7 +383,7 @@ def draw_boxplot_series(
         for row in comparison_rows:
             if not isinstance(row, Mapping):
                 continue
-            if not is_significant_row(dict(row), p_key="shuffle_p"):
+            if not np.isfinite(_declared_p_value(row)) and _declared_p_value(row) < 0.05:
                 continue
             x1 = row.get("x1")
             x2 = row.get("x2")
@@ -392,8 +396,8 @@ def draw_boxplot_series(
                 x2 = position_lookup.get(state_b)
             if x1 is None or x2 is None:
                 continue
-            stars = _boxplot_significance_stars(row.get("shuffle_p"))
-            annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": row.get("shuffle_p"), "label": f"{_comparison_display_label(row)} {stars}".strip()})
+            stars = _boxplot_significance_stars(_declared_p_value(row))
+            annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": _declared_p_value(row), "label": f"{_comparison_display_label(row)} {stars}".strip()})
         _draw_boxplot_significance_annotations(ax, annotation_rows, horizontal=horizontal)
     elif flags is not None and any(cleaned_flags):
         finite = np.concatenate(cleaned_values)

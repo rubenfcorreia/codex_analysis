@@ -48,7 +48,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 When `progression_analysis.enabled` is true, the pipeline writes dendrite and spine mean dF/F progression outputs under `results/dendrites_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial and continuous sleep-time panels. Blank trials are aligned to onset and summarized in one-second bins by default. Sleep expIDs from the same `(animal_id, date)` are ordered and concatenated without gaps into one animal-day replicate; traces are interpolated at `sleep_time_step_s` (one second by default) and truncated to the shortest valid day. The spine output includes separate raw-spine dF/F and spine-specific residual signals; plotted values are means with SEM across animal-days.
 
 State-transition CSVs and figures are kept under `results/dendrites_pipeline/general/state_transitions/`. Their scope, window mode, and metric selection remain controlled by `transition_analysis`.
-\n## State-transition analysis
+## State-transition analysis
 
 The transition family analyzes dendrite, spine-specific, event-frequency, coincident, and noncoincident metrics around within-recording state changes. It uses the shared implementation in `analysis/shared/state_transitions.py`, so its aggregation rules match the soma/bouton pipeline.
 
@@ -77,6 +77,14 @@ Dendrite outputs are written under the poster-ready paired_state_summary/ direct
 
 - `sleep_dendrite_spine_example_config.json`
 - `sleep_dendrite_spine_custom_demo_spec.json`
+
+Correlation settings are explicit in the example and poster-ready configs:
+
+- `correlation_method`: currently `pearson`; unsupported methods are rejected.
+- `correlation_inference`: `circular_shift` for time-series null inference or `none` for descriptive output.
+- `correlation_shuffle_n`, `correlation_shuffle_seed`, and `correlation_min_shift_frames` control the circular-shift null.
+
+Correlation and coactivity outputs retain classical p-values only as diagnostics when a shuffle/null inference is configured. Reports and figures use the stored `p_value_source`; missing or incompatible sources are reported as unavailable. Mixed-model contrasts use model-based Wald inference and do not run shuffles. Active caches are invalidated when the methodology version or statistical configuration changes.
 
 ## Example
 

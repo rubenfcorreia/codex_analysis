@@ -69,7 +69,9 @@ def interpolate_series(target_t: np.ndarray, source_t: np.ndarray, source_y: np.
     source_t, source_y = source_t[order], source_y[order]
     if source_t.size == 1:
         return np.full(target.shape, source_y[0], dtype=float)
-    return np.interp(target, source_t, source_y, left=source_y[0], right=source_y[-1])
+    # Samples outside the measured auxiliary-signal range are unknown.
+    # Do not turn missing wheel data into an artificial constant speed.
+    return np.interp(target, source_t, source_y, left=np.nan, right=np.nan)
 
 
 def extract_series_bundle(path: Path, signal_priority: Sequence[str]) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
@@ -107,6 +109,16 @@ def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any]
     time = np.asarray(exp_time, dtype=float)
     state_time = np.asarray(sleep_state.get("state_10hz_t", []), dtype=float)
     state_codes = np.asarray(sleep_state.get("state_10hz", []), dtype=float)
+    usable = min(state_time.size, state_codes.size)
+    state_time = state_time[:usable]
+    state_codes = state_codes[:usable]
+    valid_state = np.isfinite(state_time) & np.isfinite(state_codes)
+    state_time = state_time[valid_state]
+    state_codes = state_codes[valid_state]
+    if state_time.size:
+        order = np.argsort(state_time, kind="stable")
+        state_time = state_time[order]
+        state_codes = state_codes[order]
     codes = np.full(time.shape, -1, dtype=int)
     if state_time.size and state_codes.size:
         inside = (time >= state_time.min()) & (time <= state_time.max())
@@ -182,7 +194,7 @@ def build_state_masks_movie(
             continue
         if end_value <= start_value:
             continue
-        trial_mask = (time >= start_value) & (time <= end_value)
+        trial_mask = (time >= start_value) & (time < end_value)
         trial_wheel = wheel[trial_mask] if wheel is not None else np.asarray([], dtype=float)
         wheel_score = float(np.nanmedian(np.abs(trial_wheel))) if np.isfinite(trial_wheel).any() else float("nan")
         segments = _movie_state_segments(time, trial_mask, sleep_codes_on_time, sleep_labels)
@@ -210,25 +222,57 @@ def build_state_masks_movie(
             })
     return masks, metadata, wheel
 
+def _permutation_pvalue(observed: float, values_a: np.ndarray, values_b: np.ndarray, paired: bool, shuffle_n: int, seed: int = 12345) -> float:
+    if not np.isfinite(observed) or shuffle_n <= 0:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    null = []
+    if paired:
+        differences = values_a - values_b
+        for _ in range(int(shuffle_n)):
+            signs = rng.choice((-1.0, 1.0), size=differences.size)
+            null.append(float(np.mean(differences * signs)))
+    else:
+        pooled = np.concatenate([values_a, values_b])
+        n_a = values_a.size
+        for _ in range(int(shuffle_n)):
+            permuted = rng.permutation(pooled.size)
+            null.append(float(np.mean(pooled[permuted[:n_a]]) - np.mean(pooled[permuted[n_a:]])))
+    return float((np.sum(np.abs(null) >= abs(observed)) + 1) / (len(null) + 1))
+
+
+def _ci_from_effect(effect: float, standard_error: float, degrees_of_freedom: int) -> tuple[float, float]:
+    if not np.isfinite(effect) or not np.isfinite(standard_error) or standard_error < 0 or degrees_of_freedom <= 0:
+        return float("nan"), float("nan")
+    critical = float(stats.t.ppf(0.975, degrees_of_freedom))
+    half_width = critical * standard_error
+    return float(effect - half_width), float(effect + half_width)
+
+
 def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int) -> Dict[str, Any]:
-    del shuffle_n
     subjects = sorted(set(values_by_state.get(state_a, {})) & set(values_by_state.get(state_b, {})))
     a = np.asarray([np.nanmean(values_by_state[state_a][subject]) for subject in subjects], dtype=float)
     b = np.asarray([np.nanmean(values_by_state[state_b][subject]) for subject in subjects], dtype=float)
     mask = np.isfinite(a) & np.isfinite(b)
     a, b = a[mask], b[mask]
     result = stats.ttest_rel(a, b, nan_policy="omit") if a.size >= 2 else None
-    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": True, "n_subjects": int(a.size), "effect_size": float(np.nanmean(a - b)) if a.size else float("nan"), "classical_p": float(result.pvalue) if result is not None else float("nan")}
+    effect = float(np.nanmean(a - b)) if a.size else float("nan")
+    differences = a - b
+    standard_error = float(np.std(differences, ddof=1) / np.sqrt(a.size)) if a.size > 1 else float("nan")
+    lower_ci, upper_ci = _ci_from_effect(effect, standard_error, a.size - 1)
+    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": True, "test_choice": "paired_ttest", "n_subjects": int(a.size), "effect_size": effect, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float(result.pvalue) if result is not None else float("nan"), "shuffle_p": _permutation_pvalue(effect, a, b, True, int(shuffle_n)), "shuffle_n": int(shuffle_n)}
 
 
 def independent_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int) -> Dict[str, Any]:
-    del shuffle_n
     a = np.asarray([np.nanmean(value) for value in values_by_state.get(state_a, {}).values()], dtype=float)
     b = np.asarray([np.nanmean(value) for value in values_by_state.get(state_b, {}).values()], dtype=float)
     a, b = a[np.isfinite(a)], b[np.isfinite(b)]
     result = stats.ttest_ind(a, b, equal_var=False, nan_policy="omit") if a.size >= 2 and b.size >= 2 else None
-    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": False, "n_subjects": int(min(a.size, b.size)), "effect_size": float(np.nanmean(a) - np.nanmean(b)) if a.size and b.size else float("nan"), "classical_p": float(result.pvalue) if result is not None else float("nan")}
-
+    effect = float(np.nanmean(a) - np.nanmean(b)) if a.size and b.size else float("nan")
+    standard_error = float(np.sqrt(np.var(a, ddof=1) / a.size + np.var(b, ddof=1) / b.size)) if a.size >= 2 and b.size >= 2 else float("nan")
+    degrees_of_freedom = int(a.size + b.size - 2)
+    lower_ci, upper_ci = _ci_from_effect(effect, standard_error, degrees_of_freedom)
+    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": False, "test_choice": "welch_ttest", "n_subjects": int(min(a.size, b.size)), "n_state_a": int(a.size), "n_state_b": int(b.size), "effect_size": effect, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float(result.pvalue) if result is not None else float("nan"), "shuffle_p": _permutation_pvalue(effect, a, b, False, int(shuffle_n)), "shuffle_n": int(shuffle_n)}
 
 def apply_bonferroni_correction(records: List[Dict[str, Any]]) -> int:
     valid = [record for record in records if record.get("available") and np.isfinite(record.get("raw_pvalue", np.nan))]
@@ -288,7 +332,10 @@ def welch_ttest_summary(values_a: Sequence[float], values_b: Sequence[float]) ->
     a, b = a[np.isfinite(a)], b[np.isfinite(b)]
     result = stats.ttest_ind(a, b, equal_var=False, nan_policy="omit") if a.size >= 2 and b.size >= 2 else None
     p_value = float(result.pvalue) if result is not None and np.isfinite(result.pvalue) else float("nan")
-    return {"available": result is not None, "comparison": "stimulus_vs_blank", "statistic": float(result.statistic) if result is not None else float("nan"), "raw_pvalue": p_value, "adjusted_pvalue": p_value, "n_a": int(a.size), "n_b": int(b.size), "significant": False, "star": ""}
+    effect = float(np.nanmean(a) - np.nanmean(b)) if a.size and b.size else float("nan")
+    standard_error = float(np.sqrt(np.nanvar(a, ddof=1) / a.size + np.nanvar(b, ddof=1) / b.size)) if a.size >= 2 and b.size >= 2 else float("nan")
+    ci_half_width = 1.96 * standard_error if np.isfinite(standard_error) else float("nan")
+    return {"available": result is not None, "comparison": "stimulus_vs_blank", "test_choice": "welch_ttest", "statistic": float(result.statistic) if result is not None else float("nan"), "raw_pvalue": p_value, "adjusted_pvalue": p_value, "effect_size": effect, "lower_ci": effect - ci_half_width if np.isfinite(ci_half_width) else float("nan"), "upper_ci": effect + ci_half_width if np.isfinite(ci_half_width) else float("nan"), "n_a": int(a.size), "n_b": int(b.size), "significant": False, "star": ""}
 
 
 def extract_cut_neural_bundle(path: Path, preferred_keys: Optional[Sequence[str]] = None) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:

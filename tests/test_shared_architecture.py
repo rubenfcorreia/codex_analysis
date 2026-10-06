@@ -46,7 +46,7 @@ def test_movie_masks_accept_time_duration_and_f1_type() -> None:
         0.0,
     )
     assert metadata[0]["state_label"] == "quiet_awake_movies"
-    assert masks["quiet_awake_movies"].sum() == 6
+    assert masks["quiet_awake_movies"].sum() == 5
 
 
 def test_split_rows_normalize_roi_membership_group() -> None:
@@ -145,8 +145,8 @@ def test_movie_masks_assign_wheel_based_quiet_and_active_labels() -> None:
     )
     assert metadata[0]["state_label"] == "quiet_awake_blank"
     assert metadata[1]["state_label"] == "active_awake_zebras"
-    assert masks["quiet_awake_blank"].sum() == 5
-    assert masks["active_awake_zebras"].sum() == 5
+    assert masks["quiet_awake_blank"].sum() == 4
+    assert masks["active_awake_zebras"].sum() == 4
 
 
 def test_default_sleep_state_selection_uses_canonical_labels() -> None:
@@ -168,4 +168,4 @@ def test_movie_trial_is_split_at_sleep_state_boundary() -> None:
     assert [row["sleep_state_label"] for row in metadata] == ["quiet_awake", "nrem"]
     assert [row["parent_trial_index"] for row in metadata] == [0, 0]
     assert masks["quiet_awake_movies"].sum() == 1
-    assert masks["nrem_movies"].sum() == 4
+    assert masks["nrem_movies"].sum() == 3

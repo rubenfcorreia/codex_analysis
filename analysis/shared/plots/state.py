@@ -17,7 +17,7 @@ import pandas as pd
 from analysis.shared.state_utils import canonical_state_label as _shared_canonical_state_label
 from analysis.shared.state_utils import state_display_color as _shared_state_display_color
 from analysis.shared.state_utils import state_family_label as _shared_state_family_label
-from analysis.shared.statistics import is_significant_row
+from analysis.shared.statistics import is_significant_row, resolve_inferential_p_value
 from analysis.shared.plots.figure_io import save_figure
 from analysis.shared.plots.boxplots import draw_boxplot_series
 from analysis.shared.shared_boxplots import plot_boxplot_series, plot_grouped_boxplot_series
@@ -293,7 +293,7 @@ def _plot_boxplot(
                 x2 = position_lookup.get(state_b)
             if x1 is None or x2 is None:
                 continue
-            annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": row.get("shuffle_p")})
+            annotation_rows.append({"x1": float(x1), "x2": float(x2), "shuffle_p": resolve_inferential_p_value(dict(row))[0]})
 
     return plot_boxplot_series(
         values_by_state,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from itertools import combinations
+import warnings
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
@@ -11,38 +12,163 @@ from scipy import stats
 def run_mixed_model_family(
     rows, response, scope, contrast_specs, shuffle_n, *, alerts=None, vc_level_keys=None, state_order=None, p_value_source="classical"
 ):
-    del shuffle_n, vc_level_keys
+    """Fit the canonical animal-clustered mixed model for one response."""
+    del vc_level_keys
     alerts = alerts if alerts is not None else []
-    state_order = list(state_order or [])
-    usable = []
+    requested_source = str(p_value_source or "classical").strip().lower()
+    effective_source = requested_source if requested_source == "classical" else "classical"
+    if requested_source != "classical":
+        alerts.append(f"[ALERT] Mixed-model shuffle p-values are not implemented for {response} ({scope}); using classical model p-values.")
+    try:
+        import pandas as pd
+        from patsy import build_design_matrices
+        from scipy import stats
+        from statsmodels.regression.mixed_linear_model import MixedLM
+    except Exception as exc:
+        alerts.append(f"[ALERT] Mixed-model dependencies unavailable for {response} ({scope}): {exc}")
+        return {"summary_rows": [], "contrast_rows": [], "design": {}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "unavailable", "error": str(exc)}}
+
+    records = []
     for row in rows:
         try:
             value = float(row.get(response))
         except (TypeError, ValueError):
             continue
-        if np.isfinite(value):
-            usable.append((dict(row), value))
+        if not np.isfinite(value):
+            continue
+        item = dict(row)
+        item["response"] = value
+        item["state"] = str(item.get("state") or "missing")
+        item["animal_key"] = str(item.get("animal_id") or item.get("day_id") or "missing_animal")
+        item["day_key"] = str(item.get("day_id") or item.get("expid") or "missing_day")
+        item["unit_key"] = str(item.get("unit_id") or item.get("subject_id") or item.get("roi_key") or item["day_key"])
+        item["visual_response_cohort"] = str(item.get("visual_response_cohort") or "nonresponsive")
+        item["split_group"] = str(item.get("split_group") or "missing")
+        item["compartment"] = str(item.get("compartment") or "all")
+        records.append(item)
+    if not records:
+        return {"summary_rows": [], "contrast_rows": [], "design": {}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "no_data"}}
+
+    frame = pd.DataFrame(records)
+    state_levels = [str(state) for state in (state_order or []) if str(state) in set(frame["state"])]
+    state_levels += [state for state in sorted(frame["state"].unique()) if state not in state_levels]
+    formula_terms = ["C(state)"]
+    if frame["visual_response_cohort"].nunique() > 1:
+        formula_terms.append("C(visual_response_cohort)")
+        formula_terms.append("C(state):C(visual_response_cohort)")
+    if frame["split_group"].nunique() > 1:
+        formula_terms.append("C(split_group)")
+        formula_terms.append("C(state):C(split_group)")
+    if frame["compartment"].nunique() > 1:
+        formula_terms.append("C(compartment)")
+        formula_terms.append("C(state):C(compartment)")
+    formula = "response ~ " + " + ".join(formula_terms)
+    vc_formula = {"day": "0 + C(day_key)", "unit": "0 + C(unit_key)"}
+    fit = None
+    fit_method = "lbfgs"
+    fit_error = None
+    warning_messages = []
+    try:
+        model = MixedLM.from_formula(formula, groups="animal_key", re_formula="1", vc_formula=vc_formula, data=frame)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fit = model.fit(reml=False, method="lbfgs", maxiter=300, disp=False)
+            warning_messages.extend(str(item.message) for item in caught)
+        if not bool(getattr(fit, "converged", False)):
+            fit_method = "powell"
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                fit = model.fit(reml=False, method="powell", maxiter=300, disp=False)
+                warning_messages.extend(str(item.message) for item in caught)
+    except Exception as exc:
+        fit_error = str(exc)
+        # Small or perfectly balanced synthetic/cohort subsets can make a
+        # variance component unidentifiable.  Retain the animal random
+        # intercept and the identifiable ROI component rather than silently
+        # reverting to an independent test.
+        try:
+            fit_method = "lbfgs_unit_fallback"
+            model = MixedLM.from_formula(formula, groups="animal_key", re_formula="1", vc_formula={"unit": "0 + C(unit_key)"}, data=frame)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                fit = model.fit(reml=False, method="lbfgs", maxiter=300, disp=False)
+                warning_messages.extend(str(item.message) for item in caught)
+            if not bool(getattr(fit, "converged", False)):
+                fit_method = "powell_unit_fallback"
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    fit = model.fit(reml=False, method="powell", maxiter=300, disp=False)
+                    warning_messages.extend(str(item.message) for item in caught)
+        except Exception as fallback_exc:
+            fit_error = f"{exc}; fallback: {fallback_exc}"
+            alerts.append(f"[ALERT] Mixed-model fit failed for {response} ({scope}): {fit_error}")
+
+    singular_or_non_pd = any(any(token in message.lower() for token in ("not positive definite", "boundary", "singular")) for message in warning_messages)
+    inferential_fit_ok = bool(fit is not None and getattr(fit, "converged", False) and not singular_or_non_pd)
+    if singular_or_non_pd:
+        alerts.append(f"[ALERT] Mixed-model fit for {response} ({scope}) emitted singular/boundary diagnostics; inferential contrasts are suppressed.")
+
     summary_rows = []
-    for state in state_order or sorted({str(row.get("state") or "") for row, _ in usable if str(row.get("state") or "") }):
-        values = np.asarray([value for row, value in usable if str(row.get("state")) == str(state)], dtype=float)
-        if not values.size:
-            continue
-        summary_rows.append({"response": response, "scope": scope, "state": state, "mean": float(np.nanmean(values)), "estimate": float(np.nanmean(values)), "n": int(values.size)})
+    for state in state_levels:
+        subset = frame.loc[frame["state"] == state, "response"]
+        if len(subset):
+            summary_rows.append({"response": response, "scope": scope, "state": state, "mean": float(subset.mean()), "estimate": float(subset.mean()), "n": int(len(subset)), "n_animals": int(frame.loc[frame["state"] == state, "animal_key"].nunique()), "n_days": int(frame.loc[frame["state"] == state, "day_key"].nunique())})
+
+    def prediction_row(state, *, cohort=None, split_group=None, compartment=None):
+        row = {column: frame.iloc[0][column] for column in frame.columns}
+        row["state"] = str(state)
+        if cohort is not None:
+            row["visual_response_cohort"] = str(cohort)
+        if split_group is not None:
+            row["split_group"] = str(split_group)
+        if compartment is not None:
+            row["compartment"] = str(compartment)
+        return pd.DataFrame([row])
+
+    def contrast(label, left_row, right_row, spec):
+        if not inferential_fit_ok:
+            return {"response": response, "scope": scope, "contrast_name": label, "estimate": float("nan"), "p_value": float("nan"), "p_value_source": effective_source, "status": "fit_failed_or_diagnostic_warning", **spec}
+        try:
+            left = build_design_matrices([fit.model.data.design_info], left_row, return_type="dataframe")[0].to_numpy(dtype=float)[0]
+            right = build_design_matrices([fit.model.data.design_info], right_row, return_type="dataframe")[0].to_numpy(dtype=float)[0]
+            vector = left - right
+            estimate = float(vector @ fit.fe_params.to_numpy())
+            covariance = np.asarray(fit.cov_params(), dtype=float)
+            covariance = covariance[: len(vector), : len(vector)]
+            se = float(np.sqrt(max(0.0, vector @ covariance @ vector)))
+            z_value = estimate / se if se > 0 else float("nan")
+            p_value = float(2.0 * stats.norm.sf(abs(z_value))) if np.isfinite(z_value) else float("nan")
+            ci = 1.96 * se if np.isfinite(se) else float("nan")
+            return {"response": response, "scope": scope, "contrast_name": label, "estimate": estimate, "standard_error": se, "lower_ci": estimate - ci if np.isfinite(ci) else float("nan"), "upper_ci": estimate + ci if np.isfinite(ci) else float("nan"), "p_value": p_value, "classical_p": p_value, "p_value_source": effective_source, "status": "ok", **spec}
+        except Exception as exc:
+            alerts.append(f"[ALERT] Mixed-model contrast failed for {response} ({label}): {exc}")
+            return {"response": response, "scope": scope, "contrast_name": label, "estimate": float("nan"), "p_value": float("nan"), "p_value_source": effective_source, "status": "contrast_failed", **spec}
+
     contrast_rows = []
+    reference_cohort = sorted(frame["visual_response_cohort"].unique())[0]
+    reference_split = sorted(frame["split_group"].unique())[0]
+    reference_compartment = sorted(frame["compartment"].unique())[0]
     for spec in contrast_specs or []:
-        if spec.get("kind") != "state_pair":
-            continue
-        left = np.asarray([value for row, value in usable if str(row.get("state")) == str(spec.get("state_a"))], dtype=float)
-        right = np.asarray([value for row, value in usable if str(row.get("state")) == str(spec.get("state_b"))], dtype=float)
-        if not left.size or not right.size:
-            continue
-        test = stats.ttest_ind(left, right, equal_var=False, nan_policy="omit")
-        contrast_rows.append({"response": response, "scope": scope, "contrast_type": "state_pair", "state_a": spec.get("state_a"), "state_b": spec.get("state_b"), "estimate": float(np.nanmean(left) - np.nanmean(right)), "classical_p": float(test.pvalue) if np.isfinite(test.pvalue) else float("nan")})
-    return {"summary_rows": summary_rows, "contrast_rows": contrast_rows, "design": {"state_levels": state_order}, "equation": f"{response} ~ state", "tested_terms": {}, "tested_contrasts": {}, "validation_rows": [], "p_value_source": p_value_source, "p_value_source_requested": p_value_source, "fit": {"converged": True, "fit_method": "summary"}}
-from analysis.shared.roi_split import annotate_rows_with_split_group
-from analysis.shared.state_utils import canonical_state_label
+        kind = spec.get("kind")
+        if kind == "state_pair":
+            a, b = str(spec.get("state_a")), str(spec.get("state_b"))
+            if a in state_levels and b in state_levels:
+                contrast_rows.append(contrast(f"{a} vs {b}", prediction_row(a), prediction_row(b), {"contrast_type": kind, "state_a": a, "state_b": b}))
+        elif kind == "visual_response_cohort" and frame["visual_response_cohort"].nunique() > 1:
+            levels = sorted(frame["visual_response_cohort"].unique())
+            contrast_rows.append(contrast(f"{levels[1]} vs {levels[0]}", prediction_row(state_levels[0], cohort=levels[1]), prediction_row(state_levels[0], cohort=levels[0]), {"contrast_type": kind, "cohort_a": levels[1], "cohort_b": levels[0]}))
+        elif kind == "split_group_pair" and frame["split_group"].nunique() > 1:
+            contrast_rows.append(contrast(f"{spec.get('group_a')} vs {spec.get('group_b')}", prediction_row(spec.get("state"), split_group=spec.get("group_a")), prediction_row(spec.get("state"), split_group=spec.get("group_b")), {"contrast_type": kind, **spec}))
+        elif kind == "basal_apical" and {"basal", "apical"}.issubset(set(frame["compartment"])):
+            contrast_rows.append(contrast("apical vs basal", prediction_row(spec.get("state"), compartment="apical"), prediction_row(spec.get("state"), compartment="basal"), {"contrast_type": kind, **spec}))
 
-
+    tested_terms = []
+    if inferential_fit_ok:
+        for term, p_value in fit.pvalues.items():
+            tested_terms.append({"term": str(term), "estimate": float(fit.params.get(term, np.nan)), "p_value": float(p_value) if np.isfinite(p_value) else float("nan")})
+    design = {"state_levels": state_levels, "formula": formula, "random_effect_group": "animal_key", "variance_components": list(vc_formula), "n_rows": int(len(frame)), "n_animals": int(frame["animal_key"].nunique()), "n_days": int(frame["day_key"].nunique()), "n_units": int(frame["unit_key"].nunique())}
+    fit_payload = {"converged": bool(inferential_fit_ok), "fit_method": fit_method if fit is not None else "failed", "fallback_used": bool(fit is not None and "fallback" in fit_method), "singular_or_non_pd": bool(singular_or_non_pd), "warning_messages": warning_messages, "error": fit_error, "aic": float(fit.aic) if fit is not None and np.isfinite(fit.aic) else float("nan"), "bic": float(fit.bic) if fit is not None and np.isfinite(fit.bic) else float("nan")}
+    return {"summary_rows": summary_rows, "contrast_rows": contrast_rows, "design": design, "equation": formula, "tested_terms": tested_terms, "tested_contrasts": contrast_rows, "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": fit_payload}
 
 def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment: Optional[str] = None) -> List[Dict[str, Any]]:
     table_rows: List[Dict[str, Any]] = []

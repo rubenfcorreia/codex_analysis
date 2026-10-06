@@ -205,8 +205,15 @@ def plot_visual_response_entity_figure(
         pad = max(0.05 * (high - low), 0.05)
         box_ax.set_ylim(low - pad, high + pad)
     box_ax.text(0.02, 0.98, f"n={int(blank_values.size)} blank, n={int(visual_values.size)} visual", transform=box_ax.transAxes, ha="left", va="top", fontsize=9, color="#444444")
-    ttest = stats.ttest_ind(np.asarray(visual_values, dtype=float), np.asarray(blank_values, dtype=float), equal_var=False, nan_policy="omit")
-    p_value = float(ttest.pvalue) if np.isfinite(ttest.pvalue) else float("nan")
+    p_value = float("nan")
+    for key in ("adjusted_pvalue", "p_value", "raw_pvalue"):
+        try:
+            candidate = float(response_row.get(key))
+        except (TypeError, ValueError):
+            candidate = float("nan")
+        if np.isfinite(candidate):
+            p_value = candidate
+            break
     if bool(response_row.get("significant", False)) or (np.isfinite(p_value) and p_value < 0.05):
         finite = np.concatenate([blank_values, visual_values])
         finite = finite[np.isfinite(finite)]

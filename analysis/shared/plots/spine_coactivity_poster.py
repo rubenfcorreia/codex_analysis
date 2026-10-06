@@ -52,6 +52,7 @@ except ImportError:
 
 from analysis.shared.plots.dendrite_plot_support import (
     REPORT_SIGNIFICANCE_ALPHA,
+    is_significant_row,
     SPINE_COACTIVITY_ANCHOR_STATE,
     _draw_boxplot_significance_annotations,
     _spine_coactivity_basal_apical_distribution_rows,
@@ -578,14 +579,13 @@ def draw_state_summary_compartment_comparison_panel(
             {
                 "x1": float(state_order.index(str(row.get("state"))) + 1 - 0.18),
                 "x2": float(state_order.index(str(row.get("state"))) + 1 + 0.18),
-                "shuffle_p": row.get("shuffle_p"),
+                "shuffle_p": row.get("adjusted_pvalue", row.get("p_value")),
             }
             for row in (comparison_rows or [])
             if str(row.get("comparison")) == "basal_vs_apical"
             and str(row.get("metric")) == metric_key
             and str(row.get("state")) in state_order
-            and as_float(row.get("shuffle_p")) is not None
-            and float(as_float(row.get("shuffle_p")) or 1.0) < REPORT_SIGNIFICANCE_ALPHA
+            and is_significant_row(dict(row), p_key="p_value")
         ]
         _draw_boxplot_significance_annotations(ax, comparison_subset, orientation="horizontal")
     else:
@@ -602,14 +602,13 @@ def draw_state_summary_compartment_comparison_panel(
             {
                 "x1": float(state_order.index(str(row.get("state"))) + 1 - 0.18),
                 "x2": float(state_order.index(str(row.get("state"))) + 1 + 0.18),
-                "shuffle_p": row.get("shuffle_p"),
+                "shuffle_p": row.get("adjusted_pvalue", row.get("p_value")),
             }
             for row in (comparison_rows or [])
             if str(row.get("comparison")) == "basal_vs_apical"
             and str(row.get("metric")) == metric_key
             and str(row.get("state")) in state_order
-            and as_float(row.get("shuffle_p")) is not None
-            and float(as_float(row.get("shuffle_p")) or 1.0) < REPORT_SIGNIFICANCE_ALPHA
+            and is_significant_row(dict(row), p_key="p_value")
         ]
         _draw_boxplot_significance_annotations(ax, comparison_subset)
     if show_legend:

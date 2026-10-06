@@ -30,7 +30,7 @@ Outputs are written under `results/soma_bouton_pipeline/` by default.
 When `progression_analysis.enabled` is true, the pipeline writes bouton and soma mean dF/F progression outputs under `results/soma_bouton_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial and continuous sleep-time panels. Blank trials are aligned to onset and summarized in one-second bins by default. Same-day sleep expIDs are concatenated into one animal-day replicate, interpolated at `sleep_time_step_s` (one second by default), and truncated to the shortest valid day; group values are means with SEM across animal-days.
 
 State-transition CSVs and figures are kept under `results/soma_bouton_pipeline/general/state_transitions/`. The existing `transition_analysis` settings continue to control scopes, window modes, and metrics.
-\n## State-transition analysis
+## State-transition analysis
 
 When `transition_analysis.enabled` is true, the pipeline detects within-recording state changes and analyzes soma and bouton activity and event frequency around those transitions. The same transition outputs are also used by the comparison-preset runs.
 
@@ -44,6 +44,10 @@ Transition outputs are written under the relevant result root:
 - `state_transitions/<scope>/<window_mode>/` contains paired before/after figures and aligned `*_expday_trace.svg` figures.
 
 The primary paired tests are calculated across experiment-days, not across individual transitions or ROIs.
+
+Pairwise soma/bouton correlations are descriptive at the ROI/day-pair level unless they are aggregated through an animal-level model. Their rows retain effect sizes, confidence intervals, and inferential-status metadata; frame-level classical correlation p-values are not treated as population-level evidence. Visual-response cohorts are classified per ROI and do not imply independent population replicates.
+
+The pipeline records methodology version, statistical configuration, source signatures, dependency metadata, and random-seed settings in active result/cache metadata so stale statistical outputs are not silently reused.
 
 
 ## Paired State Summary Figures
