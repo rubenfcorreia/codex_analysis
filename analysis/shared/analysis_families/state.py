@@ -484,6 +484,7 @@ def state_comparison_rows(
     *,
     metric_col: str = "mean",
     grouped_rows: Mapping[str | None, Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]]] | None = None,
+    shuffle_cache: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     selected = [state for state in selected_states if canonical_state_label(state)]
     if len(selected) < 2:
@@ -512,9 +513,9 @@ def state_comparison_rows(
                     subjects_b = values_by_state.get(state_b, {})
                     subjects = sorted(set(subjects_a).intersection(subjects_b))
                     if len(subjects) >= 2:
-                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n, shuffle_cache=shuffle_cache)
                     else:
-                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n, shuffle_cache=shuffle_cache)
                     result["comparison"] = "state_pair"
                     result["compartment"] = compartment or "all"
                     result["state_a_display"] = state_a
@@ -543,9 +544,9 @@ def state_comparison_rows(
                     subjects_b = values_by_state.get(state_b, {})
                     subjects = sorted(set(subjects_a).intersection(subjects_b))
                     if len(subjects) >= 2:
-                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                        result = paired_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n, shuffle_cache=shuffle_cache)
                     else:
-                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n)
+                        result = independent_comparison(values_by_state, state_a, state_b, metric_col, shuffle_n, shuffle_cache=shuffle_cache)
                     result["comparison"] = "state_pair"
                     result["compartment"] = compartment or "all"
                     result["state_a_display"] = state_a

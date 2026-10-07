@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -222,11 +223,32 @@ def build_state_masks_movie(
             })
     return masks, metadata, wheel
 
-def _permutation_pvalue(observed: float, values_a: np.ndarray, values_b: np.ndarray, paired: bool, shuffle_n: int, seed: int = 12345) -> float:
-    if not np.isfinite(observed) or shuffle_n <= 0:
-        return float("nan")
+def _permutation_cache_key(values_a: np.ndarray, values_b: np.ndarray, paired: bool, shuffle_n: int, seed: int) -> str:
+    digest = hashlib.sha256()
+    digest.update(np.asarray(values_a, dtype=np.float64).tobytes())
+    digest.update(b"|")
+    digest.update(np.asarray(values_b, dtype=np.float64).tobytes())
+    digest.update(f"|{int(bool(paired))}|{int(shuffle_n)}|{int(seed)}".encode())
+    return digest.hexdigest()
+
+
+def _permutation_null(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    paired: bool,
+    shuffle_n: int,
+    seed: int = 12345,
+    shuffle_cache: Dict[str, Any] | None = None,
+) -> np.ndarray:
+    key = _permutation_cache_key(values_a, values_b, paired, shuffle_n, seed)
+    if shuffle_cache is not None:
+        entry = shuffle_cache.setdefault("entries", {}).get(key)
+        if isinstance(entry, Mapping):
+            cached = np.asarray(entry.get("null", []), dtype=float)
+            if cached.size >= int(shuffle_n):
+                return cached[: int(shuffle_n)]
     rng = np.random.default_rng(seed)
-    null = []
+    null: List[float] = []
     if paired:
         differences = values_a - values_b
         for _ in range(int(shuffle_n)):
@@ -238,6 +260,29 @@ def _permutation_pvalue(observed: float, values_a: np.ndarray, values_b: np.ndar
         for _ in range(int(shuffle_n)):
             permuted = rng.permutation(pooled.size)
             null.append(float(np.mean(pooled[permuted[:n_a]]) - np.mean(pooled[permuted[n_a:]])))
+    result = np.asarray(null, dtype=float)
+    if shuffle_cache is not None:
+        shuffle_cache.setdefault("entries", {})[key] = {
+            "null": result,
+            "paired": bool(paired),
+            "shuffle_n": int(shuffle_n),
+            "seed": int(seed),
+        }
+    return result
+
+
+def _permutation_pvalue(
+    observed: float,
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    paired: bool,
+    shuffle_n: int,
+    seed: int = 12345,
+    shuffle_cache: Dict[str, Any] | None = None,
+) -> float:
+    if not np.isfinite(observed) or shuffle_n <= 0:
+        return float("nan")
+    null = _permutation_null(values_a, values_b, paired, shuffle_n, seed, shuffle_cache)
     return float((np.sum(np.abs(null) >= abs(observed)) + 1) / (len(null) + 1))
 
 
@@ -249,7 +294,7 @@ def _ci_from_effect(effect: float, standard_error: float, degrees_of_freedom: in
     return float(effect - half_width), float(effect + half_width)
 
 
-def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int) -> Dict[str, Any]:
+def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int, *, shuffle_cache: Dict[str, Any] | None = None) -> Dict[str, Any]:
     subjects = sorted(set(values_by_state.get(state_a, {})) & set(values_by_state.get(state_b, {})))
     a = np.asarray([np.nanmean(values_by_state[state_a][subject]) for subject in subjects], dtype=float)
     b = np.asarray([np.nanmean(values_by_state[state_b][subject]) for subject in subjects], dtype=float)
@@ -260,10 +305,10 @@ def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]
     differences = a - b
     standard_error = float(np.std(differences, ddof=1) / np.sqrt(a.size)) if a.size > 1 else float("nan")
     lower_ci, upper_ci = _ci_from_effect(effect, standard_error, a.size - 1)
-    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": True, "test_choice": "paired_ttest", "n_subjects": int(a.size), "effect_size": effect, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float(result.pvalue) if result is not None else float("nan"), "shuffle_p": _permutation_pvalue(effect, a, b, True, int(shuffle_n)), "shuffle_n": int(shuffle_n)}
+    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": True, "test_choice": "paired_ttest", "n_subjects": int(a.size), "effect_size": effect, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float(result.pvalue) if result is not None else float("nan"), "shuffle_p": _permutation_pvalue(effect, a, b, True, int(shuffle_n), shuffle_cache=shuffle_cache), "shuffle_n": int(shuffle_n)}
 
 
-def independent_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int) -> Dict[str, Any]:
+def independent_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int, *, shuffle_cache: Dict[str, Any] | None = None) -> Dict[str, Any]:
     a = np.asarray([np.nanmean(value) for value in values_by_state.get(state_a, {}).values()], dtype=float)
     b = np.asarray([np.nanmean(value) for value in values_by_state.get(state_b, {}).values()], dtype=float)
     a, b = a[np.isfinite(a)], b[np.isfinite(b)]
@@ -272,7 +317,7 @@ def independent_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[f
     standard_error = float(np.sqrt(np.var(a, ddof=1) / a.size + np.var(b, ddof=1) / b.size)) if a.size >= 2 and b.size >= 2 else float("nan")
     degrees_of_freedom = int(a.size + b.size - 2)
     lower_ci, upper_ci = _ci_from_effect(effect, standard_error, degrees_of_freedom)
-    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": False, "test_choice": "welch_ttest", "n_subjects": int(min(a.size, b.size)), "n_state_a": int(a.size), "n_state_b": int(b.size), "effect_size": effect, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float(result.pvalue) if result is not None else float("nan"), "shuffle_p": _permutation_pvalue(effect, a, b, False, int(shuffle_n)), "shuffle_n": int(shuffle_n)}
+    return {"metric": metric_name, "state_a": state_a, "state_b": state_b, "paired": False, "test_choice": "welch_ttest", "n_subjects": int(min(a.size, b.size)), "n_state_a": int(a.size), "n_state_b": int(b.size), "effect_size": effect, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float(result.pvalue) if result is not None else float("nan"), "shuffle_p": _permutation_pvalue(effect, a, b, False, int(shuffle_n), shuffle_cache=shuffle_cache), "shuffle_n": int(shuffle_n)}
 
 def apply_bonferroni_correction(records: List[Dict[str, Any]]) -> int:
     valid = [record for record in records if record.get("available") and np.isfinite(record.get("raw_pvalue", np.nan))]

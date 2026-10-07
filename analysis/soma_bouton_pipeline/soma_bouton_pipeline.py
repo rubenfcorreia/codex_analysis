@@ -96,7 +96,7 @@ from analysis.shared.analysis_cache import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache
+from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
@@ -147,7 +147,7 @@ DEFAULT_CONFIG = {
     "shuffle_n": 200,
     "correlation_method": "pearson",
     "correlation_inference": "circular_shift",
-    "correlation_shuffle_n": 1000,
+    "correlation_shuffle_n": 200,
     "correlation_shuffle_seed": 12345,
     "correlation_min_shift_frames": 1,
     "rebuild": False,
@@ -867,7 +867,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "shuffle_n": int(config.get("shuffle_n", 200)),
         "correlation_method": str(config.get("correlation_method", "pearson")),
         "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
-        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 1000)),
+        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
         "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
         "event_detection_method": str(event_detection_method),
@@ -882,7 +882,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "sleep_expids": list(config.get("sleep_expids") or []),
         "soma_channel": int(config.get("soma_channel", 1)),
         "bouton_channel": int(config.get("bouton_channel", 0)),
-        "pairwise_correlation_schema_version": 2,
+        "pairwise_correlation_schema_version": 3,
         "coincidence_family_schema_version": 1,
         "coincidence_example_top_n": int(coincidence_example_top_n),
     }
@@ -915,6 +915,28 @@ def _analysis_results_cache_path(config: Mapping[str, Any], repo_root: Path, res
         return resolve_repo_path(config["analysis_results_cache_path"], repo_root)
     analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
+
+
+def _shared_shuffle_cache_path(source_cache_file: Path) -> Path:
+    return source_cache_file.with_name(f"{source_cache_file.stem}_shuffle_cache.npz")
+
+
+def _load_or_build_shared_permutation_cache(
+    path: Path,
+    *,
+    metadata: Dict[str, Any],
+    rebuild: bool,
+) -> tuple[Dict[str, Any], bool]:
+    if not rebuild and path.exists():
+        try:
+            payload = load_npz_cache(path)
+            if payload.get("schema_version") == 1 and payload.get("meta_hash") == analysis_cache_meta_hash(metadata):
+                return payload, False
+        except Exception:
+            pass
+    payload = {"schema_version": 1, "meta": metadata, "meta_hash": analysis_cache_meta_hash(metadata), "entries": {}}
+    save_npz_cache(path, payload)
+    return payload, True
 
 
 def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
@@ -1016,10 +1038,36 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
     shuffle_n = int(config.get("shuffle_n", 200))
+    correlation_shuffle_n = int(config.get("correlation_shuffle_n", 200))
+    correlation_method = str(config.get("correlation_method", "pearson"))
+    correlation_inference = str(config.get("correlation_inference", "circular_shift"))
+    correlation_shuffle_seed = int(config.get("correlation_shuffle_seed", 12345))
+    correlation_min_shift_frames = int(config.get("correlation_min_shift_frames", 1))
     analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
     analysis_results_cache_file = _analysis_results_cache_path(config, repo_root, result_root)
     analysis_tables_cache_file = _analysis_tables_cache_path(config, repo_root, result_root)
     source_cache_file = _source_cache_path(config, repo_root, result_root)
+    shared_shuffle_cache_file = _shared_shuffle_cache_path(source_cache_file)
+    shared_shuffle_metadata = {
+        "methodology_version": METHODOLOGY_VERSION,
+        "source_cache_path": str(source_cache_file),
+        "movie_expids": list(expids_by_mode.get("movie", [])),
+        "sleep_expids": list(expids_by_mode.get("sleep", [])),
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+        "shuffle_n": int(shuffle_n),
+        "state_modes": list(state_modes),
+        "union_state_labels_by_mode": dict(config.get("union_state_labels_by_mode") or {}),
+        "correlation_method": str(config.get("correlation_method", "pearson")),
+        "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
+        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
+        "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
+    }
+    shared_shuffle_cache, shared_shuffle_cache_rebuilt = _load_or_build_shared_permutation_cache(
+        shared_shuffle_cache_file,
+        metadata=shared_shuffle_metadata,
+        rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
+    )
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
@@ -1054,7 +1102,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
         "soma_channel": int(config.get("soma_channel", 1)),
         "bouton_channel": int(config.get("bouton_channel", 0)),
-        "pairwise_correlation_schema_version": 2,
+        "pairwise_correlation_schema_version": 3,
         "family_result_stage": "pairwise_correlation",
     }
     coincidence_family_cache_file = family_results_cache_path(analysis_results_cache_file, "coincidence")
@@ -1244,9 +1292,33 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
             )
             if pairwise_family_rows is None:
-                correlation_rows.extend(bouton_soma_correlation_rows(ctx, row_states, state_masks=state_masks))
-                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks))
-                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks))
+                correlation_rows.extend(bouton_soma_correlation_rows(
+                    ctx, row_states, state_masks=state_masks,
+                    correlation_shuffle_n=correlation_shuffle_n,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    correlation_shuffle_seed=correlation_shuffle_seed,
+                    correlation_min_shift_frames=correlation_min_shift_frames,
+                    shared_shuffle_cache=shared_shuffle_cache,
+                ))
+                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
+                    ctx, row_states, state_masks=state_masks,
+                    correlation_shuffle_n=correlation_shuffle_n,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    correlation_shuffle_seed=correlation_shuffle_seed,
+                    correlation_min_shift_frames=correlation_min_shift_frames,
+                    shared_shuffle_cache=shared_shuffle_cache,
+                ))
+                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
+                    ctx, row_states, state_masks=state_masks,
+                    correlation_shuffle_n=correlation_shuffle_n,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    correlation_shuffle_seed=correlation_shuffle_seed,
+                    correlation_min_shift_frames=correlation_min_shift_frames,
+                    shared_shuffle_cache=shared_shuffle_cache,
+                ))
             lag_rows.extend(
                 lag_scan_rows(
                     ctx,
@@ -1395,12 +1467,14 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         selected_states_by_mode.get("movie", []),
         shuffle_n,
         grouped_rows=movie_state_groups,
+        shuffle_cache=shared_shuffle_cache,
     )
     sleep_state_comparison_summary_rows = state_comparison_rows(
         sleep_activity_rows,
         selected_states_by_mode.get("sleep", []),
         shuffle_n,
         grouped_rows=sleep_state_groups,
+        shuffle_cache=shared_shuffle_cache,
     )
     state_event_comparison_summary_rows = state_comparison_rows(
         movie_activity_rows,
@@ -1408,6 +1482,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         shuffle_n,
         metric_col="event_frequency_per_min",
         grouped_rows=movie_state_groups,
+        shuffle_cache=shared_shuffle_cache,
     )
     sleep_state_event_comparison_summary_rows = state_comparison_rows(
         sleep_activity_rows,
@@ -1415,6 +1490,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         shuffle_n,
         metric_col="event_frequency_per_min",
         grouped_rows=sleep_state_groups,
+        shuffle_cache=shared_shuffle_cache,
     )
     correlation_summary = correlation_summary_rows(correlation_rows)
     soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows)
@@ -1615,6 +1691,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             analysis_state_order,
             shuffle_n,
             grouped_rows=cohort_state_groups,
+            shuffle_cache=shared_shuffle_cache,
         )
         cohort_state_event_comparison_rows[cohort_name] = state_comparison_rows(
             cohort_rows,
@@ -1622,6 +1699,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             shuffle_n,
             metric_col="event_frequency_per_min",
             grouped_rows=cohort_state_groups,
+            shuffle_cache=shared_shuffle_cache,
         )
         cohort_correlation_summary[cohort_name] = correlation_summary_rows(cohort_correlation_rows.get(cohort_name, []))
         cohort_soma_pairwise_summary[cohort_name] = correlation_summary_rows(cohort_soma_pairwise_rows.get(cohort_name, []))
@@ -2747,6 +2825,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "coincidence_family_cache_path": str(coincidence_family_cache_file),
             "coincidence_family_cache_reused": False,
             "source_cache_path": str(source_cache_file),
+            "shared_shuffle_cache_path": str(shared_shuffle_cache_file),
+            "shared_shuffle_cache_reused": not bool(shared_shuffle_cache_rebuilt),
+            "shared_shuffle_cache_entries": len(shared_shuffle_cache.get("entries", {})),
         },
         "output_root": str(result_root),
         "pipeline_elapsed_s": float(time.perf_counter() - pipeline_started),
@@ -2793,6 +2874,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         },
     }
     save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
+    save_npz_cache(shared_shuffle_cache_file, shared_shuffle_cache)
     write_manifest(result_root, manifest_json)
     if general_output_root is not None and generate_shared_general_figures:
         write_manifest(general_output_root, {

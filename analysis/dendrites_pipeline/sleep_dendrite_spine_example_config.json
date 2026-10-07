@@ -192,7 +192,7 @@
   "shuffle_n": 200,
   "correlation_method": "pearson",
   "correlation_inference": "circular_shift",
-  "correlation_shuffle_n": 1000,
+  "correlation_shuffle_n": 200,
   "correlation_shuffle_seed": 12345,
   "correlation_min_shift_frames": 1,
   "cpu_thread_limit": 1,

@@ -17914,7 +17914,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         source_cache_rebuild = bool(config.get("source_cache_rebuild")) or rebuild
         analysis_tables_rebuild = bool(config.get("analysis_tables_rebuild")) or rebuild
         analysis_results_rebuild = bool(config.get("analysis_results_rebuild")) or rebuild
-        shared_shuffle_cache_rebuild = bool(config.get("shared_shuffle_cache_rebuild")) or rebuild
+        shared_shuffle_cache_rebuild = bool(config.get("shared_shuffle_cache_rebuild"))
         layout = resolve_result_layout(config, root_key="output_dir", legacy_root_key="output_dir", repo_root=REPO_ROOT)
         output_dir = layout.analysis_root
         cache_path = resolve_repo_path(config.get("cache_path") or (ensure_dir(output_dir / DEFAULT_CACHE_DIRNAME) / DEFAULT_CACHE_NAME), REPO_ROOT)
@@ -18064,6 +18064,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if not shuffle_state_labels:
         shuffle_state_labels = list(PRIMARY_QUIET_STATES)
+    shared_shuffle_state_labels = sorted({str(state) for states in (union_states_by_mode or {}).values() for state in (states or []) if str(state).strip()}) or list(shuffle_state_labels)
     shared_shuffle_cache = None
     shared_shuffle_cache_file = None
     shared_shuffle_cache_rebuilt = False
@@ -18072,8 +18073,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             shared_shuffle_cache, shared_shuffle_cache_file, shared_shuffle_cache_rebuilt = load_or_build_shared_shuffle_cache(
                 analysis_cache,
                 shuffle_n,
-                state_labels=shuffle_state_labels,
-                cache_path=analysis_run_cache_path,
+                state_labels=shared_shuffle_state_labels,
+                cache_path=cache_path,
                 rebuild=shared_shuffle_cache_rebuild,
             )
     else:

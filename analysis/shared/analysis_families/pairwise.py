@@ -7,7 +7,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 import numpy as np
 
 from analysis.compartment_common import pairwise_correlation
-from analysis.shared.cache_utils import build_pairwise_correlation_cache_key
+from analysis.shared.cache_utils import build_pairwise_correlation_cache_key, build_shared_shuffle_cache_key
+from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation
 from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
 
 from .core import ExperimentContext, make_unit_id
@@ -144,6 +145,32 @@ def _masked_trace_values(member: PairwiseMember, mask: np.ndarray, usable: int) 
     return trace[:usable][state_mask]
 
 
+def _ensure_correlation_shuffle_entry(
+    shared_shuffle_cache: Dict[str, Any] | None,
+    key: str,
+    vector_length: int,
+    shuffle_n: int,
+    shuffle_seed: int,
+    min_shift_frames: int,
+) -> None:
+    if shared_shuffle_cache is None or shuffle_n <= 0 or vector_length <= 1:
+        return
+    entries = shared_shuffle_cache.setdefault("entries", {})
+    entry = entries.get(key)
+    if isinstance(entry, Mapping) and np.asarray(entry.get("shifts", []), dtype=int).size >= shuffle_n:
+        return
+    minimum = max(1, min(int(min_shift_frames), vector_length - 1))
+    shifts = np.random.default_rng(int(shuffle_seed)).integers(minimum, vector_length, size=int(shuffle_n))
+    entries[key] = {
+        "key": key,
+        "vector_length": int(vector_length),
+        "shuffle_n": int(shuffle_n),
+        "shuffle_seed": int(shuffle_seed),
+        "min_shift_frames": int(min_shift_frames),
+        "shifts": shifts,
+    }
+
+
 def build_pairwise_correlation_rows(
     ctx: ExperimentContext,
     state_masks: Mapping[str, Sequence[bool] | np.ndarray],
@@ -151,6 +178,12 @@ def build_pairwise_correlation_rows(
     comparison_name: str,
     left_members: Sequence[PairwiseMember],
     right_members: Sequence[PairwiseMember] | None = None,
+    correlation_shuffle_n: int = 0,
+    correlation_method: str = "pearson",
+    correlation_inference: str = "none",
+    correlation_shuffle_seed: int = 12345,
+    correlation_min_shift_frames: int = 1,
+    shared_shuffle_cache: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     pair_members = list(left_members if right_members is None or right_members is left_members else list(left_members) + list(right_members))
@@ -183,6 +216,32 @@ def build_pairwise_correlation_rows(
                     continue
                 corr = pairwise_correlation(left_values[valid], right_values[valid])
                 n_timepoints = int(valid.sum())
+                pair_key = _pair_unit_id(ctx, comparison_name, left, right)
+                shuffle_key = build_shared_shuffle_cache_key(
+                    family="soma_pairwise_correlation",
+                    signal=str(comparison_name),
+                    analysis_unit="day",
+                    animal_id=str(ctx.animal_id),
+                    day_id=str(ctx.day_id),
+                    source_id=f"{pair_key}|{state_key}",
+                    vector_length=n_timepoints,
+                    state_label=state_key,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_n=correlation_shuffle_n,
+                    shuffle_seed=correlation_shuffle_seed,
+                    min_shift_frames=correlation_min_shift_frames,
+                )
+                _ensure_correlation_shuffle_entry(shared_shuffle_cache, shuffle_key, n_timepoints, correlation_shuffle_n, correlation_shuffle_seed, correlation_min_shift_frames)
+                inferential = correlation_analysis_for_observation(
+                    left_values[valid], right_values[valid], correlation_shuffle_n,
+                    shared_shuffle_cache=shared_shuffle_cache,
+                    shared_shuffle_key=shuffle_key,
+                    correlation_method=correlation_method,
+                    correlation_inference=correlation_inference,
+                    shuffle_seed=correlation_shuffle_seed,
+                    min_shift_frames=correlation_min_shift_frames,
+                )
                 compartment_label = left.compartment if left.compartment == right.compartment else f"{left.compartment}_vs_{right.compartment}"
                 rows.append(
                     {
@@ -213,9 +272,12 @@ def build_pairwise_correlation_rows(
                         "effect_size": corr,
                         "lower_ci": None,
                         "upper_ci": None,
-                        "p_value": None,
-                        "p_value_source": "none_descriptive",
-                        "inferential_status": "descriptive",
+                        "p_value": inferential.get("p_value"),
+                        "shuffle_p": inferential.get("shuffle_p"),
+                        "shuffle_n_requested": inferential.get("shuffle_n_requested", 0),
+                        "shuffle_n_success": inferential.get("shuffle_n_success", 0),
+                        "p_value_source": inferential.get("p_value_source", "none_descriptive"),
+                        "inferential_status": inferential.get("status", "descriptive"),
                         "inferential_unit": "day_pair",
                         "correction_family": None,
                         "n_timepoints": int(n_timepoints),
@@ -228,6 +290,32 @@ def build_pairwise_correlation_rows(
                 continue
             corr = pairwise_correlation(left_values, right_values)
             compartment_label = left.compartment if left.compartment == right.compartment else f"{left.compartment}_vs_{right.compartment}"
+            pair_key = _pair_unit_id(ctx, comparison_name, left, right)
+            shuffle_key = build_shared_shuffle_cache_key(
+                family="soma_pairwise_correlation",
+                signal=str(comparison_name),
+                analysis_unit="day",
+                animal_id=str(ctx.animal_id),
+                day_id=str(ctx.day_id),
+                source_id=f"{pair_key}|{state_key}",
+                vector_length=int(n_timepoints),
+                state_label=state_key,
+                correlation_method=correlation_method,
+                correlation_inference=correlation_inference,
+                shuffle_n=correlation_shuffle_n,
+                shuffle_seed=correlation_shuffle_seed,
+                min_shift_frames=correlation_min_shift_frames,
+            )
+            _ensure_correlation_shuffle_entry(shared_shuffle_cache, shuffle_key, int(n_timepoints), correlation_shuffle_n, correlation_shuffle_seed, correlation_min_shift_frames)
+            inferential = correlation_analysis_for_observation(
+                left_values, right_values, correlation_shuffle_n,
+                shared_shuffle_cache=shared_shuffle_cache,
+                shared_shuffle_key=shuffle_key,
+                correlation_method=correlation_method,
+                correlation_inference=correlation_inference,
+                shuffle_seed=correlation_shuffle_seed,
+                min_shift_frames=correlation_min_shift_frames,
+            )
             rows.append(
                 {
                     "expid": ctx.expid,
@@ -313,7 +401,12 @@ def pairwise_correlation_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List
                 "effect_size": float(np.nanmean(arr)),
                 "lower_ci": None,
                 "upper_ci": None,
-                "p_value": None,
+                    "p_value": inferential.get("p_value"),
+                    "shuffle_p": inferential.get("shuffle_p"),
+                    "shuffle_n_requested": inferential.get("shuffle_n_requested", 0),
+                    "shuffle_n_success": inferential.get("shuffle_n_success", 0),
+                    "p_value_source": inferential.get("p_value_source", "none_descriptive"),
+                    "inferential_status": inferential.get("status", "descriptive"),
                 "p_value_source": "none_descriptive",
                 "inferential_status": "descriptive",
                 "inferential_unit": "day_pair",
