@@ -302,10 +302,49 @@ def run_pipeline_configs(output_dir: Path, *, only: str | None = None) -> int:
     return 0 if result["passed"] else 1
 
 
+def benchmark_demo(recipe: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    import time
+
+    output_dir = Path(output_dir)
+    build_demo(recipe, output_dir)
+    started = time.perf_counter()
+    cold_exit = run_pipeline_configs(output_dir)
+    cold_elapsed = time.perf_counter() - started
+    if cold_exit:
+        report = {"passed": False, "cold_exit": cold_exit, "cold_elapsed_s": cold_elapsed}
+        _write_json(output_dir / "benchmark_report.json", report)
+        return report
+    for name in ("dendrites", "soma_bouton"):
+        config_path = output_dir / "configs" / f"{name}_config.json"
+        config = json.loads(config_path.read_text())
+        config.update({"rebuild": False, "source_cache_rebuild": False, "analysis_tables_rebuild": False, "analysis_results_rebuild": False, "shared_shuffle_cache_rebuild": False})
+        config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+    started = time.perf_counter()
+    warm_exit = run_pipeline_configs(output_dir)
+    warm_elapsed = time.perf_counter() - started
+    manifests = {}
+    for name, relative in (("dendrites", "dendrites_results/analysis/summary/manifest.json"), ("soma_bouton", "soma_bouton_results/analysis/summary/manifest.json")):
+        path = output_dir / relative
+        if path.exists():
+            manifests[name] = json.loads(path.read_text())
+    report = {
+        "passed": warm_exit == 0,
+        "cold_exit": cold_exit,
+        "warm_exit": warm_exit,
+        "cold_elapsed_s": cold_elapsed,
+        "warm_elapsed_s": warm_elapsed,
+        "speedup": (cold_elapsed / warm_elapsed) if warm_elapsed > 0 else None,
+        "manifests": manifests,
+        "output_bytes": _output_size_bytes(output_dir),
+    }
+    _write_json(output_dir / "benchmark_report.json", report)
+    return report
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("build", "preview", "validate", "run"):
+    for name in ("build", "preview", "validate", "run", "benchmark"):
         command = sub.add_parser(name)
         command.add_argument("--config", type=Path)
         command.add_argument("--output-dir", type=Path, required=True)
@@ -325,6 +364,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if result["passed"] else 1
     if args.command == "run":
         return run_pipeline_configs(args.output_dir, only=args.only)
+    if args.command == "benchmark":
+        report = benchmark_demo(recipe, args.output_dir)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("passed") else 1
     return 0
 
 

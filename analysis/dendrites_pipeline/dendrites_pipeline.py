@@ -17927,6 +17927,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
         analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
         analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
+        source_cache_status = "rebuild_requested" if source_cache_rebuild else ("reused" if cache_path.exists() else "missing")
+        analysis_tables_cache_status = "rebuild_requested" if analysis_tables_rebuild else ("reused" if analysis_tables_cache_file.exists() else "missing")
         figure_output_dir = resolve_repo_path(config["figure_output_dir"], REPO_ROOT) if config.get("figure_output_dir") else layout.figure_root
         plots_only = bool(config.get("plots_only"))
         if plots_only:
@@ -18421,6 +18423,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shuffle_n": shuffle_n,
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
     }
+    cache_summary = {
+        "source": {"path": str(cache_path), "scope": "superset_reusable", "key": source_cache_signature(source_cache), "status": source_cache_status},
+        "analysis_day": {"path": str(analysis_cache_file), "scope": "day_level_reusable", "key": analysis_cache_meta_hash(analysis_cache_expected_meta), "status": analysis_cache_status},
+        "analysis_tables": {"path": str(analysis_tables_cache_file), "scope": "state_filterable", "key": analysis_cache_meta_hash({"analysis_unit": str(analysis_cache.get("analysis_unit", "day")), "source_config_hash": str(source_cache.get("config_hash", ""))}), "status": analysis_tables_cache_status},
+        "analysis_results": {"path": str(analysis_results_cache_file_for_run), "scope": "preset_specific", "key": analysis_cache_meta_hash(analysis_results_meta), "status": analysis_results_cache_status},
+        "shared_shuffle": {"path": str(shared_shuffle_cache_file) if shared_shuffle_cache_file is not None else None, "scope": "invariant_nulls", "status": "reused" if not shared_shuffle_cache_rebuilt else "rebuilt"},
+    }
+    results["cache_summary"] = cache_summary
     results["stage_timings"] = get_stage_timings()
     results["runtime_diagnostics"] = finish_runtime_diagnostics(runtime_diagnostics_start, output_dir)
     timing_report_path = output_dir / "timing_report.json"
@@ -18504,6 +18514,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # siblings. The common parent is the valid artifact root.
             manifest_root = Path(os.path.commonpath([str(output_dir.resolve()), str(figure_root_for_manifest.resolve())]))
     results["output_artifacts"] = collect_output_artifacts(manifest_root, tracked_output_artifacts)
+    cache_key_manifest_path = output_dir / "cache_key_manifest.json"
+    cache_key_manifest_path.write_text(json.dumps(jsonable({
+        "schema_version": 1,
+        "pipeline": "dendrites_pipeline",
+        "caches": cache_summary,
+    }), indent=2, sort_keys=True) + "\n")
+    results["output_artifacts"].append(report_relative_path(cache_key_manifest_path, output_dir))
     manifest_payload = jsonable(results)
     manifest_payload["output_root"] = str(manifest_root)
     manifest_payload["output_artifacts"] = collect_output_artifacts(manifest_root)

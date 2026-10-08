@@ -10,6 +10,7 @@ not biological inference.
 python -m analysis.demo_pipeline build --config analysis/demo_pipeline/configs/fast_unified_demo.json --output-dir /tmp/codex_demo
 python -m analysis.demo_pipeline validate --output-dir /tmp/codex_demo
 python -m analysis.demo_pipeline run --config analysis/demo_pipeline/configs/fast_unified_demo.json --output-dir /tmp/codex_demo
+python -m analysis.demo_pipeline benchmark --config analysis/demo_pipeline/configs/fast_unified_demo.json --output-dir /tmp/codex_benchmark
 python -m analysis.demo_pipeline.gui
 ```
 
@@ -76,3 +77,9 @@ correlation controls. Tmux sessions are named per output directory and
 pipeline, refuse collisions, use the active Python environment, persist logs
 and exit codes, and can be stopped safely from the GUI. Failed pipelines can
 be rerun with `run --only dendrites` or `run --only soma_bouton`.
+
+## Benchmarking
+
+The benchmark command runs the isolated fast demo twice, records cold and warm elapsed
+time, cache manifests, output size, and exit status in benchmark_report.json.
+Use it for regression checks; it does not modify real-data results.

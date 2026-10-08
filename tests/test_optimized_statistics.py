@@ -98,3 +98,17 @@ def test_runtime_diagnostics_reports_no_figure_leak(tmp_path):
     result = finish(start, tmp_path)
     assert result["figure_leak_count"] == 0
     assert result["output_file_count_delta"] == 1
+
+
+def test_analysis_cache_reports_corrupt_and_schema_mismatch(tmp_path):
+    from analysis.shared.analysis_cache import load_analysis_results_cache
+    from analysis.shared.cache_utils import save_npz_cache
+
+    corrupt = tmp_path / "corrupt.npz"
+    corrupt.write_bytes(b"not an npz")
+    _, status = load_analysis_results_cache(corrupt)
+    assert status == "unreadable"
+    schema = tmp_path / "schema.npz"
+    save_npz_cache(schema, {"schema_version": 999, "analysis_results": {}})
+    _, status = load_analysis_results_cache(schema)
+    assert status == "schema_mismatch"
