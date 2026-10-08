@@ -47,7 +47,7 @@ def launch(output_dir: Path, pipeline: str) -> Dict[str, Any]:
     log_path = logs / f"{pipeline}.log"
     exit_path = logs / f"{pipeline}.exit"
     session = session_name(output_dir, pipeline)
-    if subprocess.run(["tmux", "has-session", "-t", session], check=False).returncode == 0:
+    if subprocess.run(["tmux", "has-session", "-t", session], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
         raise RuntimeError(f"tmux session already exists: {session}")
     shell_command = (
         "set -o pipefail; "
@@ -75,7 +75,7 @@ def launch(output_dir: Path, pipeline: str) -> Dict[str, Any]:
 def status(output_dir: Path, pipeline: str) -> Dict[str, Any]:
     output_dir = Path(output_dir).resolve()
     session = session_name(output_dir, pipeline)
-    alive = subprocess.run(["tmux", "has-session", "-t", session], check=False).returncode == 0
+    alive = subprocess.run(["tmux", "has-session", "-t", session], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     payload = _read_metadata(output_dir)
     entry = _find_entry(payload, session) or {"session": session, "pipeline": pipeline}
     exit_path = output_dir / "logs" / f"{pipeline}.exit"

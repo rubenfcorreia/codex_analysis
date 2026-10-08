@@ -21,6 +21,7 @@ class DemoBuilderGUI(tk.Tk):
         self.output_dir = tk.StringVar(value=str(Path("/tmp/codex_demo")))
         self.status = tk.StringVar(value="Ready")
         self.log_text = None
+        self._last_status_line = None
         self._build_widgets()
         self.after(1000, self._poll_status)
 
@@ -109,7 +110,10 @@ class DemoBuilderGUI(tk.Tk):
                 states.append(f"{pipeline}: {tmux_status(Path(self.output_dir.get()), pipeline).get('status', 'pending')}")
             except Exception:
                 states.append(f"{pipeline}: pending")
-        self._append_log(" | ".join(states))
+        status_line = " | ".join(states)
+        if status_line != self._last_status_line:
+            self._append_log(status_line)
+            self._last_status_line = status_line
         self.after(2000, self._poll_status)
 
     def _browse(self) -> None:
