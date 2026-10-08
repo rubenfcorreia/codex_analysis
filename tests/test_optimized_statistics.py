@@ -71,3 +71,17 @@ def test_shared_shuffle_cache_reports_reuse_and_invalidation(tmp_path):
     assert not rebuilt and status == "reused"
     _, rebuilt, status = _load_or_build_shared_permutation_cache(path, metadata={"seed": 2, "n": 4}, rebuild=False)
     assert rebuilt and status == "meta_mismatch"
+
+
+def test_plot_profiles_preserve_full_and_disable_analysis_only():
+    from analysis.shared.plot_profiles import apply_plot_profile
+
+    full = apply_plot_profile({})
+    assert full["plot_profile"] == "full"
+    assert "poster_ready_only" not in full
+    analysis_only = apply_plot_profile({"plot_profile": "analysis_only"})
+    assert analysis_only["poster_ready_only"] is True
+    assert analysis_only["generate_poster_ready_figures"] is False
+    poster_only = apply_plot_profile({"plot_profile": "poster_only"})
+    assert poster_only["poster_ready_only"] is True
+    assert poster_only["generate_poster_ready_figures"] is True

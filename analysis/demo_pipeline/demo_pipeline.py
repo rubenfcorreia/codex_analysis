@@ -10,6 +10,8 @@ import pickle
 import shutil
 import subprocess
 import sys
+import platform
+import importlib.metadata
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
@@ -197,7 +199,23 @@ def _build_soma_boutons(recipe: Dict[str, Any], repo_root: Path, truth: Dict[str
     return expids
 
 
-def build_demo(recipe: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+def _package_available(name: str) -> bool:
+    try:
+        importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
+def _git_revision() -> str | None:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT), check=False, capture_output=True, text=True).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def build_demo(recipe: Dict[str, Any], output_dir: Path, *, original_recipe: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    original_recipe = dict(original_recipe or recipe)
     recipe = resolved_recipe(recipe)
     output_dir = Path(output_dir).resolve()
     repo_root = output_dir
@@ -218,20 +236,31 @@ def build_demo(recipe: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
         "state_comparison_states": list(recipe["states"]), "basal_apical_states": list(recipe["states"]), "channel": 0,
         "shuffle_n": int(recipe.get("shuffle_n", 2)), "correlation_shuffle_n": int(recipe.get("shuffle_n", 2)), "rebuild": True,
         "analysis_families": ["state", "basal_apical", "correlation", "mixed_model"], "output_dir": str(output_dir / "dendrites_results"),
-        "figure_output_dir": str(output_dir / "dendrites_results" / "figures"), "demo": False, "poster_ready_only": not bool(recipe["analysis"].get("generate_figures", True)), "generate_poster_ready_figures": bool(recipe["analysis"].get("generate_figures", True)),
+        "figure_output_dir": str(output_dir / "dendrites_results" / "figures"), "demo": False, "plot_profile": "full" if bool(recipe["analysis"].get("generate_figures", True)) else "analysis_only",
     }
     soma_config = {
         "analysis_name": "soma_bouton_pipeline", "repo_root": str(output_dir), "repo_base": str(output_dir), "user_id": "demo",
         "sleep_expids": soma_expids, "soma_channel": 1, "bouton_channel": 0, "state_comparison_states": list(recipe["states"]),
         "compartment_states": list(recipe["states"]), "shuffle_n": int(recipe.get("shuffle_n", 2)), "correlation_shuffle_n": int(recipe.get("shuffle_n", 2)),
         "correlation_inference": "circular_shift", "rebuild": True, "result_root": str(output_dir / "soma_bouton_results"),
-        "analysis_output_dir": str(output_dir / "soma_bouton_results" / "analysis"), "cache_root": str(output_dir / "soma_bouton_results" / "cache"), "poster_ready_only": not bool(recipe["analysis"].get("generate_figures", True)), "generate_poster_ready_figures": bool(recipe["analysis"].get("generate_figures", True)), "generate_dff_heatmaps": bool(recipe["analysis"].get("generate_figures", True)), "generate_visual_response_entity_figures": bool(recipe["analysis"].get("generate_figures", True)),
+        "analysis_output_dir": str(output_dir / "soma_bouton_results" / "analysis"), "cache_root": str(output_dir / "soma_bouton_results" / "cache"), "plot_profile": "full" if bool(recipe["analysis"].get("generate_figures", True)) else "analysis_only",
     }
+    _write_json(output_dir / "demo_config_original.json", original_recipe)
     _write_json(output_dir / "demo_config_resolved.json", recipe)
     _write_json(output_dir / "demo_truth.json", truth)
     _write_json(config_dir / "dendrites_config.json", dendrite_config)
     _write_json(config_dir / "soma_bouton_config.json", soma_config)
-    _write_json(output_dir / "demo_manifest.json", {"recipe_hash": recipe["recipe_hash"], "repo_root": str(repo_root), "dendrite_config": dendrite_config, "soma_bouton_config": soma_config, "generated_at": dt.datetime.now().isoformat(timespec="seconds")})
+    metadata = {
+        "recipe_hash": recipe["recipe_hash"],
+        "python": sys.version,
+        "platform": platform.platform(),
+        "packages": {name: importlib.metadata.version(name) for name in ("numpy", "scipy", "matplotlib") if _package_available(name)},
+        "git_revision": _git_revision(),
+        "methodology_version": "demo-platform-v1",
+        "generated_experiment_ids": {"dendrites": dendrite_expids, "soma_bouton": soma_expids},
+    }
+    _write_json(output_dir / "demo_run_metadata.json", metadata)
+    _write_json(output_dir / "demo_manifest.json", {"recipe_hash": recipe["recipe_hash"], "repo_root": str(repo_root), "dendrite_config": dendrite_config, "soma_bouton_config": soma_config, "metadata": metadata, "generated_at": dt.datetime.now().isoformat(timespec="seconds")})
     if recipe["analysis"].get("generate_figures", True):
         generate_preview(recipe, truth, output_dir / "expected_preview")
     return truth
@@ -260,9 +289,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         command.add_argument("--output-dir", type=Path, required=True)
     sub.choices["run"].add_argument("--only", choices=("dendrites", "soma_bouton"))
     args = parser.parse_args(argv)
+    original_recipe = {}
+    if args.config:
+        original_recipe = json.loads(args.config.read_text(encoding="utf-8"))
     recipe = load_recipe(args.config)
     if args.command in ("build", "preview", "run"):
-        build_demo(recipe, args.output_dir)
+        build_demo(recipe, args.output_dir, original_recipe=original_recipe or recipe)
     if args.command == "preview":
         return 0
     if args.command == "validate":

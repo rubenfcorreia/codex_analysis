@@ -112,6 +112,7 @@ from analysis.shared.analysis_cache import (
 )
 from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
 from analysis.shared.progression import run_soma_bouton_progression
+from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
@@ -3006,6 +3007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
     parser.add_argument("--plots-only", action="store_true", help="Skip metric recomputation and regenerate plots from written CSVs only.")
+    parser.add_argument("--plot-profile", choices=("full", "analysis_only", "poster_only"), help="Select full, analysis-only, or poster-only output generation.")
     parser.add_argument("--analysis-output-dir", type=Path, help="Stable analysis/statistics/cache directory override.")
     parser.add_argument("--figure-output-dir", type=Path, help="Disposable figure directory override.")
     parser.add_argument(
@@ -3024,6 +3026,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         config["rebuild"] = True
     if args.plots_only:
         config["plots_only"] = True
+    if args.plot_profile:
+        config["plot_profile"] = args.plot_profile
+    apply_plot_profile(config)
     if args.analysis_output_dir:
         config["analysis_output_dir"] = str(args.analysis_output_dir)
     if args.figure_output_dir:

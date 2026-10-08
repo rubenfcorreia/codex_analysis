@@ -39,6 +39,7 @@ from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.pipeline_logging import (
     current_step_prefix as shared_current_step_prefix,
     eprint as shared_eprint,
@@ -17736,6 +17737,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spine-coactivity-only", action="store_true", help="Skip the main state/correlation/matrix analyses and run only spine coactivity")
     parser.add_argument("--mixed-model-only", action="store_true", help="Skip the state/correlation/matrix analyses and run only the main mixed-model branch")
     parser.add_argument("--plots-only", action="store_true", help="Reuse saved caches and only generate plots, without rewriting CSV/JSON/report artifacts")
+    parser.add_argument("--plot-profile", choices=("full", "analysis_only", "poster_only"), help="Select full, analysis-only, or poster-only output generation")
     parser.add_argument(
         "--poster-ready-only",
         action="store_true",
@@ -17808,6 +17810,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "comparison_preset_names": parse_list_argument(args.comparison_presets) or None,
         "comparison_leaf": list(args.comparison_leaf) if args.comparison_leaf else None,
         "plots_only": True if args.plots_only else None,
+        "plot_profile": args.plot_profile,
         "poster_ready_only": True if args.poster_ready_only else None,
         "demo": True if args.demo else None,
         "channel": args.channel,
@@ -17826,6 +17829,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rebuild": True if args.rebuild else None,
     }
     config = merge_cli_config(cli_config, file_config)
+    apply_plot_profile(config)
     if config.get("comparison_presets"):
         if run_comparison_preset_subprocesses(config):
             return 0
