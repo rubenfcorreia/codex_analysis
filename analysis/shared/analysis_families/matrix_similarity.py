@@ -52,13 +52,21 @@ def matrix_similarity_analysis(
     n_a = len(vectors_a)
     rng = np.random.default_rng(int(shuffle_seed))
     null = []
+    # With equal-length vectors, every shuffled group correlation matrix is a
+    # submatrix of this one combined matrix.  This preserves the original
+    # values and removes repeated O(n^2) correlation calculations.
+    lengths = [np.asarray(vector).size for vector in combined]
+    combined_matrix = correlation_matrix(combined) if lengths and len(set(lengths)) == 1 else None
     for _ in range(max(0, int(shuffle_n))):
         perm = rng.permutation(len(combined))
-        group_a = [combined[i] for i in perm[:n_a]]
-        group_b = [combined[i] for i in perm[n_a:]]
-        m_a = correlation_matrix(group_a)
-        m_b = correlation_matrix(group_b)
-        tri_a_s, tri_b_s = upper_triangle_values(m_a), upper_triangle_values(m_b)
+        if combined_matrix is not None:
+            idx_a, idx_b = perm[:n_a], perm[n_a:]
+            tri_a_s = upper_triangle_values(combined_matrix[np.ix_(idx_a, idx_a)])
+            tri_b_s = upper_triangle_values(combined_matrix[np.ix_(idx_b, idx_b)])
+        else:
+            group_a = [combined[i] for i in perm[:n_a]]
+            group_b = [combined[i] for i in perm[n_a:]]
+            tri_a_s, tri_b_s = upper_triangle_values(correlation_matrix(group_a)), upper_triangle_values(correlation_matrix(group_b))
         mask_s = np.isfinite(tri_a_s) & np.isfinite(tri_b_s)
         if int(mask_s.sum()) < 2:
             continue

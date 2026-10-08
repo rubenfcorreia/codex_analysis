@@ -81,12 +81,25 @@ def correlation_analysis_for_observation(
                 shifts = np.array([], dtype=int)
             else:
                 shifts = rng.integers(minimum, usable, size=int(shuffle_n))
-        for shift in shifts[: int(shuffle_n)]:
-            shifted = np.roll(b, int(shift))
-            shift_mask = np.isfinite(a) & np.isfinite(shifted)
-            if int(shift_mask.sum()) < 3:
-                continue
-            null.append(float(stats.pearsonr(a[shift_mask], shifted[shift_mask]).statistic))
+        shifts = np.asarray(shifts[: int(shuffle_n)], dtype=int)
+        if shifts.size:
+            # Evaluate all circular shifts in one bounded batch.  The
+            # indexing is identical to np.roll(b, shift), while avoiding a
+            # Python/scipy call for every null sample.
+            indices = (np.arange(usable, dtype=int)[None, :] - shifts[:, None]) % usable
+            shifted = b[indices]
+            valid = np.isfinite(a)[None, :] & np.isfinite(shifted)
+            counts = valid.sum(axis=1)
+            a_values = np.where(valid, a[None, :], 0.0)
+            b_values = np.where(valid, shifted, 0.0)
+            a_mean = np.divide(a_values.sum(axis=1), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+            b_mean = np.divide(b_values.sum(axis=1), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+            a_centered = np.where(valid, a[None, :] - a_mean[:, None], 0.0)
+            b_centered = np.where(valid, shifted - b_mean[:, None], 0.0)
+            numerator = np.sum(a_centered * b_centered, axis=1)
+            denominator = np.sqrt(np.sum(a_centered * a_centered, axis=1) * np.sum(b_centered * b_centered, axis=1))
+            values = np.divide(numerator, denominator, out=np.full(shifts.shape, np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
+            null.extend(float(value) for value in values if np.isfinite(value))
     shuffle_p = float((np.sum(np.abs(null) >= abs(observed)) + 1) / (len(null) + 1)) if null else float("nan")
     return {
         **base,
