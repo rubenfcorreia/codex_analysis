@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .demo_pipeline import build_demo
+from .preview import generate_preview
 from .recipe_schema import default_recipe, load_recipe
 from .tmux_runner import launch, status as tmux_status, stop as tmux_stop
 
@@ -53,7 +54,7 @@ class DemoBuilderGUI(tk.Tk):
         ttk.Label(controls, text="Output").pack(side="left")
         ttk.Entry(controls, textvariable=self.output_dir, width=48).pack(side="left", padx=6)
         ttk.Button(controls, text="Browse", command=self._browse).pack(side="left")
-        for label, command in (("Build", self._build), ("Validate", self._validate), ("Run both", self._run), ("Stop", self._stop)):
+        for label, command in (("Build", self._build), ("Preview", self._preview), ("Validate", self._validate), ("Run both", self._run), ("Stop", self._stop)):
             ttk.Button(controls, text=label, command=command).pack(side="left", padx=3)
         ttk.Button(controls, text="Load recipe", command=self._load).pack(side="left", padx=3)
         ttk.Button(controls, text="Save recipe", command=self._save).pack(side="left", padx=3)
@@ -137,6 +138,16 @@ class DemoBuilderGUI(tk.Tk):
             self._append_log("Demo built with expected previews")
         except Exception as exc:
             messagebox.showerror("Build failed", str(exc))
+
+    def _preview(self) -> None:
+        try:
+            recipe = self._current_recipe()
+            truth = build_demo(recipe, Path(self.output_dir.get()))
+            generate_preview(recipe, truth, Path(self.output_dir.get()) / "expected_preview")
+            self.status.set("Expected preview generated")
+            self._append_log("Generated truth-derived expected preview")
+        except Exception as exc:
+            messagebox.showerror("Preview failed", str(exc))
 
     def _validate(self) -> None:
         command = ["python3", "-m", "analysis.demo_pipeline.demo_pipeline", "validate", "--output-dir", self.output_dir.get()]

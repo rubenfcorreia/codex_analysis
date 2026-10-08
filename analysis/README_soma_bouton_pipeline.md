@@ -16,3 +16,7 @@ Progression analysis is enabled with `progression_analysis.enabled` in the confi
 ## Synthetic demos
 
 Use the separate reproducible demo platform documented in [analysis/demo_pipeline/README.md](demo_pipeline/README.md).
+
+## Plot profiles
+
+The CLI supports --plot-profile full (default), analysis_only, and poster_only.
