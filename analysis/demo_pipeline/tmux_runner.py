@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,10 +41,11 @@ def launch(output_dir: Path, pipeline: str) -> Dict[str, Any]:
         raise FileNotFoundError(config)
     script_dir = "dendrites_pipeline" if pipeline == "dendrites" else "soma_bouton_pipeline"
     script = "dendrites_pipeline.py" if pipeline == "dendrites" else "soma_bouton_pipeline.py"
-    command = ["python3", str(Path(__file__).resolve().parents[2] / "analysis" / script_dir / script), "--config", str(config)]
+    command = [sys.executable, str(Path(__file__).resolve().parents[2] / "analysis" / script_dir / script), "--config", str(config)]
     logs = output_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     log_path = logs / f"{pipeline}.log"
+    exit_path = logs / f"{pipeline}.exit"
     session = session_name(output_dir, pipeline)
     if subprocess.run(["tmux", "has-session", "-t", session], check=False).returncode == 0:
         raise RuntimeError(f"tmux session already exists: {session}")
@@ -52,7 +54,7 @@ def launch(output_dir: Path, pipeline: str) -> Dict[str, Any]:
         + " ".join(shlex.quote(item) for item in command)
         + " 2>&1 | tee -a "
         + shlex.quote(str(log_path))
-        + "; exit " + "$" + "{PIPESTATUS[0]}"
+        + "; rc=" + "$" + "{PIPESTATUS[0]}; echo " + "$" + "rc > " + shlex.quote(str(exit_path)) + "; exit " + "$" + "rc"
     )
     subprocess.run(["tmux", "new-session", "-d", "-s", session, "bash", "-lc", shell_command], check=True)
     metadata = {
@@ -76,11 +78,14 @@ def status(output_dir: Path, pipeline: str) -> Dict[str, Any]:
     alive = subprocess.run(["tmux", "has-session", "-t", session], check=False).returncode == 0
     payload = _read_metadata(output_dir)
     entry = _find_entry(payload, session) or {"session": session, "pipeline": pipeline}
+    exit_path = output_dir / "logs" / f"{pipeline}.exit"
     if alive:
         entry["status"] = "running"
     else:
         if entry.get("status") == "running":
-            entry["status"] = "completed"
+            exit_code = exit_path.read_text().strip() if exit_path.exists() else None
+            entry["exit_status"] = exit_code
+            entry["status"] = "completed" if exit_code == "0" else ("failed" if exit_code is not None else "unknown")
         if "ended_at" not in entry:
             entry["ended_at"] = dt.datetime.now().isoformat()
             for candidate in reversed(payload.get("tmux", [])):

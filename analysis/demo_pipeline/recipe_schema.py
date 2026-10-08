@@ -45,6 +45,11 @@ def default_recipe() -> Dict[str, Any]:
             "run_soma_bouton": True,
             "generate_figures": True,
         },
+        "runtime": {
+            "timeout_s": 3600,
+            "max_output_bytes": 2_000_000_000,
+            "cpu_thread_limit": 1,
+        },
     }
 
 
@@ -76,6 +81,13 @@ def validate_recipe(recipe: Dict[str, Any]) -> None:
         raise ValueError("states must be a non-empty list of unique labels")
     if int(recipe.get("replicates", 0)) <= 0:
         raise ValueError("replicates must be positive")
+    runtime = recipe.get("runtime", {})
+    if float(runtime.get("timeout_s", 0)) <= 0:
+        raise ValueError("runtime.timeout_s must be positive")
+    if int(runtime.get("max_output_bytes", 0)) <= 0:
+        raise ValueError("runtime.max_output_bytes must be positive")
+    if int(runtime.get("cpu_thread_limit", 0)) <= 0:
+        raise ValueError("runtime.cpu_thread_limit must be positive")
     if float(recipe.get("duration_s", 0)) <= 0 or float(recipe.get("dt_s", 0)) <= 0:
         raise ValueError("duration_s and dt_s must be positive")
     for compartment in ("basal", "apical"):

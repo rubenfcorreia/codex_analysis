@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .demo_pipeline import build_demo
 from .recipe_schema import default_recipe, load_recipe
-from .tmux_runner import launch
+from .tmux_runner import launch, status as tmux_status, stop as tmux_stop
 
 
 class DemoBuilderGUI(tk.Tk):
@@ -19,7 +19,9 @@ class DemoBuilderGUI(tk.Tk):
         self.recipe = default_recipe()
         self.output_dir = tk.StringVar(value=str(Path("/tmp/codex_demo")))
         self.status = tk.StringVar(value="Ready")
+        self.log_text = None
         self._build_widgets()
+        self.after(1000, self._poll_status)
 
     def _build_widgets(self) -> None:
         root = ttk.Frame(self, padding=12)
@@ -51,9 +53,63 @@ class DemoBuilderGUI(tk.Tk):
         ttk.Label(controls, text="Output").pack(side="left")
         ttk.Entry(controls, textvariable=self.output_dir, width=48).pack(side="left", padx=6)
         ttk.Button(controls, text="Browse", command=self._browse).pack(side="left")
-        for label, command in (("Build", self._build), ("Validate", self._validate), ("Run both", self._run)):
+        for label, command in (("Build", self._build), ("Validate", self._validate), ("Run both", self._run), ("Stop", self._stop)):
             ttk.Button(controls, text=label, command=command).pack(side="left", padx=3)
+        ttk.Button(controls, text="Load recipe", command=self._load).pack(side="left", padx=3)
+        ttk.Button(controls, text="Save recipe", command=self._save).pack(side="left", padx=3)
+        ttk.Button(controls, text="Reset", command=self._reset).pack(side="left", padx=3)
         ttk.Label(root, textvariable=self.status).pack(anchor="w", pady=6)
+        self.log_text = tk.Text(root, height=8, state="disabled")
+        self.log_text.pack(fill="x", pady=4)
+
+    def _append_log(self, text: str) -> None:
+        if self.log_text is None:
+            return
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", text + chr(10))
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def _load(self) -> None:
+        selected = filedialog.askopenfilename(filetypes=[("JSON recipes", "*.json")])
+        if selected:
+            self.recipe = load_recipe(selected)
+            self.status.set("Recipe loaded")
+            self._append_log(f"Loaded {selected}")
+
+    def _save(self) -> None:
+        selected = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON recipes", "*.json")])
+        if selected:
+            Path(selected).write_text(json.dumps(self._current_recipe(), indent=2, sort_keys=True) + chr(10))
+            self._append_log(f"Saved {selected}")
+
+    def _reset(self) -> None:
+        self.recipe = default_recipe()
+        self.basal.set(2.0)
+        self.apical.set(0.5)
+        self.soma1.set(3.0)
+        self.soma2.set(1.0 / 3.0)
+        self.noise.set(0.0)
+        self.seed.set(12345)
+        self.status.set("Defaults restored")
+
+    def _stop(self) -> None:
+        for pipeline in ("dendrites", "soma_bouton"):
+            try:
+                tmux_stop(Path(self.output_dir.get()), pipeline)
+            except Exception:
+                pass
+        self.status.set("tmux sessions stopped")
+
+    def _poll_status(self) -> None:
+        states = []
+        for pipeline in ("dendrites", "soma_bouton"):
+            try:
+                states.append(f"{pipeline}: {tmux_status(Path(self.output_dir.get()), pipeline).get('status', 'pending')}")
+            except Exception:
+                states.append(f"{pipeline}: pending")
+        self._append_log(" | ".join(states))
+        self.after(2000, self._poll_status)
 
     def _browse(self) -> None:
         selected = filedialog.askdirectory()
@@ -78,6 +134,7 @@ class DemoBuilderGUI(tk.Tk):
         try:
             build_demo(self._current_recipe(), Path(self.output_dir.get()))
             self.status.set("Demo built")
+            self._append_log("Demo built with expected previews")
         except Exception as exc:
             messagebox.showerror("Build failed", str(exc))
 
@@ -92,6 +149,7 @@ class DemoBuilderGUI(tk.Tk):
             launch(Path(self.output_dir.get()), "dendrites")
             launch(Path(self.output_dir.get()), "soma_bouton")
             self.status.set("tmux sessions started")
+            self._append_log("Started dendrites and soma/bouton tmux sessions")
         except Exception as exc:
             messagebox.showerror("Run failed", str(exc))
 

@@ -236,14 +236,14 @@ def build_demo(recipe: Dict[str, Any], output_dir: Path, *, original_recipe: Dic
         "state_comparison_states": list(recipe["states"]), "basal_apical_states": list(recipe["states"]), "channel": 0,
         "shuffle_n": int(recipe.get("shuffle_n", 2)), "correlation_shuffle_n": int(recipe.get("shuffle_n", 2)), "rebuild": True,
         "analysis_families": ["state", "basal_apical", "correlation", "mixed_model"], "output_dir": str(output_dir / "dendrites_results"),
-        "figure_output_dir": str(output_dir / "dendrites_results" / "figures"), "demo": False, "plot_profile": "full" if bool(recipe["analysis"].get("generate_figures", True)) else "analysis_only",
+        "figure_output_dir": str(output_dir / "dendrites_results" / "figures"), "demo": False, "plot_profile": "full" if bool(recipe["analysis"].get("generate_figures", True)) else "analysis_only", "cpu_thread_limit": int(recipe["runtime"].get("cpu_thread_limit", 1)),
     }
     soma_config = {
         "analysis_name": "soma_bouton_pipeline", "repo_root": str(output_dir), "repo_base": str(output_dir), "user_id": "demo",
         "sleep_expids": soma_expids, "soma_channel": 1, "bouton_channel": 0, "state_comparison_states": list(recipe["states"]),
         "compartment_states": list(recipe["states"]), "shuffle_n": int(recipe.get("shuffle_n", 2)), "correlation_shuffle_n": int(recipe.get("shuffle_n", 2)),
         "correlation_inference": "circular_shift", "rebuild": True, "result_root": str(output_dir / "soma_bouton_results"),
-        "analysis_output_dir": str(output_dir / "soma_bouton_results" / "analysis"), "cache_root": str(output_dir / "soma_bouton_results" / "cache"), "plot_profile": "full" if bool(recipe["analysis"].get("generate_figures", True)) else "analysis_only",
+        "analysis_output_dir": str(output_dir / "soma_bouton_results" / "analysis"), "cache_root": str(output_dir / "soma_bouton_results" / "cache"), "plot_profile": "full" if bool(recipe["analysis"].get("generate_figures", True)) else "analysis_only", "cpu_thread_limit": int(recipe["runtime"].get("cpu_thread_limit", 1)),
     }
     _write_json(output_dir / "demo_config_original.json", original_recipe)
     _write_json(output_dir / "demo_config_resolved.json", recipe)
@@ -266,16 +266,38 @@ def build_demo(recipe: Dict[str, Any], output_dir: Path, *, original_recipe: Dic
     return truth
 
 
+def _output_size_bytes(output_dir: Path) -> int:
+    return sum(path.stat().st_size for path in Path(output_dir).rglob("*") if path.is_file())
+
+
 def run_pipeline_configs(output_dir: Path, *, only: str | None = None) -> int:
     configs = []
     if only in (None, "dendrites"):
         configs.append([sys.executable, str(ROOT / "analysis/dendrites_pipeline/dendrites_pipeline.py"), "--config", str(output_dir / "configs/dendrites_config.json")])
     if only in (None, "soma_bouton"):
         configs.append([sys.executable, str(ROOT / "analysis/soma_bouton_pipeline/soma_bouton_pipeline.py"), "--config", str(output_dir / "configs/soma_bouton_config.json")])
+    runtime = json.loads((output_dir / "demo_config_resolved.json").read_text()).get("runtime", {})
+    timeout_s = float(runtime.get("timeout_s", 3600))
+    max_output_bytes = int(runtime.get("max_output_bytes", 2_000_000_000))
+    metadata_path = output_dir / "demo_run_metadata.json"
+    run_metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+    run_metadata.setdefault("pipeline_runs", [])
     for command in configs:
-        completed = subprocess.run(command, cwd=str(ROOT), check=False)
-        if completed.returncode:
-            return int(completed.returncode)
+        started = dt.datetime.now().isoformat()
+        try:
+            completed = subprocess.run(command, cwd=str(ROOT), check=False, timeout=timeout_s)
+            status = "completed" if completed.returncode == 0 else "failed"
+            exit_code = int(completed.returncode)
+        except subprocess.TimeoutExpired:
+            status, exit_code = "timeout", 124
+        run_metadata["pipeline_runs"].append({"command": command, "started_at": started, "ended_at": dt.datetime.now().isoformat(), "status": status, "exit_code": exit_code})
+        _write_json(metadata_path, run_metadata)
+        if exit_code:
+            return exit_code
+        if _output_size_bytes(output_dir) > max_output_bytes:
+            run_metadata["pipeline_runs"][-1]["status"] = "output_limit_exceeded"
+            _write_json(metadata_path, run_metadata)
+            return 125
     result = validate_demo(output_dir)
     return 0 if result["passed"] else 1
 
