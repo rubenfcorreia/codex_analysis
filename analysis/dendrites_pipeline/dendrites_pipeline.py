@@ -40,6 +40,7 @@ from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PR
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.plot_profiles import apply_plot_profile
+from analysis.shared.runtime_diagnostics import finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics
 from analysis.shared.pipeline_logging import (
     current_step_prefix as shared_current_step_prefix,
     eprint as shared_eprint,
@@ -17921,6 +17922,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shared_shuffle_cache_rebuild = bool(config.get("shared_shuffle_cache_rebuild"))
         layout = resolve_result_layout(config, root_key="output_dir", legacy_root_key="output_dir", repo_root=REPO_ROOT)
         output_dir = layout.analysis_root
+        runtime_diagnostics_start = snapshot_runtime_diagnostics(output_dir)
         cache_path = resolve_repo_path(config.get("cache_path") or (ensure_dir(output_dir / DEFAULT_CACHE_DIRNAME) / DEFAULT_CACHE_NAME), REPO_ROOT)
         analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
         analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
@@ -18420,6 +18422,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
     }
     results["stage_timings"] = get_stage_timings()
+    results["runtime_diagnostics"] = finish_runtime_diagnostics(runtime_diagnostics_start, output_dir)
     timing_report_path = output_dir / "timing_report.json"
     if not plots_only:
         timing_report_path.write_text(json.dumps(jsonable({

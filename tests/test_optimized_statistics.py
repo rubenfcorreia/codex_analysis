@@ -85,3 +85,16 @@ def test_plot_profiles_preserve_full_and_disable_analysis_only():
     poster_only = apply_plot_profile({"plot_profile": "poster_only"})
     assert poster_only["poster_ready_only"] is True
     assert poster_only["generate_poster_ready_figures"] is True
+
+
+def test_runtime_diagnostics_reports_no_figure_leak(tmp_path):
+    import matplotlib.pyplot as plt
+    from analysis.shared.runtime_diagnostics import finish, snapshot
+
+    start = snapshot(tmp_path)
+    figure = plt.figure()
+    figure.savefig(tmp_path / "figure.png")
+    plt.close(figure)
+    result = finish(start, tmp_path)
+    assert result["figure_leak_count"] == 0
+    assert result["output_file_count_delta"] == 1

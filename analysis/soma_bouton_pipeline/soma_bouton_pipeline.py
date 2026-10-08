@@ -113,6 +113,7 @@ from analysis.shared.analysis_cache import (
 from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
+from analysis.shared.runtime_diagnostics import finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
@@ -1041,6 +1042,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     pipeline_started = time.perf_counter()
     layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
     result_root = layout.analysis_root
+    runtime_diagnostics_start = snapshot_runtime_diagnostics(result_root)
     preset_name = str(config.get("comparison_preset_name") or "default")
     if config.get("branch_first_figures"):
         # Comparison presets always use their canonical pooled/all leaf; a
@@ -2882,6 +2884,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "shared_shuffle_cache_status": str(shared_shuffle_cache_status),
             "shared_shuffle_cache_entries": len(shared_shuffle_cache.get("entries", {})),
         },
+        "runtime_diagnostics": finish_runtime_diagnostics(runtime_diagnostics_start, result_root),
         "output_root": str(result_root),
         "pipeline_elapsed_s": float(time.perf_counter() - pipeline_started),
     }
