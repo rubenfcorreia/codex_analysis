@@ -290,12 +290,13 @@ def run_state_family(
                 figure_root=figure_root,
             )
 
-        _render_visual_response_state_summary_figures(
-            output_dir,
-            results,
-            cache,
-            figure_root=figure_root,
-        )
+        with step_scope("figure generation: visual_response_state_summary"):
+            _render_visual_response_state_summary_figures(
+                output_dir,
+                results,
+                cache,
+                figure_root=figure_root,
+            )
 
 def _render_visual_response_state_summary_figures(
     output_dir: Any,
@@ -736,7 +737,8 @@ def run_cached_analysis(
     if "state" in selected_families:
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
-            save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
+            with step_scope("save family cache: state"):
+                save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
     if transition_analysis and bool(transition_analysis.get("enabled", False)):
         with step_scope("state transitions"):
             results["state_transitions"] = run_transition_analysis(

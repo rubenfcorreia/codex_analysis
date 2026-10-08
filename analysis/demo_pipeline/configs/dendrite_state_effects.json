@@ -1,0 +1,8 @@
+{
+  "_comment": "Dendrite-only state effect overrides.",
+  "analysis": {"run_dendrites": true, "run_soma_bouton": false},
+  "dendrites": {
+    "basal": {"activity_scale": 2.0, "frequency_scale": 2.0},
+    "apical": {"activity_scale": 0.5, "frequency_scale": 0.5}
+  }
+}

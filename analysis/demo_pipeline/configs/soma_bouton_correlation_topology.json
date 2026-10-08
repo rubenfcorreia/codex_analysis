@@ -1,0 +1,13 @@
+{
+  "_comment": "Soma/bouton topology: bouton_1 follows soma_1, bouton_2 is independent, bouton_3 follows soma_2.",
+  "analysis": {"run_dendrites": false, "run_soma_bouton": true},
+  "somas": {
+    "soma_1": {"activity_scale": 3.0, "frequency_scale": 3.0},
+    "soma_2": {"activity_scale": 0.3333333333333333, "frequency_scale": 0.3333333333333333}
+  },
+  "boutons": {
+    "bouton_1": {"coupled_to": "soma_1"},
+    "bouton_2": {"coupled_to": null},
+    "bouton_3": {"coupled_to": "soma_2"}
+  }
+}

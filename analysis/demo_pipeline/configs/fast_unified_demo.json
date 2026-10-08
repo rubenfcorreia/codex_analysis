@@ -1,0 +1,10 @@
+{
+  "_comment": "Small deterministic demo for CI and quick pipeline smoke tests.",
+  "mode": "fast",
+  "replicates": 1,
+  "seed": 12345,
+  "shuffle_n": 2,
+  "analysis": {
+    "generate_figures": false
+  }
+}

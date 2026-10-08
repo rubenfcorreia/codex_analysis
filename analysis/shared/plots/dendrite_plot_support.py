@@ -2416,7 +2416,13 @@ def _plot_visual_response_entity_trace_figure(
     fig.suptitle(f"{title_prefix} {response_row.get('animal_id', '')} {entity_id}{cohort_text}", fontsize=POSTER_SUPTITLE_SIZE - 3, y=0.985)
     fig.subplots_adjust(left=0.12, right=0.98, bottom=0.16, top=0.84)
     output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}_{label}_traces.svg"
-    save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
+    try:
+        save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
+    finally:
+        # These figures are batch-rendered and are not displayed interactively.
+        # Close each one immediately so repeated entity plots do not accumulate
+        # in pyplot's global figure registry.
+        plt.close(fig)
     return str(output_path)
 
 
@@ -2508,7 +2514,11 @@ def plot_visual_response_entity_figure(
     fig.suptitle(f"{kind.capitalize()} {title_label}{cohort_text}", fontsize=POSTER_SUPTITLE_SIZE - 3, y=0.985)
     fig.subplots_adjust(left=0.06, right=0.99, bottom=0.16, top=0.84, wspace=0.36)
     output_path = Path(fig_dir) / f"{safe_filename_component(str(response_row.get('animal_id') or 'animal'))}_{safe_filename_component(entity_id)}_{cohort_label}_blank_vs_movies.svg"
-    save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
+    try:
+        save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=("png",))
+    finally:
+        # Batch-rendered figures should not accumulate in pyplot.
+        plt.close(fig)
     return str(output_path)
 
 

@@ -4,12 +4,26 @@ import argparse
 import copy
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
+CPU_THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "BLIS_NUM_THREADS",
+)
+for _thread_env_var in CPU_THREAD_LIMIT_ENV_VARS:
+    os.environ[_thread_env_var] = "1"
+
 import numpy as np
+try:
+    from threadpoolctl import threadpool_limits
+except Exception:
+    threadpool_limits = None
+
+_CPU_THREAD_LIMIT_CONTROLLER = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -102,11 +116,28 @@ from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
     step_message,
+    step_progress,
     step_scope,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_cpu_thread_limit(thread_limit: Any = 1) -> int:
+    global _CPU_THREAD_LIMIT_CONTROLLER
+    limit = max(1, int(thread_limit or 1))
+    for env_var in CPU_THREAD_LIMIT_ENV_VARS:
+        os.environ[env_var] = str(limit)
+    if threadpool_limits is not None:
+        if _CPU_THREAD_LIMIT_CONTROLLER is not None:
+            try:
+                _CPU_THREAD_LIMIT_CONTROLLER.__exit__(None, None, None)
+            except Exception:
+                pass
+        _CPU_THREAD_LIMIT_CONTROLLER = threadpool_limits(limits=limit)
+        _CPU_THREAD_LIMIT_CONTROLLER.__enter__()
+    return limit
 
 
 def _stage(label: str, detail: str | None = None) -> None:
@@ -136,6 +167,7 @@ def _json_safe(value: Any) -> Any:
 
 DEFAULT_CONFIG = {
     "analysis_name": "soma_bouton_pipeline",
+    "cpu_thread_limit": 1,
     "result_root": "results/soma_bouton_pipeline",
     "cache_root": "results/soma_bouton_pipeline/analysis/cache",
     "movie_expids": [],
@@ -1264,12 +1296,15 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         selected_states = list(selected_states_by_mode.get(mode, []))
         row_states = list(union_states_by_mode.get(mode, selected_states)) if union_cache_enabled else selected_states
         _stage("state selection", f"{mode}: {', '.join(selected_states) if selected_states else 'none'}")
-        for expid in expids_by_mode.get(mode, []):
+        mode_expids = list(expids_by_mode.get(mode, []))
+        for exp_idx, expid in enumerate(mode_expids, start=1):
+            step_progress(exp_idx, len(mode_expids), label=f"{mode} | {expid}")
             # Figure-only runs consume the validated analysis-results cache;
             # constructing raw experiment contexts here can unnecessarily
             # deserialize incompatible legacy source pickles.
             if config.get("plots_only"):
                 continue
+            step_message(f"START experiment context: {mode} | {expid}")
             ctx = build_experiment_context(
                 expid=expid,
                 mode=mode,
@@ -1280,7 +1315,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             experiment_rows.append(experiment_summary_row(ctx))
             transition_contexts.append(ctx)
             if config.get("plots_only") or isinstance(union_rows_payload, dict):
+                step_message(f"DONE experiment context: {mode} | {expid}")
                 continue
+            step_message(f"PROCESS activity/events: {mode} | {expid}")
             state_masks = state_masks_for_context(ctx, row_states)
             activity_rows.extend(activity_rows_for_context(ctx, row_states, state_masks=state_masks))
             coincidence_rows.extend(
@@ -1292,6 +1329,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
             )
             if pairwise_family_rows is None:
+                step_message(f"PROCESS correlations: {mode} | {expid}")
                 correlation_rows.extend(bouton_soma_correlation_rows(
                     ctx, row_states, state_masks=state_masks,
                     correlation_shuffle_n=correlation_shuffle_n,
@@ -1319,6 +1357,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     correlation_min_shift_frames=correlation_min_shift_frames,
                     shared_shuffle_cache=shared_shuffle_cache,
                 ))
+            step_message(f"PROCESS lag scan: {mode} | {expid}")
             lag_rows.extend(
                 lag_scan_rows(
                     ctx,
@@ -1329,6 +1368,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
             )
             if mode == "movie":
+                step_message(f"PROCESS visual response: {mode} | {expid}")
                 visual_response_rows.extend(
                     _visual_response_entity_rows(
                         ctx,
@@ -1349,6 +1389,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         locomotion_threshold=float(config.get("locomotion_threshold", 0.0)) if config.get("locomotion_threshold") is not None else None,
                     )
                 )
+            step_message(f"DONE experiment: {mode} | {expid}")
         _stage(
             "mode complete",
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
@@ -2906,6 +2947,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     """Run one soma preset with isolated task timing and report metadata."""
     preset_name = str(config.get("comparison_preset_name") or "default")
+    cpu_thread_limit = _apply_cpu_thread_limit(config.get("cpu_thread_limit", 1))
     reset_stage_timings(pipeline="soma_bouton_pipeline", preset=preset_name)
     step_message(
         f"RUN pipeline=soma_bouton_pipeline preset={preset_name} "

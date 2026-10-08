@@ -1,0 +1,7 @@
+{
+  "_comment": "Full deterministic demo. Edit this file or copy it before changing the demo.",
+  "mode": "full",
+  "replicates": 4,
+  "seed": 12345,
+  "shuffle_n": 20
+}

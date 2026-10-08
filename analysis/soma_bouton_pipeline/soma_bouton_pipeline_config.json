@@ -34,6 +34,7 @@
     "mixed_model_contrast_p_source": "Choose whether mixed-model contrasts report classical or shuffle-based p-values."
   },
   "analysis_name": "soma_bouton_pipeline",
+  "cpu_thread_limit": 1,
   "movie_expids": [
     "2026-05-11_01_ESRC033",
     "2026-05-13_01_ESRC033",
