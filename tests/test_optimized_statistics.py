@@ -58,3 +58,16 @@ def test_vectorized_lag_scan_matches_legacy_interpolation():
     _, actual = lagged_correlation(time, x, time, y, lags)
     expected = np.asarray([pairwise_correlation(x, interpolate_series(time + lag, y, time)) for lag in lags])
     assert np.allclose(actual, expected, equal_nan=True, atol=1e-12)
+
+
+def test_shared_shuffle_cache_reports_reuse_and_invalidation(tmp_path):
+    from analysis.soma_bouton_pipeline.soma_bouton_pipeline import _load_or_build_shared_permutation_cache
+
+    path = tmp_path / "shuffle.npz"
+    metadata = {"seed": 1, "n": 4}
+    _, rebuilt, status = _load_or_build_shared_permutation_cache(path, metadata=metadata, rebuild=False)
+    assert rebuilt and status == "missing"
+    _, rebuilt, status = _load_or_build_shared_permutation_cache(path, metadata=metadata, rebuild=False)
+    assert not rebuilt and status == "reused"
+    _, rebuilt, status = _load_or_build_shared_permutation_cache(path, metadata={"seed": 2, "n": 4}, rebuild=False)
+    assert rebuilt and status == "meta_mismatch"
