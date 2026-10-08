@@ -959,17 +959,25 @@ def _load_or_build_shared_permutation_cache(
     *,
     metadata: Dict[str, Any],
     rebuild: bool,
-) -> tuple[Dict[str, Any], bool]:
-    if not rebuild and path.exists():
+) -> tuple[Dict[str, Any], bool, str]:
+    if rebuild:
+        status = "rebuild_requested"
+    elif not path.exists():
+        status = "missing"
+    else:
         try:
             payload = load_npz_cache(path)
-            if payload.get("schema_version") == 1 and payload.get("meta_hash") == analysis_cache_meta_hash(metadata):
-                return payload, False
+            if payload.get("schema_version") != 1:
+                status = "schema_mismatch"
+            elif payload.get("meta_hash") != analysis_cache_meta_hash(metadata):
+                status = "meta_mismatch"
+            else:
+                return payload, False, "reused"
         except Exception:
-            pass
+            status = "unreadable"
     payload = {"schema_version": 1, "meta": metadata, "meta_hash": analysis_cache_meta_hash(metadata), "entries": {}}
     save_npz_cache(path, payload)
-    return payload, True
+    return payload, True, status
 
 
 def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
@@ -1097,7 +1105,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
     }
-    shared_shuffle_cache, shared_shuffle_cache_rebuilt = _load_or_build_shared_permutation_cache(
+    shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = _load_or_build_shared_permutation_cache(
         shared_shuffle_cache_file,
         metadata=shared_shuffle_metadata,
         rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
@@ -1242,7 +1250,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     soma_pairwise_rows = list(pairwise_family_rows.get("soma_pairwise_rows", []))
                     bouton_pairwise_rows = list(pairwise_family_rows.get("bouton_pairwise_rows", []))
                     save_family_results_cache(
-                        pairwise_family_cache_file,
+                        analysis_results_cache_file,
                         "pairwise_correlation",
                         pairwise_family_rows,
                         base_meta=pairwise_family_meta,
@@ -1541,14 +1549,14 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     lag_summary = lag_summary_rows(lag_rows)
     coincidence_counts = dict(coincidence_family_results.get("counts", {}))
     save_family_results_cache(
-        coincidence_family_cache_file,
+        analysis_results_cache_file,
         "coincidence",
         coincidence_family_results,
         base_meta=coincidence_family_meta,
     )
     if pairwise_family_rows is None:
         save_family_results_cache(
-            pairwise_family_cache_file,
+            analysis_results_cache_file,
             "pairwise_correlation",
             {
                 "correlation_rows": correlation_rows,
@@ -1698,7 +1706,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
     if pairwise_family_rows is None:
         save_family_results_cache(
-            pairwise_family_cache_file,
+            analysis_results_cache_file,
             "pairwise_correlation",
             {
                 "correlation_rows": correlation_rows_with_cohort,
@@ -2870,6 +2878,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "source_cache_path": str(source_cache_file),
             "shared_shuffle_cache_path": str(shared_shuffle_cache_file),
             "shared_shuffle_cache_reused": not bool(shared_shuffle_cache_rebuilt),
+            "shared_shuffle_cache_status": str(shared_shuffle_cache_status),
             "shared_shuffle_cache_entries": len(shared_shuffle_cache.get("entries", {})),
         },
         "output_root": str(result_root),
