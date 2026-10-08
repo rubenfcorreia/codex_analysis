@@ -1164,12 +1164,16 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
     pairwise_family_cache: Dict[str, Any] | None = None
     pairwise_family_rows: Dict[str, List[Dict[str, Any]]] | None = None
+    pairwise_family_cache_status = "not_checked"
+    analysis_results_cache_status = "not_checked"
+    analysis_tables_cache_status = "not_checked"
     if not bool(config.get("rebuild")):
         pairwise_family_cache, pairwise_family_status = load_family_results_cache(
             pairwise_family_cache_file,
             expected_meta=pairwise_family_meta,
             rebuild=bool(config.get("analysis_results_rebuild")),
         )
+        pairwise_family_cache_status = pairwise_family_status
         if pairwise_family_status == "ok" and isinstance(pairwise_family_cache, dict):
             pairwise_family_rows = dict(pairwise_family_cache.get("analysis_results", {}))
             correlation_rows = list(pairwise_family_rows.get("correlation_rows", []))
@@ -1181,6 +1185,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             expected_meta=analysis_results_meta,
             rebuild=bool(config.get("analysis_results_rebuild")),
         )
+        analysis_results_cache_status = cached_status
         if cached_status == "ok" and isinstance(cached_results, dict):
             manifest = dict(cached_results.get("analysis_results", {}))
             manifest.setdefault("cache_summary", {})
@@ -2874,8 +2879,13 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "analysis_run_cache_path": str(analysis_run_cache_file),
             "analysis_results_cache_path": str(analysis_results_cache_file),
             "analysis_results_cache_reused": False,
+            "analysis_results_cache_status": str(analysis_results_cache_status),
+            "analysis_results_cache_key": analysis_cache_meta_hash(analysis_results_meta),
             "analysis_tables_cache_path": str(analysis_tables_cache_file),
             "analysis_tables_cache_reused": False,
+            "analysis_tables_cache_status": str(analysis_tables_cache_status),
+            "analysis_tables_cache_key": analysis_cache_meta_hash(analysis_results_meta),
+            "pairwise_family_cache_status": str(pairwise_family_cache_status),
             "coincidence_family_cache_path": str(coincidence_family_cache_file),
             "coincidence_family_cache_reused": False,
             "source_cache_path": str(source_cache_file),
@@ -2888,6 +2898,16 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "output_root": str(result_root),
         "pipeline_elapsed_s": float(time.perf_counter() - pipeline_started),
     }
+    manifest["cache_summary"]["analysis_tables_cache_status"] = str(analysis_tables_cache_status)
+    manifest["cache_summary"]["cache_key_manifest"] = str(result_root / "cache_key_manifest.json")
+    cache_key_manifest = {
+        "schema_version": 1,
+        "analysis_results": {"path": str(analysis_results_cache_file), "key": analysis_cache_meta_hash(analysis_results_meta), "scope": "preset_specific", "status": str(analysis_results_cache_status)},
+        "analysis_tables": {"path": str(analysis_tables_cache_file), "key": analysis_cache_meta_hash(analysis_results_meta), "scope": "state_filterable", "status": str(analysis_tables_cache_status)},
+        "pairwise_family": {"path": str(pairwise_family_cache_file), "key": analysis_cache_meta_hash(pairwise_family_meta), "scope": "state_specific", "status": str(pairwise_family_cache_status)},
+        "coincidence_family": {"path": str(coincidence_family_cache_file), "key": analysis_cache_meta_hash(coincidence_family_meta), "scope": "state_specific"},
+    }
+    (result_root / "cache_key_manifest.json").write_text(json.dumps(cache_key_manifest, indent=2, sort_keys=True) + "\n")
     manifest_json = _json_safe(manifest)
     timing_report_path = result_root / "timing_report.json"
     timing_report_path.write_text(json.dumps({
@@ -2930,6 +2950,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         },
     }
     save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
+    analysis_tables_cache_status = "built"
     save_npz_cache(shared_shuffle_cache_file, shared_shuffle_cache)
     write_manifest(result_root, manifest_json)
     if general_output_root is not None and generate_shared_general_figures:
@@ -2948,6 +2969,13 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "analysis_results": analysis_results_cache_payload(manifest_json),
         },
     )
+    manifest_json["cache_summary"]["analysis_results_cache_status"] = "built"
+    manifest_json["cache_summary"]["analysis_tables_cache_status"] = "built"
+    manifest_json["cache_summary"]["cache_key_manifest"] = str(result_root / "cache_key_manifest.json")
+    write_manifest(result_root, manifest_json)
+    cache_key_manifest["analysis_results"]["status"] = "built"
+    cache_key_manifest["analysis_tables"]["status"] = "built"
+    (result_root / "cache_key_manifest.json").write_text(json.dumps(cache_key_manifest, indent=2, sort_keys=True) + "\n")
     if poster_ready_errors:
         for error in poster_ready_errors:
             print(error, file=sys.stderr)
@@ -2956,6 +2984,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         for figure_path in poster_ready_figures:
             print(f"  - {figure_path}")
     _stage("completed", f"{preset_name} with {len(experiment_rows)} experiments")
+    manifest = manifest_json
     return manifest
 
 
