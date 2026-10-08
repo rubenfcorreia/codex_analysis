@@ -3,6 +3,7 @@ from scipy import stats
 
 from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation
 from analysis.shared.analysis_families.matrix_similarity import matrix_similarity_analysis
+from analysis.compartment_common import interpolate_series, lagged_correlation, pairwise_correlation
 
 
 def _reference_null(a, b, shifts):
@@ -44,3 +45,16 @@ def test_matrix_similarity_shuffle_is_deterministic():
     first = matrix_similarity_analysis(vectors_a, vectors_b, 12, shuffle_seed=19)
     second = matrix_similarity_analysis(vectors_a, vectors_b, 12, shuffle_seed=19)
     assert first == second
+
+
+def test_vectorized_lag_scan_matches_legacy_interpolation():
+    rng = np.random.default_rng(13)
+    time = np.arange(120, dtype=float) * 0.1
+    x = rng.normal(size=time.size)
+    y = rng.normal(size=time.size)
+    x[5] = np.nan
+    y[18] = np.nan
+    lags = np.arange(-1.0, 1.01, 0.1)
+    _, actual = lagged_correlation(time, x, time, y, lags)
+    expected = np.asarray([pairwise_correlation(x, interpolate_series(time + lag, y, time)) for lag in lags])
+    assert np.allclose(actual, expected, equal_nan=True, atol=1e-12)

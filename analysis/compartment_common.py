@@ -427,9 +427,35 @@ def lagged_correlation(
     y = np.asarray(y, dtype=float)
     lags_s = np.asarray(lags_s, dtype=float)
     corrs = np.full(lags_s.shape, np.nan, dtype=float)
-    for idx, lag in enumerate(lags_s):
-        shifted = interpolate_series(y_t + lag, y, x_t)
-        corrs[idx] = pairwise_correlation(x, shifted)
+    valid_source = np.isfinite(y_t) & np.isfinite(y)
+    source_t = y_t[valid_source]
+    source_y = y[valid_source]
+    # A single batched interpolation replaces one np.interp call per lag.
+    # Fall back for malformed/non-monotonic timestamps to preserve legacy
+    # behavior exactly.
+    if source_t.size >= 2 and np.all(np.diff(source_t) > 0):
+        queries = x_t[None, :] - lags_s[:, None]
+        right = np.searchsorted(source_t, queries, side="right")
+        right_clip = np.clip(right, 1, source_t.size - 1)
+        left = right_clip - 1
+        weight = (queries - source_t[left]) / (source_t[right_clip] - source_t[left])
+        shifted = source_y[left] + weight * (source_y[right_clip] - source_y[left])
+        shifted[(queries < source_t[0]) | (queries > source_t[-1])] = np.nan
+        valid = np.isfinite(x)[None, :] & np.isfinite(shifted)
+        counts = valid.sum(axis=1)
+        x_values = np.where(valid, x[None, :], 0.0)
+        y_values = np.where(valid, shifted, 0.0)
+        x_mean = np.divide(x_values.sum(axis=1), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+        y_mean = np.divide(y_values.sum(axis=1), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+        x_centered = np.where(valid, x[None, :] - x_mean[:, None], 0.0)
+        y_centered = np.where(valid, shifted - y_mean[:, None], 0.0)
+        numerator = np.sum(x_centered * y_centered, axis=1)
+        denominator = np.sqrt(np.sum(x_centered * x_centered, axis=1) * np.sum(y_centered * y_centered, axis=1))
+        corrs = np.divide(numerator, denominator, out=corrs, where=(counts >= 2) & (denominator > 0))
+    else:
+        for idx, lag in enumerate(lags_s):
+            shifted = interpolate_series(y_t + lag, y, x_t)
+            corrs[idx] = pairwise_correlation(x, shifted)
     return lags_s, corrs
 
 
