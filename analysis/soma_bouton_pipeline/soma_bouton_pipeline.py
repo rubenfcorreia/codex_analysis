@@ -113,7 +113,7 @@ from analysis.shared.analysis_cache import (
 from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
-from analysis.shared.runtime_diagnostics import finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics
+from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
@@ -353,7 +353,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         manifests.append(run_pipeline(preset_config))
         preset_configs[preset_name] = preset_config
 
-    if plan.reference_preset_name in preset_configs:
+    if plan.reference_preset_name in preset_configs and (preset_names is None or bool(config.get("poster_ready_only"))):
         final_config = copy.deepcopy(preset_configs[plan.reference_preset_name])
         final_config["plots_only"] = True
         final_config["poster_ready_only"] = True
@@ -1108,11 +1108,14 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
     }
+    cache_timings: Dict[str, float] = {}
+    cache_started = time.perf_counter()
     shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = _load_or_build_shared_permutation_cache(
         shared_shuffle_cache_file,
         metadata=shared_shuffle_metadata,
         rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
     )
+    cache_timings["shared_shuffle"] = time.perf_counter() - cache_started
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
@@ -1168,24 +1171,28 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     analysis_results_cache_status = "not_checked"
     analysis_tables_cache_status = "not_checked"
     if not bool(config.get("rebuild")):
+        cache_started = time.perf_counter()
         pairwise_family_cache, pairwise_family_status = load_family_results_cache(
             pairwise_family_cache_file,
             expected_meta=pairwise_family_meta,
             rebuild=bool(config.get("analysis_results_rebuild")),
         )
         pairwise_family_cache_status = pairwise_family_status
+        cache_timings["pairwise_family"] = time.perf_counter() - cache_started
         if pairwise_family_status == "ok" and isinstance(pairwise_family_cache, dict):
             pairwise_family_rows = dict(pairwise_family_cache.get("analysis_results", {}))
             correlation_rows = list(pairwise_family_rows.get("correlation_rows", []))
             soma_pairwise_rows = list(pairwise_family_rows.get("soma_pairwise_rows", []))
             bouton_pairwise_rows = list(pairwise_family_rows.get("bouton_pairwise_rows", []))
     if not bool(config.get("rebuild")):
+        cache_started = time.perf_counter()
         cached_results, cached_status = load_analysis_results_cache(
             analysis_results_cache_file,
             expected_meta=analysis_results_meta,
             rebuild=bool(config.get("analysis_results_rebuild")),
         )
         analysis_results_cache_status = cached_status
+        cache_timings["analysis_results"] = time.perf_counter() - cache_started
         if cached_status == "ok" and isinstance(cached_results, dict):
             manifest = dict(cached_results.get("analysis_results", {}))
             manifest.setdefault("cache_summary", {})
@@ -1310,6 +1317,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if cached_transition_events:
                 transition_results["pooled_summary_rows"] = paired_transition_summaries(cached_transition_events)
                 transition_results["summary_rows"] = paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events))
+    checkpoint_interval = max(1, int(config.get("cache_checkpoint_interval", 1) or 1))
     for mode in state_modes:
         selected_states = list(selected_states_by_mode.get(mode, []))
         row_states = list(union_states_by_mode.get(mode, selected_states)) if union_cache_enabled else selected_states
@@ -1337,77 +1345,92 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             step_message(f"PROCESS activity/events: {mode} | {expid}")
             state_masks = state_masks_for_context(ctx, row_states)
-            activity_rows.extend(activity_rows_for_context(ctx, row_states, state_masks=state_masks))
-            coincidence_rows.extend(
-                _build_coincidence_rows_for_context(
-                    ctx,
-                    row_states,
-                    state_masks,
-                    event_detection_method=event_detection_method,
+            with step_scope("activity/event extraction", task="activity", metadata={"mode": mode, "expid": expid}):
+                activity_rows.extend(activity_rows_for_context(ctx, row_states, state_masks=state_masks))
+                coincidence_rows.extend(
+                    _build_coincidence_rows_for_context(
+                        ctx,
+                        row_states,
+                        state_masks,
+                        event_detection_method=event_detection_method,
+                    )
                 )
-            )
             if pairwise_family_rows is None:
                 step_message(f"PROCESS correlations: {mode} | {expid}")
-                correlation_rows.extend(bouton_soma_correlation_rows(
-                    ctx, row_states, state_masks=state_masks,
-                    correlation_shuffle_n=correlation_shuffle_n,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    correlation_shuffle_seed=correlation_shuffle_seed,
-                    correlation_min_shift_frames=correlation_min_shift_frames,
-                    shared_shuffle_cache=shared_shuffle_cache,
-                ))
-                soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
-                    ctx, row_states, state_masks=state_masks,
-                    correlation_shuffle_n=correlation_shuffle_n,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    correlation_shuffle_seed=correlation_shuffle_seed,
-                    correlation_min_shift_frames=correlation_min_shift_frames,
-                    shared_shuffle_cache=shared_shuffle_cache,
-                ))
-                bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
-                    ctx, row_states, state_masks=state_masks,
-                    correlation_shuffle_n=correlation_shuffle_n,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    correlation_shuffle_seed=correlation_shuffle_seed,
-                    correlation_min_shift_frames=correlation_min_shift_frames,
-                    shared_shuffle_cache=shared_shuffle_cache,
-                ))
+                with step_scope("pairwise correlations", task="correlation", metadata={"mode": mode, "expid": expid}):
+                    correlation_rows.extend(bouton_soma_correlation_rows(
+                        ctx, row_states, state_masks=state_masks,
+                        correlation_shuffle_n=correlation_shuffle_n,
+                        correlation_method=correlation_method,
+                        correlation_inference=correlation_inference,
+                        correlation_shuffle_seed=correlation_shuffle_seed,
+                        correlation_min_shift_frames=correlation_min_shift_frames,
+                        shared_shuffle_cache=shared_shuffle_cache,
+                    ))
+                    soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
+                        ctx, row_states, state_masks=state_masks,
+                        correlation_shuffle_n=correlation_shuffle_n,
+                        correlation_method=correlation_method,
+                        correlation_inference=correlation_inference,
+                        correlation_shuffle_seed=correlation_shuffle_seed,
+                        correlation_min_shift_frames=correlation_min_shift_frames,
+                        shared_shuffle_cache=shared_shuffle_cache,
+                    ))
+                    bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
+                        ctx, row_states, state_masks=state_masks,
+                        correlation_shuffle_n=correlation_shuffle_n,
+                        correlation_method=correlation_method,
+                        correlation_inference=correlation_inference,
+                        correlation_shuffle_seed=correlation_shuffle_seed,
+                        correlation_min_shift_frames=correlation_min_shift_frames,
+                        shared_shuffle_cache=shared_shuffle_cache,
+                    ))
             step_message(f"PROCESS lag scan: {mode} | {expid}")
-            lag_rows.extend(
-                lag_scan_rows(
-                    ctx,
-                    row_states,
-                    lag_window_s=float(config.get("lag_window_s", 2.0)),
-                    lag_step_s=float(config.get("lag_step_s", 0.1)),
-                    state_masks=state_masks,
+            with step_scope("lag scans", task="lag", metadata={"mode": mode, "expid": expid}):
+                lag_rows.extend(
+                    lag_scan_rows(
+                        ctx,
+                        row_states,
+                        lag_window_s=float(config.get("lag_window_s", 2.0)),
+                        lag_step_s=float(config.get("lag_step_s", 0.1)),
+                        state_masks=state_masks,
+                    )
                 )
-            )
             if mode == "movie":
                 step_message(f"PROCESS visual response: {mode} | {expid}")
-                visual_response_rows.extend(
-                    _visual_response_entity_rows(
-                        ctx,
-                        compartment="soma",
-                        channel=int(config["soma_channel"]),
-                        response_metric=visual_response_metric,
-                        event_detection_method=event_detection_method,
-                        locomotion_threshold=float(config.get("locomotion_threshold", 0.0)) if config.get("locomotion_threshold") is not None else None,
+                with step_scope("visual-response analysis", task="visual_response", metadata={"mode": mode, "expid": expid}):
+                    visual_response_rows.extend(
+                        _visual_response_entity_rows(
+                            ctx,
+                            compartment="soma",
+                            channel=int(config["soma_channel"]),
+                            response_metric=visual_response_metric,
+                            event_detection_method=event_detection_method,
+                            locomotion_threshold=float(config.get("locomotion_threshold", 0.0)) if config.get("locomotion_threshold") is not None else None,
+                        )
                     )
-                )
-                visual_response_rows.extend(
-                    _visual_response_entity_rows(
-                        ctx,
-                        compartment="bouton",
-                        channel=int(config["bouton_channel"]),
-                        response_metric=visual_response_metric,
-                        event_detection_method=event_detection_method,
-                        locomotion_threshold=float(config.get("locomotion_threshold", 0.0)) if config.get("locomotion_threshold") is not None else None,
+                    visual_response_rows.extend(
+                        _visual_response_entity_rows(
+                            ctx,
+                            compartment="bouton",
+                            channel=int(config["bouton_channel"]),
+                            response_metric=visual_response_metric,
+                            event_detection_method=event_detection_method,
+                            locomotion_threshold=float(config.get("locomotion_threshold", 0.0)) if config.get("locomotion_threshold") is not None else None,
+                        )
                     )
-                )
             step_message(f"DONE experiment: {mode} | {expid}")
+            if (
+                shared_shuffle_cache_file is not None
+                and isinstance(shared_shuffle_cache, dict)
+                and exp_idx % checkpoint_interval == 0
+            ):
+                with step_scope(
+                    "shared null cache checkpoint",
+                    task="cache",
+                    metadata={"mode": mode, "expid": expid, "experiment_index": exp_idx},
+                ):
+                    save_npz_cache(shared_shuffle_cache_file, shared_shuffle_cache)
         _stage(
             "mode complete",
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
@@ -2893,6 +2916,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "shared_shuffle_cache_reused": not bool(shared_shuffle_cache_rebuilt),
             "shared_shuffle_cache_status": str(shared_shuffle_cache_status),
             "shared_shuffle_cache_entries": len(shared_shuffle_cache.get("entries", {})),
+            "shared_null_result_stats": dict(shared_shuffle_cache.get("null_result_stats", {})),
         },
         "runtime_diagnostics": finish_runtime_diagnostics(runtime_diagnostics_start, result_root),
         "output_root": str(result_root),
@@ -2900,6 +2924,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
     manifest["cache_summary"]["analysis_tables_cache_status"] = str(analysis_tables_cache_status)
     manifest["cache_summary"]["cache_key_manifest"] = str(result_root / "cache_key_manifest.json")
+    manifest["cache_summary"]["cache_records"] = annotate_cache_records(
+        manifest["cache_summary"],
+        row_counts=manifest.get("counts", {}),
+        timings=cache_timings,
+    )
     cache_key_manifest = {
         "schema_version": 1,
         "analysis_results": {"path": str(analysis_results_cache_file), "key": analysis_cache_meta_hash(analysis_results_meta), "scope": "preset_specific", "status": str(analysis_results_cache_status)},
@@ -2949,7 +2978,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "day_groups": day_groups,
         },
     }
+    cache_started = time.perf_counter()
     save_analysis_tables_cache(analysis_tables_cache_file, analysis_tables_payload)
+    cache_timings["analysis_tables"] = time.perf_counter() - cache_started
     analysis_tables_cache_status = "built"
     save_npz_cache(shared_shuffle_cache_file, shared_shuffle_cache)
     write_manifest(result_root, manifest_json)
@@ -2960,6 +2991,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "output_root": str(general_output_root),
             "output_artifacts": collect_output_artifacts(general_output_root),
         })
+    cache_started = time.perf_counter()
     save_analysis_results_cache(
         analysis_results_cache_file,
         {
@@ -2969,9 +3001,15 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "analysis_results": analysis_results_cache_payload(manifest_json),
         },
     )
+    cache_timings["analysis_results"] = time.perf_counter() - cache_started
     manifest_json["cache_summary"]["analysis_results_cache_status"] = "built"
     manifest_json["cache_summary"]["analysis_tables_cache_status"] = "built"
     manifest_json["cache_summary"]["cache_key_manifest"] = str(result_root / "cache_key_manifest.json")
+    manifest_json["cache_summary"]["cache_records"] = annotate_cache_records(
+        manifest_json["cache_summary"],
+        row_counts=manifest_json.get("counts", {}),
+        timings=cache_timings,
+    )
     write_manifest(result_root, manifest_json)
     cache_key_manifest["analysis_results"]["status"] = "built"
     cache_key_manifest["analysis_tables"]["status"] = "built"
@@ -3006,6 +3044,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     stages = get_stage_timings()
     manifest["stage_timings"] = stages
+    manifest["stage_group_timings"] = summarize_stage_groups(stages)
     result_root = Path(str(manifest.get("output_root") or config.get("result_root") or DEFAULT_CONFIG["result_root"]))
     if not result_root.is_absolute():
         result_root = REPO_ROOT / result_root
@@ -3021,6 +3060,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "pipeline": "soma_bouton_pipeline",
             "comparison_preset_name": preset_name,
             "stages": stages,
+            "stage_groups": manifest.get("stage_group_timings", {}),
         }
     )
     timing_report_path.write_text(json.dumps(timing_payload, indent=2, sort_keys=True))

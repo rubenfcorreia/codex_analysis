@@ -416,12 +416,8 @@ def test_shared_comparison_preset_plan_includes_required_presets() -> None:
         poster_ready_only=False,
         poster_required_names=POSTER_REQUIRED_COMPARISON_PRESETS,
     )
-    assert [name for name, _ in normal_plan.presets] == [
-        'movies_state_comparisons',
-        'blank_state_comparisons',
-        'all_requested_comparisons',
-    ]
-    assert normal_plan.reference_preset_name == 'all_requested_comparisons'
+    assert [name for name, _ in normal_plan.presets] == ['movies_state_comparisons']
+    assert normal_plan.reference_preset_name == 'movies_state_comparisons'
 
     poster_plan = build_comparison_preset_batch_plan(
         presets,
@@ -745,3 +741,52 @@ def test_shared_pipeline_logging_captures_failure_and_resets() -> None:
     stage = get_stage_timings()[0]
     assert stage["comparison_preset_name"] == "poster"
     assert stage["status"] == "completed"
+
+
+
+def test_explicit_comparison_preset_selection_is_strict() -> None:
+    presets = [
+        ("movies_state_comparisons", {"states": ["movie"]}),
+        ("blank_state_comparisons", {"states": ["blank"]}),
+        ("all_requested_comparisons", {"states": ["all"]}),
+        ("custom", {"states": ["custom"]}),
+    ]
+    explicit = build_comparison_preset_batch_plan(
+        presets,
+        selected_names=["movies_state_comparisons"],
+    )
+    assert [name for name, _ in explicit.presets] == ["movies_state_comparisons"]
+    default = build_comparison_preset_batch_plan(presets)
+    assert {name for name, _ in default.presets} >= {
+        "movies_state_comparisons", "blank_state_comparisons", "all_requested_comparisons"
+    }
+
+
+def test_empty_state_comparisons_return_insufficient_data_without_warning() -> None:
+    import warnings
+    from analysis.shared.analysis_families.common_helpers import independent_comparison, paired_comparison
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        paired = paired_comparison({"a": {"subject": []}, "b": {"subject": []}}, "a", "b", "metric", 0)
+        independent = independent_comparison({"a": {"subject": []}, "b": {}}, "a", "b", "metric", 0)
+    assert not [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
+    assert paired["n_subjects"] == 0
+    assert independent["n_subjects"] == 0
+    assert np.isnan(paired["effect_size"])
+    assert np.isnan(independent["effect_size"])
+
+
+def test_stage_group_summary_identifies_expensive_analysis_families() -> None:
+    from analysis.shared.runtime_diagnostics import summarize_stage_groups
+
+    groups = summarize_stage_groups([
+        {"name": "correlations", "task": "analysis", "elapsed_s": 4.0, "status": "completed"},
+        {"name": "matrix similarity", "task": "analysis", "elapsed_s": 3.0, "status": "completed"},
+        {"name": "mixed model fit", "task": "mixed_model", "elapsed_s": 2.0, "status": "completed"},
+        {"name": "poster figure generation", "task": "plot", "elapsed_s": 1.0, "status": "completed"},
+    ])
+    assert groups["correlations"]["elapsed_s"] == 4.0
+    assert groups["matrix_similarity"]["elapsed_s"] == 3.0
+    assert groups["mixed_models"]["elapsed_s"] == 2.0
+    assert groups["plot_preparation"]["elapsed_s"] == 1.0

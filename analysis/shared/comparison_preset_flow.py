@@ -55,9 +55,12 @@ def build_comparison_preset_batch_plan(
         selected_presets = [preset for preset in available_presets if preset[0] in required_names_set]
     else:
         selected_presets = list(selected_presets)
-        for preset_name, overrides in available_presets:
-            if preset_name in required_names_set and preset_name not in selected_names_set:
-                selected_presets.append((preset_name, dict(overrides)))
+        # An explicit selection is a deliberate runtime scope. Poster-required
+        # dependencies are added only for the default batch or poster mode.
+        if selected_names is None:
+            for preset_name, overrides in available_presets:
+                if preset_name in required_names_set and preset_name not in selected_names_set:
+                    selected_presets.append((preset_name, dict(overrides)))
 
     if not selected_presets:
         return ComparisonPresetBatchPlan([], '')

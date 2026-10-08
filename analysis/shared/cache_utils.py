@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import importlib
 import json
 import sys
@@ -85,8 +86,17 @@ def load_npz_cache(path: Path) -> Dict[str, Any]:
 
 
 def save_npz_cache(path: Path, payload: Dict[str, Any]) -> None:
+    """Persist an object cache atomically so interrupted runs leave a valid file."""
     ensure_dir(path.parent)
-    np.savez_compressed(path, cache=np.array([payload], dtype=object))
+    temporary = path.with_name(f".{path.name}.tmp.npz")
+    try:
+        np.savez_compressed(temporary, cache=np.array([payload], dtype=object))
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def analysis_cache_meta_hash(meta: Any) -> str:

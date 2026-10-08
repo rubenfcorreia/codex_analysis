@@ -112,3 +112,67 @@ def test_analysis_cache_reports_corrupt_and_schema_mismatch(tmp_path):
     save_npz_cache(schema, {"schema_version": 999, "analysis_results": {}})
     _, status = load_analysis_results_cache(schema)
     assert status == "schema_mismatch"
+
+
+def test_cache_records_include_payload_rows_sizes_and_invalidation_reason(tmp_path):
+    from analysis.shared.cache_utils import save_npz_cache
+    from analysis.shared.runtime_diagnostics import annotate_cache_records
+
+    cache_path = tmp_path / "tables.npz"
+    save_npz_cache(cache_path, {"schema_version": 1, "analysis_tables": {"activity_rows": [{"id": 1}, {"id": 2}]}})
+    records = annotate_cache_records(
+        {"analysis_tables": {"path": str(cache_path), "status": "reused", "key": "abc"}},
+        timings={"analysis_tables": 0.25},
+    )
+    assert len(records) == 1
+    assert records[0]["file_size_bytes"] > 0
+    assert records[0]["load_elapsed_s"] == 0.25
+    assert records[0]["row_counts"]["analysis_tables.activity_rows"] == 2
+
+    missing = annotate_cache_records(
+        {"source": {"path": str(tmp_path / "missing.npz"), "status": "meta_mismatch"}}
+    )
+    assert missing[0]["invalidation_reason"] == "meta_mismatch"
+
+
+def test_benchmark_snapshot_contains_pipeline_diagnostics(tmp_path):
+    from analysis.demo_pipeline.demo_pipeline import _benchmark_snapshot
+
+    manifest = {
+        "runtime_diagnostics": {
+            "start": {"open_figures": 0, "peak_rss_bytes": 10},
+            "end": {"open_figures": 0, "peak_rss_bytes": 20, "file_count": 2, "output_bytes": 30},
+            "figure_leak_count": 0,
+        },
+        "stage_timings": [{"name": "cache load", "elapsed_s": 0.5}],
+        "cache_summary": {"source": {"path": str(tmp_path / "source.npz"), "status": "reused"}},
+    }
+    snapshot = _benchmark_snapshot(tmp_path, {"demo": manifest})
+    assert snapshot["peak_rss_bytes"] == 20
+    assert snapshot["figure_leak_count"] == 0
+    assert snapshot["pipelines"]["demo"]["stage_totals_s"]["cache"] == 0.5
+
+
+def test_exact_null_result_cache_reuses_only_identical_traces():
+    from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation
+
+    a = np.linspace(0.0, 1.0, 40)
+    b = np.sin(np.linspace(0.0, 3.0, 40))
+    cache = {"entries": {"pair-state": {"shifts": np.array([1, 3, 7, 11], dtype=int)}}}
+    first = correlation_analysis_for_observation(
+        a, b, 4, shared_shuffle_cache=cache, shared_shuffle_key="pair-state"
+    )
+    second = correlation_analysis_for_observation(
+        a.copy(), b.copy(), 4, shared_shuffle_cache=cache, shared_shuffle_key="pair-state"
+    )
+    assert first == second
+    assert cache["null_result_stats"]["hits"] == 1
+    assert cache["null_result_stats"]["builds"] == 1
+
+    changed_trace = a.copy()
+    changed_trace[0] += 0.5
+    changed = correlation_analysis_for_observation(
+        changed_trace, b, 4, shared_shuffle_cache=cache, shared_shuffle_key="pair-state"
+    )
+    assert changed["r"] != first["r"]
+    assert cache["null_result_stats"]["misses"] == 2

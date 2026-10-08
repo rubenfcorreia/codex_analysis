@@ -294,10 +294,16 @@ def _ci_from_effect(effect: float, standard_error: float, degrees_of_freedom: in
     return float(effect - half_width), float(effect + half_width)
 
 
+def _safe_nanmean(values: Sequence[float] | np.ndarray) -> float:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    return float(np.mean(finite)) if finite.size else float("nan")
+
+
 def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int, *, shuffle_cache: Dict[str, Any] | None = None) -> Dict[str, Any]:
     subjects = sorted(set(values_by_state.get(state_a, {})) & set(values_by_state.get(state_b, {})))
-    a = np.asarray([np.nanmean(values_by_state[state_a][subject]) for subject in subjects], dtype=float)
-    b = np.asarray([np.nanmean(values_by_state[state_b][subject]) for subject in subjects], dtype=float)
+    a = np.asarray([_safe_nanmean(values_by_state[state_a][subject]) for subject in subjects], dtype=float)
+    b = np.asarray([_safe_nanmean(values_by_state[state_b][subject]) for subject in subjects], dtype=float)
     mask = np.isfinite(a) & np.isfinite(b)
     a, b = a[mask], b[mask]
     result = stats.ttest_rel(a, b, nan_policy="omit") if a.size >= 2 else None
@@ -309,8 +315,8 @@ def paired_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]
 
 
 def independent_comparison(values_by_state: Mapping[str, Mapping[str, Sequence[float]]], state_a: str, state_b: str, metric_name: str, shuffle_n: int, *, shuffle_cache: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    a = np.asarray([np.nanmean(value) for value in values_by_state.get(state_a, {}).values()], dtype=float)
-    b = np.asarray([np.nanmean(value) for value in values_by_state.get(state_b, {}).values()], dtype=float)
+    a = np.asarray([_safe_nanmean(value) for value in values_by_state.get(state_a, {}).values()], dtype=float)
+    b = np.asarray([_safe_nanmean(value) for value in values_by_state.get(state_b, {}).values()], dtype=float)
     a, b = a[np.isfinite(a)], b[np.isfinite(b)]
     result = stats.ttest_ind(a, b, equal_var=False, nan_policy="omit") if a.size >= 2 and b.size >= 2 else None
     effect = float(np.nanmean(a) - np.nanmean(b)) if a.size and b.size else float("nan")

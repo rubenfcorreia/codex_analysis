@@ -17913,7 +17913,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
                 pass
         preset_configs[preset_name] = preset_config
 
-    if plan.reference_preset_name in preset_configs:
+    if plan.reference_preset_name in preset_configs and (preset_names is None or bool(config.get("poster_ready_only"))):
         final_config = copy.deepcopy(preset_configs[plan.reference_preset_name])
         final_config["plots_only"] = True
         final_config["poster_ready_only"] = bool(config.get("poster_ready_only"))

@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 import numpy as np
 from scipy import stats
 
+from analysis.shared.cache_utils import array_signature, stable_hash
+
 SUPPORTED_CORRELATION_METHODS = {"pearson"}
 SUPPORTED_CORRELATION_INFERENCE = {"circular_shift", "none"}
 
@@ -61,8 +63,39 @@ def correlation_analysis_for_observation(
         "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else "descriptive",
         "correction_family": "correlation_time_series",
     }
+    null_cache = shared_shuffle_cache if isinstance(shared_shuffle_cache, dict) and shared_shuffle_key else None
+    null_cache_key = None
+    if null_cache is not None:
+        null_cache_key = stable_hash({
+            "schema": 1,
+            "shared_shuffle_key": str(shared_shuffle_key),
+            "trace_a": array_signature(a),
+            "trace_b": array_signature(b),
+            "finite_mask": array_signature(fixed_mask),
+            "vector_length": int(usable),
+            "correlation_method": method,
+            "correlation_inference": configured_inference,
+            "shuffle_n": int(shuffle_n),
+            "shuffle_seed": int(shuffle_seed),
+            "min_shift_frames": int(min_shift_frames),
+        })
+        null_results = null_cache.setdefault("null_results", {})
+        cached_result = null_results.get(null_cache_key)
+        cache_stats = null_cache.setdefault("null_result_stats", {"hits": 0, "misses": 0, "builds": 0})
+        if isinstance(cached_result, dict):
+            cache_stats["hits"] = int(cache_stats.get("hits", 0)) + 1
+            return dict(cached_result)
+        cache_stats["misses"] = int(cache_stats.get("misses", 0)) + 1
+
+    def _finish(result: Dict[str, Any]) -> Dict[str, Any]:
+        if null_cache is not None and null_cache_key is not None:
+            null_cache.setdefault("null_results", {})[null_cache_key] = dict(result)
+            stats = null_cache.setdefault("null_result_stats", {"hits": 0, "misses": 0, "builds": 0})
+            stats["builds"] = int(stats.get("builds", 0)) + 1
+        return result
+
     if n_valid < 3:
-        return {**base, "r": float("nan"), "effect_size": float("nan"), "classical_p": float("nan"), "shuffle_p": float("nan"), "p_value": float("nan"), "lower_ci": float("nan"), "upper_ci": float("nan"), "n": n_valid, "status": "insufficient_data"}
+        return _finish({**base, "r": float("nan"), "effect_size": float("nan"), "classical_p": float("nan"), "shuffle_p": float("nan"), "p_value": float("nan"), "lower_ci": float("nan"), "upper_ci": float("nan"), "n": n_valid, "status": "insufficient_data"})
 
     observed_result = stats.pearsonr(a[fixed_mask], b[fixed_mask])
     observed = float(observed_result.statistic)
@@ -101,7 +134,7 @@ def correlation_analysis_for_observation(
             values = np.divide(numerator, denominator, out=np.full(shifts.shape, np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
             null.extend(float(value) for value in values if np.isfinite(value))
     shuffle_p = float((np.sum(np.abs(null) >= abs(observed)) + 1) / (len(null) + 1)) if null else float("nan")
-    return {
+    return _finish({
         **base,
         "r": observed,
         "effect_size": observed,
@@ -113,7 +146,7 @@ def correlation_analysis_for_observation(
         "n": n_valid,
         "shuffle_n_success": int(len(null)),
         "status": "ok" if configured_inference == "none" or null else "insufficient_null_samples",
-    }
+    })
 
 
 __all__ = ["SUPPORTED_CORRELATION_INFERENCE", "SUPPORTED_CORRELATION_METHODS", "correlation_analysis_for_observation", "validate_correlation_settings"]

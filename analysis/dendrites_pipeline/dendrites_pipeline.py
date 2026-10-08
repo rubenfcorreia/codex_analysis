@@ -40,7 +40,7 @@ from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PR
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.plot_profiles import apply_plot_profile
-from analysis.shared.runtime_diagnostics import finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics
+from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
 from analysis.shared.pipeline_logging import (
     current_step_prefix as shared_current_step_prefix,
     eprint as shared_eprint,
@@ -17657,7 +17657,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
                 pass
         preset_configs[preset_name] = preset_config
 
-    if plan.reference_preset_name in preset_configs:
+    if plan.reference_preset_name in preset_configs and (preset_names is None or bool(config.get("poster_ready_only"))):
         final_config = copy.deepcopy(preset_configs[plan.reference_preset_name])
         final_config["plots_only"] = True
         final_config["poster_ready_only"] = bool(config.get("poster_ready_only"))
@@ -18277,6 +18277,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 transition_analysis=config.get("transition_analysis"),
                 transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
+    if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict) and not plots_only:
+        with step_scope("shared null cache checkpoint", task="cache", metadata={"scope": "analysis families"}):
+            save_shared_shuffle_cache(shared_shuffle_cache_file, shared_shuffle_cache)
+        # Keep a small, valid checkpoint even if later plotting/reporting fails.
+        checkpoint_payload = {
+            "pipeline": "dendrites_pipeline",
+            "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+            "status": "analysis_families_complete",
+            "shared_shuffle_cache_path": str(shared_shuffle_cache_file),
+            "shared_null_result_stats": dict(shared_shuffle_cache.get("null_result_stats", {})),
+            "timestamp": time.time(),
+        }
+        (output_dir / "partial_manifest.json").write_text(json.dumps(jsonable(checkpoint_payload), indent=2, sort_keys=True) + "\n")
     results.setdefault("alerts", []).extend(selection_meta.get("alerts", []))
     for alert in dict.fromkeys(results.get("alerts", []) + results.get("mixed_model", {}).get("alerts", [])):
         eprint(alert)
@@ -18422,6 +18435,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "reused": not bool(shared_shuffle_cache_rebuilt),
         "shuffle_n": shuffle_n,
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
+        "null_result_stats": dict(shared_shuffle_cache.get("null_result_stats", {})) if isinstance(shared_shuffle_cache, dict) else {},
     }
     cache_summary = {
         "source": {"path": str(cache_path), "scope": "superset_reusable", "key": source_cache_signature(source_cache), "status": source_cache_status},
@@ -18432,6 +18446,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     results["cache_summary"] = cache_summary
     results["stage_timings"] = get_stage_timings()
+    results["stage_group_timings"] = summarize_stage_groups(results["stage_timings"])
+    results["cache_summary"]["cache_records"] = annotate_cache_records(
+        cache_summary,
+        stage_timings=results["stage_timings"],
+        row_counts={
+            "source": summarize_cache(source_cache),
+            "analysis_day": summarize_cache(analysis_cache),
+            "analysis_tables": summarize_cache(analysis_cache),
+        },
+    )
     results["runtime_diagnostics"] = finish_runtime_diagnostics(runtime_diagnostics_start, output_dir)
     timing_report_path = output_dir / "timing_report.json"
     if not plots_only:
@@ -18439,6 +18463,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "pipeline": "dendrites_pipeline",
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "stages": results["stage_timings"],
+        "stage_groups": results.get("stage_group_timings", {}),
         }), indent=2, sort_keys=True))
     report_path: Optional[Path] = None
     if plots_only:
