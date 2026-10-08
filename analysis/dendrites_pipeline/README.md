@@ -92,3 +92,7 @@ Correlation and coactivity outputs retain classical p-values only as diagnostics
 python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
   --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json
 ```
+
+## Synthetic demos
+
+Use the separate reproducible demo platform documented in [analysis/demo_pipeline/README.md](../demo_pipeline/README.md).

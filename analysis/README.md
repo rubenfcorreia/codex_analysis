@@ -22,3 +22,7 @@ See also: [root README](../README.md), [dendrites_pipeline](dendrites_pipeline/R
 - `analysis/dendrites_pipeline/` keeps the main driver at the root and the analysis-family modules in subfolders, while the generic cache/state helpers are shared.
 - `analysis/deprecated/main_pipeline/` preserves the retired main pipeline as a historical archive.
 - `analysis/deprecated/visual_response/` keeps the archived movie-style stimulus-vs-blank launcher and prefers `cut_with_intertrials/` for the visual-response summaries.
+
+## Reproducible demo platform
+
+The standalone synthetic demo builder, expected-data previews, validation, GUI, and tmux runner are documented in [analysis/demo_pipeline/README.md](demo_pipeline/README.md).

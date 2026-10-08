@@ -289,7 +289,8 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     if not plan.presets:
         return []
 
-    repo_root = resolve_repo_root(Path(__file__))
+    configured_repo_root = config.get("repo_root") or config.get("repo_base")
+    repo_root = resolve_repo_path(configured_repo_root, resolve_repo_root(Path(__file__))) if configured_repo_root else resolve_repo_root(Path(__file__))
     base_result_root = resolve_repo_path(
         config.get("comparison_output_root") or config.get("result_root") or DEFAULT_CONFIG["result_root"],
         repo_root,
@@ -333,7 +334,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["rebuild"] = preset_rebuild
         preset_config["source_cache_rebuild"] = preset_rebuild
         preset_config["analysis_tables_rebuild"] = preset_rebuild
-        preset_config["analysis_results_rebuild"] = False if bool(config.get("plots_only")) else True
+        preset_config["analysis_results_rebuild"] = False if bool(config.get("plots_only")) else preset_rebuild
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["general_output_root"] = str(base_result_root / "general")
         preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
@@ -1026,7 +1027,8 @@ def _state_plot_rows_for_branch(
     return annotate_rows_with_split_group(scoped_rows, membership_rows)
 
 def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
-    repo_root = resolve_repo_root(Path(__file__))
+    configured_repo_root = config.get("repo_root") or config.get("repo_base")
+    repo_root = resolve_repo_path(configured_repo_root, resolve_repo_root(Path(__file__))) if configured_repo_root else resolve_repo_root(Path(__file__))
     pipeline_started = time.perf_counter()
     layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
     result_root = layout.analysis_root

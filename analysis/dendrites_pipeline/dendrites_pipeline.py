@@ -17612,7 +17612,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["rebuild"] = preset_rebuild
         preset_config["source_cache_rebuild"] = preset_rebuild
         preset_config["analysis_tables_rebuild"] = preset_rebuild
-        preset_config["analysis_results_rebuild"] = True
+        preset_config["analysis_results_rebuild"] = preset_rebuild
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["branch_first_output_root"] = str(preset_output_dir)
         preset_config["branch_first_figures"] = True

@@ -494,6 +494,9 @@ def experiment_root_from_expid(repo_root: Path, expid: str, animal_id: str | Non
     candidate = Path("/home/rubencorreia/data/Repository") / animal_id / expid
     if candidate.exists():
         return candidate
+    direct = repo_root / animal_id / expid
+    if direct.exists():
+        return direct
     alt = repo_root / "data" / "Repository" / animal_id / expid
     if alt.exists():
         return alt
