@@ -195,6 +195,7 @@
   "correlation_shuffle_n": 200,
   "correlation_shuffle_seed": 12345,
   "correlation_min_shift_frames": 1,
+  "correlation_batch_size": 64,
   "cpu_thread_limit": 1,
   "high_pass_hz": null,
   "locomotion_threshold": 0.05,

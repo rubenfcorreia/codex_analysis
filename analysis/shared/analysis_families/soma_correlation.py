@@ -38,6 +38,8 @@ def bouton_soma_correlation_rows(
     correlation_inference: str = "none",
     correlation_shuffle_seed: int = 12345,
     correlation_min_shift_frames: int = 1,
+    correlation_batch_size: int = 64,
+    correlation_shift_block_size: int = 8,
     shared_shuffle_cache: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
@@ -71,6 +73,8 @@ def bouton_soma_correlation_rows(
         correlation_inference=correlation_inference,
         correlation_shuffle_seed=correlation_shuffle_seed,
         correlation_min_shift_frames=correlation_min_shift_frames,
+        correlation_batch_size=correlation_batch_size,
+        correlation_shift_block_size=correlation_shift_block_size,
         shared_shuffle_cache=shared_shuffle_cache,
     )
 
@@ -84,6 +88,8 @@ def soma_pairwise_correlation_rows(
     correlation_inference: str = "none",
     correlation_shuffle_seed: int = 12345,
     correlation_min_shift_frames: int = 1,
+    correlation_batch_size: int = 64,
+    correlation_shift_block_size: int = 8,
     shared_shuffle_cache: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
@@ -107,6 +113,8 @@ def soma_pairwise_correlation_rows(
         correlation_inference=correlation_inference,
         correlation_shuffle_seed=correlation_shuffle_seed,
         correlation_min_shift_frames=correlation_min_shift_frames,
+        correlation_batch_size=correlation_batch_size,
+        correlation_shift_block_size=correlation_shift_block_size,
         shared_shuffle_cache=shared_shuffle_cache,
     )
 
@@ -120,6 +128,8 @@ def bouton_pairwise_correlation_rows(
     correlation_inference: str = "none",
     correlation_shuffle_seed: int = 12345,
     correlation_min_shift_frames: int = 1,
+    correlation_batch_size: int = 64,
+    correlation_shift_block_size: int = 8,
     shared_shuffle_cache: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
@@ -143,6 +153,8 @@ def bouton_pairwise_correlation_rows(
         correlation_inference=correlation_inference,
         correlation_shuffle_seed=correlation_shuffle_seed,
         correlation_min_shift_frames=correlation_min_shift_frames,
+        correlation_batch_size=correlation_batch_size,
+        correlation_shift_block_size=correlation_shift_block_size,
         shared_shuffle_cache=shared_shuffle_cache,
     )
 

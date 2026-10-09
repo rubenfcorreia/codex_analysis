@@ -376,6 +376,12 @@ def _benchmark_snapshot(output_dir: Path, manifests: Dict[str, Dict[str, Any]]) 
             elapsed for stage_name, elapsed in stage_seconds.items()
             if any(token in stage_name.lower() for token in ("analysis", "family", "comparison", "model"))
         )
+        serialization_records = manifest.get("serialization_records", [])
+        if not isinstance(serialization_records, list):
+            serialization_records = []
+        serialization_elapsed = sum(float(item.get("elapsed_s", 0.0) or 0.0) for item in serialization_records if isinstance(item, dict))
+        serialization_bytes = sum(int(item.get("output_bytes", 0) or 0) for item in serialization_records if isinstance(item, dict))
+        serialization_failures = sum(1 for item in serialization_records if isinstance(item, dict) and item.get("status") == "failed")
         pipelines[name] = {
             "pipeline_elapsed_s": manifest.get("pipeline_elapsed_s"),
             "stage_timings": stages,
@@ -388,6 +394,12 @@ def _benchmark_snapshot(output_dir: Path, manifests: Dict[str, Dict[str, Any]]) 
             "output_bytes": end.get("output_bytes"),
             "row_counts": manifest.get("analysis_cache_summary", {}),
             "cache_records": _cache_diagnostics(manifest.get("cache_summary")),
+            "serialization_records": serialization_records,
+            "serialization_totals": {
+                "elapsed_s": serialization_elapsed,
+                "output_bytes": serialization_bytes,
+                "failed_count": serialization_failures,
+            },
         }
     return {
         "pipelines": pipelines,

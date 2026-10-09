@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import combinations, product
+import time
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import numpy as np
 
 from analysis.compartment_common import pairwise_correlation
-from analysis.shared.cache_utils import build_pairwise_correlation_cache_key, build_shared_shuffle_cache_key
-from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation
+from analysis.shared.cache_utils import build_pairwise_correlation_cache_key, build_shared_shift_schedule_key
+from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch
 from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
 
 from .core import ExperimentContext, make_unit_id
@@ -132,7 +133,10 @@ def _paired_trace_values(
     valid = np.isfinite(left_values) & np.isfinite(right_values)
     if not np.any(valid):
         return np.array([], dtype=float), np.array([], dtype=float), 0
-    return left_values[valid], right_values[valid], int(valid.sum())
+    # Preserve the state-aligned vector and its NaNs.  Circular-shift
+    # inference must shift the original aligned samples; removing each
+    # pair's finite samples here would make vector lengths pair-specific.
+    return left_values, right_values, int(left_values.size)
 
 
 def _masked_trace_values(member: PairwiseMember, mask: np.ndarray, usable: int) -> np.ndarray:
@@ -183,9 +187,21 @@ def build_pairwise_correlation_rows(
     correlation_inference: str = "none",
     correlation_shuffle_seed: int = 12345,
     correlation_min_shift_frames: int = 1,
+    correlation_batch_size: int = 64,
+    correlation_shift_block_size: int = 8,
     shared_shuffle_cache: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    diagnostics = None
+    if isinstance(shared_shuffle_cache, dict):
+        diagnostics = shared_shuffle_cache.setdefault(
+            "pairwise_diagnostics",
+            {"states": 0, "pairs_prepared": 0, "rows_generated": 0, "observed_and_pair_prep_elapsed_s": 0.0, "null_elapsed_s": 0.0, "row_build_elapsed_s": 0.0, "by_comparison": {}},
+        )
+    comparison_diagnostics = diagnostics.setdefault("by_comparison", {}).setdefault(
+        str(comparison_name),
+        {"states": 0, "pairs_prepared": 0, "rows_generated": 0, "observed_and_pair_prep_elapsed_s": 0.0, "null_elapsed_s": 0.0, "row_build_elapsed_s": 0.0},
+    ) if diagnostics is not None else None
     pair_members = list(left_members if right_members is None or right_members is left_members else list(left_members) + list(right_members))
     trace_lengths = {int(np.asarray(member.trace, dtype=float).reshape(-1).size) for member in pair_members}
     can_pre_mask = len(trace_lengths) == 1 and bool(pair_members)
@@ -197,13 +213,17 @@ def build_pairwise_correlation_rows(
         mask_array = np.asarray(mask, dtype=bool).reshape(-1)
         if mask_array.size == 0:
             continue
+        state_member_values = None
         if can_pre_mask:
             usable = min(mask_array.size, common_trace_length)
             state_member_values = {
                 member.unit_id: _masked_trace_values(member, mask_array, usable)
                 for member in pair_members
             }
-            for left, right in _pair_iter(left_members, right_members):
+        state_started = time.perf_counter()
+        pending: List[Dict[str, Any]] = []
+        for left, right in _pair_iter(left_members, right_members):
+            if state_member_values is not None:
                 left_values = state_member_values[left.unit_id]
                 right_values = state_member_values[right.unit_id]
                 usable_pair = min(left_values.size, right_values.size)
@@ -211,111 +231,81 @@ def build_pairwise_correlation_rows(
                     continue
                 left_values = left_values[:usable_pair]
                 right_values = right_values[:usable_pair]
-                valid = np.isfinite(left_values) & np.isfinite(right_values)
-                if not np.any(valid):
+                if not np.any(np.isfinite(left_values) & np.isfinite(right_values)):
                     continue
-                corr = pairwise_correlation(left_values[valid], right_values[valid])
-                n_timepoints = int(valid.sum())
-                pair_key = _pair_unit_id(ctx, comparison_name, left, right)
-                shuffle_key = build_shared_shuffle_cache_key(
-                    family="soma_pairwise_correlation",
-                    signal=str(comparison_name),
-                    analysis_unit="day",
-                    animal_id=str(ctx.animal_id),
-                    day_id=str(ctx.day_id),
-                    source_id=f"{pair_key}|{state_key}",
-                    vector_length=n_timepoints,
-                    state_label=state_key,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_n=correlation_shuffle_n,
-                    shuffle_seed=correlation_shuffle_seed,
-                    min_shift_frames=correlation_min_shift_frames,
-                )
-                _ensure_correlation_shuffle_entry(shared_shuffle_cache, shuffle_key, n_timepoints, correlation_shuffle_n, correlation_shuffle_seed, correlation_min_shift_frames)
-                inferential = correlation_analysis_for_observation(
-                    left_values[valid], right_values[valid], correlation_shuffle_n,
-                    shared_shuffle_cache=shared_shuffle_cache,
-                    shared_shuffle_key=shuffle_key,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_seed=correlation_shuffle_seed,
-                    min_shift_frames=correlation_min_shift_frames,
-                )
-                compartment_label = left.compartment if left.compartment == right.compartment else f"{left.compartment}_vs_{right.compartment}"
-                rows.append(
-                    {
-                        "expid": ctx.expid,
-                        "mode": ctx.mode,
-                        "animal_id": ctx.animal_id,
-                        "date": ctx.date,
-                        "day_id": ctx.day_id,
-                        "analysis_unit": "day",
-                        "comparison_name": comparison_name,
-                        "pair_mode": "within_compartment" if left.compartment == right.compartment else "cross_compartment",
-                        "compartment": compartment_label,
-                        "left_compartment": left.compartment,
-                        "left_channel": int(left.channel),
-                        "left_roi_index": int(left.roi_index),
-                        "left_roi_id": left.roi_id,
-                        "left_unit_id": left.unit_id,
-                        "right_compartment": right.compartment,
-                        "right_channel": int(right.channel),
-                        "right_roi_index": int(right.roi_index),
-                        "right_roi_id": right.roi_id,
-                        "right_unit_id": right.unit_id,
-                        "pair_unit_id": _pair_unit_id(ctx, comparison_name, left, right),
-                        "state": state_key,
-                        "state_display": state_display_label(state),
-                        "state_color": state_display_color(state),
-                        "corr": corr,
-                        "effect_size": corr,
-                        "lower_ci": None,
-                        "upper_ci": None,
-                        "p_value": inferential.get("p_value") if correlation_inference != "none" else None,
-                        "shuffle_p": inferential.get("shuffle_p") if correlation_inference != "none" else None,
-                        "shuffle_n_requested": inferential.get("shuffle_n_requested", 0),
-                        "shuffle_n_success": inferential.get("shuffle_n_success", 0),
-                        "p_value_source": inferential.get("p_value_source", "none_descriptive"),
-                        "inferential_status": inferential.get("status", "descriptive"),
-                        "inferential_unit": "day_pair",
-                        "correction_family": None,
-                        "n_timepoints": int(n_timepoints),
-                    }
-                )
-            continue
-        for left, right in _pair_iter(left_members, right_members):
-            left_values, right_values, n_timepoints = _paired_trace_values(left, right, mask_array)
-            if n_timepoints <= 0:
-                continue
+            else:
+                left_values, right_values, n_timepoints = _paired_trace_values(left, right, mask_array)
+                if n_timepoints <= 0:
+                    continue
             corr = pairwise_correlation(left_values, right_values)
-            compartment_label = left.compartment if left.compartment == right.compartment else f"{left.compartment}_vs_{right.compartment}"
+            n_timepoints = int(left_values.size)
             pair_key = _pair_unit_id(ctx, comparison_name, left, right)
-            shuffle_key = build_shared_shuffle_cache_key(
+            shuffle_key = build_shared_shift_schedule_key(
                 family="soma_pairwise_correlation",
                 signal=str(comparison_name),
                 analysis_unit="day",
                 animal_id=str(ctx.animal_id),
                 day_id=str(ctx.day_id),
-                source_id=f"{pair_key}|{state_key}",
-                vector_length=int(n_timepoints),
-                state_label=state_key,
+                vector_length=n_timepoints,
                 correlation_method=correlation_method,
                 correlation_inference=correlation_inference,
                 shuffle_n=correlation_shuffle_n,
                 shuffle_seed=correlation_shuffle_seed,
                 min_shift_frames=correlation_min_shift_frames,
             )
-            _ensure_correlation_shuffle_entry(shared_shuffle_cache, shuffle_key, int(n_timepoints), correlation_shuffle_n, correlation_shuffle_seed, correlation_min_shift_frames)
-            inferential = correlation_analysis_for_observation(
-                left_values, right_values, correlation_shuffle_n,
-                shared_shuffle_cache=shared_shuffle_cache,
-                shared_shuffle_key=shuffle_key,
-                correlation_method=correlation_method,
-                correlation_inference=correlation_inference,
-                shuffle_seed=correlation_shuffle_seed,
-                min_shift_frames=correlation_min_shift_frames,
+            _ensure_correlation_shuffle_entry(
+                shared_shuffle_cache,
+                shuffle_key,
+                n_timepoints,
+                correlation_shuffle_n,
+                correlation_shuffle_seed,
+                correlation_min_shift_frames,
             )
+            pending.append({
+                "left": left,
+                "right": right,
+                "left_values": left_values,
+                "right_values": right_values,
+                "corr": corr,
+                "n_timepoints": n_timepoints,
+                "pair_key": pair_key,
+                "shuffle_key": shuffle_key,
+            })
+        if diagnostics is not None:
+            elapsed = time.perf_counter() - state_started
+            diagnostics["states"] = int(diagnostics.get("states", 0)) + 1
+            diagnostics["pairs_prepared"] = int(diagnostics.get("pairs_prepared", 0)) + len(pending)
+            diagnostics["observed_and_pair_prep_elapsed_s"] = float(diagnostics.get("observed_and_pair_prep_elapsed_s", 0.0)) + elapsed
+            if comparison_diagnostics is not None:
+                comparison_diagnostics["states"] += 1
+                comparison_diagnostics["pairs_prepared"] += len(pending)
+                comparison_diagnostics["observed_and_pair_prep_elapsed_s"] += elapsed
+        if not pending:
+            continue
+        null_started = time.perf_counter()
+        inferential = correlation_analysis_for_batch(
+            [(item["left_values"], item["right_values"]) for item in pending],
+            correlation_shuffle_n,
+            shared_shuffle_cache=shared_shuffle_cache,
+            shared_shuffle_keys=[item["shuffle_key"] for item in pending],
+            result_keys=[f"{item['pair_key']}|{state_key}" for item in pending],
+            correlation_method=correlation_method,
+            correlation_inference=correlation_inference,
+            shuffle_seed=correlation_shuffle_seed,
+            min_shift_frames=correlation_min_shift_frames,
+            max_batch_size=correlation_batch_size,
+            shift_block_size=correlation_shift_block_size,
+        )
+        if diagnostics is not None:
+            elapsed = time.perf_counter() - null_started
+            diagnostics["null_elapsed_s"] = float(diagnostics.get("null_elapsed_s", 0.0)) + elapsed
+            if comparison_diagnostics is not None:
+                comparison_diagnostics["null_elapsed_s"] += elapsed
+        row_started = time.perf_counter()
+        for item, inferential_row in zip(pending, inferential):
+            left = item["left"]
+            right = item["right"]
+            compartment_label = left.compartment if left.compartment == right.compartment else f"{left.compartment}_vs_{right.compartment}"
             rows.append(
                 {
                     "expid": ctx.expid,
@@ -337,14 +327,32 @@ def build_pairwise_correlation_rows(
                     "right_roi_index": int(right.roi_index),
                     "right_roi_id": right.roi_id,
                     "right_unit_id": right.unit_id,
-                    "pair_unit_id": _pair_unit_id(ctx, comparison_name, left, right),
+                    "pair_unit_id": item["pair_key"],
                     "state": state_key,
                     "state_display": state_display_label(state),
                     "state_color": state_display_color(state),
-                    "corr": corr,
-                    "n_timepoints": int(n_timepoints),
+                    "corr": item["corr"],
+                    "effect_size": item["corr"],
+                    "lower_ci": None,
+                    "upper_ci": None,
+                    "p_value": inferential_row.get("p_value") if correlation_inference != "none" else None,
+                    "shuffle_p": inferential_row.get("shuffle_p") if correlation_inference != "none" else None,
+                    "shuffle_n_requested": inferential_row.get("shuffle_n_requested", 0),
+                    "shuffle_n_success": inferential_row.get("shuffle_n_success", 0),
+                    "p_value_source": inferential_row.get("p_value_source", "none_descriptive"),
+                    "inferential_status": inferential_row.get("status", "descriptive"),
+                    "inferential_unit": "day_pair",
+                    "correction_family": None,
+                    "n_timepoints": item["n_timepoints"],
                 }
             )
+        if diagnostics is not None:
+            elapsed = time.perf_counter() - row_started
+            diagnostics["rows_generated"] = int(diagnostics.get("rows_generated", 0)) + len(inferential)
+            diagnostics["row_build_elapsed_s"] = float(diagnostics.get("row_build_elapsed_s", 0.0)) + elapsed
+            if comparison_diagnostics is not None:
+                comparison_diagnostics["rows_generated"] += len(inferential)
+                comparison_diagnostics["row_build_elapsed_s"] += elapsed
     return rows
 
 

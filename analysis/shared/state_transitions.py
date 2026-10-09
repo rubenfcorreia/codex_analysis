@@ -396,7 +396,7 @@ def plot_transition_summaries(
             direction_groups[(str(segment.get("state_before", "")), str(segment.get("state_after", "")))].append(segment)
         if not direction_groups:
             continue
-        fig, ax = plt.subplots(figsize=(7.0, 4.8))
+        fig, (ax, ax_pair) = plt.subplots(1, 2, figsize=(11.5, 4.8), gridspec_kw={"width_ratios": [1.45, 1.0]})
         for direction_index, (direction, direction_segments) in enumerate(sorted(direction_groups.items())):
             interpolated: list[tuple[Mapping[str, Any], np.ndarray]] = []
             for segment in direction_segments:
@@ -454,6 +454,30 @@ def plot_transition_summaries(
                 ax.plot(grid, trace, color=color, alpha=0.12, linewidth=0.7)
             ax.plot(grid, mean, color=color, linewidth=2.0, label=label)
             ax.fill_between(grid, mean - sem, mean + sem, color=color, alpha=0.16, linewidth=0)
+        # Keep the aligned trace and the corresponding before/after summary in
+        # one figure so the transition effect is readable in context.
+        pair_rows = [row for row in balanced_rows if tuple(str(row.get(field, "")) for field in fields[:2] + fields[4:]) == (scope, mode, metric, compartment)]
+        for direction_index, (direction, direction_rows) in enumerate(sorted(direction_groups.items())):
+            selected_rows = [row for row in pair_rows if str(row.get("state_before", "")) == direction[0] and str(row.get("state_after", "")) == direction[1]]
+            color = ("#2166ac", "#b2182b", "#1b7837", "#762a83", "#e08214")[direction_index % 5]
+            pre = np.asarray([row.get("pre_value", np.nan) for row in selected_rows], dtype=float)
+            post = np.asarray([row.get("post_value", np.nan) for row in selected_rows], dtype=float)
+            keep = np.isfinite(pre) & np.isfinite(post)
+            if not np.any(keep):
+                continue
+            pre, post = pre[keep], post[keep]
+            for before, after in zip(pre, post):
+                ax_pair.plot([0, 1], [before, after], color=color, alpha=0.22, linewidth=0.8)
+            ax_pair.scatter(np.zeros(pre.size), pre, color=color, s=14, alpha=0.65)
+            ax_pair.scatter(np.ones(post.size), post, color=color, s=14, alpha=0.65)
+            ax_pair.plot([0, 1], [np.mean(pre), np.mean(post)], color=color, linewidth=2.2, label=f"{direction[0]} → {direction[1]}")
+        ax_pair.set_xticks([0, 1], ["Before", "After"])
+        ax_pair.set_ylabel(metric)
+        ax_pair.set_title("Before / after")
+        ax_pair.grid(axis="y", alpha=0.2)
+        ax_pair.spines["top"].set_visible(False); ax_pair.spines["right"].set_visible(False)
+        if ax_pair.has_data():
+            ax_pair.legend(frameon=False, fontsize=7)
         ax.axvline(0.0, color="#333333", linestyle="--", linewidth=1.0)
         ax.set_xlim(-window_s, window_s)
         ax.set_xlabel("Time from transition (s)")

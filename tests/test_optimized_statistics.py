@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import stats
 
-from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation
+from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch, correlation_analysis_for_observation
 from analysis.shared.analysis_families.matrix_similarity import matrix_similarity_analysis
 from analysis.compartment_common import interpolate_series, lagged_correlation, pairwise_correlation
 
@@ -176,3 +176,83 @@ def test_exact_null_result_cache_reuses_only_identical_traces():
     )
     assert changed["r"] != first["r"]
     assert cache["null_result_stats"]["misses"] == 2
+
+
+
+def test_batched_correlation_null_matches_reference_and_keeps_pair_results() -> None:
+    rng = np.random.default_rng(101)
+    pairs = []
+    for index in range(5):
+        a = rng.normal(size=72)
+        b = rng.normal(size=72)
+        if index % 2:
+            a[4] = np.nan
+            b[19] = np.nan
+        pairs.append((a, b))
+    shifts = np.array([2, 7, 13, 21, 31], dtype=int)
+    single_cache = {"entries": {f"pair-{i}": {"shifts": shifts} for i in range(len(pairs))}}
+    expected = [
+        correlation_analysis_for_observation(
+            a, b, len(shifts), shared_shuffle_cache=single_cache, shared_shuffle_key=f"pair-{i}"
+        )
+        for i, (a, b) in enumerate(pairs)
+    ]
+    batch_cache = {"entries": {f"pair-{i}": {"shifts": shifts} for i in range(len(pairs))}}
+    actual = correlation_analysis_for_batch(
+        pairs,
+        len(shifts),
+        shared_shuffle_cache=batch_cache,
+        shared_shuffle_keys=[f"pair-{i}" for i in range(len(pairs))],
+        max_batch_size=2,
+    )
+    for reference, observed in zip(expected, actual):
+        assert reference.keys() == observed.keys()
+        for key in reference:
+            if isinstance(reference[key], float) and np.isnan(reference[key]):
+                assert np.isnan(observed[key])
+            elif isinstance(reference[key], float):
+                assert np.isclose(reference[key], observed[key], rtol=0, atol=1e-12)
+            else:
+                assert reference[key] == observed[key]
+    assert batch_cache["null_batch_diagnostics"]["pairs"] == len(pairs)
+    assert batch_cache["null_batch_diagnostics"]["max_batch_size"] == 2
+    assert batch_cache["null_batch_diagnostics"]["shift_block_size"] == 8
+    # Different finite masks no longer split otherwise compatible batches.
+    assert batch_cache["null_batch_diagnostics"]["batches"] == 3
+
+
+def test_canonical_schedule_reuse_is_independent_of_pair_identity():
+    from analysis.shared.cache_utils import build_shared_shift_schedule_key
+
+    common = dict(
+        family="soma_pairwise_correlation",
+        signal="soma_pairwise",
+        analysis_unit="day",
+        animal_id="animal",
+        day_id="day",
+        vector_length=80,
+        correlation_method="pearson",
+        correlation_inference="circular_shift",
+        shuffle_n=200,
+        shuffle_seed=17,
+        min_shift_frames=3,
+    )
+    assert build_shared_shift_schedule_key(**common) == build_shared_shift_schedule_key(**common)
+    first = correlation_analysis_for_batch(
+        [(np.arange(80, dtype=float), np.arange(80, dtype=float)[::-1])],
+        5,
+        shared_shuffle_cache={"entries": {}},
+        shared_shuffle_keys=["schedule"],
+        result_keys=["pair-a|state"],
+        shuffle_seed=17,
+    )
+    cache = {"entries": {}}
+    second = correlation_analysis_for_batch(
+        [(np.arange(80, dtype=float), np.roll(np.arange(80, dtype=float), 4))],
+        5,
+        shared_shuffle_cache=cache,
+        shared_shuffle_keys=["schedule"],
+        result_keys=["pair-b|state"],
+        shuffle_seed=17,
+    )
+    assert first[0]["shuffle_n_success"] == second[0]["shuffle_n_success"]

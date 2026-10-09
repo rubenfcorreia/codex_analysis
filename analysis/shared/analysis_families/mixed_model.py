@@ -10,6 +10,73 @@ from scipy import stats
 from analysis.shared.roi_split import annotate_rows_with_split_group
 from analysis.shared.state_utils import canonical_state_label
 
+MIXED_MODEL_PREFLIGHT_SCHEMA_VERSION = 1
+MIXED_MODEL_CONDITION_WARNING = 1.0e10
+
+
+def _mixed_model_preflight(frame, formula, contrast_specs, state_levels, vc_formula):
+    result = {
+        "schema_version": MIXED_MODEL_PREFLIGHT_SCHEMA_VERSION,
+        "status": "eligible",
+        "formula": str(formula),
+        "n_rows": int(len(frame)),
+        "n_fixed_effects": 0,
+        "design_rank": 0,
+        "condition_number": float("nan"),
+        "n_animals": int(frame["animal_key"].nunique()) if len(frame) else 0,
+        "n_days": int(frame["day_key"].nunique()) if len(frame) else 0,
+        "n_units": int(frame["unit_key"].nunique()) if len(frame) else 0,
+        "observations_per_animal": {},
+        "state_levels": list(state_levels),
+        "contrast_status": [],
+        "variance_components": list(vc_formula),
+        "reasons": [],
+    }
+    if frame.empty or frame["response"].isna().all():
+        result["status"] = "all_missing"
+        result["reasons"].append("no finite response observations")
+        return result
+    counts = frame.groupby("animal_key", dropna=False).size().to_dict()
+    result["observations_per_animal"] = {str(key): int(value) for key, value in counts.items()}
+    if len(frame) < 4:
+        result["status"] = "insufficient_data"
+        result["reasons"].append("fewer than four finite observations")
+    elif len(counts) < 2 or all(int(value) < 2 for value in counts.values()):
+        result["status"] = "insufficient_groups"
+        result["reasons"].append("random-intercept groups lack replicated observations")
+    elif len(state_levels) < 2:
+        result["status"] = "single_level_factor"
+        result["reasons"].append("state has fewer than two observed levels")
+    try:
+        import patsy
+        design = patsy.dmatrix(formula.split("~", 1)[1], frame, return_type="dataframe")
+        matrix = design.to_numpy(dtype=float)
+        rank = int(np.linalg.matrix_rank(matrix))
+        result["n_fixed_effects"] = int(matrix.shape[1])
+        result["design_rank"] = rank
+        if matrix.size and rank < matrix.shape[1]:
+            result["status"] = "rank_deficient"
+            result["reasons"].append("fixed-effect design matrix is rank deficient")
+        elif matrix.size:
+            condition = float(np.linalg.cond(matrix))
+            result["condition_number"] = condition
+            if np.isfinite(condition) and condition > MIXED_MODEL_CONDITION_WARNING and result["status"] == "eligible":
+                result["status"] = "near_singular_warning"
+                result["reasons"].append("fixed-effect condition number is high")
+    except Exception as exc:
+        result["status"] = "rank_deficient"
+        result["reasons"].append(f"design construction failed: {exc}")
+    observed_states = set(str(value) for value in frame["state"].unique())
+    for spec in contrast_specs or []:
+        if str(spec.get("kind")) != "state_pair":
+            continue
+        a, b = str(spec.get("state_a")), str(spec.get("state_b"))
+        result["contrast_status"].append({
+            "contrast": f"{a} vs {b}",
+            "status": "estimable" if a in observed_states and b in observed_states else "non_estimable_contrast",
+        })
+    return result
+
 
 def run_mixed_model_family(
     rows, response, scope, contrast_specs, shuffle_n, *, alerts=None, vc_level_keys=None, state_order=None, p_value_source="classical"
@@ -49,7 +116,7 @@ def run_mixed_model_family(
         item["compartment"] = str(item.get("compartment") or "all")
         records.append(item)
     if not records:
-        return {"summary_rows": [], "contrast_rows": [], "design": {}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "no_data"}}
+        return {"summary_rows": [], "contrast_rows": [], "design": {"preflight": {"schema_version": MIXED_MODEL_PREFLIGHT_SCHEMA_VERSION, "status": "all_missing", "formula": None, "n_rows": 0, "reasons": ["no finite response observations"]}}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "preflight_skipped", "preflight_status": "all_missing", "error": "no finite response observations"}}
 
     frame = pd.DataFrame(records)
     state_levels = [str(state) for state in (state_order or []) if str(state) in set(frame["state"])]
@@ -66,6 +133,9 @@ def run_mixed_model_family(
         formula_terms.append("C(state):C(compartment)")
     formula = "response ~ " + " + ".join(formula_terms)
     vc_formula = {"day": "0 + C(day_key)", "unit": "0 + C(unit_key)"}
+    preflight = _mixed_model_preflight(frame, formula, contrast_specs, state_levels, vc_formula)
+    if preflight["status"] in {"insufficient_data", "insufficient_groups", "single_level_factor", "rank_deficient", "all_missing"}:
+        return {"summary_rows": [], "contrast_rows": [], "design": {"preflight": preflight}, "equation": formula, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "preflight_skipped", "preflight_status": preflight["status"], "error": "; ".join(preflight["reasons"])}}
     fit = None
     fit_method = "lbfgs"
     fit_error = None
@@ -168,8 +238,11 @@ def run_mixed_model_family(
     if inferential_fit_ok:
         for term, p_value in fit.pvalues.items():
             tested_terms.append({"term": str(term), "estimate": float(fit.params.get(term, np.nan)), "p_value": float(p_value) if np.isfinite(p_value) else float("nan")})
-    design = {"state_levels": state_levels, "formula": formula, "random_effect_group": "animal_key", "variance_components": list(vc_formula), "n_rows": int(len(frame)), "n_animals": int(frame["animal_key"].nunique()), "n_days": int(frame["day_key"].nunique()), "n_units": int(frame["unit_key"].nunique())}
-    fit_payload = {"converged": bool(inferential_fit_ok), "fit_method": fit_method if fit is not None else "failed", "fallback_used": bool(fit is not None and "fallback" in fit_method), "singular_or_non_pd": bool(singular_or_non_pd), "warning_messages": warning_messages, "error": fit_error, "aic": float(fit.aic) if fit is not None and np.isfinite(fit.aic) else float("nan"), "bic": float(fit.bic) if fit is not None and np.isfinite(fit.bic) else float("nan")}
+    fixed_effect_names = []
+    if fit is not None:
+        fixed_effect_names = [str(name) for name in getattr(fit, "fe_params", {}).index] if hasattr(getattr(fit, "fe_params", None), "index") else [str(name) for name in getattr(getattr(fit, "model", None), "exog_names", [])]
+    design = {"state_levels": state_levels, "formula": formula, "fixed_effect_names": fixed_effect_names, "inferential_status": "valid" if inferential_fit_ok else "invalid_fit", "random_effect_group": "animal_key", "preflight": preflight, "variance_components": list(vc_formula), "n_rows": int(len(frame)), "n_animals": int(frame["animal_key"].nunique()), "n_days": int(frame["day_key"].nunique()), "n_units": int(frame["unit_key"].nunique())}
+    fit_payload = {"converged": bool(inferential_fit_ok), "preflight_status": preflight.get("status", "eligible"), "fit_method": fit_method if fit is not None else "failed", "fallback_used": bool(fit is not None and "fallback" in fit_method), "singular_or_non_pd": bool(singular_or_non_pd), "warning_messages": warning_messages, "error": fit_error, "aic": float(fit.aic) if fit is not None and np.isfinite(fit.aic) else float("nan"), "bic": float(fit.bic) if fit is not None and np.isfinite(fit.bic) else float("nan")}
     return {"summary_rows": summary_rows, "contrast_rows": contrast_rows, "design": design, "equation": formula, "tested_terms": tested_terms, "tested_contrasts": contrast_rows, "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": fit_payload}
 
 def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment: Optional[str] = None) -> List[Dict[str, Any]]:

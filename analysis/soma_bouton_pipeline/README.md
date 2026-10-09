@@ -45,7 +45,15 @@ Transition outputs are written under the relevant result root:
 
 The primary paired tests are calculated across experiment-days, not across individual transitions or ROIs.
 
-Pairwise soma/bouton correlations are descriptive at the ROI/day-pair level unless they are aggregated through an animal-level model. Their rows retain effect sizes, confidence intervals, and inferential-status metadata; frame-level classical correlation p-values are not treated as population-level evidence. Visual-response cohorts are classified per ROI and do not imply independent population replicates.
+Soma/bouton ROI-pair correlations use seeded circular-shift significance testing by default. Configure this independently with `pairwise_correlation_inference`, `pairwise_correlation_shuffle_n`, `correlation_shuffle_seed`, and `correlation_min_shift_frames`; the default is 200 random shifts with replacement. Each soma-soma, bouton-bouton, and soma-bouton pair/state retains its own null distribution and p-value.
+
+Compatible pairs are evaluated in bounded vectorized batches. A batch may reuse the same canonical random shift schedule, but null distributions are never pooled between pairs, ROIs, states, experiments, or days. Shifts are applied relative to each pair, so both traces are not shifted together. Schedule keys are scoped to experiment/day, vector length, method, inference, shuffle count, seed, minimum shift, and methodology/schema; they do not include pair identity or finite-mask identity. Exact-result keys remain pair- and state-specific and include both trace signatures and finite-mask signatures.
+
+The default pairwise_correlation_shift_block_size is 8. It bounds the temporary pair_batch_size x shift_block_size x vector_length array while preserving the reference per-pair null distribution. pairwise_correlation_batch_size controls the maximum number of pairs held in one vectorized batch; reduce either setting if memory is constrained. Different ROI masks may share a batch because each pair keeps its own finite mask during the calculation.
+
+The timing report records pair-family, batch, schedule-cache, exact-null-cache, serialization, elapsed-time, memory, and row-count diagnostics. It also records experiment checkpoints and per-comparison correlation diagnostics, which distinguish observed-correlation preparation, null calculation, row construction, and cache reuse. Cold runs still perform all null calculations; warm runs can reuse exact cached results and canonical schedules.
+
+Pairwise rows retain effect sizes, confidence intervals, p-values, and inferential-status metadata. Visual-response cohorts are classified per ROI and do not imply independent population replicates.
 
 The pipeline records methodology version, statistical configuration, source signatures, dependency metadata, and random-seed settings in active result/cache metadata so stale statistical outputs are not silently reused.
 
@@ -80,3 +88,10 @@ The soma/bouton pipeline also writes:
 - `csv/roi_split_summary.csv` for the per-window split summaries
 
 The split is global across pooled eligible soma and bouton ROIs, so recordings with only one ROI still contribute. The shared helper in `analysis/shared/roi_split.py` ranks the pooled ROIs by duration-weighted activity or event-frequency scores, uses `more_active` / `less_active` for activity splits and `higher_frequency` / `lower_frequency` for frequency splits, repeats each branch for `overall`, `NREM`, and `REM`, and uses sleep-session rows only for the `NREM` and `REM` bases. The same split membership is then passed into the mixed-model leaves. The matching figures are written under `results/soma_bouton_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/roi_split_<roi_type>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
+
+
+### Mixed-model preflight and serialization diagnostics
+
+Before fitting, the pipeline records finite observations, random-effect group replication, state levels, fixed-effect design rank, condition number, and contrast estimability. Models that are mathematically invalid are reported as insufficient_data, insufficient_groups, single_level_factor, rank_deficient, or all_missing and are skipped before the statistical fit. near_singular_warning models remain eligible and retain their existing fitting behavior.
+
+The additive csv/mixed_model_preflight.csv artifact and timing_report.json identify preflight and fit outcomes. CSV and NPZ writes are atomic and are recorded in serialization_records with elapsed time, row/column counts, output bytes, cache status, and RSS snapshots. Existing CSV paths, columns, formatting, and scientific calculations remain unchanged.

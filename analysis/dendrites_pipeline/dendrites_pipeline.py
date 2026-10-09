@@ -246,7 +246,7 @@ DEFAULT_SHARED_SHUFFLE_CACHE_NAME = "dendrites_cache_shuffle_cache.npz"
 CACHE_SCHEMA_VERSION = 3
 ANALYSIS_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 3
-ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 3
+ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 4
 SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 2
 REPORT_SIGNIFICANCE_ALPHA = 0.05
 CPU_THREAD_LIMIT_ENV_VARS = (
@@ -518,6 +518,7 @@ USER_EDITABLE_DEFAULTS = {
     "correlation_shuffle_n": DEFAULT_SHUFFLES,
     "correlation_shuffle_seed": 12345,
     "correlation_min_shift_frames": 1,
+    "correlation_batch_size": 64,
     "cpu_thread_limit": DEFAULT_CPU_THREAD_LIMIT,
     "locomotion_threshold": None,
     "rebuild": False,
@@ -4753,6 +4754,41 @@ def plot_direct_trial_type_state_comparison_figure(
     return str(panel_paths[0])
 
 
+def _plot_mixed_model_summary_fallback(results: Dict[str, Any], fig_dir: Path, output_name: str, title: Optional[str], model_key: str, predicted: bool = False) -> Optional[str]:
+    """Plot serialized state summaries when design fixed-effect names are absent."""
+    model = results.get(model_key, {})
+    summary = model.get("summary_rows", {}) if isinstance(model, dict) else {}
+    if not isinstance(summary, dict):
+        return None
+    rows = [(str(response), dict(row)) for response, values in summary.items() if isinstance(values, list) for row in values if isinstance(row, dict)]
+    rows = [(response, row) for response, row in rows if as_float(row.get("mean", row.get("estimate"))) is not None]
+    if not rows:
+        return None
+    fig, ax = plt.subplots(figsize=(10, max(4.0, 0.28 * len(rows))))
+    if predicted:
+        states = list(dict.fromkeys(str(row.get("state", "")) for _, row in rows))
+        responses = list(dict.fromkeys(response for response, _ in rows))
+        x = np.arange(len(states))
+        for index, response in enumerate(responses):
+            values = [as_float(next((row.get("mean", row.get("estimate")) for resp, row in rows if resp == response and str(row.get("state", "")) == state), np.nan)) for state in states]
+            ax.plot(x, values, marker="o", linewidth=2, label=response)
+        ax.set_xticks(x); ax.set_xticklabels(states, rotation=35, ha="right"); ax.set_ylabel("Mean / predicted value")
+    else:
+        labels = [f"{response}: {row.get('state', '')}" for response, row in rows]
+        values = [float(row.get("mean", row.get("estimate"))) for _, row in rows]
+        y = np.arange(len(values))
+        ax.axvline(0, color="#888", linewidth=0.8); ax.scatter(values, y, color="#4C78A8", s=28)
+        ax.set_yticks(y); ax.set_yticklabels(labels); ax.set_xlabel("Estimate / mean")
+    ax.set_title(title or ("Mixed-model predicted means" if predicted else "Mixed-model state summaries"))
+    ax.grid(axis="x" if not predicted else "y", alpha=0.2)
+    if predicted and len(rows): ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    output = Path(fig_dir) / output_name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    save_figure(fig, output, extra_formats=())
+    plt.close(fig)
+    return str(output)
+
 def plot_mixed_model_forest_figure(
     results: Dict[str, Any],
     fig_dir: Path,
@@ -4839,7 +4875,7 @@ def plot_mixed_model_forest_figure(
         payloads.append((response, design, term_lookup, display_terms))
 
     if not payloads:
-        return None
+        return _plot_mixed_model_summary_fallback(results, fig_dir, output_name, title, model_key, predicted=False)
 
     component_dir = ensure_dir(Path(fig_dir) / f"{Path(output_name).stem}_components")
     panel_paths: List[Path] = []
@@ -5046,6 +5082,8 @@ def plot_mixed_model_predicted_means_figure(
             response_order.append(response)
     if not response_order:
         return None
+    if all(not isinstance(mixed_model.get("designs", {}).get(response), dict) or not mixed_model.get("designs", {}).get(response, {}).get("fixed_effect_names") for response in response_order):
+        return _plot_mixed_model_summary_fallback(results, fig_dir, output_name, title, model_key, predicted=True)
     model_equations = mixed_model.get("model_equations", {}) if isinstance(mixed_model.get("model_equations", {}), dict) else {}
     payloads: List[Dict[str, Any]] = []
     all_values: List[float] = []
@@ -15889,9 +15927,10 @@ def write_analysis_outputs(
                 heatmap_records = records_from_dendrite_cache(source_cache, (), split_rows, str(run_params.get("event_detection_method") or "derivative"))
                 dff_heatmap_files = render_dff_heatmaps(
                     heatmap_records,
-                    (Path(configured_general_root) if configured_general_root else shared_general_root.parent) / "dff_heatmaps",
+                    (Path(configured_general_root) if configured_general_root else shared_general_root.parent) / "dff_heatmaps" / "examples",
                     event_detection_method=str(run_params.get("event_detection_method") or "derivative"),
-                    max_rois_per_class=int(run_params.get("dff_heatmap_max_rois_per_class", 10)),
+                    max_rois_per_class=int(run_params.get("dff_heatmap_max_rois_per_class", 2)),
+                    representative_only=True,
                     max_trace_points=run_params.get("dff_heatmap_max_trace_points"),
                     output_formats=tuple(run_params.get("dff_heatmap_output_formats") or ("svg", "png")),
                 )
@@ -15900,8 +15939,15 @@ def write_analysis_outputs(
                     written_artifacts.append(report_relative_path(path, output_dir))
                 step_message("dF/F heatmap generation complete: %d file(s)" % len(dff_heatmap_files))
         else:
-            results["visual_response_figure_files"] = []
-            results["event_example_gallery"] = []
+            # Shared general figures are generated once, usually by the first
+            # preset. Keep later preset manifests pointing to those existing
+            # artifacts instead of reporting them as missing.
+            general_root = Path(run_params.get("general_output_root")) if run_params.get("general_output_root") else None
+            general_figures = general_root / "figures" if general_root else None
+            results["visual_response_figure_files"] = sorted(str(path) for path in (general_figures / "visual_response").rglob("*.svg")) if general_figures and (general_figures / "visual_response").exists() else []
+            results["event_example_gallery"] = sorted(str(path) for path in (general_figures / "event_examples").rglob("*.svg")) if general_figures and (general_figures / "event_examples").exists() else []
+            heatmap_root = general_root / "dff_heatmaps" / "examples" if general_root else None
+            results["dff_heatmap_files"] = sorted(str(path) for path in heatmap_root.rglob("*") if path.suffix in {".svg", ".png", ".json"}) if heatmap_root and heatmap_root.exists() else []
         step_message("checkpoint gallery generation starting")
         with step_scope("checkpoint gallery"):
             checkpoint_root = output_dir
@@ -18115,6 +18161,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "correlation_shuffle_n": int(config.get("correlation_shuffle_n", shuffle_n)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
         "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
+        "correlation_batch_size": int(config.get("correlation_batch_size", 64)),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "comparison_leaf": list(config.get("comparison_leaf") or []) if config.get("comparison_leaf") else None,
         **visual_response_cohort_metadata,
@@ -18436,6 +18483,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shuffle_n": shuffle_n,
         "entry_count": int(len(shared_shuffle_cache.get("entries", {}))) if isinstance(shared_shuffle_cache, dict) else 0,
         "null_result_stats": dict(shared_shuffle_cache.get("null_result_stats", {})) if isinstance(shared_shuffle_cache, dict) else {},
+        "null_batch_diagnostics": dict(shared_shuffle_cache.get("null_batch_diagnostics", {})) if isinstance(shared_shuffle_cache, dict) else {},
     }
     cache_summary = {
         "source": {"path": str(cache_path), "scope": "superset_reusable", "key": source_cache_signature(source_cache), "status": source_cache_status},

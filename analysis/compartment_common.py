@@ -10,14 +10,19 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import pickle
 import re
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import numpy as np
+
+from analysis.shared.serialization_diagnostics import record_serialization, rss_bytes
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -88,11 +93,28 @@ else:  # pragma: no cover - local fallback for portability
     def write_csv_rows(path: Path | str, rows: Sequence[Mapping[str, Any]], fieldnames: Sequence[str]) -> None:
         path = Path(path)
         ensure_dir(path.parent)
-        with path.open("w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(fieldnames))
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({name: row.get(name, "") for name in fieldnames})
+        names = list(fieldnames)
+        started = time.perf_counter()
+        rss_before = rss_bytes()
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", newline="", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as fh:
+                temporary = Path(fh.name)
+                writer = csv.DictWriter(fh, fieldnames=names)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({name: row.get(name, "") for name in names})
+            os.replace(temporary, path)
+            record_serialization(path=path, artifact=path.name, format_name="csv", elapsed_s=time.perf_counter() - started, rows=len(rows), columns=len(names), status="completed", rss_before=rss_before, rss_after=rss_bytes())
+        except Exception as exc:
+            record_serialization(path=path, artifact=path.name, format_name="csv", elapsed_s=time.perf_counter() - started, rows=len(rows), columns=len(names), status="failed", error=str(exc), rss_before=rss_before, rss_after=rss_bytes())
+            raise
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
 
 
     def write_json_file(path: Path | str, payload: Mapping[str, Any]) -> None:

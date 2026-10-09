@@ -178,14 +178,23 @@ def _sleep_rows_from_segments(*, pipeline: str, segments: Mapping[tuple[str, str
             x, y = axis[valid], trace[valid]
             unique, indices = np.unique(x, return_index=True)
             y = y[indices]
-            interpolated = np.interp(grid, unique, y, left=np.nan, right=np.nan)
-            for elapsed_time, mean in zip(grid, interpolated):
-                if not np.isfinite(mean):
+            # Preserve each source experiment instead of assigning the whole
+            # concatenated day to its first expID.
+            for boundary_index, boundary in enumerate(value["boundaries"]):
+                start, end = float(boundary["start_s"]), float(boundary["end_s"])
+                # Segment boundaries are shared samples; assign each boundary
+                # to the later segment only, except for the final endpoint.
+                keep_segment = (grid >= start) & ((grid <= end) if boundary_index == len(value["boundaries"]) - 1 else (grid < end))
+                if not np.any(keep_segment):
                     continue
-                first_expid = value["source_expids"][0] if value["source_expids"] else ""
-                row = _base_row(pipeline=pipeline, compartment=compartment, signal_type=signal_type, expid=first_expid, animal_id=animal_id, date=date)
-                row.update({"day_id": f"{animal_id}_{date}", "source_expids": json.dumps(value["source_expids"]), "segment_boundaries": json.dumps(value["boundaries"]), "elapsed_time_s": float(elapsed_time), "mean_dff": float(mean), "n_rois": int(max((item["n_rois"] for item in value["boundaries"]), default=0)), "n_trials": 0, "n_frames": int(np.sum(np.abs(axis - elapsed_time) <= time_step_s / 2)), "status": "ok"})
-                rows.append(row)
+                segment_values = np.interp(grid[keep_segment], unique, y, left=np.nan, right=np.nan)
+                for elapsed_time, mean in zip(grid[keep_segment], segment_values):
+                    if not np.isfinite(mean):
+                        continue
+                    expid = str(boundary.get("expid", ""))
+                    row = _base_row(pipeline=pipeline, compartment=compartment, signal_type=signal_type, expid=expid, animal_id=animal_id, date=date)
+                    row.update({"day_id": f"{animal_id}_{date}", "source_expids": json.dumps(value["source_expids"]), "segment_boundaries": json.dumps(value["boundaries"]), "elapsed_time_s": float(elapsed_time), "mean_dff": float(mean), "n_rois": int(boundary.get("n_rois", 0)), "n_trials": 0, "n_frames": int(np.sum(np.abs(axis - elapsed_time) <= time_step_s / 2)), "status": "ok"})
+                    rows.append(row)
     return rows
 
 
@@ -292,13 +301,16 @@ def _plot_outputs(root: Path, blank_rows: Sequence[Mapping[str, Any]], sleep_row
                     for row in s:
                         grouped_sleep[float(row.get("elapsed_time_s", 0.0))].append(float(row["mean_dff"]))
                         by_day[str(row.get("day_id", row.get("animal_id", "")))].append(row)
-                    for day_rows in by_day.values():
-                        day_rows = sorted(day_rows, key=lambda row: float(row.get("elapsed_time_s", 0.0)))
-                        axes[1].plot([float(row.get("elapsed_time_s", 0.0)) / 60.0 for row in day_rows], [float(row["mean_dff"]) for row in day_rows], color="0.5", alpha=0.22, linewidth=0.8)
+                    by_expid: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+                    for row in s:
+                        by_expid[str(row.get("expid") or row.get("day_id") or "unknown")].append(row)
+                    for expid_rows in by_expid.values():
+                        expid_rows = sorted(expid_rows, key=lambda row: float(row.get("elapsed_time_s", 0.0)))
+                        axes[1].plot([float(row.get("elapsed_time_s", 0.0)) / 60.0 for row in expid_rows], [float(row["mean_dff"]) for row in expid_rows], color="0.5", alpha=0.28, linewidth=0.8)
                     x = sorted(grouped_sleep)
                     y = [_finite_mean(grouped_sleep[value]) for value in x]
                     e = [_finite_sem(grouped_sleep[value]) for value in x]
-                    axes[1].plot(np.asarray(x) / 60.0, y, linewidth=2.2, label=signal)
+                    axes[1].plot(np.asarray(x) / 60.0, y, color="#111111", linewidth=2.8, label=f"{signal} mean")
                     axes[1].fill_between(np.asarray(x) / 60.0, np.asarray(y) - np.asarray(e), np.asarray(y) + np.asarray(e), alpha=0.15)
             axes[0].set(title="Blank-trial progression", xlabel="Time from blank onset (s)", ylabel="Mean dF/F")
             axes[1].set(title="Sleep progression", xlabel="Elapsed sleep time (min)", ylabel="Mean dF/F")

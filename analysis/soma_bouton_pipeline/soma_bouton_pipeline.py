@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from datetime import datetime
 import json
 import logging
 import os
@@ -114,6 +115,7 @@ from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cach
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
+from analysis.shared.serialization_diagnostics import SerializationCollector, set_active_collector
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
@@ -184,6 +186,10 @@ DEFAULT_CONFIG = {
     "correlation_shuffle_n": 200,
     "correlation_shuffle_seed": 12345,
     "correlation_min_shift_frames": 1,
+    "pairwise_correlation_inference": "circular_shift",
+    "pairwise_correlation_shuffle_n": 200,
+    "pairwise_correlation_batch_size": 64,
+    "pairwise_correlation_shift_block_size": 8,
     "rebuild": False,
     "cache_path": None,
     "analysis_results_cache_path": None,
@@ -905,6 +911,10 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
         "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
+        "pairwise_correlation_inference": str(config.get("pairwise_correlation_inference", config.get("correlation_inference", "circular_shift"))),
+        "pairwise_correlation_shuffle_n": int(config.get("pairwise_correlation_shuffle_n", config.get("correlation_shuffle_n", 200))),
+        "pairwise_correlation_batch_size": int(config.get("pairwise_correlation_batch_size", 64)),
+        "pairwise_correlation_shift_block_size": int(config.get("pairwise_correlation_shift_block_size", 8)),
         "event_detection_method": str(event_detection_method),
         "transition_analysis": dict(config.get("transition_analysis") or {}),
         "visual_response_metric": str(visual_response_metric),
@@ -1086,6 +1096,10 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     correlation_shuffle_n = int(config.get("correlation_shuffle_n", 200))
     correlation_method = str(config.get("correlation_method", "pearson"))
     correlation_inference = str(config.get("correlation_inference", "circular_shift"))
+    pairwise_correlation_shuffle_n = int(config.get("pairwise_correlation_shuffle_n", correlation_shuffle_n))
+    pairwise_correlation_inference = str(config.get("pairwise_correlation_inference", correlation_inference))
+    pairwise_correlation_batch_size = max(1, int(config.get("pairwise_correlation_batch_size", 64)))
+    pairwise_correlation_shift_block_size = max(1, int(config.get("pairwise_correlation_shift_block_size", 8)))
     correlation_shuffle_seed = int(config.get("correlation_shuffle_seed", 12345))
     correlation_min_shift_frames = int(config.get("correlation_min_shift_frames", 1))
     analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
@@ -1107,6 +1121,10 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
         "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
+        "pairwise_correlation_inference": pairwise_correlation_inference,
+        "pairwise_correlation_shuffle_n": pairwise_correlation_shuffle_n,
+        "pairwise_correlation_batch_size": pairwise_correlation_batch_size,
+        "pairwise_correlation_shift_block_size": pairwise_correlation_shift_block_size,
     }
     cache_timings: Dict[str, float] = {}
     cache_started = time.perf_counter()
@@ -1357,30 +1375,38 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
             if pairwise_family_rows is None:
                 step_message(f"PROCESS correlations: {mode} | {expid}")
-                with step_scope("pairwise correlations", task="correlation", metadata={"mode": mode, "expid": expid}):
+                with step_scope("soma-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_bouton"}):
                     correlation_rows.extend(bouton_soma_correlation_rows(
                         ctx, row_states, state_masks=state_masks,
-                        correlation_shuffle_n=correlation_shuffle_n,
+                        correlation_shuffle_n=pairwise_correlation_shuffle_n,
                         correlation_method=correlation_method,
-                        correlation_inference=correlation_inference,
+                        correlation_inference=pairwise_correlation_inference,
+                        correlation_batch_size=pairwise_correlation_batch_size,
+                        correlation_shift_block_size=pairwise_correlation_shift_block_size,
                         correlation_shuffle_seed=correlation_shuffle_seed,
                         correlation_min_shift_frames=correlation_min_shift_frames,
                         shared_shuffle_cache=shared_shuffle_cache,
                     ))
+                with step_scope("soma-soma correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_pairwise"}):
                     soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
                         ctx, row_states, state_masks=state_masks,
-                        correlation_shuffle_n=correlation_shuffle_n,
+                        correlation_shuffle_n=pairwise_correlation_shuffle_n,
                         correlation_method=correlation_method,
-                        correlation_inference=correlation_inference,
+                        correlation_inference=pairwise_correlation_inference,
+                        correlation_batch_size=pairwise_correlation_batch_size,
+                        correlation_shift_block_size=pairwise_correlation_shift_block_size,
                         correlation_shuffle_seed=correlation_shuffle_seed,
                         correlation_min_shift_frames=correlation_min_shift_frames,
                         shared_shuffle_cache=shared_shuffle_cache,
                     ))
+                with step_scope("bouton-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "bouton_pairwise"}):
                     bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
                         ctx, row_states, state_masks=state_masks,
-                        correlation_shuffle_n=correlation_shuffle_n,
+                        correlation_shuffle_n=pairwise_correlation_shuffle_n,
                         correlation_method=correlation_method,
-                        correlation_inference=correlation_inference,
+                        correlation_inference=pairwise_correlation_inference,
+                        correlation_batch_size=pairwise_correlation_batch_size,
+                        correlation_shift_block_size=pairwise_correlation_shift_block_size,
                         correlation_shuffle_seed=correlation_shuffle_seed,
                         correlation_min_shift_frames=correlation_min_shift_frames,
                         shared_shuffle_cache=shared_shuffle_cache,
@@ -1420,6 +1446,26 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         )
                     )
             step_message(f"DONE experiment: {mode} | {expid}")
+            if isinstance(shared_shuffle_cache, dict):
+                checkpoint_key = f"{mode}|{expid}"
+                checkpoints = shared_shuffle_cache.setdefault("experiment_checkpoints", {})
+                checkpoints[checkpoint_key] = {
+                    "mode": str(mode),
+                    "expid": str(expid),
+                    "experiment_index": int(exp_idx),
+                    "completed_at": datetime.now().isoformat(timespec="seconds"),
+                    "activity_rows": int(len(activity_rows)),
+                    "correlation_rows": int(len(correlation_rows)),
+                    "soma_pairwise_rows": int(len(soma_pairwise_rows)),
+                    "bouton_pairwise_rows": int(len(bouton_pairwise_rows)),
+                    "coincidence_rows": int(len(coincidence_rows)),
+                    "lag_rows": int(len(lag_rows)),
+                    "visual_response_rows": int(len(visual_response_rows)),
+                    "schedule_cache_entries": int(len(shared_shuffle_cache.get("entries", {}))),
+                    "exact_null_cache_entries": int(len(shared_shuffle_cache.get("null_results", {}))),
+                    "pairwise_diagnostics": dict(shared_shuffle_cache.get("pairwise_diagnostics", {})),
+                    "null_batch_diagnostics": dict(shared_shuffle_cache.get("null_batch_diagnostics", {})),
+                }
             if (
                 shared_shuffle_cache_file is not None
                 and isinstance(shared_shuffle_cache, dict)
@@ -2050,9 +2096,10 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             dff_heatmap_files = render_dff_heatmaps(
                 heatmap_records,
-                (shared_general_root or figure_root) / "dff_heatmaps",
+                (shared_general_root or figure_root) / "dff_heatmaps" / "examples",
                 event_detection_method=event_detection_method,
-                max_rois_per_class=int(config.get("dff_heatmap_max_rois_per_class", 10)),
+                max_rois_per_class=int(config.get("dff_heatmap_max_rois_per_class", 2)),
+                representative_only=True,
                 max_trace_points=config.get("dff_heatmap_max_trace_points"),
                 output_formats=tuple(config.get("dff_heatmap_output_formats") or ("svg", "png")),
             )
@@ -2917,6 +2964,10 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "shared_shuffle_cache_status": str(shared_shuffle_cache_status),
             "shared_shuffle_cache_entries": len(shared_shuffle_cache.get("entries", {})),
             "shared_null_result_stats": dict(shared_shuffle_cache.get("null_result_stats", {})),
+            "shared_schedule_stats": dict(shared_shuffle_cache.get("schedule_stats", {})),
+            "pairwise_diagnostics": dict(shared_shuffle_cache.get("pairwise_diagnostics", {})),
+            "null_batch_diagnostics": dict(shared_shuffle_cache.get("null_batch_diagnostics", {})),
+            "experiment_checkpoints": dict(shared_shuffle_cache.get("experiment_checkpoints", {})),
         },
         "runtime_diagnostics": finish_runtime_diagnostics(runtime_diagnostics_start, result_root),
         "output_root": str(result_root),
@@ -2938,6 +2989,29 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
     (result_root / "cache_key_manifest.json").write_text(json.dumps(cache_key_manifest, indent=2, sort_keys=True) + "\n")
     manifest_json = _json_safe(manifest)
+    preflight_rows = []
+
+    def _collect_preflight(value, path=()):
+        if isinstance(value, dict):
+            if "preflight" in value and isinstance(value["preflight"], dict):
+                item = dict(value["preflight"])
+                item["result_path"] = ".".join(path)
+                item["observations_per_animal"] = json.dumps(item.get("observations_per_animal", {}), sort_keys=True)
+                item["contrast_status"] = json.dumps(item.get("contrast_status", []), sort_keys=True)
+                item["reasons"] = json.dumps(item.get("reasons", []), sort_keys=True)
+                preflight_rows.append(item)
+            for key, child in value.items():
+                _collect_preflight(child, path + (str(key),))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                _collect_preflight(child, path + (str(index),))
+
+    _collect_preflight(manifest_json.get("mixed_model", {}), ("mixed_model",))
+    if preflight_rows:
+        preflight_path = result_root / "csv" / "mixed_model_preflight.csv"
+        write_csv_rows(preflight_path, preflight_rows, sorted({key for row in preflight_rows for key in row}))
+        manifest_json.setdefault("diagnostics", {})["mixed_model_preflight_path"] = str(preflight_path)
+        manifest_json.setdefault("output_artifacts", []).append(str(preflight_path.relative_to(result_root)))
     timing_report_path = result_root / "timing_report.json"
     timing_report_path.write_text(json.dumps({
         "pipeline": "soma_bouton_pipeline",
@@ -3035,13 +3109,19 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         f"RUN pipeline=soma_bouton_pipeline preset={preset_name} "
         f"plots_only={bool(config.get('plots_only'))} rebuild={bool(config.get('rebuild'))}"
     )
-    with step_scope(
-        "pipeline run",
-        task="soma_bouton_pipeline",
-        metadata={"comparison_preset_name": preset_name},
-    ):
-        manifest = _run_pipeline(config)
+    collector = SerializationCollector()
+    set_active_collector(collector)
+    try:
+        with step_scope(
+            "pipeline run",
+            task="soma_bouton_pipeline",
+            metadata={"comparison_preset_name": preset_name},
+        ):
+            manifest = _run_pipeline(config)
+    finally:
+        set_active_collector(None)
 
+    manifest["serialization_records"] = list(collector.records)
     stages = get_stage_timings()
     manifest["stage_timings"] = stages
     manifest["stage_group_timings"] = summarize_stage_groups(stages)
@@ -3061,6 +3141,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "comparison_preset_name": preset_name,
             "stages": stages,
             "stage_groups": manifest.get("stage_group_timings", {}),
+            "serialization_records": manifest.get("serialization_records", []),
         }
     )
     timing_report_path.write_text(json.dumps(timing_payload, indent=2, sort_keys=True))

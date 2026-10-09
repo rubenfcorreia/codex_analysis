@@ -83,3 +83,9 @@ be rerun with `run --only dendrites` or `run --only soma_bouton`.
 The benchmark command runs the isolated fast demo twice, records cold and warm elapsed
 time, cache manifests, output size, and exit status in benchmark_report.json.
 Use it for regression checks; it does not modify real-data results.
+
+## Correlation significance and batching
+
+Demo recipes expose correlation settings when a pipeline correlation family is run. Soma/bouton ROI-pair correlations use `pairwise_correlation_inference`, `pairwise_correlation_shuffle_n`, and `pairwise_correlation_batch_size`; dendrite correlation families use `correlation_inference`, `correlation_shuffle_n`, and `correlation_batch_size`. Circular-shift offsets are seeded random samples with replacement. Compatible pairs may share the offset schedule, but every pair keeps its own null distribution, p-value, trace/mask cache key, and validation result.
+
+Batching is memory-bounded and statistically equivalent to the reference implementation. Generated traces, caches, and validation outputs are run artifacts, not recipe-editing interfaces.

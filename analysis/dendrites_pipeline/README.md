@@ -83,6 +83,13 @@ Correlation settings are explicit in the example and poster-ready configs:
 - `correlation_method`: currently `pearson`; unsupported methods are rejected.
 - `correlation_inference`: `circular_shift` for time-series null inference or `none` for descriptive output.
 - `correlation_shuffle_n`, `correlation_shuffle_seed`, and `correlation_min_shift_frames` control the circular-shift null.
+- `correlation_batch_size` bounds vectorized correlation-null batches (default 64).
+
+The correlation family applies significance testing to dendrite-wheel, dendrite-pupil, spine-dendrite raw, and spine-specific-dendrite traces. Compatible observations within an experiment/day are processed in bounded batches. Random shift schedules are seeded and sampled with replacement; a schedule may be reused across compatible observations, but each observation retains an independent null distribution and p-value. Traces are never pooled across pairs, states, animals, days, or experiments, and both traces in a pair are not shifted together.
+
+Correlation cache keys include the experiment/day, source ROI, signal type, trace and finite-mask signatures, vector length, method, inference, shuffle count, seed, minimum shift, and cache schema. Exact null results are reused only when all of those inputs match. Timing reports expose per-family batch counts, pair counts, elapsed time, cache hits/misses, and memory diagnostics.
+
+The batched implementation is validated against the one-pair reference implementation for finite, NaN-containing, constant, short, and irregular traces. Batching changes execution layout only; it does not change the scientific null model or exported schemas.
 
 Correlation and coactivity outputs retain classical p-values only as diagnostics when a shuffle/null inference is configured. Reports and figures use the stored `p_value_source`; missing or incompatible sources are reported as unavailable. Mixed-model contrasts use model-based Wald inference and do not run shuffles. Active caches are invalidated when the methodology version or statistical configuration changes.
 
@@ -100,3 +107,8 @@ Use the separate reproducible demo platform documented in [analysis/demo_pipelin
 ## Plot profiles
 
 The CLI supports --plot-profile full (default), analysis_only, and poster_only.
+
+
+### Mixed-model preflight
+
+Dendrite mixed-model fits use the shared preflight checks before fitting. The diagnostics record finite observations, animal/group replication, state and interaction levels, design rank, condition number, and contrast estimability. Invalid designs are skipped with structured statuses (insufficient_data, insufficient_groups, single_level_factor, rank_deficient, or all_missing); near_singular_warning eligible designs are fit as before and carry a diagnostic. These checks are diagnostic and do not change valid model formulas or exported result schemas.

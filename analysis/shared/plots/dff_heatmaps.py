@@ -159,8 +159,9 @@ def render_dff_heatmaps(
     max_rois_per_class: int = 10,
     max_trace_points: int | None = None,
     output_formats: Sequence[str] = ("svg", "png"),
+    representative_only: bool = True,
 ) -> list[str]:
-    """Render one full-day heatmap per compartment/day with onset markers."""
+    """Render representative activity/frequency examples, or full-day heatmaps when requested."""
     prepared: list[dict[str, Any]] = []
     for raw in records:
         metrics = _record_metrics(raw, event_detection_method)
@@ -178,13 +179,15 @@ def render_dff_heatmaps(
     saved: list[str] = []
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for record in prepared:
-        grouped[(record["compartment"], record["day_id"])].append(record)
+        group_id = "representative_examples" if representative_only else record["day_id"]
+        grouped[(record["compartment"], group_id)].append(record)
     for (compartment, day_id), group_records in sorted(grouped.items()):
         selected: list[dict[str, Any]] = []
         for class_name in CLASS_ORDER:
             candidates = [row for row in group_records if row.get("split_group") == class_name]
             candidates.sort(key=lambda row: (-_finite_float(row.get("event_frequency_per_min")) if np.isfinite(_finite_float(row.get("event_frequency_per_min"))) else float("inf"), -_finite_float(row.get("mean_dff")) if np.isfinite(_finite_float(row.get("mean_dff"))) else float("inf"), _safe_id(row.get("roi_id") or row.get("roi_key") or row.get("unit_id"))))
-            selected.extend(candidates[: max(0, int(max_rois_per_class))])
+            per_class_limit = min(max(0, int(max_rois_per_class)), 2) if representative_only else max(0, int(max_rois_per_class))
+            selected.extend(candidates[:per_class_limit])
         if not selected:
             continue
         traces: list[np.ndarray] = []
@@ -223,7 +226,8 @@ def render_dff_heatmaps(
                     ax.vlines(onset, row_index - 0.32, row_index + 0.32, color="white", linewidth=1.0, alpha=0.95)
         ax.set_xlabel("Time (s)", fontsize=11)
         ax.set_ylabel("Representative ROI", fontsize=11)
-        ax.set_title(f"{compartment.capitalize()} dF/F heatmap — Full experimental day: {day_id}", fontsize=14, pad=12)
+        title_scope = "Representative activity/frequency examples" if representative_only else f"Full experimental day: {day_id}"
+        ax.set_title(f"{compartment.capitalize()} dF/F heatmap — {title_scope}", fontsize=14, pad=12)
         ax.text(0.0, -0.13, "Rows sorted by class, event frequency ↓, mean dF/F ↓, ROI ID", transform=ax.transAxes, fontsize=9, va="top")
         cursor = 0
         for class_name in CLASS_ORDER:
@@ -238,7 +242,7 @@ def render_dff_heatmaps(
         fig.subplots_adjust(left=0.08, right=0.78, bottom=0.13, top=0.91)
         directory = output_root / _safe_filename(compartment) / _safe_filename(day_id)
         directory.mkdir(parents=True, exist_ok=True)
-        stem = "dff_heatmap_full_day"
+        stem = "dff_heatmap_examples" if representative_only else "dff_heatmap_full_day"
         for output_format in output_formats:
             output_path = directory / f"{stem}.{output_format}"
             save_figure(fig, output_path, extra_formats=())
@@ -246,7 +250,7 @@ def render_dff_heatmaps(
         metadata = {
             "compartment": compartment,
             "day_id": day_id,
-            "state_scope": "full_day",
+            "state_scope": "representative_examples" if representative_only else "full_day",
             "event_detection_method": event_detection_method,
             "sorting": ["class", "event_frequency_per_min_desc", "mean_dff_desc", "roi_id_asc"],
             "color_scale": {"vmin": float(low), "vmax": float(high)},

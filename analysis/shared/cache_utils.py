@@ -11,10 +11,11 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from analysis.shared.state_utils import ensure_dir
+from analysis.shared.serialization_diagnostics import record_serialization, rss_bytes
 
 ANALYSIS_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 1
-ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 1
+ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 2
 SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "2026-10-06-statistics-v3"
 
@@ -54,7 +55,7 @@ def ensure_numpy_pickle_compatibility() -> None:
         sys.modules.setdefault(f"numpy._core.{submodule}", module)
 
 
-def load_npz_cache(path: Path) -> Dict[str, Any]:
+def _load_npz_cache_uninstrumented(path: Path) -> Dict[str, Any]:
     """Load a trusted-input object cache.
 
     NPZ caches may contain pickled Python objects because the active pipeline
@@ -85,13 +86,74 @@ def load_npz_cache(path: Path) -> Dict[str, Any]:
     raise TypeError(f"Could not recover cache dictionary from {path}")
 
 
+def load_npz_cache(path: Path) -> Dict[str, Any]:
+    import time
+    started = time.perf_counter()
+    rss_before = rss_bytes()
+    try:
+        payload = _load_npz_cache_uninstrumented(path)
+        record_serialization(
+            path=path,
+            artifact=path.name,
+            format_name="npz",
+            elapsed_s=time.perf_counter() - started,
+            cache_status="reused",
+            schema_version=payload.get("schema_version"),
+            status="completed",
+            rss_before=rss_before,
+            rss_after=rss_bytes(),
+        )
+        return payload
+    except Exception as exc:
+        record_serialization(
+            path=path,
+            artifact=path.name,
+            format_name="npz",
+            elapsed_s=time.perf_counter() - started,
+            cache_status="unreadable",
+            status="failed",
+            error=str(exc),
+            rss_before=rss_before,
+            rss_after=rss_bytes(),
+        )
+        raise
+
+
 def save_npz_cache(path: Path, payload: Dict[str, Any]) -> None:
     """Persist an object cache atomically so interrupted runs leave a valid file."""
+    import time
     ensure_dir(path.parent)
     temporary = path.with_name(f".{path.name}.tmp.npz")
+    started = time.perf_counter()
+    rss_before = rss_bytes()
     try:
         np.savez_compressed(temporary, cache=np.array([payload], dtype=object))
         os.replace(temporary, path)
+        record_serialization(
+            path=path,
+            artifact=path.name,
+            format_name="npz",
+            elapsed_s=time.perf_counter() - started,
+            cache_status="built",
+            schema_version=payload.get("schema_version"),
+            status="completed",
+            rss_before=rss_before,
+            rss_after=rss_bytes(),
+        )
+    except Exception as exc:
+        record_serialization(
+            path=path,
+            artifact=path.name,
+            format_name="npz",
+            elapsed_s=time.perf_counter() - started,
+            cache_status="failed",
+            schema_version=payload.get("schema_version"),
+            status="failed",
+            error=str(exc),
+            rss_before=rss_before,
+            rss_after=rss_bytes(),
+        )
+        raise
     finally:
         try:
             temporary.unlink()
@@ -315,6 +377,40 @@ def build_shared_shuffle_entry(key: str, vector_length: int, shuffle_n: int) -> 
     return {"key": key, "vector_length": int(vector_length), "shuffle_n": int(shuffle_n)}
 
 
+def build_shared_shift_schedule_key(
+    *,
+    family: str,
+    signal: str,
+    analysis_unit: str,
+    animal_id: str,
+    day_id: str,
+    vector_length: int,
+    correlation_method: str,
+    correlation_inference: str,
+    shuffle_n: int,
+    shuffle_seed: int,
+    min_shift_frames: int,
+) -> str:
+    """Build a schedule-only key; exact null results remain pair-specific."""
+    return shared_shuffle_key({
+        "schema": 2,
+        "methodology_version": METHODOLOGY_VERSION,
+        # Family/signal are retained as API inputs for callers and
+        # diagnostics, but are intentionally not part of the schedule key:
+        # compatible ROI families in one experiment/day may reuse the same
+        # seeded schedule. Pair identity belongs only to exact-result keys.
+        "analysis_unit": str(analysis_unit),
+        "animal_id": str(animal_id),
+        "day_id": str(day_id),
+        "vector_length": int(vector_length),
+        "correlation_method": str(correlation_method),
+        "correlation_inference": str(correlation_inference),
+        "shuffle_n": int(shuffle_n),
+        "shuffle_seed": int(shuffle_seed),
+        "min_shift_frames": int(min_shift_frames),
+    })
+
+
 def build_pairwise_correlation_cache_key(
     *,
     family: str,
@@ -385,6 +481,7 @@ __all__ = [
     "source_cache_signature",
     "stable_hash",
     "build_shared_shuffle_cache_key",
+    "build_shared_shift_schedule_key",
     "build_shared_shuffle_entry",
     "load_shared_shuffle_cache",
 ]

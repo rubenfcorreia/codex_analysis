@@ -8,7 +8,7 @@ import numpy as np
 
 from analysis.shared.analysis_families.registry import analysis_families_to_text as _shared_analysis_families_to_text
 from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
-from analysis.shared.analysis_families.correlation import validate_correlation_settings
+from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch, validate_correlation_settings
 from analysis.shared.statistics import apply_bh_fdr_rows
 from analysis.shared.plots.dendrite_plot_support import (
     ALL_REQUESTED_STATES,
@@ -519,111 +519,84 @@ def run_correlation_family(
     correlation_shuffle_n = int(correlation_config.get("correlation_shuffle_n", shuffle_n))
     correlation_seed = int(correlation_config.get("correlation_shuffle_seed", 12345))
     correlation_min_shift = int(correlation_config.get("correlation_min_shift_frames", 1))
-    dendrite_observations: List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]] = []
+    correlation_batch_size = max(1, int(correlation_config.get("correlation_batch_size", 64)))
+    tasks: List[Dict[str, Any]] = []
     for animal_id, animal_entry in animals.items():
         for dendrite_id, dendrite_record in animal_entry["dendrites"].items():
             for exp_id, d_obs in dendrite_record["observations"].items():
-                dendrite_observations.append((animal_id, dendrite_id, dendrite_record, d_obs))
-    with step_scope("correlations", total=len(dendrite_observations)):
-        for idx, (animal_id, dendrite_id, dendrite_record, d_obs) in enumerate(dendrite_observations, start=1):
-            step_progress(idx, len(dendrite_observations), label=str(dendrite_id))
-            exp_id = str(d_obs.get("exp_id") or "")
-            exp_meta = experiments[exp_id]
-            wheel = exp_meta["wheel"]
-            pupil = exp_meta["pupil"]
-            if wheel["interpolated"] is not None:
-                wheel_key = build_shared_shuffle_cache_key(
-                    family="correlation",
-                    signal="wheel",
-                    analysis_unit=analysis_unit,
-                    animal_id=animal_id,
-                    day_id=exp_id,
-                    source_id=dendrite_id,
-                    vector_length=int(np.asarray(d_obs["trace"], dtype=float).size),
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_n=correlation_shuffle_n,
-                    shuffle_seed=correlation_seed,
-                    min_shift_frames=correlation_min_shift,
-                )
-                corr = correlation_analysis_for_observation(
-                    d_obs["trace"],
-                    wheel["interpolated"],
-                    correlation_shuffle_n,
-                    shared_shuffle_cache=shared_shuffle_cache,
-                    shared_shuffle_key=wheel_key,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_seed=correlation_seed,
-                    min_shift_frames=correlation_min_shift,
-                )
-                results["correlations"].append({"analysis": "dendrite_wheel", "animal_id": animal_id, "exp_id": exp_id, "day_id": exp_id, "global_dendrite_id": dendrite_id, "compartment": observation_compartment(cache, exp_id, d_obs), **corr})
-            if pupil["series"] is not None:
-                pupil_interp = pupil["series"]
-                if pupil["time"] is not None and not np.array_equal(pupil["time"], d_obs["time"]):
-                    pupil_interp = interpolate_series(d_obs["time"], pupil["time"], pupil["series"])
-                pupil_key = build_shared_shuffle_cache_key(
-                    family="correlation",
-                    signal="pupil",
-                    analysis_unit=analysis_unit,
-                    animal_id=animal_id,
-                    day_id=exp_id,
-                    source_id=dendrite_id,
-                    vector_length=int(np.asarray(d_obs["trace"], dtype=float).size),
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_n=correlation_shuffle_n,
-                    shuffle_seed=correlation_seed,
-                    min_shift_frames=correlation_min_shift,
-                )
-                corr = correlation_analysis_for_observation(
-                    d_obs["trace"],
-                    pupil_interp,
-                    correlation_shuffle_n,
-                    shared_shuffle_cache=shared_shuffle_cache,
-                    shared_shuffle_key=pupil_key,
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_seed=correlation_seed,
-                    min_shift_frames=correlation_min_shift,
-                )
-                results["correlations"].append({"analysis": "dendrite_pupil", "animal_id": animal_id, "exp_id": exp_id, "day_id": exp_id, "global_dendrite_id": dendrite_id, "compartment": observation_compartment(cache, exp_id, d_obs), **corr})
-            for spine_id in d_obs["spine_ids"]:
-                s_obs = dendrite_record["spines"][spine_id]["observations"].get(exp_id)
-                if s_obs is None:
-                    continue
-                spine_raw_key = build_shared_shuffle_cache_key(
-                    family="correlation",
-                    signal="spine_raw",
-                    analysis_unit=analysis_unit,
-                    animal_id=animal_id,
-                    day_id=exp_id,
-                    source_id=spine_id,
-                    vector_length=int(np.asarray(s_obs["trace_hp"], dtype=float).size),
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_n=correlation_shuffle_n,
-                    shuffle_seed=correlation_seed,
-                    min_shift_frames=correlation_min_shift,
-                )
-                spine_specific_key = build_shared_shuffle_cache_key(
-                    family="correlation",
-                    signal="spine_specific",
-                    analysis_unit=analysis_unit,
-                    animal_id=animal_id,
-                    day_id=exp_id,
-                    source_id=spine_id,
-                    vector_length=int(np.asarray(s_obs["spine_specific"], dtype=float).size),
-                    correlation_method=correlation_method,
-                    correlation_inference=correlation_inference,
-                    shuffle_n=correlation_shuffle_n,
-                    shuffle_seed=correlation_seed,
-                    min_shift_frames=correlation_min_shift,
-                )
-                corr_raw = correlation_analysis_for_observation(s_obs["trace_hp"], d_obs["trace"], correlation_shuffle_n, shared_shuffle_cache=shared_shuffle_cache, shared_shuffle_key=spine_raw_key, correlation_method=correlation_method, correlation_inference=correlation_inference, shuffle_seed=correlation_seed, min_shift_frames=correlation_min_shift)
-                corr_specific = correlation_analysis_for_observation(s_obs["spine_specific"], d_obs["trace"], correlation_shuffle_n, shared_shuffle_cache=shared_shuffle_cache, shared_shuffle_key=spine_specific_key, correlation_method=correlation_method, correlation_inference=correlation_inference, shuffle_seed=correlation_seed, min_shift_frames=correlation_min_shift)
-                results["correlations"].append({"analysis": "spine_dendrite_raw", "animal_id": animal_id, "exp_id": exp_id, "day_id": exp_id, "global_dendrite_id": dendrite_id, "global_spine_id": spine_id, "compartment": observation_compartment(cache, exp_id, s_obs), **corr_raw})
-                results["correlations"].append({"analysis": "spine_dendrite_specific", "animal_id": animal_id, "exp_id": exp_id, "day_id": exp_id, "global_dendrite_id": dendrite_id, "global_spine_id": spine_id, "compartment": observation_compartment(cache, exp_id, s_obs), **corr_specific})
+                exp_id = str(d_obs.get("exp_id") or exp_id)
+                exp_meta = experiments[exp_id]
+                wheel = exp_meta["wheel"]
+                pupil = exp_meta["pupil"]
+                common = {
+                    "animal_id": animal_id,
+                    "exp_id": exp_id,
+                    "day_id": exp_id,
+                    "global_dendrite_id": dendrite_id,
+                    "compartment": observation_compartment(cache, exp_id, d_obs),
+                }
+                if wheel["interpolated"] is not None:
+                    wheel_key = build_shared_shuffle_cache_key(
+                        family="correlation", signal="wheel", analysis_unit=analysis_unit,
+                        animal_id=animal_id, day_id=exp_id, source_id=dendrite_id,
+                        vector_length=int(np.asarray(d_obs["trace"], dtype=float).size),
+                        correlation_method=correlation_method, correlation_inference=correlation_inference,
+                        shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
+                        min_shift_frames=correlation_min_shift,
+                    )
+                    tasks.append({"analysis": "dendrite_wheel", "metadata": dict(common), "a": d_obs["trace"], "b": wheel["interpolated"], "key": wheel_key})
+                if pupil["series"] is not None:
+                    pupil_interp = pupil["series"]
+                    if pupil["time"] is not None and not np.array_equal(pupil["time"], d_obs["time"]):
+                        pupil_interp = interpolate_series(d_obs["time"], pupil["time"], pupil["series"])
+                    pupil_key = build_shared_shuffle_cache_key(
+                        family="correlation", signal="pupil", analysis_unit=analysis_unit,
+                        animal_id=animal_id, day_id=exp_id, source_id=dendrite_id,
+                        vector_length=int(np.asarray(d_obs["trace"], dtype=float).size),
+                        correlation_method=correlation_method, correlation_inference=correlation_inference,
+                        shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
+                        min_shift_frames=correlation_min_shift,
+                    )
+                    tasks.append({"analysis": "dendrite_pupil", "metadata": dict(common), "a": d_obs["trace"], "b": pupil_interp, "key": pupil_key})
+                for spine_id in d_obs["spine_ids"]:
+                    s_obs = dendrite_record["spines"][spine_id]["observations"].get(exp_id)
+                    if s_obs is None:
+                        continue
+                    spine_common = dict(common)
+                    spine_common["global_spine_id"] = spine_id
+                    spine_raw_key = build_shared_shuffle_cache_key(
+                        family="correlation", signal="spine_raw", analysis_unit=analysis_unit,
+                        animal_id=animal_id, day_id=exp_id, source_id=spine_id,
+                        vector_length=int(np.asarray(s_obs["trace_hp"], dtype=float).size),
+                        correlation_method=correlation_method, correlation_inference=correlation_inference,
+                        shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
+                        min_shift_frames=correlation_min_shift,
+                    )
+                    spine_specific_key = build_shared_shuffle_cache_key(
+                        family="correlation", signal="spine_specific", analysis_unit=analysis_unit,
+                        animal_id=animal_id, day_id=exp_id, source_id=spine_id,
+                        vector_length=int(np.asarray(s_obs["spine_specific"], dtype=float).size),
+                        correlation_method=correlation_method, correlation_inference=correlation_inference,
+                        shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
+                        min_shift_frames=correlation_min_shift,
+                    )
+                    tasks.append({"analysis": "spine_dendrite_raw", "metadata": dict(spine_common), "a": s_obs["trace_hp"], "b": d_obs["trace"], "key": spine_raw_key})
+                    tasks.append({"analysis": "spine_dendrite_specific", "metadata": dict(spine_common), "a": s_obs["spine_specific"], "b": d_obs["trace"], "key": spine_specific_key})
+    with step_scope("correlations", total=len(tasks)):
+        correlations = correlation_analysis_for_batch(
+            [(task["a"], task["b"]) for task in tasks],
+            correlation_shuffle_n,
+            shared_shuffle_cache=shared_shuffle_cache,
+            shared_shuffle_keys=[task["key"] for task in tasks],
+            correlation_method=correlation_method,
+            correlation_inference=correlation_inference,
+            shuffle_seed=correlation_seed,
+            min_shift_frames=correlation_min_shift,
+            max_batch_size=correlation_batch_size,
+        )
+        for index, (task, correlation) in enumerate(zip(tasks, correlations), start=1):
+            step_progress(index, len(tasks), label=f"{task['analysis']}:{task['metadata']['global_dendrite_id']}")
+            results["correlations"].append({"analysis": task["analysis"], **task["metadata"], **correlation})
     if output_dir is not None:
         with step_scope("figure generation: correlation"):
             render_analysis_family_figures(output_dir, results, cache, "correlation", figure_root=figure_root)
