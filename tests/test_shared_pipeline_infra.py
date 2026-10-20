@@ -436,7 +436,7 @@ def test_shared_comparison_preset_plan_includes_required_presets() -> None:
 
 def test_shared_comparison_preset_csv_loader_reads_sibling_results(tmp_path: Path) -> None:
     batch_root = tmp_path / 'results'
-    csv_dir = batch_root / 'blank_state_comparisons' / 'csv'
+    csv_dir = batch_root / 'analysis' / 'blank_state_comparisons' / 'csv'
     csv_dir.mkdir(parents=True)
     csv_path = csv_dir / 'state_activity_by_experiment.csv'
     csv_path.write_text('expid,state,mean\nexp1,sleep,1.5\n')

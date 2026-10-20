@@ -21,6 +21,8 @@ from ...compartment_common import (
     summarize_vector,
 )
 
+from analysis.shared.analysis_families.core import make_global_bouton_id, make_global_soma_id
+
 
 @dataclass(frozen=True)
 class ExperimentContext:
@@ -106,14 +108,6 @@ def _make_scoped_unit_id(
         str(roi_id).strip() if roi_id is not None and str(roi_id).strip() != "" else "",
     ]
     return "|".join(part for part in parts if part)
-
-
-def make_global_soma_id(*, animal_id: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None) -> str:
-    return _make_scoped_unit_id(animal_id=animal_id, day_id=day_id, compartment="soma", channel=channel, roi_id=roi_id)
-
-
-def make_global_bouton_id(*, animal_id: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None) -> str:
-    return _make_scoped_unit_id(animal_id=animal_id, day_id=day_id, compartment="bouton", channel=channel, roi_id=roi_id)
 
 
 def make_unit_id(

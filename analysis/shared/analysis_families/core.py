@@ -106,11 +106,29 @@ def _make_scoped_unit_id(
     return "|".join(part for part in parts if part)
 
 
-def make_global_soma_id(*, animal_id: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None) -> str:
+def make_global_roi_id(*, animal_id: Any = None, expid: Any = None, day_id: Any = None, compartment: str, channel: Any = None, roi_id: Any = None, roi_index: Any = None, plane: Any = None) -> str:
+    parts = [
+        str(animal_id).strip() if animal_id is not None else "",
+        str(expid).strip() if expid is not None and str(expid).strip() else "",
+        str(day_id).strip() if day_id is not None else "",
+        str(compartment).strip().lower(),
+        f"ch{int(channel)}" if channel is not None and str(channel).strip() != "" else "",
+        f"plane{int(plane)}" if plane is not None and str(plane).strip() != "" else "",
+        f"roi{roi_id}" if roi_id is not None and str(roi_id).strip() != "" else "",
+        f"index{int(roi_index)}" if roi_index is not None else "",
+    ]
+    return "|".join(part for part in parts if part)
+
+
+def make_global_soma_id(*, animal_id: Any = None, expid: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None, roi_index: Any = None, plane: Any = None) -> str:
+    if expid is not None or roi_index is not None:
+        return make_global_roi_id(animal_id=animal_id, expid=expid, day_id=day_id, compartment="soma", channel=channel, roi_id=roi_id, roi_index=roi_index, plane=plane)
     return _make_scoped_unit_id(animal_id=animal_id, day_id=day_id, compartment="soma", channel=channel, roi_id=roi_id)
 
 
-def make_global_bouton_id(*, animal_id: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None) -> str:
+def make_global_bouton_id(*, animal_id: Any = None, expid: Any = None, day_id: Any = None, channel: Any = None, roi_id: Any = None, roi_index: Any = None, plane: Any = None) -> str:
+    if expid is not None or roi_index is not None:
+        return make_global_roi_id(animal_id=animal_id, expid=expid, day_id=day_id, compartment="bouton", channel=channel, roi_id=roi_id, roi_index=roi_index, plane=plane)
     return _make_scoped_unit_id(animal_id=animal_id, day_id=day_id, compartment="bouton", channel=channel, roi_id=roi_id)
 
 
@@ -151,4 +169,4 @@ def summarize_activity(matrix: np.ndarray, mask: np.ndarray) -> Dict[str, Any]:
     flattened = masked.reshape(-1)
     return summarize_vector(flattened)
 
-__all__ = ["ExperimentContext", "build_experiment_context", "experiment_summary_row", "shared_time_axis", "summarize_activity", "make_unit_id", "make_global_soma_id", "make_global_bouton_id"]
+__all__ = ["ExperimentContext", "build_experiment_context", "experiment_summary_row", "shared_time_axis", "summarize_activity", "make_unit_id", "make_global_roi_id", "make_global_soma_id", "make_global_bouton_id"]

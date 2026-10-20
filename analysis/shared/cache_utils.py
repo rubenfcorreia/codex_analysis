@@ -368,7 +368,7 @@ def build_shared_shuffle_cache_key(
             "shuffle_n": None if shuffle_n is None else int(shuffle_n),
             "shuffle_seed": None if shuffle_seed is None else int(shuffle_seed),
             "min_shift_frames": None if min_shift_frames is None else int(min_shift_frames),
-            "null_model": str(null_model or correlation_inference),
+            "null_model": str(null_model or "mask_aware"),
         }
     )
 
@@ -390,6 +390,7 @@ def build_shared_shift_schedule_key(
     shuffle_n: int,
     shuffle_seed: int,
     min_shift_frames: int,
+    null_model: str = "mask_aware",
 ) -> str:
     """Build a schedule-only key; exact null results remain pair-specific."""
     return shared_shuffle_key({
@@ -408,6 +409,7 @@ def build_shared_shift_schedule_key(
         "shuffle_n": int(shuffle_n),
         "shuffle_seed": int(shuffle_seed),
         "min_shift_frames": int(min_shift_frames),
+        "null_model": str(null_model),
     })
 
 

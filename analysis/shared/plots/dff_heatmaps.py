@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -97,7 +98,9 @@ def _record_metrics(record: Mapping[str, Any], method: str) -> dict[str, Any] | 
     compact_time = time[finite]
     compact_trace = trace[finite]
     event_info = build_event_info(compact_trace, compact_time, method=method, include_all_methods=False)
-    frequency = _finite_float(event_info.get("event_frequency_per_min"))
+    frequency = _finite_float(record.get("event_frequency_per_min"))
+    if not np.isfinite(frequency):
+        frequency = _finite_float(event_info.get("event_frequency_per_min"))
     activity = _finite_float(record.get("mean_dff"))
     if not np.isfinite(activity):
         activity = _finite_float(record.get("mean_activity"))
@@ -114,8 +117,10 @@ def _record_metrics(record: Mapping[str, Any], method: str) -> dict[str, Any] | 
     }
 
 
-def _class_lookup(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str, str], str]:
-    lookup: dict[tuple[str, str, str], str] = {}
+def _class_lookup(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str, str, str, str], str]:
+    """Return only split assignments that are unambiguous for a ROI."""
+    lookup: dict[tuple[str, str, str, str, str], str] = {}
+    fallback_groups: dict[tuple[str, str], set[str]] = defaultdict(set)
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -125,9 +130,19 @@ def _class_lookup(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str, str
         compartment = str(row.get("compartment") or "").strip().lower()
         subject = _safe_id(row.get("subject_id") or row.get("unit_id") or row.get("roi_key") or row.get("roi_id"))
         state = canonical_state_label(row.get("state") or row.get("state_label") or "")
-        if compartment and subject:
-            lookup[(compartment, subject, state)] = group
-            lookup[(compartment, subject, "")] = group
+        split_name = str(row.get("split_name") or row.get("split_definition") or "").strip()
+        split_basis = str(row.get("basis_name") or row.get("split_basis") or "").strip()
+        if not compartment or not subject:
+            continue
+        key = (compartment, subject, state, split_name, split_basis)
+        previous = lookup.get(key)
+        if previous is not None and previous != group:
+            lookup[key] = ""
+        else:
+            lookup[key] = group
+        fallback_groups[(compartment, subject)].add(group)
+    for (compartment, subject), groups in fallback_groups.items():
+        lookup[(compartment, subject, "", "", "")] = next(iter(groups)) if len(groups) == 1 else ""
     return lookup
 
 
@@ -254,6 +269,7 @@ def render_dff_heatmaps(
             "event_detection_method": event_detection_method,
             "sorting": ["class", "event_frequency_per_min_desc", "mean_dff_desc", "roi_id_asc"],
             "color_scale": {"vmin": float(low), "vmax": float(high)},
+            "source_data_hash": hashlib.sha256(json.dumps([{"roi_id": _safe_id(row.get("roi_id") or row.get("roi_key") or row.get("unit_id")), "class": row.get("split_group"), "event_frequency_per_min": row.get("event_frequency_per_min"), "mean_dff": row.get("mean_dff")} for row in selected], sort_keys=True, default=str).encode("utf-8")).hexdigest(),
             "rois": [
                 {
                     "roi_id": _safe_id(row.get("roi_id") or row.get("roi_key") or row.get("unit_id")),
@@ -294,7 +310,7 @@ def records_from_soma_contexts(
                     else make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.bouton_channel, roi_id=roi_id)
                 )
                 usable = min(time.size, trace.size)
-                records.append({"compartment": compartment, "day_id": ctx.day_id, "state": "full_day", "roi_id": unit_id, "time": time[:usable], "trace": np.asarray(trace[:usable], dtype=float), "split_group": lookup.get((compartment, unit_id, ""), "")})
+                records.append({"compartment": compartment, "day_id": ctx.day_id, "state": "full_day", "roi_id": unit_id, "time": time[:usable], "trace": np.asarray(trace[:usable], dtype=float), "split_group": lookup.get((compartment, unit_id, "", "", ""), "")})
     return records
 
 
@@ -311,7 +327,7 @@ def records_from_dendrite_cache(
         for dendrite_id, dendrite in (animal.get("dendrites", {}) or {}).items():
             for exp_id, obs in (dendrite.get("observations", {}) or {}).items():
                 day_id = str(exp_id or f"{animal_id}_day").strip()
-                records.append({"compartment": "dendrite", "day_id": day_id, "state": "full_day", "roi_id": dendrite_id, "time": obs.get("time"), "trace": obs.get("trace"), "split_group": lookup.get(("dendrite", _safe_id(dendrite_id), ""), "")})
+                records.append({"compartment": "dendrite", "day_id": day_id, "state": "full_day", "roi_id": dendrite_id, "time": obs.get("time"), "trace": obs.get("trace"), "split_group": lookup.get(("dendrite", _safe_id(dendrite_id), "", "", ""), "")})
                 for spine_id, spine in (dendrite.get("spines", {}) or {}).items():
                     spine_obs = (spine.get("observations", {}) or {}).get(exp_id)
                     if spine_obs is None:
@@ -319,7 +335,7 @@ def records_from_dendrite_cache(
                     trace = spine_obs.get("spine_specific")
                     if trace is None:
                         trace = spine_obs.get("trace")
-                    records.append({"compartment": "spine", "day_id": day_id, "state": "full_day", "roi_id": spine_id, "time": spine_obs.get("time"), "trace": trace, "split_group": lookup.get(("spine", _safe_id(spine_id), ""), "")})
+                    records.append({"compartment": "spine", "day_id": day_id, "state": "full_day", "roi_id": spine_id, "time": spine_obs.get("time"), "trace": trace, "split_group": lookup.get(("spine", _safe_id(spine_id), "", "", ""), "")})
     return records
 
 

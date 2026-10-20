@@ -9,6 +9,7 @@ import numpy as np
 from analysis.shared.analysis_families.registry import analysis_families_to_text as _shared_analysis_families_to_text
 from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
 from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch, validate_correlation_settings
+from analysis.shared.analysis_families.core import make_global_roi_id
 from analysis.shared.statistics import apply_bh_fdr_rows
 from analysis.shared.plots.dendrite_plot_support import (
     ALL_REQUESTED_STATES,
@@ -544,7 +545,7 @@ def run_correlation_family(
                         shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
                         min_shift_frames=correlation_min_shift,
                     )
-                    tasks.append({"analysis": "dendrite_wheel", "metadata": dict(common), "a": d_obs["trace"], "b": wheel["interpolated"], "key": wheel_key})
+                    tasks.append({"analysis": "dendrite_wheel", "metadata": dict(common), "a": d_obs["trace"], "b": wheel["interpolated"], "key": wheel_key, "signal_a_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="dendrite", roi_id=dendrite_id, plane=d_obs.get("plane")), "signal_b_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="wheel", roi_id=dendrite_id, plane=d_obs.get("plane"))})
                 if pupil["series"] is not None:
                     pupil_interp = pupil["series"]
                     if pupil["time"] is not None and not np.array_equal(pupil["time"], d_obs["time"]):
@@ -557,7 +558,7 @@ def run_correlation_family(
                         shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
                         min_shift_frames=correlation_min_shift,
                     )
-                    tasks.append({"analysis": "dendrite_pupil", "metadata": dict(common), "a": d_obs["trace"], "b": pupil_interp, "key": pupil_key})
+                    tasks.append({"analysis": "dendrite_pupil", "metadata": dict(common), "a": d_obs["trace"], "b": pupil_interp, "key": pupil_key, "signal_a_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="dendrite", roi_id=dendrite_id, plane=d_obs.get("plane")), "signal_b_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="pupil", roi_id=dendrite_id, plane=d_obs.get("plane"))})
                 for spine_id in d_obs["spine_ids"]:
                     s_obs = dendrite_record["spines"][spine_id]["observations"].get(exp_id)
                     if s_obs is None:
@@ -580,14 +581,15 @@ def run_correlation_family(
                         shuffle_n=correlation_shuffle_n, shuffle_seed=correlation_seed,
                         min_shift_frames=correlation_min_shift,
                     )
-                    tasks.append({"analysis": "spine_dendrite_raw", "metadata": dict(spine_common), "a": s_obs["trace_hp"], "b": d_obs["trace"], "key": spine_raw_key})
-                    tasks.append({"analysis": "spine_dendrite_specific", "metadata": dict(spine_common), "a": s_obs["spine_specific"], "b": d_obs["trace"], "key": spine_specific_key})
+                    tasks.append({"analysis": "spine_dendrite_raw", "metadata": dict(spine_common), "a": s_obs["trace_hp"], "b": d_obs["trace"], "key": spine_raw_key, "signal_a_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="spine_raw", roi_id=spine_id, plane=s_obs.get("plane", d_obs.get("plane"))), "signal_b_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="dendrite", roi_id=dendrite_id, plane=d_obs.get("plane"))})
+                    tasks.append({"analysis": "spine_dendrite_specific", "metadata": dict(spine_common), "a": s_obs["spine_specific"], "b": d_obs["trace"], "key": spine_specific_key, "signal_a_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="spine_specific", roi_id=spine_id, plane=s_obs.get("plane", d_obs.get("plane"))), "signal_b_key": make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="dendrite", roi_id=dendrite_id, plane=d_obs.get("plane"))})
     with step_scope("correlations", total=len(tasks)):
         correlations = correlation_analysis_for_batch(
             [(task["a"], task["b"]) for task in tasks],
             correlation_shuffle_n,
             shared_shuffle_cache=shared_shuffle_cache,
             shared_shuffle_keys=[task["key"] for task in tasks],
+            signal_keys=[(task.get("signal_a_key"), task.get("signal_b_key")) for task in tasks],
             correlation_method=correlation_method,
             correlation_inference=correlation_inference,
             shuffle_seed=correlation_seed,

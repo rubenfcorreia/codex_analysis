@@ -22,7 +22,7 @@ def comparison_leaf_figure_root(config: Mapping[str, Any], *, branch: str, basis
 
 
 def shared_figure_root(pipeline_root: Path | str) -> Path:
-    return Path(pipeline_root) / "general" / "figures"
+    return Path(pipeline_root) / "figures" / "general"
 
 
 def standalone_figure_root(run_root: Path | str) -> Path:

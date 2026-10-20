@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from analysis.shared.analysis_families.core import ExperimentContext
+from analysis.shared.analysis_families.core import ExperimentContext, make_global_soma_id
 from analysis.shared.analysis_families.pairwise import (
     build_pairwise_correlation_rows,
     pairwise_correlation_summary_rows,
@@ -54,6 +54,7 @@ def bouton_soma_correlation_rows(
         channel=ctx.soma_channel,
         trace=soma_mean,
         label="mean",
+        shuffle_keys=tuple(make_global_soma_id(animal_id=ctx.animal_id, expid=ctx.expid, day_id=ctx.day_id, channel=ctx.soma_channel, roi_id=roi_id, roi_index=None if (hasattr(ctx.soma, 'roi_plane_ids') and index < len(ctx.soma.roi_plane_ids()) and ctx.soma.roi_plane_ids()[index] is not None) else index, plane=(ctx.soma.roi_plane_ids()[index] if hasattr(ctx.soma, 'roi_plane_ids') and index < len(ctx.soma.roi_plane_ids()) else None)) for index, roi_id in enumerate(_soma_roi_ids(ctx, soma_matrix))),
     )
     bouton_members = pairwise_members_from_matrix(
         ctx=ctx,

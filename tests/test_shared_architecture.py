@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_shared_figure_roots_are_canonical() -> None:
     assert comparison_leaf_figure_root({"branch_first_output_root": "/tmp/preset"}, branch="activity_split", basis="nrem") == Path("/tmp/preset/activity_split/nrem")
-    assert shared_figure_root("/tmp/pipeline") == Path("/tmp/pipeline/general/figures")
+    assert shared_figure_root("/tmp/pipeline") == Path("/tmp/pipeline/figures/general")
     assert standalone_figure_root("/tmp/run") == Path("/tmp/run/figures")
 
 
@@ -169,3 +169,11 @@ def test_movie_trial_is_split_at_sleep_state_boundary() -> None:
     assert [row["parent_trial_index"] for row in metadata] == [0, 0]
     assert masks["quiet_awake_movies"].sum() == 1
     assert masks["nrem_movies"].sum() == 3
+
+
+def test_result_layout_uses_sibling_analysis_and_figures_roots(tmp_path: Path):
+    from analysis.shared.result_layout import resolve_result_layout
+    layout = resolve_result_layout({"output_dir": str(tmp_path / "run")})
+    assert layout.analysis_root == tmp_path / "run" / "analysis"
+    assert layout.figure_root == tmp_path / "run" / "figures"
+    assert layout.analysis_root != layout.figure_root

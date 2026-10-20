@@ -12,7 +12,7 @@ from analysis.shared.cache_utils import build_pairwise_correlation_cache_key, bu
 from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch
 from analysis.shared.state_utils import canonical_state_label, state_display_color, state_display_label
 
-from .core import ExperimentContext, make_unit_id
+from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class PairwiseMember:
     roi_id: Any
     unit_id: str
     trace: np.ndarray
+    shuffle_keys: tuple[str, ...] | None = None
 
 
 def pairwise_member_from_trace(
@@ -34,6 +35,7 @@ def pairwise_member_from_trace(
     roi_id: Any,
     trace: Sequence[float] | np.ndarray,
     unit_id: str | None = None,
+    shuffle_keys: Sequence[str] | None = None,
 ) -> PairwiseMember:
     trace_array = np.asarray(trace, dtype=float).reshape(-1)
     resolved_unit_id = unit_id or make_unit_id(
@@ -52,6 +54,7 @@ def pairwise_member_from_trace(
         roi_id=roi_id,
         unit_id=str(resolved_unit_id),
         trace=trace_array,
+        shuffle_keys=tuple(str(value) for value in (shuffle_keys or (resolved_unit_id,))),
     )
 
 
@@ -72,6 +75,9 @@ def pairwise_members_from_matrix(
     members: List[PairwiseMember] = []
     for roi_index in range(arr.shape[0]):
         roi_id = resolved_roi_ids[roi_index] if roi_index < len(resolved_roi_ids) else roi_index
+        entity = ctx.soma if compartment == "soma" else ctx.bouton
+        planes = list(entity.roi_plane_ids()) if hasattr(entity, "roi_plane_ids") else []
+        plane = planes[roi_index] if roi_index < len(planes) else None
         members.append(
             pairwise_member_from_trace(
                 ctx=ctx,
@@ -80,6 +86,7 @@ def pairwise_members_from_matrix(
                 roi_index=roi_index,
                 roi_id=roi_id,
                 trace=arr[roi_index],
+                shuffle_keys=((make_global_soma_id if compartment == "soma" else make_global_bouton_id)(animal_id=ctx.animal_id, expid=ctx.expid, day_id=ctx.day_id, channel=channel, roi_id=roi_id, roi_index=None if plane is not None else roi_index, plane=plane),),
             )
         )
     return members
@@ -92,6 +99,7 @@ def pairwise_mean_member(
     channel: int,
     trace: Sequence[float] | np.ndarray,
     label: str = "mean",
+    shuffle_keys: Sequence[str] | None = None,
 ) -> PairwiseMember:
     return pairwise_member_from_trace(
         ctx=ctx,
@@ -101,6 +109,7 @@ def pairwise_mean_member(
         roi_id=label,
         trace=trace,
         unit_id=f"{ctx.day_id}|{compartment}|{label}",
+        shuffle_keys=shuffle_keys,
     )
 
 
@@ -196,7 +205,7 @@ def build_pairwise_correlation_rows(
     if isinstance(shared_shuffle_cache, dict):
         diagnostics = shared_shuffle_cache.setdefault(
             "pairwise_diagnostics",
-            {"states": 0, "pairs_prepared": 0, "rows_generated": 0, "observed_and_pair_prep_elapsed_s": 0.0, "null_elapsed_s": 0.0, "row_build_elapsed_s": 0.0, "by_comparison": {}},
+            {"null_model": str((shared_shuffle_cache or {}).get("null_model", "mask_aware")), "states": 0, "pairs_prepared": 0, "rows_generated": 0, "observed_and_pair_prep_elapsed_s": 0.0, "null_elapsed_s": 0.0, "row_build_elapsed_s": 0.0, "by_comparison": {}},
         )
     comparison_diagnostics = diagnostics.setdefault("by_comparison", {}).setdefault(
         str(comparison_name),
@@ -252,6 +261,7 @@ def build_pairwise_correlation_rows(
                 shuffle_n=correlation_shuffle_n,
                 shuffle_seed=correlation_shuffle_seed,
                 min_shift_frames=correlation_min_shift_frames,
+                null_model=str((shared_shuffle_cache or {}).get("null_model", "mask_aware")),
             )
             _ensure_correlation_shuffle_entry(
                 shared_shuffle_cache,
@@ -270,6 +280,9 @@ def build_pairwise_correlation_rows(
                 "n_timepoints": n_timepoints,
                 "pair_key": pair_key,
                 "shuffle_key": shuffle_key,
+                "signal_a_key": tuple(left.shuffle_keys or (left.unit_id,)),
+                "signal_b_key": tuple(right.shuffle_keys or (right.unit_id,)),
+                "signal_masks": (np.asarray(mask_array, dtype=bool), np.asarray(mask_array, dtype=bool)),
             })
         if diagnostics is not None:
             elapsed = time.perf_counter() - state_started
@@ -288,6 +301,8 @@ def build_pairwise_correlation_rows(
             correlation_shuffle_n,
             shared_shuffle_cache=shared_shuffle_cache,
             shared_shuffle_keys=[item["shuffle_key"] for item in pending],
+            signal_keys=[(item["signal_a_key"], item["signal_b_key"]) for item in pending],
+            signal_masks=[item["signal_masks"] for item in pending],
             result_keys=[f"{item['pair_key']}|{state_key}" for item in pending],
             correlation_method=correlation_method,
             correlation_inference=correlation_inference,
@@ -295,6 +310,7 @@ def build_pairwise_correlation_rows(
             min_shift_frames=correlation_min_shift_frames,
             max_batch_size=correlation_batch_size,
             shift_block_size=correlation_shift_block_size,
+            null_model=str((shared_shuffle_cache or {}).get("null_model", "mask_aware")),
         )
         if diagnostics is not None:
             elapsed = time.perf_counter() - null_started

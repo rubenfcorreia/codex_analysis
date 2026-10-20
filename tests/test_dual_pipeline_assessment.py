@@ -54,3 +54,13 @@ def test_heatmap_representative_mode_writes_one_gallery_per_compartment(tmp_path
     metadata = sorted(tmp_path.rglob("dff_heatmap_examples.json"))
     assert len(metadata) == 2
     assert len(files) == 6
+
+
+def test_heatmap_split_conflicts_do_not_overwrite_roi_assignment(tmp_path: Path):
+    from analysis.shared.plots.dff_heatmaps import _class_lookup
+    rows = [
+        {"compartment": "spine", "unit_id": "roi-1", "state": "quiet", "split_name": "activity_frequency", "basis_name": "all", "split_group": "high_activity_high_frequency"},
+        {"compartment": "spine", "unit_id": "roi-1", "state": "quiet", "split_name": "activity_frequency", "basis_name": "all", "split_group": "low_activity_high_frequency"},
+    ]
+    lookup = _class_lookup(rows)
+    assert lookup[("spine", "roi-1", "quiet", "activity_frequency", "all")] == ""

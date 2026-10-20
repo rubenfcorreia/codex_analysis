@@ -45,7 +45,7 @@ Transition outputs are written under the relevant result root:
 
 The primary paired tests are calculated across experiment-days, not across individual transitions or ROIs.
 
-Soma/bouton ROI-pair correlations use seeded circular-shift significance testing by default. Configure this independently with `pairwise_correlation_inference`, `pairwise_correlation_shuffle_n`, `correlation_shuffle_seed`, and `correlation_min_shift_frames`; the default is 200 random shifts with replacement. Each soma-soma, bouton-bouton, and soma-bouton pair/state retains its own null distribution and p-value.
+Soma/bouton ROI-pair correlations use seeded circular-shift significance testing by default. Configure this independently with `pairwise_correlation_inference`, `pairwise_correlation_shuffle_n`, `correlation_shuffle_seed`, and `correlation_min_shift_frames`; the default is 100 random shifts with replacement. Each soma-soma, bouton-bouton, and soma-bouton pair/state retains its own null distribution and p-value.
 
 Compatible pairs are evaluated in bounded vectorized batches. A batch may reuse the same canonical random shift schedule, but null distributions are never pooled between pairs, ROIs, states, experiments, or days. Shifts are applied relative to each pair, so both traces are not shifted together. Schedule keys are scoped to experiment/day, vector length, method, inference, shuffle count, seed, minimum shift, and methodology/schema; they do not include pair identity or finite-mask identity. Exact-result keys remain pair- and state-specific and include both trace signatures and finite-mask signatures.
 

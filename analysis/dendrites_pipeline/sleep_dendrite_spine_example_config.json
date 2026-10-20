@@ -189,10 +189,10 @@
   ],
   "state_comparison_states": null,
   "channel": 0,
-  "shuffle_n": 200,
+  "shuffle_n": 100,
   "correlation_method": "pearson",
   "correlation_inference": "circular_shift",
-  "correlation_shuffle_n": 200,
+  "correlation_shuffle_n": 100,
   "correlation_shuffle_seed": 12345,
   "correlation_min_shift_frames": 1,
   "correlation_batch_size": 64,
@@ -257,5 +257,6 @@
       "raw",
       "spine_specific"
     ]
-  }
+  },
+  "null_model": "mask_aware"
 }

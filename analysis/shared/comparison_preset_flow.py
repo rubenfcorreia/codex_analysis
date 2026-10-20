@@ -95,7 +95,8 @@ def load_comparison_preset_csv_rows(
     logger: Any = None,
 ) -> List[Dict[str, Any]]:
     batch_result_root = Path(batch_result_root)
-    manifest = load_manifest(batch_result_root)
+    preset_root = batch_result_root if batch_result_root.name == str(preset_name) else batch_result_root / "analysis" / str(preset_name)
+    manifest = load_manifest(preset_root)
     if isinstance(manifest, Mapping):
         manifest_preset_name = _preset_name_from_manifest(manifest)
         if manifest_preset_name and manifest_preset_name != preset_name and logger is not None:
@@ -106,13 +107,13 @@ def load_comparison_preset_csv_rows(
                 manifest_preset_name,
             )
         for relative_candidate in _preset_csv_relative_candidates(csv_name):
-            csv_path = manifest_artifact_path(manifest, batch_result_root, relative_candidate)
+            csv_path = manifest_artifact_path(manifest, preset_root, relative_candidate)
             if csv_path is not None and csv_path.exists():
                 return read_csv_rows(csv_path)
     candidate_paths: List[Path] = []
+    preset_root = batch_result_root if batch_result_root.name == str(preset_name) else batch_result_root / "analysis" / str(preset_name)
     for relative_candidate in _preset_csv_relative_candidates(csv_name):
-        candidate_paths.append(batch_result_root / relative_candidate)
-        candidate_paths.append(batch_result_root / str(preset_name) / relative_candidate)
+        candidate_paths.append(preset_root / relative_candidate)
     for csv_path in dict.fromkeys(candidate_paths):
         if csv_path.exists():
             return read_csv_rows(csv_path)
@@ -137,7 +138,8 @@ def load_comparison_preset_manifest(
     logger: Any = None,
 ) -> Optional[Dict[str, Any]]:
     batch_result_root = Path(batch_result_root)
-    manifest = load_manifest(batch_result_root)
+    preset_root = batch_result_root if batch_result_root.name == str(preset_name) else batch_result_root / "analysis" / str(preset_name)
+    manifest = load_manifest(preset_root)
     if isinstance(manifest, Mapping):
         manifest_preset_name = _preset_name_from_manifest(manifest)
         if manifest_preset_name and manifest_preset_name != preset_name and logger is not None:

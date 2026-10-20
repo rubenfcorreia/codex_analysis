@@ -381,6 +381,21 @@ class LoadedBundle:
                 return [int(v) for v in value]
         return list(range(self.matrix().shape[0]))
 
+    def roi_plane_ids(self) -> List[int | None]:
+        maps = self.data.get("AllRoiMaps")
+        if isinstance(maps, Mapping):
+            locations: List[int | None] = []
+            for plane, value in sorted(maps.items(), key=lambda item: int(item[0])):
+                labels = np.unique(np.asarray(value))
+                count = int(np.sum(labels > 0))
+                locations.extend([int(plane)] * count)
+            if locations:
+                return locations[: self.matrix().shape[0]]
+        value = self.data.get("plane_ids")
+        if value is not None:
+            return [int(item) if item is not None else None for item in np.asarray(value).ravel().tolist()[: self.matrix().shape[0]]]
+        return [None] * self.matrix().shape[0]
+
 
 def as_2d_matrix(value: Any) -> np.ndarray:
     arr = np.asarray(value, dtype=float)

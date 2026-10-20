@@ -1614,7 +1614,7 @@ def build_figure(
     }
     plot_results: Dict[str, Any] = {"analysis_state_selection": analysis_state_selection}
 
-    shuffle_n = int(config.get("shuffle_n", 200) or 200)
+    shuffle_n = int(config.get("shuffle_n", 100) or 100)
 
     analysis_results: Dict[str, Any] = dict(results) if isinstance(results, dict) else poster_common.load_analysis_results_payload()
     if isinstance(analysis_results.get("analysis_state_selection"), dict):

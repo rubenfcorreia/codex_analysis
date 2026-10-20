@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import time
+from pathlib import Path
 
 import numpy as np
 from scipy import stats
 
 from analysis.shared.cache_utils import array_signature, stable_hash
+from analysis.shared.shuffle_dataset import ShuffleDataset
 
 SUPPORTED_CORRELATION_METHODS = {"pearson"}
 SUPPORTED_CORRELATION_INFERENCE = {"circular_shift", "none"}
+SUPPORTED_NULL_MODELS = {"mask_aware", "full_trace"}
 
 
 def validate_correlation_settings(method: str = "pearson", inference: str = "circular_shift") -> tuple[str, str]:
@@ -20,6 +23,13 @@ def validate_correlation_settings(method: str = "pearson", inference: str = "cir
     if inference not in SUPPORTED_CORRELATION_INFERENCE:
         raise ValueError(f"Unsupported correlation_inference={inference!r}; supported methods: circular_shift, none")
     return method, inference
+
+
+def validate_null_model(null_model: str = "mask_aware") -> str:
+    value = str(null_model or "mask_aware").strip().lower()
+    if value not in SUPPORTED_NULL_MODELS:
+        raise ValueError(f"Unsupported null_model={value!r}; supported models: mask_aware, full_trace")
+    return value
 
 
 def _fisher_ci(r_value: float, n: int) -> tuple[float, float]:
@@ -37,16 +47,19 @@ def correlation_analysis_for_observation(
     use_circular_shift: bool = True,
     shared_shuffle_cache: Optional[Dict[str, Any]] = None,
     shared_shuffle_key: Optional[str] = None,
+    signal_keys: Optional[Tuple[Optional[str], Optional[str]]] = None,
     *,
     correlation_method: str = "pearson",
     correlation_inference: Optional[str] = None,
     shuffle_seed: int = 12345,
     min_shift_frames: int = 1,
+    null_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     method, configured_inference = validate_correlation_settings(
         correlation_method,
         correlation_inference or ("circular_shift" if use_circular_shift else "none"),
     )
+    configured_null_model = validate_null_model(null_model or (shared_shuffle_cache or {}).get("null_model", "mask_aware"))
     a = np.asarray(trace_a, dtype=float).reshape(-1)
     b = np.asarray(trace_b, dtype=float).reshape(-1)
     usable = min(a.size, b.size)
@@ -56,7 +69,7 @@ def correlation_analysis_for_observation(
     base = {
         "correlation_method": method,
         "p_value_source": "circular_shift" if configured_inference == "circular_shift" else "none_descriptive",
-        "null_model": configured_inference,
+        "null_model": configured_null_model,
         "shuffle_seed": int(shuffle_seed),
         "shuffle_n_requested": int(shuffle_n) if configured_inference == "circular_shift" else 0,
         "shuffle_n_success": 0,
@@ -64,6 +77,13 @@ def correlation_analysis_for_observation(
         "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else "descriptive",
         "correction_family": "correlation_time_series",
     }
+    if signal_keys and isinstance(shared_shuffle_cache, dict) and shared_shuffle_cache.get("shuffle_dataset_path"):
+        return correlation_analysis_for_batch(
+            [(a, b)], int(shuffle_n), shared_shuffle_cache=shared_shuffle_cache,
+            shared_shuffle_keys=[shared_shuffle_key], signal_keys=[signal_keys], result_keys=[shared_shuffle_key],
+            correlation_method=method, correlation_inference=configured_inference,
+            shuffle_seed=shuffle_seed, min_shift_frames=min_shift_frames, null_model=configured_null_model,
+        )[0]
     null_cache = shared_shuffle_cache if isinstance(shared_shuffle_cache, dict) and shared_shuffle_key else None
     null_cache_key = None
     if null_cache is not None:
@@ -79,6 +99,7 @@ def correlation_analysis_for_observation(
             "shuffle_n": int(shuffle_n),
             "shuffle_seed": int(shuffle_seed),
             "min_shift_frames": int(min_shift_frames),
+            "null_model": configured_null_model,
         })
         null_results = null_cache.setdefault("null_results", {})
         cached_result = null_results.get(null_cache_key)
@@ -163,6 +184,8 @@ def _batch_null_cache_key(
     shuffle_n: int,
     shuffle_seed: int,
     min_shift_frames: int,
+    null_model: str,
+    mask_signature: Optional[str],
 ) -> Optional[str]:
     if not shared_shuffle_key:
         return None
@@ -179,6 +202,8 @@ def _batch_null_cache_key(
         "shuffle_n": int(shuffle_n),
         "shuffle_seed": int(shuffle_seed),
         "min_shift_frames": int(min_shift_frames),
+        "null_model": str(null_model),
+        "mask_signature": mask_signature,
     })
 
 
@@ -226,11 +251,14 @@ def correlation_analysis_for_batch(
     *,
     shared_shuffle_cache: Optional[Dict[str, Any]] = None,
     shared_shuffle_keys: Optional[Sequence[Optional[str]]] = None,
+    signal_keys: Optional[Sequence[Tuple[Any, Any]]] = None,
+    signal_masks: Optional[Sequence[Tuple[Optional[np.ndarray], Optional[np.ndarray]]]] = None,
     result_keys: Optional[Sequence[Optional[str]]] = None,
     correlation_method: str = "pearson",
     correlation_inference: Optional[str] = None,
     shuffle_seed: int = 12345,
     min_shift_frames: int = 1,
+    null_model: Optional[str] = None,
     max_batch_size: int = 64,
     shift_block_size: int = 8,
 ) -> List[Dict[str, Any]]:
@@ -245,18 +273,40 @@ def correlation_analysis_for_batch(
         correlation_method,
         correlation_inference or "circular_shift",
     )
+    configured_null_model = validate_null_model(null_model or (shared_shuffle_cache or {}).get("null_model", "mask_aware"))
     keys = list(shared_shuffle_keys or [None] * len(pairs))
     if len(keys) != len(pairs):
         raise ValueError("shared_shuffle_keys must have one entry per pair")
     result_key_list = list(result_keys or [None] * len(pairs))
     if len(result_key_list) != len(pairs):
         raise ValueError("result_keys must have one entry per pair")
+    signal_key_list = list(signal_keys or [(None, None)] * len(pairs))
+    if len(signal_key_list) != len(pairs):
+        raise ValueError("signal_keys must have one entry per pair")
+    signal_mask_list = list(signal_masks or [(None, None)] * len(pairs))
+    if len(signal_mask_list) != len(pairs):
+        raise ValueError("signal_masks must have one entry per pair")
     batch_size = max(1, int(max_batch_size))
     results: List[Optional[Dict[str, Any]]] = [None] * len(pairs)
     pending: List[Dict[str, Any]] = []
+    dataset = None
+    if configured_null_model == "full_trace" and isinstance(shared_shuffle_cache, dict) and shared_shuffle_cache.get("shuffle_dataset_path"):
+        dataset_path = str(shared_shuffle_cache["shuffle_dataset_path"])
+        metadata = dict(shared_shuffle_cache.get("shuffle_dataset_metadata") or {})
+        try:
+            if not Path(dataset_path).exists():
+                raise FileNotFoundError(f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={dataset_path}")
+            dataset = ShuffleDataset(dataset_path, metadata, readonly=True)
+        except (OSError, ValueError, RuntimeError):
+            if Path(dataset_path).exists():
+                raise
+            dataset = None
     cache_stats = None
     if isinstance(shared_shuffle_cache, dict):
         cache_stats = shared_shuffle_cache.setdefault("null_result_stats", {"hits": 0, "misses": 0, "builds": 0})
+    if dataset is not None:
+        requested_keys = [key for pair_keys in signal_key_list for key in pair_keys if key is not None]
+        dataset.validate_requested_keys(requested_keys)
     for index, (trace_a, trace_b) in enumerate(pairs):
         a = np.asarray(trace_a, dtype=float).reshape(-1)
         b = np.asarray(trace_b, dtype=float).reshape(-1)
@@ -268,7 +318,7 @@ def correlation_analysis_for_batch(
         base = {
             "correlation_method": method,
             "p_value_source": "circular_shift" if configured_inference == "circular_shift" else "none_descriptive",
-            "null_model": configured_inference,
+            "null_model": configured_null_model,
             "shuffle_seed": int(shuffle_seed),
             "shuffle_n_requested": int(shuffle_n) if configured_inference == "circular_shift" else 0,
             "shuffle_n_success": 0,
@@ -276,7 +326,11 @@ def correlation_analysis_for_batch(
             "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else "descriptive",
             "correction_family": "correlation_time_series",
         }
-        cache_key = _batch_null_cache_key(a, b, fixed_mask, usable, keys[index], result_key_list[index], method, configured_inference, shuffle_n, shuffle_seed, min_shift_frames)
+        mask_signature = stable_hash({
+            "a": array_signature(signal_mask_list[index][0]),
+            "b": array_signature(signal_mask_list[index][1]),
+        })
+        cache_key = _batch_null_cache_key(a, b, fixed_mask, usable, keys[index], result_key_list[index], method, configured_inference, shuffle_n, shuffle_seed, min_shift_frames, configured_null_model, mask_signature)
         if isinstance(shared_shuffle_cache, dict) and cache_key is not None:
             cached = shared_shuffle_cache.setdefault("null_results", {}).get(cache_key)
             if isinstance(cached, dict):
@@ -308,13 +362,16 @@ def correlation_analysis_for_batch(
             "base": base,
             "cache_key": cache_key,
             "shifts": _batch_shift_schedule(shared_shuffle_cache, keys[index], usable, int(shuffle_n), int(shuffle_seed), int(min_shift_frames)),
+            "signal_a_key": signal_key_list[index][0],
+            "signal_b_key": signal_key_list[index][1],
+            "signal_masks": signal_mask_list[index],
         })
 
     batch_diagnostics = None
     if isinstance(shared_shuffle_cache, dict):
         batch_diagnostics = shared_shuffle_cache.setdefault(
             "null_batch_diagnostics",
-            {"batches": 0, "pairs": 0, "elapsed_s": 0.0, "max_batch_size": 0, "shift_block_size": int(shift_block_size), "vector_lengths": {}},
+            {"null_model": configured_null_model, "batches": 0, "pairs": 0, "elapsed_s": 0.0, "max_batch_size": 0, "shift_block_size": int(shift_block_size), "vector_lengths": {}},
         )
     groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
     for item in pending:
@@ -325,7 +382,7 @@ def correlation_analysis_for_batch(
             int(shuffle_n),
             int(shuffle_seed),
             int(min_shift_frames),
-            tuple(np.asarray(item["shifts"], dtype=int).tolist()),
+            () if dataset is not None else tuple(np.asarray(item["shifts"], dtype=int).tolist()),
         )
         groups.setdefault(group_key, []).append(item)
 
@@ -338,24 +395,64 @@ def correlation_analysis_for_batch(
             b_stack = np.stack([item["b"] for item in chunk], axis=0)
             null_values: List[List[float]] = [[] for _ in chunk]
             block_size = max(1, int(shift_block_size))
-            for shift_start in range(0, len(shifts), block_size):
-                shift_block = shifts[shift_start:shift_start + block_size]
-                shifted = np.stack([
-                    b_stack[:, (np.arange(a_stack.shape[1], dtype=int) - int(shift)) % a_stack.shape[1]
-                ] for shift in shift_block], axis=1)
-                valid = np.isfinite(a_stack)[:, None, :] & np.isfinite(shifted)
-                counts = valid.sum(axis=2)
-                a_values = np.where(valid, a_stack[:, None, :], 0.0)
-                b_values = np.where(valid, shifted, 0.0)
-                a_mean = np.divide(a_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
-                b_mean = np.divide(b_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
-                a_centered = np.where(valid, a_stack[:, None, :] - a_mean[:, :, None], 0.0)
-                b_centered = np.where(valid, shifted - b_mean[:, :, None], 0.0)
-                numerator = np.sum(a_centered * b_centered, axis=2)
-                denominator = np.sqrt(np.sum(a_centered * a_centered, axis=2) * np.sum(b_centered * b_centered, axis=2))
-                values = np.divide(numerator, denominator, out=np.full((len(chunk), len(shift_block)), np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
-                for local_index, pair_values in enumerate(values):
-                    null_values[local_index].extend(float(value) for value in pair_values if np.isfinite(value))
+            if configured_null_model == "full_trace" and dataset is not None and all(item.get("signal_a_key") and item.get("signal_b_key") for item in chunk):
+                # A batch often contains the same soma/behaviour signal in many
+                # pairs. Keep this cache bounded to the current batch so repeated
+                # pairs reuse one HDF5 decompression without retaining the full
+                # dataset in memory.
+                loaded_signal_arrays = {}
+                def _load_signal(signal_key, signal_mask):
+                    keys = signal_key if isinstance(signal_key, (tuple, list)) else (signal_key,)
+                    canonical_keys = tuple(str(key) for key in keys)
+                    if canonical_keys not in loaded_signal_arrays:
+                        arrays = [dataset.read_signal(key, int(shuffle_n)) for key in canonical_keys]
+                        loaded_signal_arrays[canonical_keys] = (
+                            np.nanmean(np.stack(arrays, axis=0), axis=0) if len(arrays) > 1 else arrays[0]
+                        )
+                    array = loaded_signal_arrays[canonical_keys]
+                    if signal_mask is not None:
+                        mask = np.asarray(signal_mask, dtype=bool).reshape(-1)
+                        usable_mask = mask[:array.shape[1]]
+                        array = array[:, usable_mask]
+                    return array
+                a_null_stack = np.stack([_load_signal(item["signal_a_key"], item["signal_masks"][0]) for item in chunk], axis=0)
+                b_null_stack = np.stack([_load_signal(item["signal_b_key"], item["signal_masks"][1]) for item in chunk], axis=0)
+                null_count = min(int(shuffle_n), a_null_stack.shape[1], b_null_stack.shape[1])
+                for shift_start in range(0, null_count, block_size):
+                    a_null = a_null_stack[:, shift_start:shift_start + block_size, :]
+                    b_null = b_null_stack[:, shift_start:shift_start + block_size, :]
+                    valid = np.isfinite(a_null) & np.isfinite(b_null)
+                    counts = valid.sum(axis=2)
+                    a_values = np.where(valid, a_null, 0.0)
+                    b_values = np.where(valid, b_null, 0.0)
+                    a_mean = np.divide(a_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+                    b_mean = np.divide(b_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+                    a_centered = np.where(valid, a_null - a_mean[:, :, None], 0.0)
+                    b_centered = np.where(valid, b_null - b_mean[:, :, None], 0.0)
+                    numerator = np.sum(a_centered * b_centered, axis=2)
+                    denominator = np.sqrt(np.sum(a_centered * a_centered, axis=2) * np.sum(b_centered * b_centered, axis=2))
+                    values = np.divide(numerator, denominator, out=np.full((len(chunk), a_null.shape[1]), np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
+                    for local_index, pair_values in enumerate(values):
+                        null_values[local_index].extend(float(value) for value in pair_values if np.isfinite(value))
+            else:
+                for shift_start in range(0, len(shifts), block_size):
+                    shift_block = shifts[shift_start:shift_start + block_size]
+                    shifted = np.stack([
+                        b_stack[:, (np.arange(a_stack.shape[1], dtype=int) - int(shift)) % a_stack.shape[1]
+                    ] for shift in shift_block], axis=1)
+                    valid = np.isfinite(a_stack)[:, None, :] & np.isfinite(shifted)
+                    counts = valid.sum(axis=2)
+                    a_values = np.where(valid, a_stack[:, None, :], 0.0)
+                    b_values = np.where(valid, shifted, 0.0)
+                    a_mean = np.divide(a_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+                    b_mean = np.divide(b_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+                    a_centered = np.where(valid, a_stack[:, None, :] - a_mean[:, :, None], 0.0)
+                    b_centered = np.where(valid, shifted - b_mean[:, :, None], 0.0)
+                    numerator = np.sum(a_centered * b_centered, axis=2)
+                    denominator = np.sqrt(np.sum(a_centered * a_centered, axis=2) * np.sum(b_centered * b_centered, axis=2))
+                    values = np.divide(numerator, denominator, out=np.full((len(chunk), len(shift_block)), np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
+                    for local_index, pair_values in enumerate(values):
+                        null_values[local_index].extend(float(value) for value in pair_values if np.isfinite(value))
             if batch_diagnostics is not None:
                 batch_diagnostics["batches"] = int(batch_diagnostics.get("batches", 0)) + 1
                 batch_diagnostics["pairs"] = int(batch_diagnostics.get("pairs", 0)) + len(chunk)
@@ -384,7 +481,9 @@ def correlation_analysis_for_batch(
                 if isinstance(shared_shuffle_cache, dict) and item["cache_key"] is not None:
                     shared_shuffle_cache.setdefault("null_results", {})[item["cache_key"]] = dict(result)
                     cache_stats["builds"] = int(cache_stats.get("builds", 0)) + 1
+    if dataset is not None:
+        dataset.close(complete=True)
     return [result if result is not None else {} for result in results]
 
 
-__all__ = ["SUPPORTED_CORRELATION_INFERENCE", "SUPPORTED_CORRELATION_METHODS", "correlation_analysis_for_observation", "correlation_analysis_for_batch", "validate_correlation_settings"]
+__all__ = ["SUPPORTED_CORRELATION_INFERENCE", "SUPPORTED_CORRELATION_METHODS", "SUPPORTED_NULL_MODELS", "correlation_analysis_for_observation", "correlation_analysis_for_batch", "validate_correlation_settings", "validate_null_model"]

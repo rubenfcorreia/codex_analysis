@@ -54,6 +54,8 @@ from analysis.shared.pipeline_logging import (
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.cache_utils import METHODOLOGY_VERSION
+from analysis.shared.shuffle_dataset import build_shuffle_dataset_once, validate_shuffle_preset_overrides
+from analysis.shared.analysis_families.core import make_global_roi_id
 from analysis.shared.analysis_families.common_helpers import build_state_masks_movie as shared_build_state_masks_movie
 from analysis.shared.union_rows import (
     filter_table_rows_by_states, load_union_rows_cache, save_union_rows_cache,
@@ -236,7 +238,7 @@ ZEBRA_PREFIX = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\02"
 NORMAL_CONVERSION_FILENAME = "ROIs_normal_mode_conversion.npy"
 DEND_AXON_CONVERSION_FILENAME = "ROIs_dendrite_axon_mode_conversion.npy"
 DEFAULT_CHANNEL = 0
-DEFAULT_SHUFFLES = 200
+DEFAULT_SHUFFLES = 100
 DEFAULT_CPU_THREAD_LIMIT = 1
 DEFAULT_Locomotion_THRESHOLD_FRACTION = 3.0
 DEFAULT_CACHE_NAME = "dendrites_cache.npz"
@@ -481,6 +483,7 @@ USER_EDITABLE_DEFAULTS = {
     "mixed_model_only": False,
     "mixed_model_contrast_p_source": "classical",
     "plots_only": False,
+    "figures_only": False,
     "poster_ready_only": False,
     "plots_only_include_supporting_figures": False,
     "generate_poster_ready_figures": True,
@@ -515,6 +518,7 @@ USER_EDITABLE_DEFAULTS = {
     "shuffle_n": DEFAULT_SHUFFLES,
     "correlation_method": "pearson",
     "correlation_inference": "circular_shift",
+    "null_model": "mask_aware",
     "correlation_shuffle_n": DEFAULT_SHUFFLES,
     "correlation_shuffle_seed": 12345,
     "correlation_min_shift_frames": 1,
@@ -7417,8 +7421,8 @@ def generate_analysis_figures(
     mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = fig_dir
-        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        base_root = Path(run_params.get("general_figure_root")) if run_params.get("general_figure_root") else fig_dir
+        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
     for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
         scope = str(spec.get("scope") or "all_state")
@@ -7848,8 +7852,8 @@ def generate_review_figures(
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = review_dir
-        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        base_root = Path(run_params.get("general_figure_root")) if run_params.get("general_figure_root") else review_dir
+        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     with step_scope("review family: mixed model figures"):
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
@@ -8770,8 +8774,8 @@ def generate_checkpoint_gallery(
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
     shared_mixed_model_dir = None
     if generate_shared_general_figures:
-        base_root = gallery_dir
-        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        base_root = Path(run_params.get("general_figure_root")) if run_params.get("general_figure_root") else gallery_dir
+        shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_gallery_dir = figure_family_dir(gallery_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     for spec in [item for item in mixed_model_branch_render_specs(results, review=False) if item.get("plotter") is plot_mixed_model_contrasts_checkpoint]:
         scope = str(spec["scope"])
@@ -10199,8 +10203,8 @@ def load_npz_cache(path: Path) -> Dict[str, Any]:
         if isinstance(item, dict):
             return item
     raise TypeError(f"Could not recover cache dictionary from {path}")
-def shared_shuffle_cache_path(cache_path: Path) -> Path:
-    return cache_path.with_name(f"{cache_path.stem}_shuffle_cache.npz")
+def shared_shuffle_cache_path(cache_path: Path, null_model: str = "mask_aware") -> Path:
+    return cache_path.with_name(f"{cache_path.stem}_shuffle_cache_{str(null_model)}.npz")
 def array_signature(array: Any) -> Optional[str]:
     if array is None:
         return None
@@ -10308,6 +10312,7 @@ def build_shared_shuffle_cache(
     entries: Dict[str, Dict[str, Any]] = {}
     state_labels = [str(state) for state in (state_labels or []) if str(state)]
     analysis_unit = str(cache.get("analysis_unit", "source"))
+    null_model = str(cache.get("null_model", "mask_aware"))
     for animal_id in sorted(animals):
         animal_entry = animals[animal_id]
         for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
@@ -10385,6 +10390,7 @@ def build_shared_shuffle_cache(
             "analysis_unit": analysis_unit,
             "shuffle_n": int(shuffle_n),
             "state_labels": list(state_labels),
+            "null_model": null_model,
             "experiment_signatures": {
                 str(exp_id): str(exp_meta.get("source_signature"))
                 for exp_id, exp_meta in sorted(experiments.items())
@@ -10396,6 +10402,7 @@ def build_shared_shuffle_cache(
         "analysis_unit": analysis_unit,
         "shuffle_n": int(shuffle_n),
         "state_labels": list(state_labels),
+        "null_model": null_model,
         "signature": signature,
         "entries": entries,
     }
@@ -10407,7 +10414,7 @@ def load_or_build_shared_shuffle_cache(
     cache_path: Optional[Path] = None,
     rebuild: bool = False,
 ) -> Tuple[Dict[str, Any], Optional[Path], bool]:
-    shuffle_path = None if cache_path is None else shared_shuffle_cache_path(cache_path)
+    shuffle_path = None if cache_path is None else shared_shuffle_cache_path(cache_path, str(cache.get("null_model", "mask_aware")))
     existing = None
     if shuffle_path is not None and shuffle_path.exists() and not rebuild:
         existing = load_shared_shuffle_cache(shuffle_path)
@@ -11802,13 +11809,13 @@ def shuffle_matrix_similarity(vectors_a, vectors_b, shuffle_n, *, shuffle_seed=1
     return _canonical_matrix_similarity(vectors_a, vectors_b, shuffle_n, shuffle_seed=shuffle_seed)
 def correlation_analysis_for_observation(
     trace_a, trace_b, shuffle_n, use_circular_shift=True,
-    shared_shuffle_cache=None, shared_shuffle_key=None, *,
+    shared_shuffle_cache=None, shared_shuffle_key=None, signal_keys=None, *,
     correlation_method="pearson", correlation_inference=None,
     shuffle_seed=12345, min_shift_frames=1,
 ):
     return _canonical_correlation_analysis(
         trace_a, trace_b, shuffle_n, use_circular_shift=use_circular_shift,
-        shared_shuffle_cache=shared_shuffle_cache, shared_shuffle_key=shared_shuffle_key,
+        shared_shuffle_cache=shared_shuffle_cache, shared_shuffle_key=shared_shuffle_key, signal_keys=signal_keys,
         correlation_method=correlation_method, correlation_inference=correlation_inference,
         shuffle_seed=shuffle_seed, min_shift_frames=min_shift_frames,
     )
@@ -11854,6 +11861,10 @@ def _spine_coactivity_compute_pair_row(
         use_circular_shift=True,
         shared_shuffle_cache=shared_shuffle_cache,
         shared_shuffle_key=shared_shuffle_key,
+        signal_keys=(
+            f"{shared_shuffle_meta.get('animal_id', 'unknown')}|{shared_shuffle_meta.get('day_id', 'unknown')}|spine_specific|{shared_shuffle_meta.get('source_id', 'unknown')}|a",
+            f"{shared_shuffle_meta.get('animal_id', 'unknown')}|{shared_shuffle_meta.get('day_id', 'unknown')}|spine_specific|{shared_shuffle_meta.get('source_id', 'unknown')}|b",
+        ) if shared_shuffle_meta is not None else None,
     )
     r_value = as_float(analysis.get("r"))
     classical_p = as_float(analysis.get("classical_p"))
@@ -15893,12 +15904,12 @@ def write_analysis_outputs(
         generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
         shared_general_root = None
         if generate_shared_general_figures:
-            configured_general_root = run_params.get("general_output_root")
+            configured_general_root = run_params.get("general_figure_root")
             if configured_general_root:
-                shared_general_root = ensure_dir(Path(configured_general_root) / "figures")
+                shared_general_root = ensure_dir(Path(configured_general_root))
             else:
-                base_root = Path(figure_root) if figure_root is not None else (output_dir / "figures")
-                shared_general_root = ensure_dir(base_root / DEFAULT_SHARED_FIGURES_DIRNAME)
+                base_root = Path(figure_root) if figure_root is not None else (output_dir.parent / "figures")
+                shared_general_root = ensure_dir(base_root)
         if source_cache is not None and shared_general_root is not None:
             step_message("visual response figure generation starting")
             with step_scope("visual response figure generation"):
@@ -17607,6 +17618,56 @@ def merge_cli_config(cli: Dict[str, Any], file_config: Dict[str, Any]) -> Dict[s
             continue
         merged[key] = value
     return merged
+def _build_dendrite_shuffle_dataset(
+    source_cache: Mapping[str, Any],
+    config: Mapping[str, Any],
+    output_root: Path,
+    preset_count: int,
+) -> Dict[str, Any]:
+    """Build the single pipeline-wide full-trace shuffle artifact."""
+    signals: Dict[str, np.ndarray] = {}
+    experiments = source_cache.get("experiments", {}) if isinstance(source_cache, Mapping) else {}
+    animals = source_cache.get("animals", {}) if isinstance(source_cache, Mapping) else {}
+    for animal_id, animal_entry in sorted(dict(animals).items()):
+        for dendrite_id, dendrite_record in sorted(dict(animal_entry.get("dendrites", {})).items()):
+            observations = dendrite_record.get("observations", {})
+            spines = dendrite_record.get("spines", {})
+            for day_id, d_obs in sorted(dict(observations).items()):
+                exp_id = str(d_obs.get("exp_id") or day_id)
+                d_trace = np.asarray(d_obs.get("trace"), dtype=float).reshape(-1)
+                if d_trace.size > 1 and np.any(np.isfinite(d_trace)):
+                    signals[make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="dendrite", roi_id=dendrite_id, plane=d_obs.get("plane"))] = d_trace
+                exp_meta = experiments.get(exp_id, experiments.get(day_id, {}))
+                wheel = exp_meta.get("wheel", {}) if isinstance(exp_meta, Mapping) else {}
+                wheel_trace = np.asarray(wheel.get("interpolated"), dtype=float).reshape(-1) if wheel.get("interpolated") is not None else np.asarray([], dtype=float)
+                if wheel_trace.size > 1 and np.any(np.isfinite(wheel_trace)):
+                    signals[make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="wheel", roi_id=dendrite_id, plane=d_obs.get("plane"))] = wheel_trace
+                pupil = exp_meta.get("pupil", {}) if isinstance(exp_meta, Mapping) else {}
+                pupil_trace = np.asarray(pupil.get("series"), dtype=float).reshape(-1) if pupil.get("series") is not None else np.asarray([], dtype=float)
+                pupil_time = np.asarray(pupil.get("time"), dtype=float).reshape(-1) if pupil.get("time") is not None else np.asarray([], dtype=float)
+                d_time = np.asarray(d_obs.get("time"), dtype=float).reshape(-1)
+                if pupil_trace.size and pupil_time.size and d_time.size and pupil_time.size != d_time.size:
+                    pupil_trace = np.asarray(interpolate_series(d_time, pupil_time, pupil_trace), dtype=float).reshape(-1)
+                if pupil_trace.size > 1 and np.any(np.isfinite(pupil_trace)):
+                    signals[make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="pupil", roi_id=dendrite_id, plane=d_obs.get("plane"))] = pupil_trace
+                for spine_id in d_obs.get("spine_ids", []):
+                    s_obs = dict(spines.get(spine_id, {}).get("observations", {})).get(exp_id) or dict(spines.get(spine_id, {}).get("observations", {})).get(day_id)
+                    if not isinstance(s_obs, Mapping):
+                        continue
+                    raw = s_obs.get("trace_hp", s_obs.get("trace"))
+                    raw_trace = np.asarray(raw, dtype=float).reshape(-1) if raw is not None else np.asarray([], dtype=float)
+                    if raw_trace.size > 1 and np.any(np.isfinite(raw_trace)):
+                        signals[make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="spine_raw", roi_id=spine_id, plane=s_obs.get("plane", d_obs.get("plane")))] = raw_trace
+                    specific = np.asarray(s_obs.get("spine_specific"), dtype=float).reshape(-1) if s_obs.get("spine_specific") is not None else np.asarray([], dtype=float)
+                    if specific.size > 1 and np.any(np.isfinite(specific)):
+                        signals[make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="spine_specific", roi_id=spine_id, plane=s_obs.get("plane", d_obs.get("plane")))] = specific
+    shuffle_n = int(config.get("correlation_shuffle_n") or config.get("shuffle_n") or DEFAULT_SHUFFLES)
+    seed = int(config.get("correlation_shuffle_seed", 12345))
+    path = output_root / "analysis" / "cache" / "dendrite_roi_shuffle_dataset.h5"
+    metadata = {"analysis_unit": str(source_cache.get("analysis_unit", "day")), "null_model": "full_trace", "source_cache_signature": source_cache_signature(dict(source_cache)), "channel": int(config.get("channel") or DEFAULT_CHANNEL)}
+    return build_shuffle_dataset_once(path, metadata, signals, shuffle_n=shuffle_n, seed=seed, min_shift_frames=int(config.get("correlation_min_shift_frames", 1)), pipeline="dendrites_pipeline", preset_count=preset_count, log=lambda message: print(message, file=sys.stderr))
+
+
 def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     preset_names = parse_list_argument(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
@@ -17618,9 +17679,10 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     )
     if not plan.presets:
         return False
+    validate_shuffle_preset_overrides(plan.presets, log=lambda message: print(message, file=sys.stderr))
 
     base_output_dir = resolve_repo_path(config.get("comparison_output_root") or config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
-    shared_cache_path = resolve_repo_path(config.get("cache_path") or (base_output_dir / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME), REPO_ROOT)
+    shared_cache_path = resolve_repo_path(config.get("cache_path") or (base_output_dir / "analysis" / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME), REPO_ROOT)
 
     child_script = Path(__file__).resolve()
     preset_configs: Dict[str, Dict[str, Any]] = {}
@@ -17638,9 +17700,27 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
             "basal_apical": basal_apical,
         })
     union_states_by_mode = union_state_labels(preset_state_maps)
+    all_movie_expids = list(dict.fromkeys([*parse_list_argument(config.get("movie_expids")), *[expid for _, overrides in plan.presets for expid in parse_list_argument(overrides.get("movie_expids"))]]))
+    all_sleep_expids = list(dict.fromkeys([*parse_list_argument(config.get("sleep_expids")), *[expid for _, overrides in plan.presets for expid in parse_list_argument(overrides.get("sleep_expids"))]]))
+    all_basal_expids = list(dict.fromkeys([*parse_list_argument(config.get("basal_expids")), *[expid for _, overrides in plan.presets for expid in parse_list_argument(overrides.get("basal_expids"))]]))
+    all_apical_expids = list(dict.fromkeys([*parse_list_argument(config.get("apical_expids")), *[expid for _, overrides in plan.presets for expid in parse_list_argument(overrides.get("apical_expids"))]]))
+    if bool(config.get("plots_only")) and not shared_cache_path.exists():
+        raise FileNotFoundError(f"plots_only requires the shared dendrite source cache at {shared_cache_path}")
+    dendrite_source_cache = load_or_build_cache(
+        repo_base=Path(config.get("repo_base") or f"/home/{config.get('user_id')}/data/Repository"),
+        movie_expids=all_movie_expids, sleep_expids=all_sleep_expids, basal_expids=all_basal_expids, apical_expids=all_apical_expids,
+        channel=int(config.get("channel") or DEFAULT_CHANNEL), explicit_locomotion_threshold=config.get("locomotion_threshold"), cache_path=shared_cache_path,
+        rebuild=bool(config.get("rebuild") or config.get("source_cache_rebuild")), validate_existing_cache=bool(config.get("source_cache_validate", True)),
+    )
+    # Correlation consumes the normalized day-level cache, not the raw
+    # experiment cache. Build the shared signal dataset from that same
+    # representation so producer and consumer use identical IDs and traces.
+    dendrite_analysis_cache = build_day_pooled_cache(dendrite_source_cache)
+    shuffle_dataset_info = _build_dendrite_shuffle_dataset(dendrite_analysis_cache, config, base_output_dir, len(plan.presets))
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
-        preset_output_dir = base_output_dir / safe_name
+        preset_output_dir = base_output_dir / "analysis" / safe_name
+        preset_figure_dir = base_output_dir / "figures" / safe_name
         preset_cache_path = preset_output_dir / DEFAULT_CACHE_DIRNAME / f"{shared_cache_path.stem}_{safe_name}.npz"
         preset_config = copy.deepcopy(config)
         preset_config.pop("comparison_presets", None)
@@ -17651,10 +17731,15 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config.update(overrides)
         preset_config["comparison_preset_name"] = preset_name
         preset_config["output_dir"] = str(preset_output_dir)
+        preset_config["analysis_output_dir"] = str(preset_output_dir)
         preset_config["cache_path"] = str(shared_cache_path)
+        preset_config["shuffle_dataset_path"] = str(shuffle_dataset_info["path"])
+        preset_config["shuffle_dataset_sha256"] = str(shuffle_dataset_info["sha256"])
+        preset_config["shuffle_dataset_replicates"] = int(shuffle_dataset_info["replicates"])
+        preset_config["shuffle_dataset_source_signature"] = str(shuffle_dataset_info.get("source_signature", ""))
         preset_config["analysis_run_cache_path"] = str(preset_cache_path)
         preset_config["analysis_results_cache_path"] = None
-        preset_config["shared_union_rows_cache_path"] = str(base_output_dir / "general" / "cache" / "dendrites_union_rows_cache.npz")
+        preset_config["shared_union_rows_cache_path"] = str(base_output_dir / "analysis" / "general" / "cache" / "dendrites_union_rows_cache.npz")
         generate_once = preset_index == 0
         preset_rebuild = bool(config.get("rebuild")) if generate_once else False
         preset_config["rebuild"] = preset_rebuild
@@ -17664,9 +17749,10 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
         preset_config["branch_first_output_root"] = str(preset_output_dir)
         preset_config["branch_first_figures"] = True
-        preset_config["figure_output_dir"] = str(branch_leaf_figure_root(preset_output_dir, "pooled", "all"))
+        preset_config["figure_output_dir"] = str(branch_leaf_figure_root(preset_figure_dir, "pooled", "all"))
         preset_config["generate_visual_response_entity_figures"] = preset_index == 0 and not bool(preset_config.get("plots_only"))
-        preset_config["general_output_root"] = str(base_output_dir / "general")
+        preset_config["general_output_root"] = str(base_output_dir / "analysis" / "general")
+        preset_config["general_figure_root"] = str(base_output_dir / "figures" / "general")
         preset_config["union_state_labels_by_mode"] = union_states_by_mode
         preset_config["union_rows_cache_builder"] = generate_once
         preset_config["generate_shared_general_outputs"] = generate_once
@@ -17784,6 +17870,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spine-coactivity-only", action="store_true", help="Skip the main state/correlation/matrix analyses and run only spine coactivity")
     parser.add_argument("--mixed-model-only", action="store_true", help="Skip the state/correlation/matrix analyses and run only the main mixed-model branch")
     parser.add_argument("--plots-only", action="store_true", help="Reuse saved caches and only generate plots, without rewriting CSV/JSON/report artifacts")
+    parser.add_argument("--figures-only", action="store_true", help="Regenerate only figures from the new-layout analysis caches")
     parser.add_argument("--plot-profile", choices=("full", "analysis_only", "poster_only"), help="Select full, analysis-only, or poster-only output generation")
     parser.add_argument(
         "--poster-ready-only",
@@ -17856,7 +17943,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "analysis_families": parse_list_argument(args.analysis_families) or None,
         "comparison_preset_names": parse_list_argument(args.comparison_presets) or None,
         "comparison_leaf": list(args.comparison_leaf) if args.comparison_leaf else None,
-        "plots_only": True if args.plots_only else None,
+        "plots_only": True if (args.plots_only or args.figures_only) else None,
+        "figures_only": True if args.figures_only else None,
         "plot_profile": args.plot_profile,
         "poster_ready_only": True if args.poster_ready_only else None,
         "demo": True if args.demo else None,
@@ -17973,6 +18061,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
         analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
         analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
+        if config.get("figures_only"):
+            required = [cache_path, analysis_tables_cache_file, analysis_results_cache_file]
+            missing = [str(path) for path in required if not path.exists()]
+            if missing:
+                raise SystemExit("figures_only requires new-layout analysis artifacts; missing: " + ", ".join(missing))
         source_cache_status = "rebuild_requested" if source_cache_rebuild else ("reused" if cache_path.exists() else "missing")
         analysis_tables_cache_status = "rebuild_requested" if analysis_tables_rebuild else ("reused" if analysis_tables_cache_file.exists() else "missing")
         figure_output_dir = resolve_repo_path(config["figure_output_dir"], REPO_ROOT) if config.get("figure_output_dir") else layout.figure_root
@@ -18119,6 +18212,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not shuffle_state_labels:
         shuffle_state_labels = list(PRIMARY_QUIET_STATES)
     shared_shuffle_state_labels = sorted({str(state) for states in (union_states_by_mode or {}).values() for state in (states or []) if str(state).strip()}) or list(shuffle_state_labels)
+    analysis_cache["null_model"] = str(config.get("null_model", "mask_aware"))
     shared_shuffle_cache = None
     shared_shuffle_cache_file = None
     shared_shuffle_cache_rebuilt = False
@@ -18133,6 +18227,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
     else:
         shared_shuffle_cache = None
+    if not isinstance(shared_shuffle_cache, dict):
+        shared_shuffle_cache = {"entries": {}, "null_results": {}, "null_result_stats": {"hits": 0, "misses": 0, "builds": 0}}
+    configured_shuffle_dataset = config.get("shuffle_dataset_path")
+    shuffle_dataset_file = resolve_repo_path(configured_shuffle_dataset, REPO_ROOT) if configured_shuffle_dataset else (shared_shuffle_cache_file.with_name(f"{shared_shuffle_cache_file.stem.replace('_shuffle_cache', '')}_shuffle_dataset.h5") if shared_shuffle_cache_file is not None else None)
+    if shuffle_dataset_file is None or not shuffle_dataset_file.exists():
+        raise FileNotFoundError(f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={shuffle_dataset_file}")
+    expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "")
+    if expected_shuffle_sha256:
+        digest = hashlib.sha256()
+        with shuffle_dataset_file.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        actual_shuffle_sha256 = digest.hexdigest()
+        if actual_shuffle_sha256 != expected_shuffle_sha256:
+            raise ValueError(f"SHUFFLE DATASET: validation failure | reason=hash_mismatch | action=reject | path={shuffle_dataset_file}")
+        print(f"SHUFFLE DATASET: preset reuse | preset={config.get('comparison_preset_name') or 'default'} | path={shuffle_dataset_file} | sha256={actual_shuffle_sha256} | status=reused", file=sys.stderr)
+    shared_shuffle_cache["null_model"] = str(config.get("null_model", "mask_aware"))
+    shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
+    shared_shuffle_cache["shuffle_dataset_metadata"] = {}
     from analysis_families.core import run_cached_analysis
     source_signature = source_cache_signature(source_cache)
     visual_response_cohort_metadata = visual_response_cohort_settings(config)
@@ -18158,6 +18271,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "shuffle_n": int(shuffle_n),
         "correlation_method": str(config.get("correlation_method", "pearson")),
         "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
+        "null_model": str(config.get("null_model", "mask_aware")),
         "correlation_shuffle_n": int(config.get("correlation_shuffle_n", shuffle_n)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
         "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
@@ -18282,7 +18396,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
-                transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
+                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
@@ -18302,7 +18416,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
-                transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
+                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
         else:
             results = run_cached_analysis(
@@ -18322,7 +18436,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
-                transition_output_root=(Path(config.get("general_output_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(output_dir) / "general" / "state_transitions" / "figures") if not config.get("general_output_root") else None),
+                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions" / "figures") if not config.get("general_output_root") else None),
             )
     if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict) and not plots_only:
         with step_scope("shared null cache checkpoint", task="cache", metadata={"scope": "analysis families"}):
@@ -18396,6 +18510,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "transition_analysis": dict(config.get("transition_analysis") or {}),
         "progression_analysis": dict(config.get("progression_analysis") or {}),
         "general_output_root": str(config.get("general_output_root")) if config.get("general_output_root") else None,
+        "general_figure_root": str(config.get("general_figure_root")) if config.get("general_figure_root") else None,
         "poster_ready_only": bool(config.get("poster_ready_only")),
         "analysis_run_cache_path": str(analysis_run_cache_path),
         "shared_union_rows_cache_path": str(union_cache_path),
@@ -18411,6 +18526,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "cache_path": str(cache_path),
         "analysis_tables_cache_path": str(analysis_tables_cache_file),
         "analysis_results_cache_path": str(analysis_results_cache_file_for_run),
+        "shuffle_dataset_path": str(config.get("shuffle_dataset_path") or ""),
+        "shuffle_dataset_sha256": str(config.get("shuffle_dataset_sha256") or ""),
+        "shuffle_dataset_replicates": int(config.get("shuffle_dataset_replicates", config.get("correlation_shuffle_n", shuffle_n))),
+        "shuffle_dataset_seed": int(config.get("correlation_shuffle_seed", 12345)),
+        "shuffle_dataset_source_signature": str(config.get("shuffle_dataset_source_signature") or ""),
     }
     results["analysis_state_selection"] = {
         "compare_states": selection_meta.get("compare_states"),

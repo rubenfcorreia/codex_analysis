@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -104,7 +105,33 @@ def write_manifest(output_root: Path | str, manifest: Mapping[str, Any]) -> Path
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
     temporary.replace(path)
+    if "output_artifacts" in payload:
+        write_artifact_index(output_root, payload.get("output_artifacts", []))
     return path
+
+def write_artifact_index(output_root: Path | str, artifacts: Sequence[str] | None = None) -> Path:
+    """Write a compact path/size/hash index without embedding result rows."""
+    root = Path(output_root)
+    candidates = list(artifacts) if artifacts is not None else _scan_output_artifacts(root)
+    entries = []
+    for artifact in candidates:
+        path = Path(str(artifact))
+        if not path.is_absolute():
+            path = root / path
+        if not path.is_file():
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        entries.append({"path": str(path.resolve().relative_to(root.resolve())), "size_bytes": path.stat().st_size, "sha256": digest.hexdigest()})
+    index_path = root / "summary" / "artifact_index.json"
+    ensure_dir(index_path.parent)
+    temporary = index_path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"schema_version": 1, "output_root": str(root.resolve()), "artifacts": entries}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(index_path)
+    return index_path
+
 def load_manifest(output_root: Path | str) -> Optional[Dict[str, Any]]:
     root = Path(output_root)
     candidate_paths = [

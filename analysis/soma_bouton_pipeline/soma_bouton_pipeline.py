@@ -49,7 +49,7 @@ from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branc
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
 from analysis.shared.union_rows import filter_rows_by_states, load_union_rows_cache, save_union_rows_cache, union_rows_meta, union_state_labels
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
-from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_soma_id, shared_time_axis
+from analysis.shared.analysis_families.core import ExperimentContext, build_experiment_context, experiment_summary_row, make_global_bouton_id, make_global_roi_id, make_global_soma_id, shared_time_axis
 from analysis.shared.analysis_families.pairwise import pairwise_correlation_summary_rows
 from analysis.shared.analysis_families.mixed_model import run_family as run_mixed_model_family, run_split_family
 from analysis.shared.analysis_families.splits import SPLIT_BRANCHES, require_split_groups
@@ -116,6 +116,7 @@ from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
 from analysis.shared.serialization_diagnostics import SerializationCollector, set_active_collector
+from analysis.shared.shuffle_dataset import build_shuffle_dataset_once, validate_shuffle_preset_overrides
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
@@ -180,14 +181,16 @@ DEFAULT_CONFIG = {
     "bouton_channel": 0,
     "lag_window_s": 2.0,
     "lag_step_s": 0.1,
-    "shuffle_n": 200,
+    "shuffle_n": 100,
     "correlation_method": "pearson",
     "correlation_inference": "circular_shift",
-    "correlation_shuffle_n": 200,
+    "null_model": "mask_aware",
+    "correlation_shuffle_n": 100,
     "correlation_shuffle_seed": 12345,
     "correlation_min_shift_frames": 1,
     "pairwise_correlation_inference": "circular_shift",
-    "pairwise_correlation_shuffle_n": 200,
+    "pairwise_correlation_null_model": "mask_aware",
+    "pairwise_correlation_shuffle_n": 100,
     "pairwise_correlation_batch_size": 64,
     "pairwise_correlation_shift_block_size": 8,
     "rebuild": False,
@@ -219,6 +222,7 @@ DEFAULT_CONFIG = {
     "generate_visual_response_entity_figures": True,
     "visual_response_entity_max_trace_points": None,
     "plots_only": False,
+    "figures_only": False,
     "poster_ready_only": False,
     "comparison_presets": None,
     "comparison_preset_name": None,
@@ -285,6 +289,104 @@ def _preset_selection_names(value: Any) -> List[str] | None:
     return [text] if text else None
 
 
+def _build_soma_shuffle_dataset(config: Mapping[str, Any], repo_root: Path, result_root: Path, expids_by_mode: Mapping[str, Sequence[str]], preset_count: int) -> Dict[str, Any]:
+    signals: Dict[str, np.ndarray] = {}
+
+    def add_signal(key: str, trace: np.ndarray) -> None:
+        value = np.asarray(trace, dtype=float).reshape(-1)
+        existing = signals.get(key)
+        if existing is not None:
+            if existing.shape != value.shape or not np.array_equal(existing, value, equal_nan=True):
+                raise ValueError(f"conflicting canonical soma shuffle signal: {key}")
+            return
+        signals[key] = value
+
+    for mode in ("movie", "sleep"):
+        for expid in dict.fromkeys(str(value) for value in expids_by_mode.get(mode, []) if str(value)):
+            ctx = build_experiment_context(
+                expid=expid,
+                mode=mode,
+                soma_channel=int(config.get("soma_channel", 1)),
+                bouton_channel=int(config.get("bouton_channel", 0)),
+                repo_root=repo_root,
+            )
+            for compartment, entity, channel in (("soma", ctx.soma, ctx.soma_channel), ("bouton", ctx.bouton, ctx.bouton_channel)):
+                matrix = np.asarray(entity.matrix(), dtype=float)
+                roi_ids = list(entity.roi_ids()) if hasattr(entity, "roi_ids") else list(range(matrix.shape[0]))
+                planes = list(entity.roi_plane_ids()) if hasattr(entity, "roi_plane_ids") else [None] * matrix.shape[0]
+                for index, trace in enumerate(matrix):
+                    roi_id = roi_ids[index] if index < len(roi_ids) else index
+                    plane = planes[index] if index < len(planes) else None
+                    key = make_global_roi_id(
+                        animal_id=ctx.animal_id,
+                        expid=ctx.expid,
+                        day_id=ctx.day_id,
+                        compartment=compartment,
+                        channel=channel,
+                        roi_id=roi_id,
+                        plane=plane,
+                        roi_index=None if plane is not None else index,
+                    )
+                    add_signal(key, np.asarray(trace, dtype=float))
+    shuffle_n = int(config.get("pairwise_correlation_shuffle_n", config.get("correlation_shuffle_n", 100)))
+    seed = int(config.get("correlation_shuffle_seed", 12345))
+    path = result_root / "analysis" / "cache" / "soma_bouton_roi_shuffle_dataset.h5"
+    metadata = {"soma_channel": int(config.get("soma_channel", 1)), "bouton_channel": int(config.get("bouton_channel", 0)), "expids_by_mode": {mode: list(values) for mode, values in expids_by_mode.items()}, "null_model": "full_trace"}
+    return build_shuffle_dataset_once(path, metadata, signals, shuffle_n=shuffle_n, seed=seed, min_shift_frames=int(config.get("correlation_min_shift_frames", 1)), pipeline="soma_bouton_pipeline", preset_count=preset_count, log=lambda message: print(message, file=sys.stderr))
+
+def _build_soma_source_cache(
+    config: Mapping[str, Any],
+    repo_root: Path,
+    source_cache_path: Path,
+    expids_by_mode: Mapping[str, Sequence[str]],
+) -> Dict[str, Any]:
+    """Build one pipeline-wide source inventory before shuffle generation."""
+    records: List[Dict[str, Any]] = []
+    requests = [
+        (mode, str(expid))
+        for mode in ("movie", "sleep")
+        for expid in dict.fromkeys(str(value) for value in expids_by_mode.get(mode, []) if str(value))
+    ]
+    _stage("source experiments", "rebuilding cache from source experiments")
+    for index, (mode, expid) in enumerate(requests, start=1):
+        step_progress(index, len(requests), label=expid)
+        ctx = build_experiment_context(
+            expid=expid,
+            mode=mode,
+            soma_channel=int(config.get("soma_channel", 1)),
+            bouton_channel=int(config.get("bouton_channel", 0)),
+            repo_root=repo_root,
+        )
+        row = experiment_summary_row(ctx)
+        row.update(
+            {
+                "mode": str(mode),
+                "soma_source_path": str(ctx.soma.path),
+                "bouton_source_path": str(ctx.bouton.path),
+                "soma_source_mtime_ns": int(ctx.soma.path.stat().st_mtime_ns),
+                "bouton_source_mtime_ns": int(ctx.bouton.path.stat().st_mtime_ns),
+            }
+        )
+        records.append(row)
+    metadata = {
+        "schema_version": 1,
+        "pipeline": "soma_bouton_pipeline",
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+        "expids_by_mode": {mode: list(values) for mode, values in expids_by_mode.items()},
+        "complete": True,
+    }
+    payload = {
+        "metadata": metadata,
+        "experiments": records,
+        "source_signature": analysis_cache_meta_hash({"metadata": metadata, "experiments": records}),
+        "complete": True,
+    }
+    save_npz_cache(source_cache_path, payload)
+    _stage("source experiments", f"cache complete: {source_cache_path}")
+    return payload
+
+
 def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     preset_names = _preset_selection_names(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
@@ -296,6 +398,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     )
     if not plan.presets:
         return []
+    validate_shuffle_preset_overrides(plan.presets, log=lambda message: print(message, file=sys.stderr))
 
     configured_repo_root = config.get("repo_root") or config.get("repo_base")
     repo_root = resolve_repo_path(configured_repo_root, resolve_repo_root(Path(__file__))) if configured_repo_root else resolve_repo_root(Path(__file__))
@@ -318,7 +421,22 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
                 probe_state_map[mode] = resolve_analysis_state_selections(probe_config, mode)
         preset_state_maps.append(probe_state_map)
     union_states_by_mode = union_state_labels(preset_state_maps)
-    shared_union_rows_cache_path = base_result_root / "general" / "cache" / "soma_bouton_union_rows_cache.npz"
+    shared_union_rows_cache_path = base_result_root / "analysis" / "general" / "cache" / "soma_bouton_union_rows_cache.npz"
+    all_expids_by_mode = {mode: list(dict.fromkeys([*config.get(f"{mode}_expids", []), *[expid for _, overrides in plan.presets for expid in overrides.get(f"{mode}_expids", [])]])) for mode in ("movie", "sleep")}
+    if not bool(config.get("plots_only")):
+        _build_soma_source_cache(
+            config,
+            repo_root,
+            shared_source_cache_path,
+            all_expids_by_mode,
+        )
+    try:
+        shuffle_dataset_info = _build_soma_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets))
+    except FileNotFoundError as exc:
+        if config.get("user_id") or config.get("repo_root") or config.get("repo_base"):
+            raise
+        print(f"SHUFFLE DATASET: validation failure | reason=source_unavailable | action=reject | detail={exc}", file=sys.stderr)
+        shuffle_dataset_info = {"path": str(base_result_root / "analysis" / "cache" / "soma_bouton_roi_shuffle_dataset.h5"), "sha256": "", "replicates": int(config.get("correlation_shuffle_n", 100))}
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
@@ -327,10 +445,11 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config.pop("comparison_preset_name", None)
         preset_config.update(overrides)
         preset_config["comparison_preset_name"] = preset_name
-        preset_result_root = base_result_root / safe_name
+        preset_result_root = base_result_root / "analysis" / safe_name
+        preset_figure_root = base_result_root / "figures" / safe_name
         preset_config["result_root"] = str(preset_result_root)
         preset_config["analysis_output_dir"] = str(preset_result_root)
-        preset_cache_root = base_cache_root / safe_name
+        preset_cache_root = preset_result_root / "cache"
         preset_run_cache_path = preset_cache_root / "analysis_run_cache.npz"
         preset_results_cache_path = preset_cache_root / "analysis_results_cache.npz"
         preset_tables_cache_path = preset_cache_root / "analysis_tables_cache.npz"
@@ -344,7 +463,12 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["analysis_tables_rebuild"] = preset_rebuild
         preset_config["analysis_results_rebuild"] = False if bool(config.get("plots_only")) else preset_rebuild
         preset_config["shared_shuffle_cache_rebuild"] = preset_rebuild
-        preset_config["general_output_root"] = str(base_result_root / "general")
+        preset_config["general_output_root"] = str(base_result_root / "analysis" / "general")
+        preset_config["general_figure_root"] = str(base_result_root / "figures" / "general")
+        preset_config["shuffle_dataset_path"] = str(shuffle_dataset_info["path"])
+        preset_config["shuffle_dataset_sha256"] = str(shuffle_dataset_info["sha256"])
+        preset_config["shuffle_dataset_replicates"] = int(shuffle_dataset_info["replicates"])
+        preset_config["shuffle_dataset_source_signature"] = str(shuffle_dataset_info.get("source_signature", ""))
         preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
         preset_config["union_state_labels_by_mode"] = union_states_by_mode
         preset_config["union_rows_cache_builder"] = preset_index == 0 and not bool(config.get("plots_only"))
@@ -353,6 +477,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["source_cache_validate"] = False if preset_index else config.get("source_cache_validate", True)
         preset_config["branch_first_output_root"] = str(preset_result_root)
         preset_config["branch_first_figures"] = True
+        preset_config["figure_output_dir"] = str(preset_figure_root / "pooled" / "all")
         preset_config["generate_visual_response_entity_figures"] = preset_index == 0 and bool(config.get("generate_visual_response_entity_figures", True))
         preset_config["generate_poster_ready_figures"] = False
         _stage("comparison preset", f"{preset_name} -> {preset_result_root}")
@@ -905,14 +1030,14 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "state_modes": list(state_modes),
         "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
-        "shuffle_n": int(config.get("shuffle_n", 200)),
+        "shuffle_n": int(config.get("shuffle_n", 100)),
         "correlation_method": str(config.get("correlation_method", "pearson")),
         "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
-        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
+        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 100)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
         "correlation_min_shift_frames": int(config.get("correlation_min_shift_frames", 1)),
         "pairwise_correlation_inference": str(config.get("pairwise_correlation_inference", config.get("correlation_inference", "circular_shift"))),
-        "pairwise_correlation_shuffle_n": int(config.get("pairwise_correlation_shuffle_n", config.get("correlation_shuffle_n", 200))),
+        "pairwise_correlation_shuffle_n": int(config.get("pairwise_correlation_shuffle_n", config.get("correlation_shuffle_n", 100))),
         "pairwise_correlation_batch_size": int(config.get("pairwise_correlation_batch_size", 64)),
         "pairwise_correlation_shift_block_size": int(config.get("pairwise_correlation_shift_block_size", 8)),
         "event_detection_method": str(event_detection_method),
@@ -962,8 +1087,12 @@ def _analysis_results_cache_path(config: Mapping[str, Any], repo_root: Path, res
     return analysis_run_cache_file.with_name(f"{analysis_run_cache_file.stem}_analysis_results_cache.npz")
 
 
-def _shared_shuffle_cache_path(source_cache_file: Path) -> Path:
-    return source_cache_file.with_name(f"{source_cache_file.stem}_shuffle_cache.npz")
+def _shared_shuffle_cache_path(source_cache_file: Path, null_model: str = "mask_aware") -> Path:
+    return source_cache_file.with_name(f"{source_cache_file.stem}_shuffle_cache_{str(null_model)}.npz")
+
+
+def _shuffle_dataset_path(source_cache_file: Path) -> Path:
+    return source_cache_file.with_name(f"{source_cache_file.stem}_shuffle_dataset.h5")
 
 
 def _load_or_build_shared_permutation_cache(
@@ -981,6 +1110,8 @@ def _load_or_build_shared_permutation_cache(
             payload = load_npz_cache(path)
             if payload.get("schema_version") != 1:
                 status = "schema_mismatch"
+            elif not Path(str(metadata.get("source_cache_path") or "")).exists():
+                status = "source_cache_missing"
             elif payload.get("meta_hash") != analysis_cache_meta_hash(metadata):
                 status = "meta_mismatch"
             else:
@@ -1060,10 +1191,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         figure_root = _comparison_figure_root(config, repo_root, result_root)
     else:
         figure_root = resolve_repo_path(config["figure_output_dir"], repo_root) if config.get("figure_output_dir") else layout.figure_root
-    general_output_root = resolve_repo_path(config.get("general_output_root"), repo_root) if config.get("general_output_root") else None
     generate_shared_general_outputs = bool(config.get("generate_shared_general_outputs", False))
     generate_shared_general_figures = bool(config.get("generate_shared_general_figures", False))
-    shared_general_root = general_output_root if generate_shared_general_figures else None
+    general_output_root = resolve_repo_path(config.get("general_output_root"), repo_root) if config.get("general_output_root") else None
+    general_figure_root = resolve_repo_path(config.get("general_figure_root"), repo_root) if config.get("general_figure_root") else (layout.figure_root / "general" if generate_shared_general_figures else None)
+    shared_general_root = general_figure_root if generate_shared_general_figures else None
     general_csv_root = (general_output_root / "csv") if general_output_root is not None else (result_root / "csv")
     write_general_tables = general_output_root is None or generate_shared_general_outputs
     if general_output_root is not None and write_general_tables:
@@ -1092,8 +1224,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         f"event_detection_method={event_detection_method}, visual_response_metric={visual_response_metric}, visual_response_cohort={visual_response_cohort}",
     )
 
-    shuffle_n = int(config.get("shuffle_n", 200))
-    correlation_shuffle_n = int(config.get("correlation_shuffle_n", 200))
+    shuffle_n = int(config.get("shuffle_n", 100))
+    correlation_shuffle_n = int(config.get("correlation_shuffle_n", 100))
     correlation_method = str(config.get("correlation_method", "pearson"))
     correlation_inference = str(config.get("correlation_inference", "circular_shift"))
     pairwise_correlation_shuffle_n = int(config.get("pairwise_correlation_shuffle_n", correlation_shuffle_n))
@@ -1106,10 +1238,19 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     analysis_results_cache_file = _analysis_results_cache_path(config, repo_root, result_root)
     analysis_tables_cache_file = _analysis_tables_cache_path(config, repo_root, result_root)
     source_cache_file = _source_cache_path(config, repo_root, result_root)
-    shared_shuffle_cache_file = _shared_shuffle_cache_path(source_cache_file)
+    if config.get("figures_only"):
+        required = [source_cache_file, analysis_tables_cache_file, _analysis_results_cache_path(config, repo_root, result_root)]
+        missing = [str(path) for path in required if not path.exists()]
+        if missing:
+            raise SystemExit("figures_only requires new-layout analysis artifacts; missing: " + ", ".join(missing))
+    shared_shuffle_cache_file = _shared_shuffle_cache_path(source_cache_file, str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))))
+    configured_shuffle_dataset = config.get("shuffle_dataset_path")
+    shuffle_dataset_file = resolve_repo_path(configured_shuffle_dataset, repo_root) if configured_shuffle_dataset else _shuffle_dataset_path(source_cache_file)
+    expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "")
     shared_shuffle_metadata = {
         "methodology_version": METHODOLOGY_VERSION,
         "source_cache_path": str(source_cache_file),
+        "null_model": str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))),
         "movie_expids": list(expids_by_mode.get("movie", [])),
         "sleep_expids": list(expids_by_mode.get("sleep", [])),
         "soma_channel": int(config.get("soma_channel", 1)),
@@ -1119,12 +1260,15 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "union_state_labels_by_mode": dict(config.get("union_state_labels_by_mode") or {}),
         "correlation_method": str(config.get("correlation_method", "pearson")),
         "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
-        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 200)),
+        "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 100)),
         "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
         "pairwise_correlation_inference": pairwise_correlation_inference,
+        "pairwise_correlation_null_model": str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))),
         "pairwise_correlation_shuffle_n": pairwise_correlation_shuffle_n,
         "pairwise_correlation_batch_size": pairwise_correlation_batch_size,
         "pairwise_correlation_shift_block_size": pairwise_correlation_shift_block_size,
+        "shuffle_dataset_schema_version": 1,
+        "shuffle_dataset_path": str(shuffle_dataset_file),
     }
     cache_timings: Dict[str, float] = {}
     cache_started = time.perf_counter()
@@ -1134,6 +1278,36 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
     )
     cache_timings["shared_shuffle"] = time.perf_counter() - cache_started
+    if not shuffle_dataset_file.exists() and not configured_shuffle_dataset:
+        single_run_info = _build_soma_shuffle_dataset(config, repo_root, result_root, expids_by_mode, 1)
+        shuffle_dataset_file = Path(str(single_run_info["path"]))
+    if not shuffle_dataset_file.exists():
+        raise FileNotFoundError(
+            f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={shuffle_dataset_file}"
+        )
+    if expected_shuffle_sha256:
+        import hashlib
+        digest = hashlib.sha256()
+        with shuffle_dataset_file.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        actual_shuffle_sha256 = digest.hexdigest()
+        if actual_shuffle_sha256 != expected_shuffle_sha256:
+            raise ValueError(
+                f"SHUFFLE DATASET: validation failure | reason=hash_mismatch | action=reject | path={shuffle_dataset_file}"
+            )
+        print(
+            f"SHUFFLE DATASET: preset reuse | preset={preset_name} | path={shuffle_dataset_file} | sha256={actual_shuffle_sha256} | status=reused",
+            file=sys.stderr,
+        )
+    shared_shuffle_cache["null_model"] = str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware")))
+    shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
+    # The HDF5 artifact owns its provenance. Per-preset state/cohort metadata
+    # must not invalidate the pipeline-wide dataset.
+    shared_shuffle_cache["shuffle_dataset_metadata"] = {}
+    shared_shuffle_cache["source_cache_available"] = bool(source_cache_file.exists())
+    if not source_cache_file.exists():
+        shared_shuffle_cache["source_cache_status"] = "missing_external_source_cache"
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
@@ -1477,6 +1651,30 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     metadata={"mode": mode, "expid": expid, "experiment_index": exp_idx},
                 ):
                     save_npz_cache(shared_shuffle_cache_file, shared_shuffle_cache)
+            checkpoint_dir = ensure_dir(result_root / "checkpoints")
+            checkpoint_payload = {
+                "status": "incomplete",
+                "mode": str(mode),
+                "expid": str(expid),
+                "experiment_index": int(exp_idx),
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+                "counts": {
+                    "experiments": len(experiment_rows),
+                    "activity_rows": len(activity_rows),
+                    "correlation_rows": len(correlation_rows),
+                    "soma_pairwise_rows": len(soma_pairwise_rows),
+                    "bouton_pairwise_rows": len(bouton_pairwise_rows),
+                },
+                "shuffle_dataset_path": str(shuffle_dataset_file),
+            "shuffle_dataset_sha256": str(config.get("shuffle_dataset_sha256") or ""),
+            "shuffle_dataset_replicates": int(config.get("shuffle_dataset_replicates", pairwise_correlation_shuffle_n)),
+            "shuffle_dataset_seed": int(correlation_shuffle_seed),
+            "shuffle_dataset_source_signature": str(config.get("shuffle_dataset_source_signature") or ""),
+                "source_cache_available": bool(source_cache_file.exists()),
+            }
+            checkpoint_path = checkpoint_dir / f"{safe_filename_component(str(mode))}_{safe_filename_component(str(expid))}.json"
+            checkpoint_path.write_text(json.dumps(checkpoint_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            (checkpoint_dir / "partial_manifest.json").write_text(json.dumps({"status": "incomplete", "latest_checkpoint": str(checkpoint_path), "output_root": str(result_root)}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         _stage(
             "mode complete",
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
@@ -1546,11 +1744,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             selected_states_by_mode,
             config.get("transition_analysis"),
             event_detection_method=event_detection_method,
-            output_root=(general_output_root if general_output_root is not None and generate_shared_general_outputs else figure_root),
+            output_root=(general_figure_root if general_figure_root is not None and generate_shared_general_outputs else figure_root),
         )
 
     progression_enabled = bool((config.get("progression_analysis") or {}).get("enabled", False))
-    progression_general_root = general_output_root or (result_root / "general")
+    progression_general_root = general_figure_root or (figure_root / "general")
     if progression_enabled and not config.get("plots_only") and (general_output_root is None or generate_shared_general_outputs or not config.get("comparison_preset_name")):
         _stage("progression analysis", "soma and bouton mean dF/F")
         run_soma_bouton_progression(transition_contexts, progression_general_root / "progression", config.get("progression_analysis"))
@@ -1882,7 +2080,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             grouped_rows.setdefault(key, []).append(row)
         for (scope, window_mode), grouped in sorted(grouped_rows.items()):
             _stage("writing csv", f"state_transition_{table_name}_{scope}_{window_mode}")
-            transition_root = (general_output_root / "state_transitions") if general_output_root is not None else (result_root / "general" / "state_transitions")
+            transition_root = (general_figure_root / "state_transitions") if general_figure_root is not None else (figure_root / "state_transitions")
             path = transition_root / f"state_transition_{table_name}_{scope}_{window_mode}.csv"
             write_csv_rows(path, grouped, sorted({key for row in grouped for key in row.keys()}))
 
@@ -2960,6 +3158,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "coincidence_family_cache_reused": False,
             "source_cache_path": str(source_cache_file),
             "shared_shuffle_cache_path": str(shared_shuffle_cache_file),
+            "shuffle_dataset_path": str(shuffle_dataset_file),
+            "source_cache_available": bool(source_cache_file.exists()),
             "shared_shuffle_cache_reused": not bool(shared_shuffle_cache_rebuilt),
             "shared_shuffle_cache_status": str(shared_shuffle_cache_status),
             "shared_shuffle_cache_entries": len(shared_shuffle_cache.get("entries", {})),
@@ -3147,6 +3347,9 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     timing_report_path.write_text(json.dumps(timing_payload, indent=2, sort_keys=True))
     manifest["timing_report_path"] = str(timing_report_path)
     write_manifest(result_root, manifest)
+    checkpoint_dir = result_root / "checkpoints"
+    if checkpoint_dir.exists():
+        (checkpoint_dir / "partial_manifest.json").write_text(json.dumps({"status": "complete", "output_root": str(result_root), "manifest_path": str(result_root / "summary" / "manifest.json")}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     step_message(
         f"SUMMARY pipeline=soma_bouton_pipeline preset={preset_name} "
         f"stages={len(stages)} timing_report={timing_report_path}"
@@ -3160,6 +3363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
     parser.add_argument("--plots-only", action="store_true", help="Skip metric recomputation and regenerate plots from written CSVs only.")
+    parser.add_argument("--figures-only", action="store_true", help="Regenerate only figures from the new-layout analysis caches.")
     parser.add_argument("--plot-profile", choices=("full", "analysis_only", "poster_only"), help="Select full, analysis-only, or poster-only output generation.")
     parser.add_argument("--analysis-output-dir", type=Path, help="Stable analysis/statistics/cache directory override.")
     parser.add_argument("--figure-output-dir", type=Path, help="Disposable figure directory override.")
@@ -3177,8 +3381,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = load_config(args.config)
     if args.rebuild:
         config["rebuild"] = True
-    if args.plots_only:
+    if args.plots_only or args.figures_only:
         config["plots_only"] = True
+    if args.figures_only:
+        config["figures_only"] = True
     if args.plot_profile:
         config["plot_profile"] = args.plot_profile
     apply_plot_profile(config)
