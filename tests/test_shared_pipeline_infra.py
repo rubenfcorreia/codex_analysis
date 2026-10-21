@@ -790,3 +790,18 @@ def test_stage_group_summary_identifies_expensive_analysis_families() -> None:
     assert groups["matrix_similarity"]["elapsed_s"] == 3.0
     assert groups["mixed_models"]["elapsed_s"] == 2.0
     assert groups["plot_preparation"]["elapsed_s"] == 1.0
+
+
+def test_soma_shuffle_dataset_is_only_required_for_full_trace():
+    assert not soma_pipeline._requires_full_trace_shuffle_dataset(
+        {"pairwise_correlation_null_model": "mask_aware"},
+        [("states", {})],
+    )
+    assert soma_pipeline._requires_full_trace_shuffle_dataset(
+        {"pairwise_correlation_null_model": "mask_aware"},
+        [("states", {"pairwise_correlation_null_model": "full_trace"})],
+    )
+    assert soma_pipeline._requires_full_trace_shuffle_dataset(
+        {"pairwise_correlation_null_model": "full_trace"},
+        [("states", {})],
+    )

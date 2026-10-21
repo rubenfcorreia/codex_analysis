@@ -371,8 +371,8 @@ def plot_transition_summaries(
         ax.grid(axis="y", alpha=0.2)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + ".svg"
-        path = Path(output_root) / "state_transitions" / scope / mode / filename
+        filename = "state_transition_" + "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + ".svg"
+        path = Path(output_root) / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")
         plt.close(fig)
@@ -492,7 +492,7 @@ def plot_transition_summaries(
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + "_expday_trace.svg"
-        path = Path(output_root) / "state_transitions" / scope / mode / filename
+        path = Path(output_root) / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")
         plt.close(fig)

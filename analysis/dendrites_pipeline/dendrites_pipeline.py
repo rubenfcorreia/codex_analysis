@@ -68,6 +68,7 @@ from analysis.shared.plots.dendrite_plot_support import summarize_state_values, 
 from analysis.shared.plots.dendrite_plot_support import _collect_state_summary_values
 from analysis.shared.plots.dff_heatmaps import records_from_dendrite_cache, render_dff_heatmaps
 from analysis.shared.plots.dendrite_plot_support import plot_state_summary_compartment_comparison_figure as _shared_plot_state_summary_compartment_comparison_figure
+from analysis.shared.plots.dendrite_plot_support import plot_spine_coactivity_state_colored_distribution_figure as _shared_plot_spine_coactivity_state_colored_distribution_figure
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.shared.analysis_families.splits import require_split_groups, scope_split_rows
 from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
@@ -2737,15 +2738,28 @@ def filter_rows_by_spine_coactivity(
     compartment_filter: Any = None,
     **_compat_kwargs,
 ) -> List[Dict[str, Any]]:
-    """Filter spine-coactivity rows to the requested output compartment."""
+    """Filter spine-coactivity rows to the requested compartment and dendrite."""
     selected_compartment = compartment_filter if compartment_filter is not None else compartment
     compartment_key = str(selected_compartment or "").strip().lower()
-    if not compartment_key or compartment_key == "all":
-        return list(rows or [])
+    dendrite_key = str(_compat_kwargs.get("global_dendrite_id_filter") or "").strip()
 
     filtered: List[Dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
+            continue
+
+        if dendrite_key:
+            row_dendrite_key = str(
+                row.get("global_dendrite_id")
+                or row.get("dendrite_global_id")
+                or row.get("parent_global_dendrite_id")
+                or ""
+            ).strip()
+            if row_dendrite_key != dendrite_key:
+                continue
+
+        if not compartment_key or compartment_key == "all":
+            filtered.append(row)
             continue
 
         candidates = [
@@ -3051,6 +3065,64 @@ def _make_count_heatmap(count_rows: List[Dict[str, Any]]) -> Tuple[np.ndarray, L
     col_labels = [row["compartment"] for row in count_rows]
     matrix = np.asarray([[float(row[label]) for row in count_rows] for label in row_labels], dtype=float)
     return matrix, row_labels, col_labels
+
+def plot_roi_metrics_figure(
+    results: Dict[str, Any],
+    fig_dir: Path,
+    output_name: str = "roi_metrics.svg",
+) -> Optional[str]:
+    """Plot validated all/responsive/nonresponsive ROI counts by type and compartment."""
+    if plt is None:
+        return None
+    summaries = [
+        ("Dendrites", results.get("dendrite_visual_response", {})),
+        ("Spines", results.get("spine_visual_response", {})),
+    ]
+    panels = []
+    for label, summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        rows = summary.get("rows", [])
+        counts = summary.get("counts", {})
+        if not rows and not counts:
+            continue
+        panel_counts = {}
+        for compartment in ("basal", "apical"):
+            entry = counts.get(compartment, {}) if isinstance(counts, dict) else {}
+            if entry:
+                panel_counts[compartment] = {
+                    "all": int(entry.get("tested", 0) or 0),
+                    "responsive": int(entry.get("responsive", 0) or 0),
+                    "nonresponsive": int(entry.get("nonresponsive", 0) or 0),
+                }
+        if panel_counts:
+            panels.append((label, panel_counts))
+    if not panels:
+        return None
+    fig, axes = plt.subplots(1, len(panels), figsize=(max(6.8, 4.2 * len(panels)), 4.8), squeeze=False)
+    cohorts = ("all", "responsive", "nonresponsive")
+    colors = {"all": "#777777", "responsive": "#2ca02c", "nonresponsive": "#d62728"}
+    for axis, (label, panel_counts) in zip(axes.ravel(), panels):
+        compartments = list(panel_counts)
+        x = np.arange(len(compartments))
+        width = 0.24
+        for offset, cohort in enumerate(cohorts):
+            values = [panel_counts[compartment][cohort] for compartment in compartments]
+            axis.bar(x + (offset - 1) * width, values, width=width, color=colors[cohort], label=cohort)
+        axis.set_xticks(x, [str(compartment).capitalize() for compartment in compartments])
+        axis.set_ylabel("Number of ROIs")
+        axis.set_title(label)
+        axis.grid(axis="y", alpha=0.25)
+        axis.spines["top"].set_visible(False)
+        axis.spines["right"].set_visible(False)
+    axes.ravel()[0].legend(frameon=False, fontsize=POSTER_LEGEND_SIZE)
+    fig.suptitle("ROI metrics by visual-response cohort", fontsize=POSTER_TITLE_SIZE)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    output_path = Path(fig_dir) / output_name
+    save_figure(fig, output_path, extra_formats=())
+    plt.close(fig)
+    return str(output_path)
+
 def plot_loading_qc_checkpoint(
     cache: Dict[str, Any],
     results: Dict[str, Any],
@@ -3251,12 +3323,19 @@ def plot_matrix_similarity_distribution(
     output_name: str = "matrix_similarity_distribution.svg",
     title: str = "Spine-spine coefficient distributions",
     compartment_filter: Optional[str] = None,
+    significant_only: bool = False,
 ) -> Optional[str]:
     if plt is None:
         return None
     rows = results.get("matrix_similarity", [])
     if compartment_filter is not None:
         rows = filter_rows_by_matrix_similarity(rows, compartment_filter=compartment_filter)
+    if significant_only:
+        rows = [
+            row for row in rows
+            if (resolve_inferential_p_value(row)[0] is not None
+                and resolve_inferential_p_value(row)[0] < REPORT_SIGNIFICANCE_ALPHA)
+        ]
     if not rows:
         return None
 
@@ -3433,49 +3512,37 @@ def mixed_model_branch_render_specs(
 results: Dict[str, Any], review: bool = False) -> List[Dict[str, Any]]:
     branch_configs = [
         {
-            "key": "mixed_model",
-            "scope": "all_state",
-            "name": "mixed_model_all_state",
-            "forest_output_name": "mixed_model_all_state_forest.svg",
-            "predicted_output_name": "mixed_model_all_state_predicted_means.svg",
-            "contrast_output_name": "mixed_model_contrasts_all_state.svg",
-            "forest_title": "Mixed-model fixed effects - all state",
-            "predicted_title": "Mixed-model predicted means - all state",
-            "contrast_title": "Mixed-model contrasts - all state",
-        },
-        {
-            
             "key": "mixed_model_selected_state",
-            "scope": "selected_state",
-            "name": "mixed_model_selected_state",
-            "forest_output_name": "mixed_model_selected_state_forest.svg",
-            "predicted_output_name": "mixed_model_selected_state_predicted_means.svg",
-            "contrast_output_name": "mixed_model_contrasts_selected_state.svg",
-            "forest_title": "Mixed-model fixed effects - selected state",
-            "predicted_title": "Mixed-model predicted means - selected state",
-            "contrast_title": "Mixed-model contrasts - selected state",
+            "scope": "all",
+            "name": "mixed_model_all",
+            "forest_output_name": "mixed_model_all_forest.svg",
+            "predicted_output_name": "mixed_model_all_predicted_means.svg",
+            "contrast_output_name": "mixed_model_all_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - all selected states",
+            "predicted_title": "Mixed-model predicted means - all selected states",
+            "contrast_title": "Mixed-model contrasts - all selected states",
         },
         {
             "key": "mixed_model_visual_response_responsive_selected_state",
-            "scope": "visual_response_responsive_selected_state",
-            "name": "mixed_model_visual_response_responsive_selected_state",
-            "forest_output_name": "mixed_model_visual_response_responsive_selected_state_forest.svg",
-            "predicted_output_name": "mixed_model_visual_response_responsive_selected_state_predicted_means.svg",
-            "contrast_output_name": "mixed_model_visual_response_responsive_selected_state_contrasts.svg",
-            "forest_title": "Mixed-model fixed effects - visual response responsive selected state",
-            "predicted_title": "Mixed-model predicted means - visual response responsive selected state",
-            "contrast_title": "Mixed-model contrasts - visual response responsive selected state",
+            "scope": "visual_response_responsive",
+            "name": "mixed_model_visual_response_responsive",
+            "forest_output_name": "mixed_model_visual_response_responsive_forest.svg",
+            "predicted_output_name": "mixed_model_visual_response_responsive_predicted_means.svg",
+            "contrast_output_name": "mixed_model_visual_response_responsive_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - visual-response responsive",
+            "predicted_title": "Mixed-model predicted means - visual-response responsive",
+            "contrast_title": "Mixed-model contrasts - visual-response responsive",
         },
         {
             "key": "mixed_model_visual_response_nonresponsive_selected_state",
-            "scope": "visual_response_nonresponsive_selected_state",
-            "name": "mixed_model_visual_response_nonresponsive_selected_state",
-            "forest_output_name": "mixed_model_visual_response_nonresponsive_selected_state_forest.svg",
-            "predicted_output_name": "mixed_model_visual_response_nonresponsive_selected_state_predicted_means.svg",
-            "contrast_output_name": "mixed_model_visual_response_nonresponsive_selected_state_contrasts.svg",
-            "forest_title": "Mixed-model fixed effects - visual response nonresponsive selected state",
-            "predicted_title": "Mixed-model predicted means - visual response nonresponsive selected state",
-            "contrast_title": "Mixed-model contrasts - visual response nonresponsive selected state",
+            "scope": "visual_response_nonresponsive",
+            "name": "mixed_model_visual_response_nonresponsive",
+            "forest_output_name": "mixed_model_visual_response_nonresponsive_forest.svg",
+            "predicted_output_name": "mixed_model_visual_response_nonresponsive_predicted_means.svg",
+            "contrast_output_name": "mixed_model_visual_response_nonresponsive_contrasts.svg",
+            "forest_title": "Mixed-model fixed effects - visual-response nonresponsive",
+            "predicted_title": "Mixed-model predicted means - visual-response nonresponsive",
+            "contrast_title": "Mixed-model contrasts - visual-response nonresponsive",
         },
     ]
     review_prefix = "review_" if review else ""
@@ -3517,8 +3584,8 @@ results: Dict[str, Any], review: bool = False) -> List[Dict[str, Any]]:
         )
     return specs
 def mixed_model_scope_is_shared(scope: Any) -> bool:
-    text = str(scope or "").strip().lower()
-    return text == "all_state" or text.endswith("_all_state")
+    """Mixed-model scopes are preset-specific because they use preset-selected states."""
+    return False
 
 
 def _mixed_model_response_payload(results: Dict[str, Any], response: str, model_key: str = "mixed_model") -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -4468,21 +4535,13 @@ def plot_spine_coactivity_pair_state_summary_figure(
     ax.set_ylim(y_min, y_max)
     anchor_text = f" | anchor={format_requested_state_label(anchor_state_filter)}" if anchor_state_filter is not None else ""
     active_text = f" | selected if {spine_coactivity_anchor_selection_text(spine_coactivity_abs_threshold_from_results(results))}" if coactive_only else ""
-    ax.text(
-        0.02,
-        0.98,
-        f"Each dot = one pair | n pairs = {len(summary_rows)} | rows sorted in heatmap by coactivity_r_range{anchor_text}{active_text}",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=POSTER_NOTE_SIZE,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85),
-    )
+    annotation = f"Each dot = one pair | n pairs = {len(summary_rows)} | rows sorted in heatmap by coactivity_r_range{anchor_text}{active_text}"
+    fig.text(0.5, 0.985, annotation, ha="center", va="top", fontsize=POSTER_NOTE_SIZE, wrap=True, bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="#dddddd", alpha=0.85))
     cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Mean coactivity coefficient", fontsize=POSTER_LABEL_SIZE)
     cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
     set_sparse_colorbar_ticks(cbar, nbins=5)
-    fig.tight_layout(pad=0.95)
+    fig.tight_layout(rect=(0.0, 0.0, 0.86, 0.88), pad=0.95)
     output_path = fig_dir / output_name
     save_figure(fig, output_path, extra_formats=())
     return str(output_path)
@@ -5099,8 +5158,10 @@ def plot_mixed_model_predicted_means_figure(
         fixed_effect_names = [str(term) for term in design.get("fixed_effect_names", [])]
         term_lookup = {str(row.get("term")): dict(row) for row in rows}
         beta = np.asarray([as_float(term_lookup.get(term, {}).get("estimate")) for term in fixed_effect_names], dtype=float)
-        if beta.size == 0 or not np.all(np.isfinite(beta)):
+        if beta.size == 0 or not np.isfinite(beta).any():
             continue
+        finite_beta = np.isfinite(beta)
+        beta = np.where(finite_beta, beta, 0.0)
         selected_state_set = {canonical_state_label(state) for state in selected_mixed_model_state_labels(results)}
         state_levels = [canonical_state_label(state) for state in design.get("state_levels", []) if canonical_state_label(state) in selected_state_set]
         if not state_levels:
@@ -5118,7 +5179,11 @@ def plot_mixed_model_predicted_means_figure(
             observed: List[float] = []
             observed_sem: List[float] = []
             for state in state_levels:
-                predicted_value = float(np.dot(mixed_model_design_row(design, state, compartment, split_group=split_group), beta))
+                design_vector = np.asarray(
+                    mixed_model_design_row(design, state, compartment, split_group=split_group),
+                    dtype=float,
+                )
+                predicted_value = float(np.dot(design_vector, beta))
                 predicted.append(predicted_value)
                 all_values.append(predicted_value)
                 lookup_key = (str(split_group) if include_split_group else str(compartment) if compartment is not None else None, state)
@@ -5421,7 +5486,7 @@ def plot_state_summary_figure(
     y_limits=None,
     comparison_rows=None,
     cohort_label="all",
-    state_group=DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME,
+    state_group: Optional[str] = None,
     **_compat_kwargs,
 ):
     """Compatibility wrapper delegating state-summary rendering to shared code."""
@@ -6861,7 +6926,7 @@ def plot_correlation_summary(
         p_values.append(p_arr if p_arr.size else np.asarray([np.nan], dtype=float))
     if not labels:
         return None
-    fig, axes = plt.subplots(1, 2, figsize=(8.4, 4.5), squeeze=False, gridspec_kw={"wspace": 0.28})
+    fig, axes = plt.subplots(1, 2, figsize=(11.6, 5.4), squeeze=False, gridspec_kw={"wspace": 0.30})
     x = np.arange(1, len(labels) + 1)
     palette = plt.get_cmap("Set1")
     ax = axes[0, 0]
@@ -6877,7 +6942,7 @@ def plot_correlation_summary(
     ax.set_title("Correlation coefficients", fontsize=POSTER_TITLE_SIZE)
     ax.set_ylabel("Pearson r", fontsize=POSTER_LABEL_SIZE)
     ax.set_xticks(x)
-    ax.set_xticklabels([label.replace(" vs ", "\nvs ") for label in labels], rotation=0)
+    ax.set_xticklabels([label.replace(" vs ", "\nvs ").replace(" activity", "\nactivity") for label in labels], rotation=28, ha="right", fontsize=max(POSTER_FONT_SIZE - 1, 9))
     ax.set_ylim(-1.05, 1.05)
     ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
     ax.grid(axis="y", alpha=0.25)
@@ -6897,13 +6962,15 @@ def plot_correlation_summary(
     ax.set_title("Shuffle p-values", fontsize=POSTER_TITLE_SIZE)
     ax.set_ylabel("p", fontsize=POSTER_LABEL_SIZE)
     ax.set_xticks(x)
-    ax.set_xticklabels([label.replace(" vs ", "\nvs ") for label in labels], rotation=0)
+    ax.set_xticklabels([label.replace(" vs ", "\nvs ").replace(" activity", "\nactivity") for label in labels], rotation=28, ha="right", fontsize=max(POSTER_FONT_SIZE - 1, 9))
     ax.set_ylim(-0.02, 1.05)
     ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
     ax.grid(axis="y", alpha=0.25)
     set_sparse_numeric_ticks(ax, axis="y", nbins=5)
     output_path = fig_dir / output_name
+    fig.subplots_adjust(left=0.09, right=0.98, bottom=0.30, top=0.90)
     save_figure(fig, output_path, extra_formats=())
+    plt.close(fig)
     return str(output_path)
 
 def plot_matrix_similarity_heatmap(
@@ -6967,9 +7034,8 @@ def plot_matrix_similarity_heatmap(
         cmap = plt.get_cmap("coolwarm")
         norm = Normalize(vmin=-1.0, vmax=1.0)
         _configure_square_heatmap_axes(ax, state_labels, "State B", "State A")
-        ax.set_xticklabels([])
-        ax.tick_params(axis="x", labelbottom=False, bottom=False)
-        ax.set_xlabel("State B", fontsize=max(POSTER_LABEL_SIZE - 6, 12))
+        ax.set_xlabel("State B", fontsize=max(POSTER_LABEL_SIZE - 2, 14))
+        ax.tick_params(axis="x", labelrotation=35, labelsize=max(POSTER_FONT_SIZE - 1, 9), pad=4)
         ax.set_title(plot_title, fontsize=POSTER_TITLE_SIZE, pad=12)
         ax.set_xticks(np.arange(-0.5, len(state_labels), 1), minor=True)
         ax.set_yticks(np.arange(-0.5, len(state_labels), 1), minor=True)
@@ -7333,7 +7399,15 @@ def generate_analysis_figures(
     from analysis.shared.plots.roi_split import plot_roi_split_bundle_figure
 
     roi_split_results = results.get("roi_split", {})
-    roi_split_bundles = roi_split_results.get("bundles", []) if isinstance(roi_split_results, dict) else []
+    roi_run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    roi_general_enabled = bool(roi_run_params.get("generate_shared_general_figures", False))
+    roi_general_root = Path(roi_run_params.get("general_output_root")) if roi_run_params.get("general_output_root") else None
+    roi_split_target_dir = (roi_general_root / "roi_split") if roi_general_root is not None else (fig_dir / "roi_split")
+    roi_split_bundles = (
+        roi_split_results.get("bundles", [])
+        if roi_general_enabled and isinstance(roi_split_results, dict)
+        else []
+    )
     for plot_idx, bundle in enumerate(roi_split_bundles, start=1):
         if not isinstance(bundle, dict) or not bundle:
             continue
@@ -7346,7 +7420,7 @@ def generate_analysis_figures(
             total=len(roi_split_bundles),
         ):
             try:
-                output_paths = plot_roi_split_bundle_figure(bundle, fig_dir)
+                output_paths = plot_roi_split_bundle_figure(bundle, roi_split_target_dir)
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with roi_split[{roi_type}|{compartment}|{split_name}]: {exc}")
                 continue
@@ -7370,7 +7444,7 @@ def generate_analysis_figures(
             total=len(property_split_bundles),
         ):
             try:
-                output_paths = plot_roi_split_bundle_figure(bundle, fig_dir)
+                output_paths = plot_roi_split_bundle_figure(bundle, roi_split_target_dir)
             except Exception as exc:
                 eprint(f"[ALERT] Failed to create figure with spine_coactivity_property_split[{roi_type}|{compartment}|{split_name}|{basis_name}]: {exc}")
                 continue
@@ -7415,6 +7489,16 @@ def generate_analysis_figures(
                 continue
             if output_path:
                 saved.append(output_path)
+            significant_path = plot_matrix_similarity_distribution(
+                compartment_results,
+                figure_family_dir(fig_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
+                output_name=f"review_matrix_similarity_distribution_significant_{gallery_compartment_suffix(compartment)}.svg",
+                title=f"Review: Significant spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
+                compartment_filter=compartment,
+                significant_only=True,
+            )
+            if significant_path:
+                saved.append(significant_path)
     run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
     comparison_preset_name = str(run_params.get("comparison_preset_name") or "default")
     generate_shared_general_figures = bool(run_params.get("generate_shared_general_figures", True))
@@ -7425,7 +7509,7 @@ def generate_analysis_figures(
         shared_mixed_model_dir = ensure_dir(base_root / DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
     mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
     for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
-        scope = str(spec.get("scope") or "all_state")
+        scope = str(spec.get("scope") or "all")
         is_shared_scope = mixed_model_scope_is_shared(scope)
         if is_shared_scope and shared_mixed_model_dir is None:
             continue
@@ -7812,7 +7896,17 @@ def generate_review_figures(
                 for component_path in sorted(component_dir.glob("*.svg")):
                     saved.append(str(component_path))
     with step_scope("review family: direct trial-type figures"):
-        direct_review_dir = figure_family_dir(review_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+        review_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+        review_general_enabled = bool(
+            review_params.get("generate_shared_general_figures", False)
+            or review_params.get("generate_shared_general_outputs", False)
+        )
+        review_general_root = review_params.get("general_figure_root")
+        direct_review_dir = (
+            figure_family_dir(Path(review_general_root), DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+            if review_general_enabled and review_general_root
+            else None
+        )
         direct_review_specs = [
             {
                 "name": "direct_trial_type_distribution",
@@ -7826,7 +7920,7 @@ def generate_review_figures(
                 "title": "Review: Direct trial-type comparison - state pair scatter",
                 "plotter": plot_direct_trial_type_state_comparison_figure,
             },
-        ]
+        ] if direct_review_dir is not None else []
         for plot_idx, spec in enumerate(direct_review_specs, start=1):
             with step_scope(f"review figure plotter: {spec['name']}", index=plot_idx, total=len(direct_review_specs)):
                 try:
@@ -7858,7 +7952,7 @@ def generate_review_figures(
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
         for plot_idx, spec in enumerate(mixed_model_specs, start=1):
-            scope = str(spec.get("scope") or "all_state")
+            scope = str(spec.get("scope") or "all")
             is_shared_scope = mixed_model_scope_is_shared(scope)
             if is_shared_scope and shared_mixed_model_dir is None:
                 continue
@@ -8071,6 +8165,17 @@ def render_analysis_family_figures(
     if plt is None:
         return []
     fig_dir = ensure_dir(Path(figure_root) if figure_root is not None else (output_dir / "figures"))
+    run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    general_outputs_enabled = bool(
+        run_params.get("generate_shared_general_figures", False)
+        or run_params.get("generate_shared_general_outputs", False)
+        or not run_params
+    )
+    general_output_root = (
+        Path(run_params.get("general_figure_root"))
+        if run_params.get("general_figure_root")
+        else None
+    )
     saved: List[str] = []
     def record(path: Optional[str] | Sequence[str], plot_name: Optional[str] = None) -> None:
         if path:
@@ -8203,7 +8308,20 @@ def render_analysis_family_figures(
     elif family == "basal_apical":
         record(plot_basal_apical_summary(results, fig_dir), plot_name="basal_apical_summary")
     elif family == "direct_trial_type_comparison":
-        direct_dir = figure_family_dir(fig_dir, DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME)
+        direct_rows = results.get("direct_trial_type_comparison", {})
+        if not general_outputs_enabled:
+            step_message("skipped direct trial-type figures: general-only family")
+            return saved
+        if not isinstance(direct_rows, dict) or not any(
+            isinstance(direct_rows.get(key), list) and direct_rows.get(key)
+            for key in ("table_rows", "video_state_rows", "animal_video_state_rows", "state_pair_rows")
+        ):
+            step_message("skipped direct trial-type figures: no valid trial-type rows")
+            return saved
+        direct_dir = figure_family_dir(
+            general_output_root or fig_dir,
+            DEFAULT_DIRECT_TRIAL_TYPE_FIGURES_DIRNAME,
+        )
         direct_plotters = [
             {
                 "name": "direct_trial_type_distribution",
@@ -8316,12 +8434,16 @@ def render_analysis_family_figures(
     elif family == "mixed_model":
         mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
+        legacy_scope_names = not run_params and bool(results.get("mixed_model"))
         for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
+            scope = str(spec.get("scope") or "all")
+            if legacy_scope_names:
+                scope = "all_state" if plot_idx == 1 else "selected_state"
             with step_scope(f"figure plotter: {spec['name']}", index=plot_idx, total=len(mixed_model_plotters)):
                 try:
                     kwargs = {
                         "results": results,
-                        "fig_dir": figure_nested_dir(mixed_model_dir, str(spec.get("scope") or "all_state")),
+                        "fig_dir": figure_nested_dir(mixed_model_dir, scope),
                         "output_name": spec["output_name"],
                         "title": spec["title"],
                         "model_key": str(spec.get("model_key", "mixed_model")),
@@ -8334,6 +8456,18 @@ def render_analysis_family_figures(
         record(plot_demo_validation_figure(results, mixed_model_dir), plot_name="mixed_model_demo_validation")
     elif family == "spine_coactivity":
         coactivity_dir = figure_family_dir(fig_dir, DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME)
+        try:
+            record(
+                _shared_plot_spine_coactivity_state_colored_distribution_figure(
+                    results,
+                    spine_coactivity_figure_dir(coactivity_dir, "distribution"),
+                    output_name="spine_coactivity_state_colored_distribution.svg",
+                    title="Spine coactivity distributions by state - basal and apical dendrites",
+                ),
+                plot_name="spine_coactivity_state_colored_distribution",
+            )
+        except Exception as exc:
+            eprint(f"[ALERT] Failed to create state-colored coactivity distribution: {exc}")
         coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
         coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
         for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
@@ -8475,7 +8609,13 @@ def generate_checkpoint_gallery(
         scope: Optional[str] = None,
     ) -> None:
         if not path:
-            step_message(f"skipped checkpoint gallery {checkpoint}[{variant}]: plotter returned no output")
+            if checkpoint == "loading_qc":
+                reason = "no qualifying trace or invalid input"
+            elif checkpoint == "regression_qc":
+                reason = "no qualifying spine or missing regression output"
+            else:
+                reason = "no qualifying records after intended filtering"
+            step_message(f"skipped checkpoint gallery {checkpoint}[{variant}]: {reason}")
             return
         path_obj = Path(path)
         try:
@@ -15854,6 +15994,122 @@ def write_analysis_report(
     else:
         lines.append("- none")
     write_text_report(report_path, lines)
+
+def validate_plot_input_cache(
+    results: Dict[str, Any],
+    cache: Dict[str, Any],
+    source_cache: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Classify plot inputs before rendering so empty data are not mistaken for plot failures."""
+    def count_rows(value: Any) -> int:
+        return len(value) if isinstance(value, (list, tuple)) else 0
+
+    diagnostics: Dict[str, Any] = {}
+    source = source_cache if isinstance(source_cache, dict) else cache
+    run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    source_summary = results.get("source_cache_summary", {}) if isinstance(results.get("source_cache_summary"), dict) else {}
+    analysis_summary = results.get("analysis_cache_summary", results.get("cache_summary", {}))
+    analysis_summary = analysis_summary if isinstance(analysis_summary, dict) else {}
+    source_signature = str(source_summary.get("source_signature") or source.get("source_signature") or "")
+    expected_source_signature = str(results.get("source_cache_signature") or analysis_summary.get("source_signature") or "")
+    dependency_status = "validated"
+    dependency_reason = "source and derived cache metadata are available"
+    if source_signature and expected_source_signature and source_signature != expected_source_signature:
+        dependency_status = "stale_or_invalid_cache"
+        dependency_reason = "source-cache signature differs from derived-cache dependency"
+    diagnostics["cache_dependencies"] = {
+        "status": dependency_status,
+        "reason": dependency_reason,
+        "source_signature": source_signature or None,
+        "derived_source_signature": expected_source_signature or None,
+        "analysis_config_hash": analysis_summary.get("analysis_config_hash") or source.get("config_hash"),
+        "preset": run_params.get("comparison_preset_name"),
+        "selected_states": list((results.get("analysis_state_selection") or {}).get("state_comparison_states", [])) if isinstance(results.get("analysis_state_selection"), dict) else [],
+        "visual_response_metric": run_params.get("visual_response_metric"),
+        "visual_response_method": run_params.get("visual_response_method"),
+        "shuffle_n": run_params.get("shuffle_n"),
+    }
+    if dependency_status == "stale_or_invalid_cache":
+        step_message(f"plot input audit: cache_dependencies | {dependency_status} | {dependency_reason}")
+    experiments = source.get("experiments", {}) if isinstance(source, dict) else {}
+    diagnostics["source"] = {
+        "status": "valid_input" if isinstance(experiments, dict) and experiments else "invalid_or_empty",
+        "n_experiments": len(experiments) if isinstance(experiments, dict) else 0,
+        "n_animals": len(source.get("animals", {})) if isinstance(source.get("animals", {}), dict) else 0,
+    }
+    direct = results.get("direct_trial_type_comparison", {})
+    direct_rows = sum(
+        count_rows(direct.get(key, []))
+        for key in ("table_rows", "video_state_rows", "animal_video_state_rows", "state_pair_rows")
+    ) if isinstance(direct, dict) else 0
+    diagnostics["direct_trial_type"] = {
+        "status": "valid_input" if direct_rows else "empty_input_after_filtering",
+        "row_count": direct_rows,
+    }
+    correlations = count_rows(results.get("correlations", []))
+    matrix = count_rows(results.get("matrix_similarity", []))
+    coactivity = results.get("spine_coactivity", {})
+    coactivity_rows = count_rows(coactivity.get("table_rows", [])) if isinstance(coactivity, dict) else 0
+    diagnostics["correlations"] = {"status": "valid_input" if correlations else "empty_input_after_filtering", "row_count": correlations}
+    diagnostics["matrix_similarity"] = {"status": "valid_input" if matrix else "empty_input_after_filtering", "row_count": matrix}
+    diagnostics["spine_coactivity"] = {"status": "valid_input" if coactivity_rows else "empty_input_after_filtering", "row_count": coactivity_rows}
+    for key, value in results.items():
+        if not str(key).startswith("mixed_model"):
+            continue
+        if not isinstance(value, dict):
+            continue
+        row_count = count_rows(value.get("contrast_rows", []))
+        summary_rows = value.get("summary_rows", {})
+        if isinstance(summary_rows, dict):
+            row_count += sum(count_rows(rows) for rows in summary_rows.values())
+        diagnostics[str(key)] = {
+            "status": "valid_input" if row_count else "empty_input_after_filtering",
+            "row_count": row_count,
+        }
+    results["plot_input_diagnostics"] = diagnostics
+    for family, info in diagnostics.items():
+        if family == "source":
+            continue
+        step_message(f"plot input audit: {family} | {info['status']} | rows={info.get('row_count', info.get('n_experiments', 0))}")
+    return diagnostics
+
+
+def validate_generated_figure_paths(results: Mapping[str, Any]) -> Dict[str, Any]:
+    """Reject generated images outside the canonical figures tree."""
+    image_suffixes = {".svg", ".png", ".pdf", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+    candidates: List[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        key_lower = key.lower()
+        if isinstance(value, Mapping):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, key)
+        elif isinstance(value, str) and ("figure" in key_lower or "gallery" in key_lower or "poster" in key_lower):
+            path = Path(value)
+            if path.suffix.lower() in image_suffixes and path.is_absolute():
+                candidates.append(str(path))
+
+    visit(results)
+    invalid = []
+    for raw_path in sorted(set(candidates)):
+        parts = set(Path(raw_path).parts)
+        if "analysis" in parts or "figures" not in parts:
+            invalid.append(raw_path)
+    status = "valid" if not invalid else "invalid_output_path"
+    report = {"status": status, "checked": len(set(candidates)), "invalid_paths": invalid}
+    results["figure_path_validation"] = report
+    params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    strict = bool(params.get("general_figure_root") or params.get("general_output_root") or params.get("comparison_preset_name"))
+    if invalid and strict:
+        raise RuntimeError(
+            "generated figure paths must be under the canonical figures root; "
+            f"invalid paths: {invalid[:5]}"
+        )
+    return report
+
 def write_analysis_outputs(
     output_dir: Path,
     results: Dict[str, Any],
@@ -15868,6 +16124,7 @@ def write_analysis_outputs(
 ) -> List[str]:
     ensure_dir(output_dir)
     written_artifacts: List[str] = []
+    validate_plot_input_cache(results, cache, source_cache=source_cache)
     _restore_roi_split_from_analysis_tables(results, cache)
     run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
     configured_general_root = run_params.get("general_output_root")
@@ -15923,6 +16180,13 @@ def write_analysis_outputs(
             results["visual_response_figure_files"] = visual_response_figure_files
             for path in visual_response_figure_files:
                 written_artifacts.append(report_relative_path(path, output_dir))
+            roi_metrics_path = plot_roi_metrics_figure(
+                results,
+                Path(configured_general_root) / "roi_metrics",
+            )
+            if roi_metrics_path:
+                results["roi_metrics_figure"] = roi_metrics_path
+                written_artifacts.append(report_relative_path(roi_metrics_path, output_dir))
             step_message("visual response figure generation complete: %d file(s)" % len(visual_response_figure_files))
             step_message("event detection example gallery starting")
             with step_scope("event detection example gallery"):
@@ -16050,6 +16314,7 @@ def write_analysis_outputs(
         results["visual_response_figure_files"] = []
         results["checkpoint_gallery"] = {}
         results["event_example_gallery"] = []
+    validate_generated_figure_paths(results)
     figure_artifacts = [
         path for path in written_artifacts
         if Path(str(path)).suffix.lower() in {".svg", ".png", ".pdf", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
@@ -16293,7 +16558,9 @@ def write_poster_ready_figures(
         write_visual_response_poster_figure,
     )
 
-    poster_output_dir = ensure_dir(Path(results.get("figure_output_root") or output_dir) / "poster_ready")
+    poster_run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
+    poster_root = Path(poster_run_params.get("general_output_root")) if poster_run_params.get("general_output_root") else Path(results.get("figure_output_root") or output_dir)
+    poster_output_dir = ensure_dir(poster_root / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
 
     preset_csv_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
@@ -18396,7 +18663,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
-                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions" / "figures") if not config.get("general_output_root") else None),
+                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions") if not config.get("general_output_root") else None),
             )
         elif bool(config.get("mixed_model_only")):
             results = run_cached_analysis(
@@ -18416,7 +18683,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
-                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions" / "figures") if not config.get("general_output_root") else None),
+                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions") if not config.get("general_output_root") else None),
             )
         else:
             results = run_cached_analysis(
@@ -18436,7 +18703,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
-                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions" / "figures") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions" / "figures") if not config.get("general_output_root") else None),
+                transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions") if not config.get("general_output_root") else None),
             )
     if shared_shuffle_cache_file is not None and isinstance(shared_shuffle_cache, dict) and not plots_only:
         with step_scope("shared null cache checkpoint", task="cache", metadata={"scope": "analysis families"}):

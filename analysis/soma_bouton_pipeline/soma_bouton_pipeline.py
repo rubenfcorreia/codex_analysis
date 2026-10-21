@@ -387,6 +387,16 @@ def _build_soma_source_cache(
     return payload
 
 
+def _requires_full_trace_shuffle_dataset(config: Mapping[str, Any], presets: Sequence[tuple[str, Mapping[str, Any]]]) -> bool:
+    default_model = str(config.get('pairwise_correlation_null_model', config.get('null_model', 'mask_aware'))).strip().lower()
+    if default_model == "full_trace":
+        return True
+    for _preset_name, overrides in presets:
+        model = str(overrides.get("pairwise_correlation_null_model", default_model)).strip().lower()
+        if model == "full_trace":
+            return True
+    return False
+
 def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     preset_names = _preset_selection_names(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
@@ -430,13 +440,18 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
             shared_source_cache_path,
             all_expids_by_mode,
         )
-    try:
-        shuffle_dataset_info = _build_soma_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets))
-    except FileNotFoundError as exc:
-        if config.get("user_id") or config.get("repo_root") or config.get("repo_base"):
-            raise
-        print(f"SHUFFLE DATASET: validation failure | reason=source_unavailable | action=reject | detail={exc}", file=sys.stderr)
-        shuffle_dataset_info = {"path": str(base_result_root / "analysis" / "cache" / "soma_bouton_roi_shuffle_dataset.h5"), "sha256": "", "replicates": int(config.get("correlation_shuffle_n", 100))}
+    requires_shuffle_dataset = _requires_full_trace_shuffle_dataset(config, plan.presets)
+    if requires_shuffle_dataset:
+        try:
+            shuffle_dataset_info = _build_soma_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets))
+        except FileNotFoundError as exc:
+            if config.get("user_id") or config.get("repo_root") or config.get("repo_base"):
+                raise
+            print(f"SHUFFLE DATASET: validation failure | reason=source_unavailable | action=reject | detail={exc}", file=sys.stderr)
+            shuffle_dataset_info = {"path": str(base_result_root / "analysis" / "cache" / "soma_bouton_roi_shuffle_dataset.h5"), "sha256": "", "replicates": int(config.get("correlation_shuffle_n", 100))}
+    else:
+        print("SHUFFLE DATASET: creation skipped | reason=no_full_trace_consumer | null_model=mask_aware", file=sys.stderr)
+        shuffle_dataset_info = {"path": "", "sha256": "", "replicates": 0, "source_signature": ""}
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
@@ -1221,7 +1236,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     visual_response_cohort = str(config.get("visual_response_cohort") or DEFAULT_VISUAL_RESPONSE_COHORT)
     _stage(
         "config knobs",
-        f"event_detection_method={event_detection_method}, visual_response_metric={visual_response_metric}, visual_response_cohort={visual_response_cohort}",
+        f"event_detection_method={event_detection_method}, visual_response_metric={visual_response_metric}, visual_response_cohort={visual_response_cohort}, pairwise_null_model={str(config.get('pairwise_correlation_null_model', config.get('null_model', 'mask_aware'))).strip().lower()}",
     )
 
     shuffle_n = int(config.get("shuffle_n", 100))
@@ -1244,9 +1259,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         if missing:
             raise SystemExit("figures_only requires new-layout analysis artifacts; missing: " + ", ".join(missing))
     shared_shuffle_cache_file = _shared_shuffle_cache_path(source_cache_file, str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))))
-    configured_shuffle_dataset = config.get("shuffle_dataset_path")
-    shuffle_dataset_file = resolve_repo_path(configured_shuffle_dataset, repo_root) if configured_shuffle_dataset else _shuffle_dataset_path(source_cache_file)
-    expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "")
+    pairwise_null_model = str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))).strip().lower()
+    requires_shuffle_dataset = pairwise_null_model == "full_trace"
+    configured_shuffle_dataset = config.get("shuffle_dataset_path") if requires_shuffle_dataset else None
+    shuffle_dataset_file = (resolve_repo_path(configured_shuffle_dataset, repo_root) if configured_shuffle_dataset else _shuffle_dataset_path(source_cache_file)) if requires_shuffle_dataset else None
+    expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "") if requires_shuffle_dataset else ""
     shared_shuffle_metadata = {
         "methodology_version": METHODOLOGY_VERSION,
         "source_cache_path": str(source_cache_file),
@@ -1268,7 +1285,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "pairwise_correlation_batch_size": pairwise_correlation_batch_size,
         "pairwise_correlation_shift_block_size": pairwise_correlation_shift_block_size,
         "shuffle_dataset_schema_version": 1,
-        "shuffle_dataset_path": str(shuffle_dataset_file),
+        "shuffle_dataset_path": str(shuffle_dataset_file) if shuffle_dataset_file is not None else "",
     }
     cache_timings: Dict[str, float] = {}
     cache_started = time.perf_counter()
@@ -1278,13 +1295,17 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
     )
     cache_timings["shared_shuffle"] = time.perf_counter() - cache_started
-    if not shuffle_dataset_file.exists() and not configured_shuffle_dataset:
-        single_run_info = _build_soma_shuffle_dataset(config, repo_root, result_root, expids_by_mode, 1)
-        shuffle_dataset_file = Path(str(single_run_info["path"]))
-    if not shuffle_dataset_file.exists():
-        raise FileNotFoundError(
-            f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={shuffle_dataset_file}"
-        )
+    if requires_shuffle_dataset:
+        if not shuffle_dataset_file.exists() and not configured_shuffle_dataset:
+            print("SHUFFLE DATASET: fallback build | reason=missing | scope=direct_run", file=sys.stderr)
+            single_run_info = _build_soma_shuffle_dataset(config, repo_root, result_root, expids_by_mode, 1)
+            shuffle_dataset_file = Path(str(single_run_info["path"]))
+        if not shuffle_dataset_file.exists():
+            raise FileNotFoundError(
+                f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={shuffle_dataset_file}"
+            )
+    else:
+        print("SHUFFLE DATASET: consumer disabled | null_model=mask_aware", file=sys.stderr)
     if expected_shuffle_sha256:
         import hashlib
         digest = hashlib.sha256()
@@ -1300,8 +1321,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             f"SHUFFLE DATASET: preset reuse | preset={preset_name} | path={shuffle_dataset_file} | sha256={actual_shuffle_sha256} | status=reused",
             file=sys.stderr,
         )
-    shared_shuffle_cache["null_model"] = str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware")))
-    shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
+    shared_shuffle_cache["null_model"] = pairwise_null_model
+    if requires_shuffle_dataset:
+        shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
+    else:
+        shared_shuffle_cache.pop("shuffle_dataset_path", None)
     # The HDF5 artifact owns its provenance. Per-preset state/cohort metadata
     # must not invalidate the pipeline-wide dataset.
     shared_shuffle_cache["shuffle_dataset_metadata"] = {}
@@ -1665,7 +1689,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     "soma_pairwise_rows": len(soma_pairwise_rows),
                     "bouton_pairwise_rows": len(bouton_pairwise_rows),
                 },
-                "shuffle_dataset_path": str(shuffle_dataset_file),
+                "shuffle_dataset_path": str(shuffle_dataset_file) if shuffle_dataset_file is not None else "",
             "shuffle_dataset_sha256": str(config.get("shuffle_dataset_sha256") or ""),
             "shuffle_dataset_replicates": int(config.get("shuffle_dataset_replicates", pairwise_correlation_shuffle_n)),
             "shuffle_dataset_seed": int(correlation_shuffle_seed),
@@ -3158,7 +3182,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "coincidence_family_cache_reused": False,
             "source_cache_path": str(source_cache_file),
             "shared_shuffle_cache_path": str(shared_shuffle_cache_file),
-            "shuffle_dataset_path": str(shuffle_dataset_file),
+            "shuffle_dataset_path": str(shuffle_dataset_file) if shuffle_dataset_file is not None else "",
             "source_cache_available": bool(source_cache_file.exists()),
             "shared_shuffle_cache_reused": not bool(shared_shuffle_cache_rebuilt),
             "shared_shuffle_cache_status": str(shared_shuffle_cache_status),

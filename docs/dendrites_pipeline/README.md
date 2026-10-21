@@ -42,6 +42,16 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 | `analysis/dendrites_pipeline/posters/` | Poster-generation scripts and shared poster helpers. |
 | `analysis/dendrites_pipeline/analysis_families/` | Family-specific analysis runners and shared dispatcher logic. |
 
+## Figure Layout And Cache Validation
+
+The canonical figure root is `results/dendrites_pipeline/figures/`; no generated image should be written below an `analysis/` directory. Preset-specific outputs use `figures/<preset>/pooled/<scope>/`, while general-only families are written once under `figures/general/`: `checkpoint_examples/`, `roi_split/`, `roi_metrics/`, `visual_response/`, `state_transitions/`, `day_detail/`, `poster_ready/`, and `direct_trial_type_comparison/`. State summaries use only one active branch per run: `all/` for an all-state preset or `selected_states/` for a selected-state preset. Mixed models use exactly `all/`, `visual_response_responsive/`, and `visual_response_nonresponsive/`; an empty cohort is reported rather than rendered as an `n=0` figure.
+
+Before figure generation, the run records a cache audit covering source experiments, derived-cache dependency signatures, selected states, visual-response settings, shuffle settings, and row counts for each family. The audit distinguishes valid input with a plotter issue, intended empty filtering, stale/invalid cache, and missing upstream metadata. Targeted rebuild flags preserve valid source caches; derived caches are rebuilt when dependency signatures, schemas, experiment membership, state selection, visual-response settings, or inference settings no longer match. Direct trial-type and nonresponsive mixed-model emptiness are reported explicitly and are never silently replaced with another cohort.
+
+The final manifest validates every generated image path and rejects paths outside the canonical figures tree. Checkpoint skips include the reason (missing trace, missing spine/regression output, or no records after filtering).
+
+Matrix-similarity plots are explicitly labelled as spine-spine correlation-matrix figures and include full and significant-only distributions. Spine-coactivity plots remain a separate family and include per-ROI filtered heatmaps plus a state-colored basal/apical distribution. Day-detail and poster-ready outputs are general-only.
+
 ## Progression and State-Transition Outputs
 
 When `progression_analysis.enabled` is true, the pipeline writes dendrite and spine mean dF/F progression outputs under `results/dendrites_pipeline/general/progression/`. Each native compartment contains `blank_trial_progression.csv`, `sleep_expid_progression.csv`, `progression_summary.csv`, and a figure with blank-trial and continuous sleep-time panels. Blank trials are aligned to onset and summarized in one-second bins by default. Sleep expIDs from the same `(animal_id, date)` are ordered and concatenated without gaps into one animal-day replicate; traces are interpolated at `sleep_time_step_s` (one second by default) and truncated to the shortest valid day. The spine output includes separate raw-spine dF/F and spine-specific residual signals; plotted values are means with SEM across animal-days.
@@ -49,8 +59,8 @@ When `progression_analysis.enabled` is true, the pipeline writes dendrite and sp
 State-transition CSVs and figures are kept under `results/dendrites_pipeline/general/state_transitions/`. Their scope, window mode, and metric selection remain controlled by `transition_analysis`.
 ## Visual Response
 
-- The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/<branch>/<basis>/figures/visual_response/`, where `branch` is one of `pooled`, `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
-- ROI split figures are written under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
+- The main pipeline writes dendrite and spine visual-response summaries under `results/dendrites_pipeline/figures/general/visual_response/`, where `branch` is one of `pooled`, `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
+- ROI split figures are written under `results/dendrites_pipeline/figures/general/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split` and `basis` is one of `all`, `nrem`, or `rem`.
 - The shared renderer lives in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 - Dendrite responsiveness is computed from dendrite cut activity only.
 - Spine responsiveness is computed from spine-specific cut activity only, not from the parent dendrite label.

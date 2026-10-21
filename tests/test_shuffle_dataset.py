@@ -185,3 +185,47 @@ def test_full_trace_model_is_explicit_and_can_differ_from_mask_aware(tmp_path: P
     assert mask_aware["null_model"] == "mask_aware"
     assert full_trace["null_model"] == "full_trace"
     assert not np.isclose(mask_aware["shuffle_p"], full_trace["shuffle_p"])
+
+
+def test_mask_aware_does_not_open_persisted_dataset(tmp_path: Path, monkeypatch):
+    path = tmp_path / "full_trace.h5"
+    a = np.sin(np.arange(40.0) / 3.0)
+    b = np.roll(a, 4)
+    build_shuffle_dataset_once(path, {"source": "test"}, {"a": a, "b": b}, shuffle_n=4, seed=7, pipeline="test", preset_count=1, log=lambda _: None)
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError("mask-aware correlations must not read the full-trace dataset")
+
+    monkeypatch.setattr(ShuffleDataset, "read_signal", fail_read)
+    cache = {"null_model": "mask_aware", "shuffle_dataset_path": str(path), "shuffle_dataset_metadata": {}}
+    rows = correlation_analysis_for_batch(
+        [(a, b)], 4, shared_shuffle_cache=cache, shared_shuffle_keys=["pair"],
+        signal_keys=[("a", "b")], result_keys=["pair-state"],
+        correlation_inference="circular_shift", null_model="mask_aware",
+    )
+    assert rows[0]["null_model"] == "mask_aware"
+    assert "shuffle_dataset_usage" not in cache
+
+
+def test_full_trace_reads_persisted_dataset(tmp_path: Path, monkeypatch):
+    path = tmp_path / "full_trace.h5"
+    a = np.sin(np.arange(40.0) / 3.0)
+    b = np.roll(a, 4)
+    build_shuffle_dataset_once(path, {"source": "test"}, {"a": a, "b": b}, shuffle_n=4, seed=7, pipeline="test", preset_count=1, log=lambda _: None)
+    reads = []
+    original = ShuffleDataset.read_signal
+
+    def spy(self, key, count=None):
+        reads.append(key)
+        return original(self, key, count)
+
+    monkeypatch.setattr(ShuffleDataset, "read_signal", spy)
+    cache = {"null_model": "full_trace", "shuffle_dataset_path": str(path), "shuffle_dataset_metadata": {}}
+    rows = correlation_analysis_for_batch(
+        [(a, b)], 4, shared_shuffle_cache=cache, shared_shuffle_keys=["pair"],
+        signal_keys=[("a", "b")], result_keys=["pair-state"],
+        correlation_inference="circular_shift", null_model="full_trace",
+    )
+    assert rows[0]["null_model"] == "full_trace"
+    assert set(reads) == {"a", "b"}
+    assert cache["shuffle_dataset_usage"]["signals_read"] == 2

@@ -169,12 +169,23 @@ def extract_dendrite_token(global_dendrite_id: str) -> str:
     return parts[-1]
 
 
+def resolve_day_detail_output_dir(output_dir: Path) -> Path:
+    root = Path(output_dir)
+    if root.name == "day_detail":
+        return root
+    if root.name == "general":
+        return root / "day_detail"
+    if root.name == "figures":
+        return root / "general" / "day_detail"
+    return root / "figures" / "general" / "day_detail"
+
+
 def build_figure_save_path(output_dir: Path, animal_id: str, date: str, compartment: Any, global_dendrite_id: str) -> Path:
     animal_slug = safe_filename_component(animal_id)
     compartment_slug = safe_filename_component(normalized_compartment_folder(compartment))
     date_slug = safe_filename_component(date)
     dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
-    figure_dir = output_dir / "figures" / animal_slug / compartment_slug / date_slug
+    figure_dir = output_dir / animal_slug / compartment_slug / date_slug
     figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}.svg"
     return figure_dir / figure_name
 
@@ -2069,7 +2080,7 @@ def build_activity_window_save_path(output_dir: Path, animal_id: str, date: str,
     compartment_slug = safe_filename_component(normalized_compartment_folder(compartment))
     date_slug = safe_filename_component(date)
     dendrite_slug = safe_filename_component(extract_dendrite_token(global_dendrite_id))
-    figure_dir = output_dir / "figures" / animal_slug / compartment_slug / date_slug
+    figure_dir = output_dir / animal_slug / compartment_slug / date_slug
     figure_name = f"{animal_slug}_{compartment_slug}_{date_slug}_{dendrite_slug}_activity_15min.svg"
     return figure_dir / figure_name
 
@@ -2214,7 +2225,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     config = load_json_config(args.config)
     user_id = str(config.get("user_id") or "")
     repo_base = Path(config.get("repo_base") or (f"/home/{user_id}/data/Repository" if user_id else "/home/rubencorreia/data/Repository"))
-    output_dir = Path(args.output_dir or config.get("output_dir") or DEFAULT_OUTPUT_DIR)
+    output_dir = resolve_day_detail_output_dir(Path(args.output_dir or config.get("output_dir") or DEFAULT_OUTPUT_DIR))
     cache_path = Path(args.cache_path or config.get("cache_path") or DEFAULT_CACHE_PATH)
     basal_expids = set(parse_list_argument(config.get("basal_expids")))
     apical_expids = set(parse_list_argument(config.get("apical_expids")))
@@ -2274,7 +2285,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print(f"[saved] {figure_path}")
 
     with step_scope("cleanup ROI detail figures"):
-        removed = cleanup_roi_detail_figures(output_dir / "figures")
+        removed = cleanup_roi_detail_figures(output_dir)
         if removed:
             step_message(f"removed {len(removed)} stale ROI detail PNG/SVG files")
 

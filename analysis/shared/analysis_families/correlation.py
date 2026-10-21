@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import time
 from pathlib import Path
+import sys
 
 import numpy as np
 from scipy import stats
@@ -13,6 +14,16 @@ from analysis.shared.shuffle_dataset import ShuffleDataset
 SUPPORTED_CORRELATION_METHODS = {"pearson"}
 SUPPORTED_CORRELATION_INFERENCE = {"circular_shift", "none"}
 SUPPORTED_NULL_MODELS = {"mask_aware", "full_trace"}
+
+
+def _record_shuffle_dataset_usage(shared_shuffle_cache: Optional[Dict[str, Any]], *, path: str) -> None:
+    if not isinstance(shared_shuffle_cache, dict):
+        return
+    usage = shared_shuffle_cache.setdefault("shuffle_dataset_usage", {"opened": False, "read_calls": 0, "signals_read": 0, "path": str(path)})
+    usage["path"] = str(path)
+    if not bool(usage.get("opened")):
+        usage["opened"] = True
+        print(f"SHUFFLE DATASET: consumer open | null_model=full_trace | path={path}", file=sys.stderr)
 
 
 def validate_correlation_settings(method: str = "pearson", inference: str = "circular_shift") -> tuple[str, str]:
@@ -26,6 +37,7 @@ def validate_correlation_settings(method: str = "pearson", inference: str = "cir
 
 
 def validate_null_model(null_model: str = "mask_aware") -> str:
+    """Validate the inferential null: mask-aware shuffles retained state samples, while full-trace shuffles complete traces before masking."""
     value = str(null_model or "mask_aware").strip().lower()
     if value not in SUPPORTED_NULL_MODELS:
         raise ValueError(f"Unsupported null_model={value!r}; supported models: mask_aware, full_trace")
@@ -297,6 +309,7 @@ def correlation_analysis_for_batch(
             if not Path(dataset_path).exists():
                 raise FileNotFoundError(f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={dataset_path}")
             dataset = ShuffleDataset(dataset_path, metadata, readonly=True)
+            _record_shuffle_dataset_usage(shared_shuffle_cache, path=dataset_path)
         except (OSError, ValueError, RuntimeError):
             if Path(dataset_path).exists():
                 raise
@@ -406,6 +419,10 @@ def correlation_analysis_for_batch(
                     canonical_keys = tuple(str(key) for key in keys)
                     if canonical_keys not in loaded_signal_arrays:
                         arrays = [dataset.read_signal(key, int(shuffle_n)) for key in canonical_keys]
+                        if isinstance(shared_shuffle_cache, dict):
+                            usage = shared_shuffle_cache.setdefault("shuffle_dataset_usage", {})
+                            usage["signals_read"] = int(usage.get("signals_read", 0)) + len(canonical_keys)
+                            usage["read_calls"] = int(usage.get("read_calls", 0)) + 1
                         loaded_signal_arrays[canonical_keys] = (
                             np.nanmean(np.stack(arrays, axis=0), axis=0) if len(arrays) > 1 else arrays[0]
                         )

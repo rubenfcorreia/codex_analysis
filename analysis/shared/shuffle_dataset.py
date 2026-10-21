@@ -17,6 +17,7 @@ from typing import Any, Mapping, Optional
 import numpy as np
 
 SCHEMA_VERSION = 1
+MASK_AWARE_SCHEMA_VERSION = 1
 
 
 def _key_id(key: str) -> str:
@@ -242,8 +243,8 @@ def build_shuffle_dataset_once(
                 payload = {"path": str(target), "sha256": _file_sha256(target), "signals": len(canonical), "replicates": int(shuffle_n), "source_signature": str(metadata.get("source_signature", "")), "status": "reused"}
                 log(f"SHUFFLE DATASET: build complete | path={target} | signals={len(canonical)} | replicates={int(shuffle_n)} | sha256={payload['sha256']}")
                 return payload
-        except (OSError, ValueError, KeyError):
-            log(f"SHUFFLE DATASET: validation failure | reason=stale_or_incompatible | action=rebuild")
+        except (OSError, ValueError, KeyError) as exc:
+            log(f"SHUFFLE DATASET: validation failure | reason=stale_or_incompatible | action=rebuild | detail={exc}")
     temporary = target.with_name(f".{target.name}.building")
     if temporary.exists():
         log(f"SHUFFLE DATASET: incomplete build rejected | path={temporary}")
@@ -299,4 +300,51 @@ def validate_shuffle_preset_overrides(presets, *, log=print) -> None:
             raise ValueError(f"preset-level shuffle override rejected: {preset_name}:{parameter}")
 
 
-__all__ = ["SCHEMA_VERSION", "ShuffleDataset", "estimate_dataset_bytes", "prepare_shuffle_dataset", "build_shuffle_dataset_once", "validate_shuffle_preset_overrides"]
+
+def _mask_entry_id(key: str) -> str:
+    return hashlib.sha256(str(key).encode("utf-8")).hexdigest()
+
+def build_mask_aware_shuffle_dataset_once(path: Path | str, metadata: Mapping[str, Any], entries: Mapping[str, np.ndarray], *, shuffle_n: int, seed: int, min_shift_frames: int = 1, pipeline: str, log=print) -> dict[str, Any]:
+    """Eagerly build/reuse state-masked shuffled vectors in one atomic HDF5 file."""
+    target = Path(path); target.parent.mkdir(parents=True, exist_ok=True)
+    canonical = {str(key): np.asarray(value, dtype=np.float32).reshape(-1) for key, value in entries.items()}
+    meta = dict(metadata); meta.update({"schema_version": MASK_AWARE_SCHEMA_VERSION, "pipeline": str(pipeline), "shuffle_n": int(shuffle_n), "shuffle_seed": int(seed), "min_shift_frames": int(min_shift_frames), "entry_signature": hashlib.sha256("".join(f"{k}:{hashlib.sha256(v.tobytes()).hexdigest()}" for k, v in sorted(canonical.items())).encode()).hexdigest()})
+    meta_hash = hashlib.sha256(_attrs_json(meta).encode()).hexdigest()
+    required = estimate_dataset_bytes({k: v.size for k, v in canonical.items()}, shuffle_n)
+    log(f"MASK-AWARE DATASET: build start | pipeline={pipeline} | entries={len(canonical)} | required_bytes={required}")
+    if target.exists():
+        try:
+            import h5py
+            with h5py.File(target, "r") as h:
+                if h.attrs.get("meta_hash", "") == meta_hash and int(h.attrs.get("schema_version", -1)) == MASK_AWARE_SCHEMA_VERSION and str(h.attrs.get("complete", "false")).lower() == "true":
+                    log(f"MASK-AWARE DATASET: reuse | path={target} | entries={len(canonical)}")
+                    return {"path": str(target), "status": "reused", "entries": len(canonical), "meta_hash": meta_hash}
+        except (OSError, ValueError):
+            log("MASK-AWARE DATASET: validation failure | reason=stale_or_incompatible | action=rebuild")
+    import h5py
+    temporary = target.with_name(f".{target.name}.building")
+    if temporary.exists(): temporary.unlink()
+    with h5py.File(temporary, "w") as h:
+        h.attrs["schema_version"] = MASK_AWARE_SCHEMA_VERSION; h.attrs["meta_hash"] = meta_hash; h.attrs["metadata"] = _attrs_json(meta); h.attrs["complete"] = "false"
+        group = h.create_group("entries")
+        for index, (key, trace) in enumerate(sorted(canonical.items()), 1):
+            shifts = _signal_shifts(key, trace.size, int(shuffle_n), int(seed), int(min_shift_frames))
+            values = np.stack([np.roll(trace, int(shift)) for shift in shifts], axis=0) if shifts.size else np.empty((0, trace.size), dtype=np.float32)
+            item = group.create_group(_mask_entry_id(key)); item.create_dataset("traces", data=values, compression="gzip", compression_opts=4); item.attrs["key"] = key; item.attrs["source_signature"] = hashlib.sha256(trace.tobytes()).hexdigest(); item.attrs["length"] = trace.size
+            if index == 1 or index == len(canonical) or index % 100 == 0: log(f"MASK-AWARE DATASET: progress | {index}/{len(canonical)} | key={key}")
+        h.attrs["complete"] = "true"
+    os.replace(temporary, target)
+    return {"path": str(target), "status": "built", "entries": len(canonical), "meta_hash": meta_hash}
+
+class MaskAwareShuffleDataset:
+    def __init__(self, path: Path | str):
+        import h5py
+        self.path = Path(path); self._handle = h5py.File(self.path, "r")
+        if int(self._handle.attrs.get("schema_version", -1)) != MASK_AWARE_SCHEMA_VERSION or str(self._handle.attrs.get("complete", "false")).lower() != "true": raise ValueError(f"invalid mask-aware dataset: {self.path}")
+    def read_signal(self, key: str, count: Optional[int] = None) -> np.ndarray:
+        group = self._handle["entries"][_mask_entry_id(key)]
+        return np.asarray(group["traces"][: int(count) if count is not None else None], dtype=float)
+    def close(self) -> None:
+        self._handle.close()
+
+__all__ = ["SCHEMA_VERSION", "ShuffleDataset", "MaskAwareShuffleDataset", "estimate_dataset_bytes", "prepare_shuffle_dataset", "build_shuffle_dataset_once", "build_mask_aware_shuffle_dataset_once", "validate_shuffle_preset_overrides"]
