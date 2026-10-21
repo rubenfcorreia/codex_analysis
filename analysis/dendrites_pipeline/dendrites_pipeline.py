@@ -54,7 +54,7 @@ from analysis.shared.pipeline_logging import (
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.cache_utils import METHODOLOGY_VERSION
-from analysis.shared.shuffle_dataset import build_shuffle_dataset_once, validate_shuffle_preset_overrides
+from analysis.shared.shuffle_dataset import build_mask_aware_shuffle_dataset_once, build_shuffle_dataset_once, mask_aware_entry_key, validate_shuffle_preset_overrides
 from analysis.shared.analysis_families.core import make_global_roi_id
 from analysis.shared.analysis_families.common_helpers import build_state_masks_movie as shared_build_state_masks_movie
 from analysis.shared.union_rows import (
@@ -10343,6 +10343,24 @@ def load_npz_cache(path: Path) -> Dict[str, Any]:
         if isinstance(item, dict):
             return item
     raise TypeError(f"Could not recover cache dictionary from {path}")
+def build_mask_aware_dataset_from_cache(cache: Dict[str, Any], path: Path, state_labels: Sequence[str], shuffle_n: int, seed: int, min_shift_frames: int) -> Dict[str, Any]:
+    entries: Dict[str, np.ndarray] = {}
+    for animal_id, animal in cache.get("animals", {}).items():
+        for dendrite_id, dendrite in animal.get("dendrites", {}).items():
+            for day_id, obs in dendrite.get("observations", {}).items():
+                exp = cache.get("experiments", {}).get(day_id, {}); masks = exp.get("state_masks", {})
+                signals = [(f"{animal_id}|{day_id}|dendrite|{dendrite_id}", obs.get("trace"))]
+                for spine_id in obs.get("spine_ids", []):
+                    sobs = dendrite.get("spines", {}).get(spine_id, {}).get("observations", {}).get(day_id)
+                    if sobs is not None: signals.append((f"{animal_id}|{day_id}|spine_specific|{spine_id}", sobs.get("spine_specific")))
+                for state in state_labels:
+                    mask = np.asarray(masks.get(state, []), dtype=bool)
+                    if mask.size == 0 or not np.any(mask): continue
+                    signature = hashlib.sha256(mask.astype(np.uint8).tobytes()).hexdigest()
+                    for key, trace in signals:
+                        if trace is not None and np.asarray(trace).size == mask.size: entries[mask_aware_entry_key(key, signature)] = np.asarray(trace, dtype=float)[mask]
+    return build_mask_aware_shuffle_dataset_once(path, {"pipeline": "dendrites_pipeline", "state_labels": list(state_labels)}, entries, shuffle_n=shuffle_n, seed=seed, min_shift_frames=min_shift_frames, pipeline="dendrites_pipeline", log=step_message)
+
 def shared_shuffle_cache_path(cache_path: Path, null_model: str = "mask_aware") -> Path:
     return cache_path.with_name(f"{cache_path.stem}_shuffle_cache_{str(null_model)}.npz")
 def array_signature(array: Any) -> Optional[str]:
@@ -12002,8 +12020,8 @@ def _spine_coactivity_compute_pair_row(
         shared_shuffle_cache=shared_shuffle_cache,
         shared_shuffle_key=shared_shuffle_key,
         signal_keys=(
-            f"{shared_shuffle_meta.get('animal_id', 'unknown')}|{shared_shuffle_meta.get('day_id', 'unknown')}|spine_specific|{shared_shuffle_meta.get('source_id', 'unknown')}|a",
-            f"{shared_shuffle_meta.get('animal_id', 'unknown')}|{shared_shuffle_meta.get('day_id', 'unknown')}|spine_specific|{shared_shuffle_meta.get('source_id', 'unknown')}|b",
+            f"{shared_shuffle_meta.get('animal_id', 'unknown')}|{shared_shuffle_meta.get('day_id', 'unknown')}|spine_specific|{shared_shuffle_meta.get('source_id_a', 'unknown')}",
+            f"{shared_shuffle_meta.get('animal_id', 'unknown')}|{shared_shuffle_meta.get('day_id', 'unknown')}|spine_specific|{shared_shuffle_meta.get('source_id_b', 'unknown')}",
         ) if shared_shuffle_meta is not None else None,
     )
     r_value = as_float(analysis.get("r"))
@@ -12166,7 +12184,7 @@ def build_spine_coactivity_table(
                         rows.append({**base_row, "n_frames": 0, "coactivity_r": float("nan"), "coactivity_z": float("nan"), "coactive": False, "status": "empty_trace", "skip_reason": "empty_trace"})
                         skip_counts["empty_trace"] += 1
                         continue
-                    shared_shuffle_meta = {**shared_shuffle_meta_base, "source_id": spine_id_2}
+                    shared_shuffle_meta = {**shared_shuffle_meta_base, "source_id": spine_id_2, "source_id_a": spine_id_1, "source_id_b": spine_id_2}
                     r_value, z_value, classical_p, shuffle_p, n_frames, skip_reason = _spine_coactivity_compute_pair_row(
                         trace_a,
                         trace_b,
@@ -18496,6 +18514,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shared_shuffle_cache = None
     if not isinstance(shared_shuffle_cache, dict):
         shared_shuffle_cache = {"entries": {}, "null_results": {}, "null_result_stats": {"hits": 0, "misses": 0, "builds": 0}}
+    mask_aware_dataset_file = cache_path.with_name(f"{cache_path.stem}_mask_aware_shuffle_dataset.h5")
+    if not plots_only:
+        mask_aware_info = build_mask_aware_dataset_from_cache(analysis_cache, mask_aware_dataset_file, shared_shuffle_state_labels, shuffle_n, int(config.get("correlation_shuffle_seed", 12345)), int(config.get("correlation_min_shift_frames", 1)))
+        shared_shuffle_cache["mask_aware_shuffle_dataset_path"] = str(mask_aware_info["path"])
     configured_shuffle_dataset = config.get("shuffle_dataset_path")
     shuffle_dataset_file = resolve_repo_path(configured_shuffle_dataset, REPO_ROOT) if configured_shuffle_dataset else (shared_shuffle_cache_file.with_name(f"{shared_shuffle_cache_file.stem.replace('_shuffle_cache', '')}_shuffle_dataset.h5") if shared_shuffle_cache_file is not None else None)
     if shuffle_dataset_file is None or not shuffle_dataset_file.exists():

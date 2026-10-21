@@ -116,7 +116,7 @@ from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
 from analysis.shared.serialization_diagnostics import SerializationCollector, set_active_collector
-from analysis.shared.shuffle_dataset import build_shuffle_dataset_once, validate_shuffle_preset_overrides
+from analysis.shared.shuffle_dataset import build_mask_aware_shuffle_dataset_once, build_shuffle_dataset_once, mask_aware_entry_key, validate_shuffle_preset_overrides
 from analysis.shared.pipeline_logging import (
     get_stage_timings,
     reset_stage_timings,
@@ -289,6 +289,25 @@ def _preset_selection_names(value: Any) -> List[str] | None:
     return [text] if text else None
 
 
+def _build_soma_mask_aware_shuffle_dataset(config: Mapping[str, Any], repo_root: Path, result_root: Path, expids_by_mode: Mapping[str, Sequence[str]], states_by_mode: Mapping[str, Sequence[str]]) -> Dict[str, Any]:
+    entries: Dict[str, np.ndarray] = {}
+    for mode in ("movie", "sleep"):
+        for expid in dict.fromkeys(str(value) for value in expids_by_mode.get(mode, []) if str(value)):
+            ctx = build_experiment_context(expid=expid, mode=mode, soma_channel=int(config.get("soma_channel", 1)), bouton_channel=int(config.get("bouton_channel", 0)), repo_root=repo_root)
+            masks = state_masks_for_context(ctx, states_by_mode.get(mode, []))
+            for compartment, entity, channel in (("soma", ctx.soma, ctx.soma_channel), ("bouton", ctx.bouton, ctx.bouton_channel)):
+                matrix = np.asarray(entity.matrix(), dtype=float)
+                roi_ids = list(entity.roi_ids()) if hasattr(entity, "roi_ids") else list(range(matrix.shape[0]))
+                planes = list(entity.roi_plane_ids()) if hasattr(entity, "roi_plane_ids") else [None] * matrix.shape[0]
+                for index, trace in enumerate(matrix):
+                    roi_id = roi_ids[index] if index < len(roi_ids) else index; plane = planes[index] if index < len(planes) else None
+                    base_key = make_global_roi_id(animal_id=ctx.animal_id, expid=ctx.expid, day_id=ctx.day_id, compartment=compartment, channel=channel, roi_id=roi_id, plane=plane, roi_index=None if plane is not None else index)
+                    for state, mask in masks.items():
+                        mask = np.asarray(mask, dtype=bool); signature = hashlib.sha256(mask.astype(np.uint8).tobytes()).hexdigest()
+                        if mask.size == trace.size and np.any(mask): entries[mask_aware_entry_key(base_key, signature)] = np.asarray(trace[mask], dtype=float)
+    path = result_root / "analysis" / "cache" / "soma_bouton_mask_aware_shuffle_dataset.h5"
+    return build_mask_aware_shuffle_dataset_once(path, {"pipeline": "soma_bouton_pipeline", "states_by_mode": {k: list(v) for k, v in states_by_mode.items()}}, entries, shuffle_n=int(config.get("pairwise_correlation_shuffle_n", 100)), seed=int(config.get("correlation_shuffle_seed", 12345)), min_shift_frames=int(config.get("correlation_min_shift_frames", 1)), pipeline="soma_bouton_pipeline", log=lambda message: print(message, file=sys.stderr))
+
 def _build_soma_shuffle_dataset(config: Mapping[str, Any], repo_root: Path, result_root: Path, expids_by_mode: Mapping[str, Sequence[str]], preset_count: int) -> Dict[str, Any]:
     signals: Dict[str, np.ndarray] = {}
 
@@ -441,6 +460,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
             all_expids_by_mode,
         )
     requires_shuffle_dataset = _requires_full_trace_shuffle_dataset(config, plan.presets)
+    mask_aware_dataset_info = _build_soma_mask_aware_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, union_states_by_mode)
     if requires_shuffle_dataset:
         try:
             shuffle_dataset_info = _build_soma_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets))
@@ -484,6 +504,7 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["shuffle_dataset_sha256"] = str(shuffle_dataset_info["sha256"])
         preset_config["shuffle_dataset_replicates"] = int(shuffle_dataset_info["replicates"])
         preset_config["shuffle_dataset_source_signature"] = str(shuffle_dataset_info.get("source_signature", ""))
+        preset_config["mask_aware_shuffle_dataset_path"] = str(mask_aware_dataset_info["path"])
         preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
         preset_config["union_state_labels_by_mode"] = union_states_by_mode
         preset_config["union_rows_cache_builder"] = preset_index == 0 and not bool(config.get("plots_only"))
@@ -1322,6 +1343,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             file=sys.stderr,
         )
     shared_shuffle_cache["null_model"] = pairwise_null_model
+    if config.get("mask_aware_shuffle_dataset_path"):
+        shared_shuffle_cache["mask_aware_shuffle_dataset_path"] = str(resolve_repo_path(config["mask_aware_shuffle_dataset_path"], repo_root))
     if requires_shuffle_dataset:
         shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
     else:

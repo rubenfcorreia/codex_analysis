@@ -9,7 +9,7 @@ import numpy as np
 from scipy import stats
 
 from analysis.shared.cache_utils import array_signature, stable_hash
-from analysis.shared.shuffle_dataset import ShuffleDataset
+from analysis.shared.shuffle_dataset import MaskAwareShuffleDataset, ShuffleDataset, mask_aware_entry_key
 
 SUPPORTED_CORRELATION_METHODS = {"pearson"}
 SUPPORTED_CORRELATION_INFERENCE = {"circular_shift", "none"}
@@ -302,6 +302,13 @@ def correlation_analysis_for_batch(
     results: List[Optional[Dict[str, Any]]] = [None] * len(pairs)
     pending: List[Dict[str, Any]] = []
     dataset = None
+    mask_dataset = None
+    if configured_null_model == "mask_aware" and isinstance(shared_shuffle_cache, dict) and shared_shuffle_cache.get("mask_aware_shuffle_dataset_path"):
+        dataset_path = str(shared_shuffle_cache["mask_aware_shuffle_dataset_path"])
+        if Path(dataset_path).exists():
+            mask_dataset = MaskAwareShuffleDataset(dataset_path)
+            usage = shared_shuffle_cache.setdefault("mask_aware_dataset_usage", {"opened": True, "read_calls": 0, "signals_read": 0})
+            usage["opened"] = True
     if configured_null_model == "full_trace" and isinstance(shared_shuffle_cache, dict) and shared_shuffle_cache.get("shuffle_dataset_path"):
         dataset_path = str(shared_shuffle_cache["shuffle_dataset_path"])
         metadata = dict(shared_shuffle_cache.get("shuffle_dataset_metadata") or {})
@@ -408,7 +415,30 @@ def correlation_analysis_for_batch(
             b_stack = np.stack([item["b"] for item in chunk], axis=0)
             null_values: List[List[float]] = [[] for _ in chunk]
             block_size = max(1, int(shift_block_size))
-            if configured_null_model == "full_trace" and dataset is not None and all(item.get("signal_a_key") and item.get("signal_b_key") for item in chunk):
+            if configured_null_model == "mask_aware" and mask_dataset is not None and all(item.get("signal_a_key") and item.get("signal_b_key") for item in chunk):
+                loaded_signal_arrays = {}
+                def _load_mask_signal(signal_key, signal_mask):
+                    key = signal_key[0] if isinstance(signal_key, (tuple, list)) else signal_key
+                    mask_signature = array_signature(signal_mask)
+                    entry_key = mask_aware_entry_key(str(key), str(mask_signature))
+                    if entry_key not in loaded_signal_arrays:
+                        loaded_signal_arrays[entry_key] = mask_dataset.read_signal(entry_key, int(shuffle_n))
+                        usage = shared_shuffle_cache.setdefault("mask_aware_dataset_usage", {"opened": True, "read_calls": 0, "signals_read": 0})
+                        usage["signals_read"] = int(usage.get("signals_read", 0)) + 1
+                    return loaded_signal_arrays[entry_key]
+                b_null_stack = np.stack([_load_mask_signal(item["signal_b_key"], item["signal_masks"][1]) for item in chunk], axis=0)
+                null_count = min(int(shuffle_n), b_null_stack.shape[1])
+                for shift_start in range(0, null_count, block_size):
+                    b_null = b_null_stack[:, shift_start:shift_start + block_size, :]
+                    a_null = np.broadcast_to(a_stack[:, None, :], b_null.shape)
+                    valid = np.isfinite(a_null) & np.isfinite(b_null)
+                    counts = valid.sum(axis=2)
+                    av = np.where(valid, a_null, 0.0); bv = np.where(valid, b_null, 0.0)
+                    am = np.divide(av.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0); bm = np.divide(bv.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
+                    ac = np.where(valid, a_null - am[:, :, None], 0.0); bc = np.where(valid, b_null - bm[:, :, None], 0.0)
+                    den = np.sqrt(np.sum(ac * ac, axis=2) * np.sum(bc * bc, axis=2)); vals = np.divide(np.sum(ac * bc, axis=2), den, out=np.full((len(chunk), a_null.shape[1]), np.nan), where=(counts >= 3) & (den > 0))
+                    for local_index, pair_values in enumerate(vals): null_values[local_index].extend(float(value) for value in pair_values if np.isfinite(value))
+            elif configured_null_model == "full_trace" and dataset is not None and all(item.get("signal_a_key") and item.get("signal_b_key") for item in chunk):
                 # A batch often contains the same soma/behaviour signal in many
                 # pairs. Keep this cache bounded to the current batch so repeated
                 # pairs reuse one HDF5 decompression without retaining the full
@@ -500,6 +530,8 @@ def correlation_analysis_for_batch(
                     cache_stats["builds"] = int(cache_stats.get("builds", 0)) + 1
     if dataset is not None:
         dataset.close(complete=True)
+    if mask_dataset is not None:
+        mask_dataset.close()
     return [result if result is not None else {} for result in results]
 
 

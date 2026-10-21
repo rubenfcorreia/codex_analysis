@@ -301,6 +301,9 @@ def validate_shuffle_preset_overrides(presets, *, log=print) -> None:
 
 
 
+def mask_aware_entry_key(signal_key: str, mask_signature: str) -> str:
+    return f"{signal_key}|mask={mask_signature}"
+
 def _mask_entry_id(key: str) -> str:
     return hashlib.sha256(str(key).encode("utf-8")).hexdigest()
 
@@ -347,4 +350,4 @@ class MaskAwareShuffleDataset:
     def close(self) -> None:
         self._handle.close()
 
-__all__ = ["SCHEMA_VERSION", "ShuffleDataset", "MaskAwareShuffleDataset", "estimate_dataset_bytes", "prepare_shuffle_dataset", "build_shuffle_dataset_once", "build_mask_aware_shuffle_dataset_once", "validate_shuffle_preset_overrides"]
+__all__ = ["SCHEMA_VERSION", "ShuffleDataset", "MaskAwareShuffleDataset", "mask_aware_entry_key", "estimate_dataset_bytes", "prepare_shuffle_dataset", "build_shuffle_dataset_once", "build_mask_aware_shuffle_dataset_once", "validate_shuffle_preset_overrides"]
