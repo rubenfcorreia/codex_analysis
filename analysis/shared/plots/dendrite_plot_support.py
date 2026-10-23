@@ -16634,7 +16634,8 @@ def write_analysis_outputs(
                     leaf_results["mixed_model"] = leaf_split_mixed_model
                     leaf_results["mixed_model_selected_state"] = leaf_split_mixed_model
                 leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name)
-                leaf_figure_root = branch_leaf_figure_root(branch_root, branch_name, basis_name)
+                figure_tree_root = Path(figure_root).parents[1] if figure_root is not None else branch_root
+                leaf_figure_root = branch_leaf_figure_root(figure_tree_root, branch_name, basis_name)
                 # Shared visual-response and event-example galleries are
                 # generated once at the comparison root; branch leaves only
                 # need their branch-specific analysis/review/checkpoint plots.

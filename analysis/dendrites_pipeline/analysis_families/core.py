@@ -595,6 +595,7 @@ def run_correlation_family(
             shuffle_seed=correlation_seed,
             min_shift_frames=correlation_min_shift,
             max_batch_size=correlation_batch_size,
+            null_model="full_trace",
         )
         for index, (task, correlation) in enumerate(zip(tasks, correlations), start=1):
             step_progress(index, len(tasks), label=f"{task['analysis']}:{task['metadata']['global_dendrite_id']}")

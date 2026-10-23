@@ -95,7 +95,7 @@ def run_mixed_model_family(
         from statsmodels.regression.mixed_linear_model import MixedLM
     except Exception as exc:
         alerts.append(f"[ALERT] Mixed-model dependencies unavailable for {response} ({scope}): {exc}")
-        return {"summary_rows": [], "contrast_rows": [], "design": {}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "unavailable", "error": str(exc)}}
+        return {"summary_rows": [], "state_summary_rows": [], "contrast_rows": [], "design": {}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "unavailable", "error": str(exc)}}
 
     records = []
     for row in rows:
@@ -116,7 +116,7 @@ def run_mixed_model_family(
         item["compartment"] = str(item.get("compartment") or "all")
         records.append(item)
     if not records:
-        return {"summary_rows": [], "contrast_rows": [], "design": {"preflight": {"schema_version": MIXED_MODEL_PREFLIGHT_SCHEMA_VERSION, "status": "all_missing", "formula": None, "n_rows": 0, "reasons": ["no finite response observations"]}}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "preflight_skipped", "preflight_status": "all_missing", "error": "no finite response observations"}}
+        return {"summary_rows": [], "state_summary_rows": [], "contrast_rows": [], "design": {"preflight": {"schema_version": MIXED_MODEL_PREFLIGHT_SCHEMA_VERSION, "status": "all_missing", "formula": None, "n_rows": 0, "reasons": ["no finite response observations"]}}, "equation": None, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "preflight_skipped", "preflight_status": "all_missing", "error": "no finite response observations"}}
 
     frame = pd.DataFrame(records)
     state_levels = [str(state) for state in (state_order or []) if str(state) in set(frame["state"])]
@@ -135,7 +135,7 @@ def run_mixed_model_family(
     vc_formula = {"day": "0 + C(day_key)", "unit": "0 + C(unit_key)"}
     preflight = _mixed_model_preflight(frame, formula, contrast_specs, state_levels, vc_formula)
     if preflight["status"] in {"insufficient_data", "insufficient_groups", "single_level_factor", "rank_deficient", "all_missing"}:
-        return {"summary_rows": [], "contrast_rows": [], "design": {"preflight": preflight}, "equation": formula, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "preflight_skipped", "preflight_status": preflight["status"], "error": "; ".join(preflight["reasons"])}}
+        return {"summary_rows": [], "state_summary_rows": [], "contrast_rows": [], "design": {"preflight": preflight}, "equation": formula, "tested_terms": [], "tested_contrasts": [], "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": {"converged": False, "fit_method": "preflight_skipped", "preflight_status": preflight["status"], "error": "; ".join(preflight["reasons"])}}
     fit = None
     fit_method = "lbfgs"
     fit_error = None
@@ -180,11 +180,11 @@ def run_mixed_model_family(
     if singular_or_non_pd:
         alerts.append(f"[ALERT] Mixed-model fit for {response} ({scope}) emitted singular/boundary diagnostics; inferential contrasts are suppressed.")
 
-    summary_rows = []
+    state_summary_rows = []
     for state in state_levels:
         subset = frame.loc[frame["state"] == state, "response"]
         if len(subset):
-            summary_rows.append({"response": response, "scope": scope, "state": state, "mean": float(subset.mean()), "estimate": float(subset.mean()), "n": int(len(subset)), "n_animals": int(frame.loc[frame["state"] == state, "animal_key"].nunique()), "n_days": int(frame.loc[frame["state"] == state, "day_key"].nunique())})
+            state_summary_rows.append({"response": response, "scope": scope, "state": state, "mean": float(subset.mean()), "estimate": float(subset.mean()), "n": int(len(subset)), "n_animals": int(frame.loc[frame["state"] == state, "animal_key"].nunique()), "n_days": int(frame.loc[frame["state"] == state, "day_key"].nunique())})
 
     def prediction_row(state, *, cohort=None, split_group=None, compartment=None):
         row = {column: frame.iloc[0][column] for column in frame.columns}
@@ -234,16 +234,65 @@ def run_mixed_model_family(
         elif kind == "basal_apical" and {"basal", "apical"}.issubset(set(frame["compartment"])):
             contrast_rows.append(contrast("apical vs basal", prediction_row(spec.get("state"), compartment="apical"), prediction_row(spec.get("state"), compartment="basal"), {"contrast_type": kind, **spec}))
 
-    tested_terms = []
-    if inferential_fit_ok:
-        for term, p_value in fit.pvalues.items():
-            tested_terms.append({"term": str(term), "estimate": float(fit.params.get(term, np.nan)), "p_value": float(p_value) if np.isfinite(p_value) else float("nan")})
     fixed_effect_names = []
     if fit is not None:
         fixed_effect_names = [str(name) for name in getattr(fit, "fe_params", {}).index] if hasattr(getattr(fit, "fe_params", None), "index") else [str(name) for name in getattr(getattr(fit, "model", None), "exog_names", [])]
-    design = {"state_levels": state_levels, "formula": formula, "fixed_effect_names": fixed_effect_names, "inferential_status": "valid" if inferential_fit_ok else "invalid_fit", "random_effect_group": "animal_key", "preflight": preflight, "variance_components": list(vc_formula), "n_rows": int(len(frame)), "n_animals": int(frame["animal_key"].nunique()), "n_days": int(frame["day_key"].nunique()), "n_units": int(frame["unit_key"].nunique())}
+    summary_rows = []
+    if fit is not None:
+        beta = np.asarray(getattr(fit, "fe_params", []), dtype=float).ravel()
+        covariance = np.asarray(fit.cov_params(), dtype=float)
+        covariance = covariance[: len(beta), : len(beta)]
+        pvalues = getattr(fit, "pvalues", {})
+        params = getattr(fit, "params", {})
+        for index, term in enumerate(fixed_effect_names):
+            estimate = float(beta[index]) if index < len(beta) else float("nan")
+            variance = float(covariance[index, index]) if index < covariance.shape[0] else float("nan")
+            se = float(np.sqrt(variance)) if np.isfinite(variance) and variance > 0 else float("nan")
+            p_value = pvalues.get(term, float("nan")) if hasattr(pvalues, "get") else float("nan")
+            summary_rows.append({
+                "response": response,
+                "scope": scope,
+                "model_name": f"{scope}_{response}",
+                "term": term,
+                "estimate": estimate,
+                "se": se,
+                "z": estimate / se if np.isfinite(se) and se > 0 else float("nan"),
+                "p_value": float(p_value) if np.isfinite(p_value) else float("nan"),
+                "random_structure": fit_method,
+                "fit_method": fit_method,
+                "converged": bool(inferential_fit_ok),
+                "n_obs": int(len(frame)),
+                "n_animals": int(frame["animal_key"].nunique()),
+                "n_sessions": int(frame["day_key"].nunique()),
+                "n_dendrites": int(frame["unit_key"].nunique()),
+            })
+    tested_terms = list(summary_rows)
+    design = {
+        "state_levels": state_levels,
+        "formula": formula,
+        "fixed_effect_names": fixed_effect_names,
+        "inferential_status": "valid" if inferential_fit_ok else "invalid_fit",
+        "random_effect_group": "animal_key",
+        "preflight": preflight,
+        "variance_components": list(vc_formula),
+        "n_rows": int(len(frame)),
+        "n_obs": int(len(frame)),
+        "n_animals": int(frame["animal_key"].nunique()),
+        "n_days": int(frame["day_key"].nunique()),
+        "n_units": int(frame["unit_key"].nunique()),
+        "include_compartment": bool(frame["compartment"].nunique() > 1),
+        "compartment_levels": sorted(str(value) for value in frame["compartment"].unique()),
+        "compartment_reference": reference_compartment,
+        "interaction_compartments": [str(value) for value in sorted(frame["compartment"].unique()) if str(value) != reference_compartment],
+        "include_split_group": bool(frame["split_group"].nunique() > 1),
+        "split_group_levels": sorted(str(value) for value in frame["split_group"].unique()),
+        "split_group_reference": reference_split,
+        "include_visual_response": bool(frame["visual_response_cohort"].nunique() > 1),
+        "visual_response_levels": sorted(str(value) for value in frame["visual_response_cohort"].unique()),
+        "visual_response_reference": reference_cohort,
+    }
     fit_payload = {"converged": bool(inferential_fit_ok), "preflight_status": preflight.get("status", "eligible"), "fit_method": fit_method if fit is not None else "failed", "fallback_used": bool(fit is not None and "fallback" in fit_method), "singular_or_non_pd": bool(singular_or_non_pd), "warning_messages": warning_messages, "error": fit_error, "aic": float(fit.aic) if fit is not None and np.isfinite(fit.aic) else float("nan"), "bic": float(fit.bic) if fit is not None and np.isfinite(fit.bic) else float("nan")}
-    return {"summary_rows": summary_rows, "contrast_rows": contrast_rows, "design": design, "equation": formula, "tested_terms": tested_terms, "tested_contrasts": contrast_rows, "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": fit_payload}
+    return {"summary_rows": summary_rows, "state_summary_rows": state_summary_rows, "contrast_rows": contrast_rows, "design": design, "equation": formula, "tested_terms": tested_terms, "tested_contrasts": contrast_rows, "validation_rows": [], "p_value_source": effective_source, "p_value_source_requested": requested_source, "fit": fit_payload}
 
 def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment: Optional[str] = None) -> List[Dict[str, Any]]:
     table_rows: List[Dict[str, Any]] = []
@@ -321,6 +370,7 @@ def _run_branch(
         "p_value_source": p_value_source,
         "p_value_source_requested": p_value_source,
         "summary_rows": {},
+        "state_summary_rows": {},
         "contrast_rows": [],
         "designs": {},
         "model_equations": {},
@@ -358,6 +408,7 @@ def _run_branch(
             p_value_source=p_value_source,
         )
         branch["summary_rows"][response] = list(result.get("summary_rows", []))
+        branch["state_summary_rows"][response] = list(result.get("state_summary_rows", []))
         branch["contrast_rows"].extend(result.get("contrast_rows", []))
         if result.get("design") is not None:
             branch["designs"][response] = result.get("design")

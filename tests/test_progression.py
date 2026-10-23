@@ -33,6 +33,7 @@ def test_soma_progression_uses_experiment_level_means(tmp_path: Path) -> None:
     result = run_soma_bouton_progression(contexts, tmp_path / "general" / "progression", {"enabled": True, "blank_bin_s": 1})
     assert result["blank_rows"] == 4
     assert result["sleep_rows"] == 4
+    assert result["sleep_rows_by_policy"] == {"common_overlap": 4, "all_available": 4}
     assert (tmp_path / "general" / "progression" / "soma" / "figures" / "soma_progression.svg").exists()
 
 
@@ -68,6 +69,7 @@ def test_sleep_progression_concatenates_same_day_and_truncates_to_shortest_day(t
     root = tmp_path / "general" / "progression"
     result = run_soma_bouton_progression(contexts, root, {"enabled": True, "sleep_time_step_s": 1})
     assert result["sleep_rows"] == 12
+    assert result["sleep_rows_by_policy"] == {"common_overlap": 12, "all_available": 12}
     with (root / "soma" / "sleep_expid_progression.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
     day_one = [row for row in rows if row["date"] == "2026-01-01"]

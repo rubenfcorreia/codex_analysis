@@ -249,7 +249,7 @@ DEFAULT_SHARED_SHUFFLE_CACHE_NAME = "dendrites_cache_shuffle_cache.npz"
 CACHE_SCHEMA_VERSION = 3
 ANALYSIS_CACHE_SCHEMA_VERSION = 1
 ANALYSIS_TABLE_CACHE_SCHEMA_VERSION = 3
-ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 4
+ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION = 5
 SHARED_SHUFFLE_CACHE_SCHEMA_VERSION = 2
 REPORT_SIGNIFICANCE_ALPHA = 0.05
 CPU_THREAD_LIMIT_ENV_VARS = (
@@ -3601,6 +3601,30 @@ def _mixed_model_response_payload(results: Dict[str, Any], response: str, model_
         return None, []
     rows = list(summary_rows.get(response, []))
     return design, rows
+def _mixed_model_fixed_effect_rows_valid(design: Dict[str, Any], rows: Sequence[Dict[str, Any]]) -> bool:
+    if not isinstance(design, dict) or not isinstance(rows, list) or not rows:
+        return False
+    terms = [str(term) for term in design.get("fixed_effect_names", []) if str(term)]
+    by_term = {str(row.get("term")): row for row in rows if isinstance(row, dict)}
+    if not terms or any(term not in by_term for term in terms):
+        return False
+    return all(as_float(by_term[term].get("estimate")) is not None and np.isfinite(as_float(by_term[term].get("estimate"))) for term in terms)
+
+
+def _mixed_model_branch_validation_issues(branch_name: str, branch_data: Dict[str, Any]) -> List[str]:
+    issues: List[str] = []
+    designs = branch_data.get("designs", {}) if isinstance(branch_data, dict) else {}
+    summary_rows = branch_data.get("summary_rows", {}) if isinstance(branch_data, dict) else {}
+    if not isinstance(designs, dict) or not isinstance(summary_rows, dict):
+        return [f"{branch_name}: missing designs or summary_rows"]
+    for response, design in designs.items():
+        rows = summary_rows.get(response, [])
+        if rows and not _mixed_model_fixed_effect_rows_valid(design, rows):
+            issues.append(f"{branch_name}/{response}: fixed-effect rows do not match design terms")
+        if bool(design.get("include_compartment")) and len(design.get("compartment_levels", [])) < 2:
+            issues.append(f"{branch_name}/{response}: include_compartment is true but fewer than two compartment levels are present")
+    return issues
+
 def _poster_state_display_label(state_label: Any) -> str:
     canonical = canonical_state_label(state_label)
     parts = [part for part in canonical.split("_") if part]
@@ -4901,7 +4925,7 @@ def plot_mixed_model_forest_figure(
 
     for response in response_order:
         design, rows = _mixed_model_response_payload(results, response, model_key=model_key)
-        if design is None or not rows:
+        if design is None or not _mixed_model_fixed_effect_rows_valid(design, rows):
             continue
 
         term_lookup = {str(row.get("term")): dict(row) for row in rows}
@@ -5153,7 +5177,7 @@ def plot_mixed_model_predicted_means_figure(
     equation_lines: List[str] = []
     for response in response_order:
         design, rows = _mixed_model_response_payload(results, response, model_key=model_key)
-        if design is None or not rows:
+        if design is None or not _mixed_model_fixed_effect_rows_valid(design, rows):
             continue
         fixed_effect_names = [str(term) for term in design.get("fixed_effect_names", [])]
         term_lookup = {str(row.get("term")): dict(row) for row in rows}
@@ -5285,6 +5309,7 @@ def plot_mixed_model_predicted_means_figure(
         panel_path = component_dir / f"{Path(output_name).stem}_{index:02d}_{response}.svg"
         save_figure(fig, panel_path, extra_formats=())
         panel_paths.append(panel_path)
+        plt.close(fig)
     if not panel_paths:
         return None
     return str(panel_paths[0])
@@ -5473,6 +5498,7 @@ def plot_mixed_model_contrasts_checkpoint(
         panel_path = component_dir / f"{Path(output_name or f'07_mixed_model_contrasts_{scope}.svg').stem}_{index:02d}_{response}.svg"
         save_figure(fig, panel_path, extra_formats=())
         panel_paths.append(panel_path)
+        plt.close(fig)
     if not panel_paths:
         return None
     return str(panel_paths[0])
@@ -8433,6 +8459,13 @@ def render_analysis_family_figures(
                         eprint(f"[ALERT] Failed to create matrix heatmap for {compartment} / {dendrite_id}: {exc}")
     elif family == "mixed_model":
         mixed_model_dir = figure_family_dir(fig_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
+        for branch_key in ("mixed_model_selected_state", "mixed_model_visual_response_responsive_selected_state", "mixed_model_visual_response_nonresponsive_selected_state"):
+            branch_data = results.get(branch_key, {})
+            issues = _mixed_model_branch_validation_issues(branch_key, branch_data)
+            if not issues and isinstance(branch_data, dict) and not (branch_data.get("designs") or branch_data.get("summary_rows") or branch_data.get("contrast_rows")):
+                issues = [f"{branch_key}: no usable model rows"]
+            for issue in issues:
+                step_message(f"skipped mixed-model plot data: {issue}")
         mixed_model_plotters = mixed_model_branch_render_specs(results, review=False)
         legacy_scope_names = not run_params and bool(results.get("mixed_model"))
         for plot_idx, spec in enumerate(mixed_model_plotters, start=1):
@@ -10348,15 +10381,17 @@ def build_mask_aware_dataset_from_cache(cache: Dict[str, Any], path: Path, state
     for animal_id, animal in cache.get("animals", {}).items():
         for dendrite_id, dendrite in animal.get("dendrites", {}).items():
             for day_id, obs in dendrite.get("observations", {}).items():
-                exp = cache.get("experiments", {}).get(day_id, {}); masks = exp.get("state_masks", {})
-                signals = [(f"{animal_id}|{day_id}|dendrite|{dendrite_id}", obs.get("trace"))]
+                exp_id = str(obs.get("exp_id") or day_id)
+                exp = cache.get("experiments", {}).get(exp_id, {})
+                masks = exp.get("state_masks", {})
+                signals = [(make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="dendrite", roi_id=dendrite_id, plane=obs.get("plane")), obs.get("trace"))]
                 for spine_id in obs.get("spine_ids", []):
-                    sobs = dendrite.get("spines", {}).get(spine_id, {}).get("observations", {}).get(day_id)
-                    if sobs is not None: signals.append((f"{animal_id}|{day_id}|spine_specific|{spine_id}", sobs.get("spine_specific")))
+                    sobs = dendrite.get("spines", {}).get(spine_id, {}).get("observations", {}).get(exp_id)
+                    if sobs is not None: signals.append((make_global_roi_id(animal_id=animal_id, expid=exp_id, day_id=exp_id, compartment="spine_specific", roi_id=spine_id, plane=sobs.get("plane", obs.get("plane"))), sobs.get("spine_specific")))
                 for state in state_labels:
                     mask = np.asarray(masks.get(state, []), dtype=bool)
                     if mask.size == 0 or not np.any(mask): continue
-                    signature = hashlib.sha256(mask.astype(np.uint8).tobytes()).hexdigest()
+                    signature = array_signature(mask)
                     for key, trace in signals:
                         if trace is not None and np.asarray(trace).size == mask.size: entries[mask_aware_entry_key(key, signature)] = np.asarray(trace, dtype=float)[mask]
     return build_mask_aware_shuffle_dataset_once(path, {"pipeline": "dendrites_pipeline", "state_labels": list(state_labels)}, entries, shuffle_n=shuffle_n, seed=seed, min_shift_frames=min_shift_frames, pipeline="dendrites_pipeline", log=step_message)
@@ -14359,6 +14394,14 @@ def run_mixed_model_analysis(
                 "coincident_event_frequency_per_min": [],
                 "noncoincident_event_frequency_per_min": [],
             },
+            "state_summary_rows": {
+                "mean_dendrite_activity": [],
+                "mean_spine_activity_per_dendrite": [],
+                "dendrite_event_frequency_per_min": [],
+                "spine_event_frequency_per_min": [],
+                "coincident_event_frequency_per_min": [],
+                "noncoincident_event_frequency_per_min": [],
+            },
             "contrast_rows": [],
             "validation_rows": [],
             "designs": {},
@@ -14417,6 +14460,7 @@ def run_mixed_model_analysis(
                 p_value_source=p_value_source,
             )
             branch["summary_rows"][response].extend(result.get("summary_rows", []))
+            branch["state_summary_rows"][response].extend(result.get("state_summary_rows", []))
             branch["contrast_rows"].extend(result.get("contrast_rows", []))
             branch["p_value_source"] = result.get("p_value_source", p_value_source)
             branch["p_value_source_requested"] = result.get("p_value_source_requested", p_value_source)
@@ -16299,7 +16343,13 @@ def write_analysis_outputs(
                     leaf_results["mixed_model"] = leaf_split_mixed_model
                     leaf_results["mixed_model_selected_state"] = leaf_split_mixed_model
                 leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name)
-                leaf_figure_root = branch_leaf_figure_root(branch_root, branch_name, basis_name)
+                # ``branch_root`` is the analysis tree. In comparison runs
+                # the corresponding figure tree is rooted beside it, and
+                # ``figure_root`` points at the current pooled/all leaf.
+                # Deriving the figure parent from that leaf keeps recursive
+                # branch rendering out of ``analysis/...``.
+                figure_tree_root = Path(figure_root).parents[1] if figure_root is not None else branch_root
+                leaf_figure_root = branch_leaf_figure_root(figure_tree_root, branch_name, basis_name)
                 # Shared visual-response and event-example galleries are
                 # generated once at the comparison root; branch leaves only
                 # need their branch-specific analysis/review/checkpoint plots.

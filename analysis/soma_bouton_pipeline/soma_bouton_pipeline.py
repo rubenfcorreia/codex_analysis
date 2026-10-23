@@ -103,6 +103,7 @@ from analysis.shared.analysis_families.coincidence import build_bidirectional_co
 from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
 from analysis.shared.plots.dff_heatmaps import records_from_soma_contexts, render_dff_heatmaps
+from analysis.shared.plots.figure_io import save_figure
 from analysis.shared.analysis_cache import (
     ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
     ANALYSIS_TABLE_CACHE_SCHEMA_VERSION,
@@ -112,7 +113,7 @@ from analysis.shared.analysis_cache import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import METHODOLOGY_VERSION, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
+from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
@@ -304,7 +305,7 @@ def _build_soma_mask_aware_shuffle_dataset(config: Mapping[str, Any], repo_root:
                     roi_id = roi_ids[index] if index < len(roi_ids) else index; plane = planes[index] if index < len(planes) else None
                     base_key = make_global_roi_id(animal_id=ctx.animal_id, expid=ctx.expid, day_id=ctx.day_id, compartment=compartment, channel=channel, roi_id=roi_id, plane=plane, roi_index=None if plane is not None else index)
                     for state, mask in masks.items():
-                        mask = np.asarray(mask, dtype=bool); signature = hashlib.sha256(mask.astype(np.uint8).tobytes()).hexdigest()
+                        mask = np.asarray(mask, dtype=bool); signature = array_signature(mask)
                         if mask.size == trace.size and np.any(mask): entries[mask_aware_entry_key(base_key, signature)] = np.asarray(trace[mask], dtype=float)
     path = result_root / "analysis" / "cache" / "soma_bouton_mask_aware_shuffle_dataset.h5"
     return build_mask_aware_shuffle_dataset_once(path, {"pipeline": "soma_bouton_pipeline", "states_by_mode": {k: list(v) for k, v in states_by_mode.items()}}, entries, shuffle_n=int(config.get("pairwise_correlation_shuffle_n", 100)), seed=int(config.get("correlation_shuffle_seed", 12345)), min_shift_frames=int(config.get("correlation_min_shift_frames", 1)), pipeline="soma_bouton_pipeline", log=lambda message: print(message, file=sys.stderr))
@@ -453,26 +454,38 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     union_states_by_mode = union_state_labels(preset_state_maps)
     shared_union_rows_cache_path = base_result_root / "analysis" / "general" / "cache" / "soma_bouton_union_rows_cache.npz"
     all_expids_by_mode = {mode: list(dict.fromkeys([*config.get(f"{mode}_expids", []), *[expid for _, overrides in plan.presets for expid in overrides.get(f"{mode}_expids", [])]])) for mode in ("movie", "sleep")}
-    if not bool(config.get("plots_only")):
-        _build_soma_source_cache(
-            config,
-            repo_root,
-            shared_source_cache_path,
-            all_expids_by_mode,
-        )
     requires_shuffle_dataset = _requires_full_trace_shuffle_dataset(config, plan.presets)
-    mask_aware_dataset_info = _build_soma_mask_aware_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, union_states_by_mode)
-    if requires_shuffle_dataset:
-        try:
-            shuffle_dataset_info = _build_soma_shuffle_dataset(config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets))
-        except FileNotFoundError as exc:
-            if config.get("user_id") or config.get("repo_root") or config.get("repo_base"):
-                raise
-            print(f"SHUFFLE DATASET: validation failure | reason=source_unavailable | action=reject | detail={exc}", file=sys.stderr)
-            shuffle_dataset_info = {"path": str(base_result_root / "analysis" / "cache" / "soma_bouton_roi_shuffle_dataset.h5"), "sha256": "", "replicates": int(config.get("correlation_shuffle_n", 100))}
-    else:
-        print("SHUFFLE DATASET: creation skipped | reason=no_full_trace_consumer | null_model=mask_aware", file=sys.stderr)
-        shuffle_dataset_info = {"path": "", "sha256": "", "replicates": 0, "source_signature": ""}
+    try:
+        if not bool(config.get("plots_only")):
+            _build_soma_source_cache(
+                config,
+                repo_root,
+                shared_source_cache_path,
+                all_expids_by_mode,
+            )
+        mask_aware_dataset_info = _build_soma_mask_aware_shuffle_dataset(
+            config, repo_root, base_result_root, all_expids_by_mode, union_states_by_mode
+        )
+        if requires_shuffle_dataset:
+            shuffle_dataset_info = _build_soma_shuffle_dataset(
+                config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets)
+            )
+        else:
+            print("SHUFFLE DATASET: creation skipped | reason=no_full_trace_consumer | null_model=mask_aware", file=sys.stderr)
+            shuffle_dataset_info = {"path": "", "sha256": "", "replicates": 0, "source_signature": ""}
+    except FileNotFoundError as exc:
+        if config.get("user_id") or config.get("repo_root") or config.get("repo_base") or bool(config.get("plots_only")):
+            raise
+        print(f"SOURCE PRECOMPUTE: deferred until preset execution | reason=source_unavailable | detail={exc}", file=sys.stderr)
+        mask_aware_dataset_info = {
+            "path": str(base_result_root / "analysis" / "cache" / "soma_bouton_mask_aware_shuffle_dataset.h5"),
+        }
+        shuffle_dataset_info = {
+            "path": str(base_result_root / "analysis" / "cache" / "soma_bouton_roi_shuffle_dataset.h5"),
+            "sha256": "",
+            "replicates": int(config.get("correlation_shuffle_n", 100)),
+            "source_signature": "",
+        }
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_config = copy.deepcopy(dict(config))
@@ -512,7 +525,10 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
         preset_config["generate_shared_general_outputs"] = preset_index == 0
         preset_config["generate_shared_general_figures"] = preset_index == 0
         preset_config["source_cache_validate"] = False if preset_index else config.get("source_cache_validate", True)
-        preset_config["branch_first_output_root"] = str(preset_result_root)
+        # Branch-first plotting writes figures below this root. Keep the
+        # statistical/cache root separate so plotters cannot create figures
+        # under analysis/<preset>.
+        preset_config["branch_first_output_root"] = str(preset_figure_root)
         preset_config["branch_first_figures"] = True
         preset_config["figure_output_dir"] = str(preset_figure_root / "pooled" / "all")
         preset_config["generate_visual_response_entity_figures"] = preset_index == 0 and bool(config.get("generate_visual_response_entity_figures", True))
@@ -1092,6 +1108,20 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "pairwise_correlation_schema_version": 3,
         "coincidence_family_schema_version": 1,
         "coincidence_example_top_n": int(coincidence_example_top_n),
+        "null_model": str(config.get("null_model", config.get("pairwise_correlation_null_model", "mask_aware"))),
+        "shuffle_parameters": {
+            "shuffle_n": int(config.get("shuffle_n", 100)),
+            "correlation_shuffle_n": int(config.get("correlation_shuffle_n", 100)),
+            "correlation_shuffle_seed": int(config.get("correlation_shuffle_seed", 12345)),
+        },
+        "roi_split_definitions": config.get("roi_split_definitions", config.get("roi_split_specs", config.get("roi_splits", {}))),
+        "mixed_model_parameters": {
+            "contrast_p_source": str(config.get("mixed_model_contrast_p_source", "classical")),
+            "formula": config.get("mixed_model_formula"),
+            "vc_level_keys": list(config.get("mixed_model_vc_level_keys", ["unit_id"])),
+        },
+        "analysis_results_schema_version": int(ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION),
+        "analysis_tables_schema_version": int(ANALYSIS_TABLE_CACHE_SCHEMA_VERSION),
     }
 
 
@@ -1175,6 +1205,160 @@ def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_r
     )
 
 
+def _validate_figure_root(path: Path, figure_root: Path, *, label: str) -> Path:
+    """Reject figure roots that resolve inside the analysis tree."""
+    resolved = Path(path).resolve()
+    canonical = Path(figure_root).resolve()
+    try:
+        resolved.relative_to(canonical)
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must be below the canonical figure root {canonical}, got {resolved}"
+        ) from exc
+    if "analysis" in resolved.parts:
+        raise ValueError(f"{label} may not contain an analysis path: {resolved}")
+    return resolved
+
+
+def _mixed_model_branch_validation_issues(branch_name: str, branch_data: Mapping[str, Any]) -> List[str]:
+    issues: List[str] = []
+    if not isinstance(branch_data, Mapping) or not branch_data:
+        return [f"{branch_name}: branch is empty"]
+    designs = branch_data.get("designs", {})
+    summary_rows = branch_data.get("summary_rows", {})
+    contrast_rows = branch_data.get("contrast_rows", [])
+    if not isinstance(designs, Mapping) or not designs:
+        issues.append(f"{branch_name}: missing designs")
+        designs = {}
+    if not isinstance(summary_rows, Mapping):
+        issues.append(f"{branch_name}: summary_rows is invalid")
+        summary_rows = {}
+    for response, design in designs.items():
+        rows = summary_rows.get(response, []) if isinstance(summary_rows, Mapping) else []
+        if not isinstance(design, Mapping):
+            issues.append(f"{branch_name}/{response}: invalid design")
+            continue
+        if not isinstance(rows, list) or not rows:
+            issues.append(f"{branch_name}/{response}: no summary rows")
+            continue
+        terms = {str(term) for term in design.get("fixed_effect_names", []) if str(term)}
+        row_terms = {str(row.get("term")) for row in rows if isinstance(row, Mapping)}
+        missing = sorted(terms - row_terms)
+        if missing:
+            issues.append(f"{branch_name}/{response}: missing fixed effects {missing}")
+        for row in rows:
+            if isinstance(row, Mapping):
+                try:
+                    estimate = float(row.get("estimate"))
+                except (TypeError, ValueError):
+                    estimate = float("nan")
+                if not np.isfinite(estimate):
+                    issues.append(f"{branch_name}/{response}: non-finite estimate for {row.get('term', 'unknown')}")
+                    break
+        if bool(design.get("include_compartment")) and len(design.get("compartment_levels", [])) < 2:
+            issues.append(f"{branch_name}/{response}: fewer than two compartment levels")
+    if not isinstance(contrast_rows, list):
+        issues.append(f"{branch_name}: contrast_rows is invalid")
+    return issues
+
+
+def _write_soma_roi_split_metrics(rows: Sequence[Mapping[str, Any]], output_root: Path) -> Dict[str, Any]:
+    output_root = Path(output_root)
+    if not rows:
+        return {"status": "skipped", "reason": "no ROI-split membership rows", "figure_paths": [], "csv_path": None, "row_count": 0}
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+    grouped = defaultdict(set)
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        group = str(row.get("split_group") or row.get("group") or "unassigned")
+        cohort = str(row.get("cohort") or "all").strip().lower()
+        if cohort not in {"all", "responsive", "nonresponsive"}:
+            cohort = "all"
+        branch = str(row.get("branch_name") or row.get("split_name") or "split")
+        basis = str(row.get("basis_name") or "all")
+        roi_type = str(row.get("roi_type") or "roi")
+        compartment = str(row.get("compartment") or "all")
+        subject = str(row.get("roi_key") or row.get("subject_id") or row.get("unit_id") or row.get("roi_id") or "")
+        if subject:
+            grouped[(branch, basis, roi_type, compartment, cohort, group)].add(subject)
+    metrics = []
+    totals = defaultdict(int)
+    for key, subjects in sorted(grouped.items()):
+        branch, basis, roi_type, compartment, cohort, group = key
+        count = len(subjects)
+        totals[(branch, basis, roi_type, compartment, cohort)] += count
+        metrics.append({"branch_name": branch, "basis_name": basis, "roi_type": roi_type, "compartment": compartment, "cohort": cohort, "split_group": group, "n_rois": count})
+    for row in metrics:
+        total = totals[(row["branch_name"], row["basis_name"], row["roi_type"], row["compartment"], row["cohort"])]
+        row["fraction"] = float(row["n_rois"] / total) if total else float("nan")
+    output_root.mkdir(parents=True, exist_ok=True)
+    csv_path = output_root / "roi_split_metrics.csv"
+    write_csv_rows(csv_path, metrics, sorted({key for row in metrics for key in row}))
+    fig_path = output_root / "roi_split_metrics.svg"
+    labels = [f"{r['branch_name']}:{r['split_group']}\n{r['cohort']}" for r in metrics]
+    values = [r["n_rois"] for r in metrics]
+    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 0.35), 5), constrained_layout=True)
+    ax.bar(range(len(values)), values, color="#4c78a8")
+    ax.set_xticks(range(len(labels)), labels, rotation=90)
+    ax.set_ylabel("Unique ROI count")
+    ax.set_title("Soma/bouton ROI split metrics")
+    ax.grid(axis="y", alpha=0.2)
+    save_figure(fig, fig_path, extra_formats=(), format="svg")
+    plt.close(fig)
+    return {"status": "written", "figure_paths": [str(fig_path)], "csv_path": str(csv_path), "row_count": len(metrics), "total_rois": int(sum(values))}
+
+
+def _figure_inventory(root: Path) -> Dict[str, Any]:
+    """Return a compact manifest-safe inventory of generated figure files."""
+    root = Path(root)
+    if not root.exists():
+        return {"root": str(root), "file_count": 0, "bytes": 0, "families": {}}
+    families: Dict[str, Dict[str, int]] = {}
+    total_bytes = 0
+    total_files = 0
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in {".svg", ".png", ".pdf"}:
+            continue
+        relative = path.relative_to(root)
+        family = relative.parts[0] if relative.parts else "root"
+        size = int(path.stat().st_size)
+        payload = families.setdefault(family, {"file_count": 0, "bytes": 0})
+        payload["file_count"] += 1
+        payload["bytes"] += size
+        total_files += 1
+        total_bytes += size
+    return {
+        "root": str(root),
+        "file_count": total_files,
+        "bytes": total_bytes,
+        "families": families,
+    }
+
+
+
+def _ungrouped_state_plot_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove ROI-split annotations from pooled state plots."""
+    split_keys = {
+        "split_group",
+        "split_group_display",
+        "split_group_color",
+        "split_group_rank",
+        "split_name",
+        "split_mode",
+        "branch_name",
+        "basis_name",
+        "roi_type",
+    }
+    return [
+        {key: value for key, value in dict(row).items() if key not in split_keys}
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
+
 
 def _state_plot_rows_for_branch(
     leaf_roi_split: Mapping[str, Any] | None,
@@ -1220,6 +1404,15 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     pipeline_started = time.perf_counter()
     layout = resolve_result_layout(config, root_key="result_root", legacy_root_key="result_root", repo_root=repo_root)
     result_root = layout.analysis_root
+    # ResultLayout keeps analysis and figures as siblings for normal runs.
+    # Comparison batches pass a figure branch root explicitly because their
+    # analysis root is nested below analysis/<preset>.
+    branch_root_config = config.get("branch_first_output_root")
+    if branch_root_config:
+        branch_root_path = resolve_repo_path(branch_root_config, repo_root)
+        canonical_figure_root = branch_root_path if branch_root_path.name == "figures" else branch_root_path.parent
+    else:
+        canonical_figure_root = layout.run_root / "figures"
     runtime_diagnostics_start = snapshot_runtime_diagnostics(result_root)
     preset_name = str(config.get("comparison_preset_name") or "default")
     if config.get("branch_first_figures"):
@@ -1230,8 +1423,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         figure_root = resolve_repo_path(config["figure_output_dir"], repo_root) if config.get("figure_output_dir") else layout.figure_root
     generate_shared_general_outputs = bool(config.get("generate_shared_general_outputs", False))
     generate_shared_general_figures = bool(config.get("generate_shared_general_figures", False))
+    figure_root = _validate_figure_root(figure_root, canonical_figure_root, label="figure_root")
     general_output_root = resolve_repo_path(config.get("general_output_root"), repo_root) if config.get("general_output_root") else None
-    general_figure_root = resolve_repo_path(config.get("general_figure_root"), repo_root) if config.get("general_figure_root") else (layout.figure_root / "general" if generate_shared_general_figures else None)
+    general_figure_root = resolve_repo_path(config.get("general_figure_root"), repo_root) if config.get("general_figure_root") else (canonical_figure_root / "general" if generate_shared_general_figures else None)
+    if general_figure_root is not None:
+        general_figure_root = _validate_figure_root(general_figure_root, canonical_figure_root, label="general_figure_root")
     shared_general_root = general_figure_root if generate_shared_general_figures else None
     general_csv_root = (general_output_root / "csv") if general_output_root is not None else (result_root / "csv")
     write_general_tables = general_output_root is None or generate_shared_general_outputs
@@ -1470,7 +1666,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     cached_transition_events = list(table_rows.get("state_transition_event_rows", []))
                     transition_results = {"event_rows": cached_transition_events, "pooled_summary_rows": paired_transition_summaries(cached_transition_events), "summary_rows": paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events)), "figure_paths": [], "alerts": []}
                     if cached_transition_events:
-                        transition_figure_root = (general_output_root if general_output_root is not None and generate_shared_general_outputs else figure_root)
+                        transition_figure_root = (general_figure_root if general_figure_root is not None and generate_shared_general_figures else figure_root)
                         transition_results["figure_paths"] = plot_transition_summaries(
                             cached_transition_events,
                             Path(transition_figure_root),
@@ -1986,6 +2182,10 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         roi_split_results["branches"].setdefault(branch_key, {})[basis_key] = bundle
 
     split_membership_rows = roi_split_results.get("membership_rows", []) if isinstance(roi_split_results, dict) else []
+    roi_split_metrics = {"status": "not_requested", "figure_paths": [], "csv_path": None, "row_count": 0}
+    if shared_general_root is not None:
+        roi_split_metrics = _write_soma_roi_split_metrics(split_membership_rows, Path(shared_general_root) / "roi_split")
+
     if split_membership_rows:
         activity_rows_with_cohort = annotate_rows_with_split_group(activity_rows_with_cohort, split_membership_rows)
         correlation_rows_with_cohort = annotate_rows_with_split_group(correlation_rows_with_cohort, split_membership_rows)
@@ -2128,7 +2328,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             grouped_rows.setdefault(key, []).append(row)
         for (scope, window_mode), grouped in sorted(grouped_rows.items()):
             _stage("writing csv", f"state_transition_{table_name}_{scope}_{window_mode}")
-            transition_root = (general_figure_root / "state_transitions") if general_figure_root is not None else (figure_root / "state_transitions")
+            transition_root = (general_csv_root / "state_transitions") if general_output_root is not None else (result_root / "csv" / "state_transitions")
             path = transition_root / f"state_transition_{table_name}_{scope}_{window_mode}.csv"
             write_csv_rows(path, grouped, sorted({key for row in grouped for key in row.keys()}))
 
@@ -2223,7 +2423,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort_rows = cohort_activity_rows.get(cohort_name, [])
             if not cohort_rows:
                 continue
-            cohort_plot_rows = _state_plot_rows_for_branch(roi_split_results, cohort_rows, cohort_name)
+            cohort_plot_rows = _ungrouped_state_plot_rows(cohort_rows)
             if not cohort_plot_rows:
                 continue
             plot_state_activity(
@@ -2352,19 +2552,28 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             dff_heatmap_files = list(dff_heatmap_files)
         if not poster_ready_only and mixed_model_results:
             mixed_model_fig_dir = ensure_dir(figure_root / "mixed_model")
-            for cohort_name, cohort_results in mixed_model_results.items():
+            mixed_model_validation = {}
+            for cohort_name in ("all", "responsive", "nonresponsive"):
+                cohort_results = mixed_model_results.get(cohort_name, {})
                 if not isinstance(cohort_results, dict) or not cohort_results:
+                    mixed_model_validation[cohort_name] = {"status": "skipped", "reason": "cohort has no model results"}
                     continue
-                cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
                 for compartment_key, compartment_results in cohort_results.items():
-                    if not isinstance(compartment_results, dict) or not compartment_results:
+                    if not isinstance(compartment_results, dict):
+                        mixed_model_validation[f"{cohort_name}/{compartment_key}"] = {"status": "skipped", "reason": "compartment results are invalid"}
                         continue
-                    compartment_dir = ensure_dir(cohort_dir / compartment_key)
                     for scope_key in ("selected_state",):
                         branch = compartment_results.get(scope_key, {})
-                        scope_label = scope_key.replace("_", " ")
-                        if not isinstance(branch, dict) or not branch:
+                        branch_name = f"{cohort_name}/{compartment_key}/{scope_key}"
+                        issues = _mixed_model_branch_validation_issues(branch_name, branch)
+                        mixed_model_validation[branch_name] = {"status": "ok" if not issues else "skipped", "issues": issues}
+                        if issues:
+                            for issue in issues:
+                                _stage("skipped mixed-model figure", issue)
                             continue
+                        cohort_dir = ensure_dir(mixed_model_fig_dir / cohort_name)
+                        compartment_dir = ensure_dir(cohort_dir / compartment_key)
+                        scope_label = scope_key.replace("_", " ")
                         mixed_model_payload = {
                             "analysis_state_selection": {
                                 "state_comparison_states": list(analysis_state_order),
@@ -2848,7 +3057,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
             for cohort_name in ("all", "responsive", "nonresponsive"):
                 cohort_rows = basis_activity_rows.get(cohort_name, [])
-                plot_rows = _state_plot_rows_for_branch(leaf_roi_split, cohort_rows, cohort_name, require_split=branch_name in SPLIT_BRANCHES)
+                plot_rows = (
+                    _ungrouped_state_plot_rows(cohort_rows)
+                    if branch_name == "pooled" and basis_name == "all"
+                    else _state_plot_rows_for_branch(leaf_roi_split, cohort_rows, cohort_name, require_split=branch_name in SPLIT_BRANCHES)
+                )
                 if not plot_rows:
                     continue
                 plot_state_activity(
@@ -3086,6 +3299,18 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             cohort="all",
         ).as_dict(),
         "output_artifacts": collect_output_artifacts(result_root),
+        "figure_output_root": str(figure_root),
+        "figure_artifacts": collect_output_artifacts(figure_root),
+        "figure_inventory": _figure_inventory(figure_root),
+        "general_figure_output_root": str(general_figure_root) if general_figure_root is not None else None,
+        "general_figure_inventory": _figure_inventory(general_figure_root) if general_figure_root is not None else None,
+        "roi_split_metrics": roi_split_metrics,
+        "mixed_model_validation": mixed_model_validation if "mixed_model_validation" in locals() else {},
+        "family_reports": {
+            "mixed_model": {"status": "validated", "cohorts": list((mixed_model_validation if "mixed_model_validation" in locals() else {}).keys())},
+            "roi_split": {"status": str(roi_split_metrics.get("status")), "row_count": int(roi_split_metrics.get("row_count", 0))},
+            "visual_response": {"status": "shared_general" if shared_general_root is not None else "preset_specific", "row_count": len(visual_response_rows)},
+        },
         "selected_states_by_mode": selected_states_by_mode_payload,
         "state_modes": state_modes,
         "day_groups": day_groups,
@@ -3312,6 +3537,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "generated_by_preset": preset_name,
             "output_root": str(general_output_root),
             "output_artifacts": collect_output_artifacts(general_output_root),
+            "figure_output_root": str(general_figure_root) if general_figure_root is not None else None,
+            "figure_artifacts": collect_output_artifacts(general_figure_root) if general_figure_root is not None else [],
+            "figure_inventory": _figure_inventory(general_figure_root) if general_figure_root is not None else None,
+            "roi_split_metrics": roi_split_metrics,
+            "mixed_model_validation": mixed_model_validation if "mixed_model_validation" in locals() else {},
         })
     cache_started = time.perf_counter()
     save_analysis_results_cache(

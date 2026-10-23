@@ -101,6 +101,8 @@ def test_soma_preset_orchestration_shares_union_cache(monkeypatch, tmp_path):
     assert analysis_runs[0]["union_state_labels_by_mode"]["movie"] == ["active", "quiet"]
     assert analysis_runs[0]["generate_shared_general_outputs"] is True
     assert analysis_runs[1]["generate_shared_general_outputs"] is False
+    assert Path(analysis_runs[0]["figure_output_dir"]).parts[-4:-2] == ("figures", "first")
+    assert Path(analysis_runs[1]["figure_output_dir"]).parts[-4:-2] == ("figures", "second")
 
 
 def test_dendrites_preset_orchestration_shares_union_cache(monkeypatch, tmp_path):
