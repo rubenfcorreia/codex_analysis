@@ -120,6 +120,7 @@ def test_dendrites_preset_orchestration_shares_union_cache(monkeypatch, tmp_path
     pipeline.run_comparison_preset_subprocesses({
         "output_dir": str(tmp_path / "results"),
         "cache_path": str(tmp_path / "cache.npz"),
+        "allow_external_cache_read_only": True,
         "movie_expids": ["movie-1"],
         "comparison_presets": {
             "first": {"state_comparison_states": ["quiet_awake"]},

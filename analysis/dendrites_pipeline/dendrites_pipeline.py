@@ -39,6 +39,7 @@ from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.run_timing import RunTimer, attach_timing_to_outputs, write_timing_report
 from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
 from analysis.shared.pipeline_logging import (
@@ -200,6 +201,7 @@ def extract_dendrite_token(global_dendrite_id: Any) -> str:
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
 if __name__ == "__main__":
     sys.modules.setdefault("dendrites_pipeline", sys.modules[__name__])
     sys.modules.setdefault("analysis.dendrites_pipeline.dendrites_pipeline", sys.modules[__name__])
@@ -509,6 +511,7 @@ USER_EDITABLE_DEFAULTS = {
         "window_modes": ["strict", "max_available"],
         "scopes": ["all_states", "sleep_states"],
         "metrics": ["activity", "event_frequency"],
+        "max_event_rows": None,
     },
     "source_cache_rebuild": False,
     "analysis_tables_rebuild": False,
@@ -528,6 +531,7 @@ USER_EDITABLE_DEFAULTS = {
     "locomotion_threshold": None,
     "rebuild": False,
     "cache_path": None,
+    "allow_external_cache_read_only": False,
     "analysis_tables_cache_path": None,
     "analysis_run_cache_path": None,
     "analysis_results_cache_path": None,
@@ -970,6 +974,8 @@ def format_report_list(values: Any, max_items: int = 10) -> str:
     shown = ", ".join(items[:max_items])
     return f"{shown}, ... (+{len(items) - max_items} more)"
 def is_significant_row(row: Dict[str, Any], alpha: float = REPORT_SIGNIFICANCE_ALPHA, p_key: str = "shuffle_p") -> bool:
+    if row.get("inferential_valid") is False:
+        return False
     source = str(row.get("p_value_source") or "").strip().lower()
     if source and p_key == "shuffle_p" and source not in {"shuffle", "circular_shift"}:
         return False
@@ -7427,7 +7433,7 @@ def generate_analysis_figures(
     roi_split_results = results.get("roi_split", {})
     roi_run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
     roi_general_enabled = bool(roi_run_params.get("generate_shared_general_figures", False))
-    roi_general_root = Path(roi_run_params.get("general_output_root")) if roi_run_params.get("general_output_root") else None
+    roi_general_root = Path(roi_run_params.get("general_figure_root")) if roi_run_params.get("general_figure_root") else None
     roi_split_target_dir = (roi_general_root / "roi_split") if roi_general_root is not None else (fig_dir / "roi_split")
     roi_split_bundles = (
         roi_split_results.get("bundles", [])
@@ -9356,6 +9362,7 @@ def build_state_masked_event_info(
     *,
     method: Optional[str] = None,
     min_consecutive_frames: int = 3,
+    include_all_methods: bool = True,
 ) -> Dict[str, Any]:
     source_info = full_event_info if isinstance(full_event_info, dict) else {}
     selected_method = get_active_event_detection_method(method or source_info.get("method") or source_info.get("primary_method"))
@@ -9367,6 +9374,7 @@ def build_state_masked_event_info(
         method=selected_method,
         threshold=threshold,
         min_consecutive_frames=min_consecutive_frames,
+        include_all_methods=include_all_methods,
     )
 
 
@@ -9857,6 +9865,22 @@ def family_results_cache_path(cache_path: Path, stage: str) -> Path:
 
 def family_results_cache_index(cache_path: Path) -> Dict[str, str]:
     return {stage: str(family_results_cache_path(cache_path, stage)) for stage in FAMILY_RESULT_CACHE_STAGES}
+
+
+def validate_cache_location(path: Path, analysis_root: Path, config: Mapping[str, Any], label: str) -> None:
+    candidate = Path(path).resolve()
+    root = Path(analysis_root).resolve()
+    try:
+        candidate.relative_to(root)
+        return
+    except ValueError:
+        pass
+    read_only = bool(config.get("allow_external_cache_read_only"))
+    rebuild_requested = any(bool(config.get(key)) for key in ("rebuild", "source_cache_rebuild", "analysis_tables_rebuild", "analysis_results_rebuild", "shared_shuffle_cache_rebuild"))
+    if read_only and not rebuild_requested:
+        return
+    mode = "; external caches are read-only and cannot be rebuilt" if read_only else "; set allow_external_cache_read_only=true only for intentional reuse"
+    raise ValueError(f"{label} must be under analysis root {root}: {candidate}{mode}")
 
 
 def family_results_cache_stage_for_selection(selected_families: Optional[Sequence[str]]) -> str:
@@ -13812,6 +13836,8 @@ def build_fixed_effect_fallback_result(design: Dict[str, Any], reason: str) -> D
             "include_dendrite": False,
         },
         "random_structure_name": "ols_fallback",
+        "fit_status": "fallback",
+        "inferential_valid": False,
         "design": design,
     }
 def fit_mixedlm_fixed_structure(
@@ -13871,6 +13897,9 @@ def fit_mixedlm_fixed_structure(
         "result": last_result,
         "fit_method": last_method,
         "converged": bool(getattr(last_result, "converged", False)),
+        "fit_status": "converged" if bool(getattr(last_result, "converged", False)) else "nonconverged",
+        "inferential_valid": bool(getattr(last_result, "converged", False)),
+        "fallback_reason": None,
         "warning_messages": [],
         "warning_count": 0,
         "random_structure": {
@@ -14120,7 +14149,10 @@ def summarize_mixed_model_result(
                 "estimate": estimate,
                 "se": se,
                 "z": z_value,
-                "p_value": p_value,
+                "p_value": p_value if fit_info.get("inferential_valid", True) else float("nan"),
+                "inferential_valid": bool(fit_info.get("inferential_valid", False)),
+                "fallback_reason": fit_info.get("fallback_reason"),
+                "fit_status": fit_info.get("fit_status"),
                 "random_structure": fit_info.get("random_structure_name"),
                 "fit_method": fit_info.get("fit_method"),
                 "converged": bool(fit_info.get("converged", False)),
@@ -14294,8 +14326,11 @@ def run_mixed_model_family(
             "estimate": observed["estimate"],
             "se": observed["se"],
             "z": observed["z"],
-            "classical_p": observed["classical_p"],
-            "shuffle_p": active_p,
+            "classical_p": observed["classical_p"] if fit_info.get("inferential_valid", True) else float("nan"),
+            "shuffle_p": active_p if fit_info.get("inferential_valid", True) else float("nan"),
+            "inferential_valid": bool(fit_info.get("inferential_valid", False)),
+            "fallback_reason": fit_info.get("fallback_reason"),
+            "fit_status": fit_info.get("fit_status"),
             "p_value_source": effective_p_value_source,
             "shuffle_n_requested": shuffle_n_requested,
             "shuffle_n_success": shuffle_n_success,
@@ -16200,7 +16235,9 @@ def write_analysis_outputs(
     if source_cache is not None and bool(progression_config.get("enabled", False)) and (not configured_general_root or bool(run_params.get("generate_shared_general_outputs", False))):
         from analysis.shared.progression import run_dendrite_spine_progression
         progression_root = Path(configured_general_root) if configured_general_root else (Path(output_dir) / "general")
-        run_dendrite_spine_progression(source_cache, progression_root / "progression", progression_config)
+        configured_figure_root = run_params.get("general_figure_root")
+        progression_figure_root = (Path(configured_figure_root) / "progression") if configured_figure_root else None
+        run_dendrite_spine_progression(source_cache, progression_root / "progression", progression_config, figure_root=progression_figure_root)
 
     if include_supporting_figures:
         # Save figures first so the JSON report can include their exact file paths.
@@ -16348,7 +16385,14 @@ def write_analysis_outputs(
                 # ``figure_root`` points at the current pooled/all leaf.
                 # Deriving the figure parent from that leaf keeps recursive
                 # branch rendering out of ``analysis/...``.
-                figure_tree_root = Path(figure_root).parents[1] if figure_root is not None else branch_root
+                if figure_root is not None:
+                    figure_tree_root = Path(figure_root).parents[1]
+                else:
+                    # Comparison analysis and figure trees are siblings.  A
+                    # missing parent figure root must not make recursive leaf
+                    # plots fall back into analysis/<preset>/pooled/all.
+                    branch_root_path = Path(branch_root)
+                    figure_tree_root = branch_root_path.parents[1] / "figures" / branch_root_path.name
                 leaf_figure_root = branch_leaf_figure_root(figure_tree_root, branch_name, basis_name)
                 # Shared visual-response and event-example galleries are
                 # generated once at the comparison root; branch leaves only
@@ -16407,7 +16451,24 @@ def write_analysis_outputs(
         # its manifest is written by the outer orchestration layer using the
         # common comparison root. Leaf calls still publish transactionally.
         if not branch_first_figures:
-            write_manifest(output_dir, jsonable(results))
+            # Branch leaves store analysis outputs and figures in sibling
+            # trees. Keep the manifest beside the leaf analysis outputs, but
+            # declare the shared root so validation can include both trees.
+            manifest_root = Path(output_dir)
+            if figure_root is not None:
+                manifest_root = Path(os.path.commonpath([
+                    str(Path(output_dir).resolve()),
+                    str(Path(figure_root).resolve()),
+                ]))
+            manifest_payload = jsonable(results)
+            manifest_payload["output_root"] = str(manifest_root)
+            manifest_payload["output_artifacts"] = [
+                str((Path(output_dir) / str(path)).resolve())
+                if not Path(str(path)).is_absolute()
+                else str(path)
+                for path in written_artifacts
+            ]
+            write_manifest(output_dir, manifest_payload)
         return list(dict.fromkeys(written_artifacts))
     json_path = output_dir / "analysis_results.json"
     with json_path.open("w") as handle:
@@ -18003,21 +18064,29 @@ def _build_dendrite_shuffle_dataset(
     return build_shuffle_dataset_once(path, metadata, signals, shuffle_n=shuffle_n, seed=seed, min_shift_frames=int(config.get("correlation_min_shift_frames", 1)), pipeline="dendrites_pipeline", preset_count=preset_count, log=lambda message: print(message, file=sys.stderr))
 
 
-def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
+def _run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     preset_names = parse_list_argument(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
     plan = build_comparison_preset_batch_plan(
         presets,
         selected_names=preset_names,
-        poster_ready_only=bool(config.get("poster_ready_only")),
+        poster_ready_only=bool(config.get("poster_ready_only")) and not bool(preset_names),
         poster_required_names=POSTER_REQUIRED_COMPARISON_PRESETS,
     )
     if not plan.presets:
         return False
+    resolved_names = [name for name, _ in plan.presets]
+    if preset_names and set(resolved_names) != set(preset_names):
+        raise RuntimeError(
+            f"resolved comparison preset set {resolved_names} does not match explicit selection {preset_names}"
+        )
+    config["_resolved_preset_names"] = list(resolved_names)
+    print(f"PRESET PLAN pipeline=dendrites_pipeline names={resolved_names}", file=sys.stderr)
     validate_shuffle_preset_overrides(plan.presets, log=lambda message: print(message, file=sys.stderr))
 
     base_output_dir = resolve_repo_path(config.get("comparison_output_root") or config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
     shared_cache_path = resolve_repo_path(config.get("cache_path") or (base_output_dir / "analysis" / DEFAULT_CACHE_DIRNAME / DEFAULT_CACHE_NAME), REPO_ROOT)
+    validate_cache_location(shared_cache_path, base_output_dir / "analysis", config, "shared source cache")
 
     child_script = Path(__file__).resolve()
     preset_configs: Dict[str, Dict[str, Any]] = {}
@@ -18066,6 +18135,7 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         preset_config.update(overrides)
         preset_config["comparison_preset_name"] = preset_name
         preset_config["output_dir"] = str(preset_output_dir)
+        preset_config["comparison_output_root"] = str(base_output_dir)
         preset_config["analysis_output_dir"] = str(preset_output_dir)
         preset_config["cache_path"] = str(shared_cache_path)
         preset_config["shuffle_dataset_path"] = str(shuffle_dataset_info["path"])
@@ -18096,12 +18166,10 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
             preset_family_stage = family_results_cache_stage_for_selection(preset_config.get("analysis_families"))
             preset_family_cache_path = family_results_cache_path(preset_cache_path, preset_family_stage)
             if not preset_results_cache_path.exists() and not preset_family_cache_path.exists():
-                print(
-                    "[comparison preset] "
-                    f"{preset_name}: plots_only cache missing; rebuilding analysis results for this preset",
-                    file=sys.stderr,
+                raise FileNotFoundError(
+                    f"plots_only requires a valid analysis or family-results cache for preset {preset_name}: "
+                    f"{preset_results_cache_path} or {preset_family_cache_path}. Run the analysis pass first."
                 )
-                preset_config["plots_only"] = False
         preset_config["plots_only_include_supporting_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         preset_config["generate_shared_general_figures"] = bool(generate_once and not preset_config.get("plots_only"))
@@ -18147,6 +18215,33 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
             except FileNotFoundError:
                 pass
     return True
+
+
+def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
+    preset_names = parse_list_argument(config.get("comparison_preset_names"))
+    timer = RunTimer(
+        "dendrites_pipeline",
+        config_path=str(config.get("_config_path") or ""),
+        output_root=str(config.get("comparison_output_root") or config.get("output_dir") or DEFAULT_RESULTS_DIR),
+        mode="plots_only" if bool(config.get("plots_only")) else "full",
+        preset_names=list(preset_names or []),
+    )
+    root = resolve_repo_path(config.get("comparison_output_root") or config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+    try:
+        result = _run_comparison_preset_subprocesses(config)
+        payload = timer.finish(exit_status="completed")
+        payload["scope"] = "preset_batch"
+        payload["resolved_preset_names"] = list(config.get("_resolved_preset_names") or preset_names or [])
+        write_timing_report(root / "batch_timing_report.json", payload)
+        attach_timing_to_outputs(root, payload)
+        return result
+    except BaseException as exc:
+        payload = timer.finish(exit_status="failed", error=exc)
+        payload["scope"] = "preset_batch"
+        payload["resolved_preset_names"] = list(config.get("_resolved_preset_names") or preset_names or [])
+        write_timing_report(root / "batch_timing_report.json", payload)
+        attach_timing_to_outputs(root, payload)
+        raise
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -18250,7 +18345,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--demo-spec", type=Path, help="Optional JSON file describing custom demo characteristics")
     return parser
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
     # Parse the config, merge overrides, then run the cache build and analysis stages.
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -18299,6 +18394,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "rebuild": True if args.rebuild else None,
     }
     config = merge_cli_config(cli_config, file_config)
+    config["_config_path"] = str(args.config) if args.config else ""
     apply_plot_profile(config)
     if config.get("comparison_presets"):
         if run_comparison_preset_subprocesses(config):
@@ -18396,6 +18492,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         analysis_run_cache_path = resolve_repo_path(config.get("analysis_run_cache_path") or cache_path, REPO_ROOT)
         analysis_tables_cache_file = resolve_repo_path(config.get("analysis_tables_cache_path") or analysis_table_cache_path(cache_path), REPO_ROOT)
         analysis_results_cache_file = resolve_repo_path(config.get("analysis_results_cache_path") or analysis_results_cache_path(analysis_run_cache_path), REPO_ROOT)
+        shared_output_root = resolve_repo_path(config.get("comparison_output_root"), REPO_ROOT) if config.get("comparison_output_root") else output_dir
+        shared_analysis_root = shared_output_root / "analysis" if config.get("comparison_output_root") else output_dir
+        validate_cache_location(cache_path, shared_analysis_root, config, "source cache")
+        validate_cache_location(analysis_tables_cache_file, shared_analysis_root, config, "analysis-tables cache")
+        for cache_label, cache_file in (("analysis-run cache", analysis_run_cache_path), ("analysis-results cache", analysis_results_cache_file)):
+            validate_cache_location(cache_file, output_dir, config, cache_label)
+        if config.get("shared_union_rows_cache_path"):
+            validate_cache_location(resolve_repo_path(config["shared_union_rows_cache_path"], REPO_ROOT), shared_analysis_root, config, "shared union-rows cache")
+        if config.get("shuffle_dataset_path"):
+            validate_cache_location(resolve_repo_path(config["shuffle_dataset_path"], REPO_ROOT), shared_analysis_root, config, "shuffle dataset")
         if config.get("figures_only"):
             required = [cache_path, analysis_tables_cache_file, analysis_results_cache_file]
             missing = [str(path) for path in required if not path.exists()]
@@ -19073,5 +19179,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         info("Issues encountered: none")
     return 0
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args_list = list(argv) if argv is not None else sys.argv[1:]
+    config_path = None
+    if "--config" in args_list:
+        index = args_list.index("--config")
+        if index + 1 < len(args_list):
+            config_path = Path(args_list[index + 1])
+    config_path = config_path or Path(__file__).with_name("sleep_dendrite_spine_example_config.json")
+    file_config = load_config_file(config_path) if config_path.exists() else {}
+    preset_names = parse_list_argument(file_config.get("comparison_preset_names"))
+    timer = RunTimer(
+        "dendrites_pipeline",
+        config_path=str(config_path),
+        output_root=str(file_config.get("comparison_output_root") or file_config.get("output_dir") or DEFAULT_RESULTS_DIR),
+        mode="plots_only" if bool(file_config.get("plots_only")) else "full",
+        preset_names=list(preset_names or []),
+    )
+    try:
+        result = _main_impl(argv)
+        payload = timer.finish(exit_status="completed")
+        payload["scope"] = "process"
+        output_root = resolve_repo_path(file_config.get("comparison_output_root") or file_config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+        write_timing_report(output_root / "run_timing.json", payload)
+        attach_timing_to_outputs(output_root, payload)
+        return result
+    except BaseException as exc:
+        payload = timer.finish(exit_status="failed", error=exc)
+        payload["scope"] = "process"
+        output_root = resolve_repo_path(file_config.get("comparison_output_root") or file_config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)
+        write_timing_report(output_root / "run_timing.json", payload)
+        attach_timing_to_outputs(output_root, payload)
+        raise
+
 if __name__ == "__main__":
     raise SystemExit(main())

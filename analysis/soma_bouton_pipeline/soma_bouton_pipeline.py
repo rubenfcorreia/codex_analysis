@@ -41,10 +41,11 @@ from analysis.compartment_common import (
 from analysis.shared.comparison_preset_flow import (
     POSTER_REQUIRED_COMPARISON_PRESETS,
     build_comparison_preset_batch_plan,
-    load_all_requested_comparison_rows,
+    load_all_state_comparison_rows,
     load_comparison_preset_csv_rows,
 )
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
+from analysis.shared.run_timing import RunTimer, attach_timing_to_outputs, write_timing_report
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
@@ -418,7 +419,7 @@ def _requires_full_trace_shuffle_dataset(config: Mapping[str, Any], presets: Seq
             return True
     return False
 
-def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
+def _run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     preset_names = _preset_selection_names(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
     plan = build_comparison_preset_batch_plan(
@@ -429,6 +430,14 @@ def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]
     )
     if not plan.presets:
         return []
+    resolved_names = [name for name, _ in plan.presets]
+    if preset_names and set(resolved_names) != set(preset_names):
+        raise RuntimeError(
+            f"resolved comparison preset set {resolved_names} does not match explicit selection {preset_names}"
+        )
+    if isinstance(config, dict):
+        config["_resolved_preset_names"] = list(resolved_names)
+    print(f"PRESET PLAN pipeline=soma_bouton_pipeline names={resolved_names}", file=sys.stderr)
     validate_shuffle_preset_overrides(plan.presets, log=lambda message: print(message, file=sys.stderr))
 
     configured_repo_root = config.get("repo_root") or config.get("repo_base")
@@ -1398,6 +1407,34 @@ def _state_plot_rows_for_branch(
         scoped_rows.append(payload)
     return annotate_rows_with_split_group(scoped_rows, membership_rows)
 
+def run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    preset_names = _preset_selection_names(config.get("comparison_preset_names"))
+    repo_root = resolve_repo_root(Path(__file__))
+    root = resolve_repo_path(config.get("comparison_output_root") or config.get("result_root") or DEFAULT_CONFIG["result_root"], repo_root)
+    timer = RunTimer(
+        "soma_bouton_pipeline",
+        config_path=str(config.get("_config_path") or ""),
+        output_root=str(root),
+        mode="plots_only" if bool(config.get("plots_only")) else "full",
+        preset_names=list(preset_names or []),
+    )
+    try:
+        result = _run_comparison_preset_runs(config)
+        payload = timer.finish(exit_status="completed")
+        payload["scope"] = "preset_batch"
+        payload["resolved_preset_names"] = list(config.get("_resolved_preset_names") or preset_names or [])
+        write_timing_report(root / "batch_timing_report.json", payload)
+        attach_timing_to_outputs(root, payload)
+        return result
+    except BaseException as exc:
+        payload = timer.finish(exit_status="failed", error=exc)
+        payload["scope"] = "preset_batch"
+        payload["resolved_preset_names"] = list(config.get("_resolved_preset_names") or preset_names or [])
+        write_timing_report(root / "batch_timing_report.json", payload)
+        attach_timing_to_outputs(root, payload)
+        raise
+
+
 def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     configured_repo_root = config.get("repo_root") or config.get("repo_base")
     repo_root = resolve_repo_path(configured_repo_root, resolve_repo_root(Path(__file__))) if configured_repo_root else resolve_repo_root(Path(__file__))
@@ -2306,9 +2343,12 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if write_general_tables:
         _stage("writing csv", "general experiments")
         write_csv_rows(general_csv_root / "experiments.csv", experiment_rows, list(experiment_rows[0].keys()) if experiment_rows else ["expid"])
-    if activity_rows and write_general_tables:
-        _stage("writing csv", "general state_activity_by_experiment")
-        write_csv_rows(general_csv_root / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "split_group", "split_group_display", "split_group_color", "split_group_rank", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
+    if activity_rows:
+        _stage("writing csv", "preset state_activity_by_experiment")
+        write_csv_rows(result_root / "csv" / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "split_group", "split_group_display", "split_group_color", "split_group_rank", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
+        if write_general_tables:
+            _stage("writing csv", "general state_activity_by_experiment")
+            write_csv_rows(general_csv_root / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "split_group", "split_group_display", "split_group_color", "split_group_rank", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
     if correlation_rows and write_general_tables:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(general_csv_root / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
@@ -2708,8 +2748,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         def _load_preset_csv_rows(preset_name: str, csv_name: str) -> List[Dict[str, Any]]:
             return load_comparison_preset_csv_rows(preset_result_root, preset_name, csv_name, logger=logger)
 
-        def _load_all_requested_comparison_rows(csv_name: str) -> List[Dict[str, Any]]:
-            return load_all_requested_comparison_rows(preset_result_root, csv_name, logger=logger)
+        def _load_all_state_comparison_rows(csv_name: str) -> List[Dict[str, Any]]:
+            return load_all_state_comparison_rows(preset_result_root, csv_name, logger=logger)
 
         blank_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("blank_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
         movie_preset_activity_rows = _assign_visual_response_cohorts(_load_preset_csv_rows("movies_state_comparisons", "state_activity_by_experiment.csv"), visual_response_rows)
@@ -2882,9 +2922,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             all_correlation_path: str | None = None
             for cohort_name in ("all", "responsive", "nonresponsive"):
                 if cohort_name == "all":
-                    cohort_rows = list(_load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"))
-                    cohort_soma_pairwise_rows = list(_load_all_requested_comparison_rows("cohort/all/soma_pairwise_correlation_by_day.csv"))
-                    cohort_bouton_pairwise_rows = list(_load_all_requested_comparison_rows("cohort/all/bouton_pairwise_correlation_by_day.csv"))
+                    cohort_rows = list(_load_all_state_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"))
+                    cohort_soma_pairwise_rows = list(_load_all_state_comparison_rows("cohort/all/soma_pairwise_correlation_by_day.csv"))
+                    cohort_bouton_pairwise_rows = list(_load_all_state_comparison_rows("cohort/all/bouton_pairwise_correlation_by_day.csv"))
                 else:
                     cohort_rows = list(cohort_correlation_rows.get(cohort_name, []))
                     cohort_soma_pairwise_rows = list(cohort_soma_pairwise_summary.get(cohort_name, []))
@@ -2951,7 +2991,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     nonresponsive_comparison_rows=blank_comparison_rows + movie_comparison_rows,
                     responsive_compartment_significant_states=sorted(responsive_significant_states),
                     nonresponsive_compartment_significant_states=sorted(nonresponsive_significant_states),
-                    correlation_rows=_load_all_requested_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"),
+                    correlation_rows=_load_all_state_comparison_rows("cohort/all/bouton_soma_correlation_by_day.csv"),
                     correlation_comparison_rows=[
                         row for row in cohort_state_comparison_rows.get("all", [])
                         if str(row.get("compartment") or "all").strip().lower() in {"all", compartment}
@@ -3635,7 +3675,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     return manifest
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _main_impl(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Compare soma (ch2) and bouton (ch1) activity across movie and sleep states.")
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
@@ -3657,6 +3697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     config = load_config(args.config)
+    config["_config_path"] = str(args.config)
     if args.rebuild:
         config["rebuild"] = True
     if args.plots_only or args.figures_only:
@@ -3681,6 +3722,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
     return 0
 
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args_list = list(argv) if argv is not None else __import__("sys").argv[1:]
+    config_path = None
+    if "--config" in args_list:
+        index = args_list.index("--config")
+        if index + 1 < len(args_list):
+            config_path = Path(args_list[index + 1])
+    config_path = config_path or Path(__file__).with_name("soma_bouton_pipeline_config.json")
+    file_config = load_config(config_path)
+    preset_names = _preset_selection_names(file_config.get("comparison_preset_names"))
+    repo_root = resolve_repo_root(Path(__file__))
+    output_root = resolve_repo_path(file_config.get("comparison_output_root") or file_config.get("result_root") or DEFAULT_CONFIG["result_root"], repo_root)
+    timer = RunTimer(
+        "soma_bouton_pipeline",
+        config_path=str(config_path),
+        output_root=str(output_root),
+        mode="plots_only" if bool(file_config.get("plots_only")) else "full",
+        preset_names=list(preset_names or []),
+    )
+    try:
+        result = _main_impl(argv)
+        payload = timer.finish(exit_status="completed")
+        payload["scope"] = "process"
+        attach_timing_to_outputs(output_root, payload)
+        return result
+    except BaseException as exc:
+        payload = timer.finish(exit_status="failed", error=exc)
+        payload["scope"] = "process"
+        attach_timing_to_outputs(output_root, payload)
+        raise
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -46,6 +46,15 @@ from poster_plotting import (
 
 from analysis.shared.plots.figure_io import save_figure
 
+
+def _save_and_close_figure(fig: Any, path: Path, **kwargs: Any) -> None:
+    """Export one figure and release it even when the exporter fails."""
+    try:
+        save_figure(fig, path, **kwargs)
+    finally:
+        if plt is not None:
+            plt.close(fig)
+
 from analysis.shared.plots.dendrite_plot_support import (
     as_float,
     cleanup_roi_detail_figures,
@@ -1508,7 +1517,7 @@ def plot_roi_detail_figure(
     )
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.86])
     ensure_dir(output_path.parent)
-    save_figure(fig, output_path, dpi=dpi, extra_formats=())
+    _save_and_close_figure(fig, output_path, dpi=dpi, extra_formats=())
     composed_svg_path = output_path.with_suffix(".svg")
     compose_svg_figure(
         composed_svg_path,
@@ -1928,7 +1937,7 @@ def plot_day_figure(
     meanimg_panel_title = "meanImg"
     meanimg_panel_path = output_path.with_name(f"{output_path.stem}_meanImg_panel.svg")
     standalone_meanimg_fig = render_meanimg_panel_figure(mean_img, contours, meanimg_panel_title)
-    save_figure(standalone_meanimg_fig, meanimg_panel_path, dpi=dpi)
+    _save_and_close_figure(standalone_meanimg_fig, meanimg_panel_path, dpi=dpi)
 
     state_matrix = day_summary.state_codes[np.newaxis, :]
     cmap = ListedColormap([BROAD_STATE_COLORS[label] for label in BROAD_STATE_ORDER])
@@ -2072,7 +2081,7 @@ def plot_day_figure(
         cbar.ax.tick_params(labelsize=POSTER_FONT_SIZE)
 
     ensure_dir(output_path.parent)
-    save_figure(fig, output_path, dpi=dpi)
+    _save_and_close_figure(fig, output_path, dpi=dpi)
 
 
 def build_activity_window_save_path(output_dir: Path, animal_id: str, date: str, compartment: Any, global_dendrite_id: str) -> Path:
@@ -2203,7 +2212,7 @@ def plot_activity_window_figure(
 
     fig.tight_layout()
     ensure_dir(output_path.parent)
-    save_figure(fig, output_path, dpi=dpi, extra_formats=())
+    _save_and_close_figure(fig, output_path, dpi=dpi, extra_formats=())
 
 
 

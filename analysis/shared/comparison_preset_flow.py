@@ -11,11 +11,11 @@ from analysis.shared.result_manifest import load_manifest, manifest_artifact_pat
 POSTER_REQUIRED_COMPARISON_PRESETS: Tuple[str, ...] = (
     'blank_state_comparisons',
     'movies_state_comparisons',
-    'all_requested_comparisons',
+    'all_states',
 )
 
 POSTER_REFERENCE_COMPARISON_PRESETS: Tuple[str, ...] = (
-    'all_requested_comparisons',
+    'all_states',
     'movies_state_comparisons',
     'blank_state_comparisons',
 )
@@ -122,13 +122,13 @@ def load_comparison_preset_csv_rows(
     return []
 
 
-def load_all_requested_comparison_rows(
+def load_all_state_comparison_rows(
     batch_result_root: Path,
     csv_name: str,
     *,
     logger: Any = None,
 ) -> List[Dict[str, Any]]:
-    return load_comparison_preset_csv_rows(batch_result_root, 'all_requested_comparisons', csv_name, logger=logger)
+    return load_comparison_preset_csv_rows(batch_result_root, 'all_states', csv_name, logger=logger)
 
 
 def load_comparison_preset_manifest(

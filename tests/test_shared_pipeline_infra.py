@@ -407,7 +407,7 @@ def test_shared_comparison_preset_plan_includes_required_presets() -> None:
     presets = [
         ('movies_state_comparisons', {'movie': True}),
         ('blank_state_comparisons', {'blank': True}),
-        ('all_requested_comparisons', {'all': True}),
+        ('all_states', {'all': True}),
         ('unused_preset', {'unused': True}),
     ]
     normal_plan = build_comparison_preset_batch_plan(
@@ -428,9 +428,9 @@ def test_shared_comparison_preset_plan_includes_required_presets() -> None:
     assert [name for name, _ in poster_plan.presets] == [
         'movies_state_comparisons',
         'blank_state_comparisons',
-        'all_requested_comparisons',
+        'all_states',
     ]
-    assert poster_plan.reference_preset_name == 'all_requested_comparisons'
+    assert poster_plan.reference_preset_name == 'all_states'
 
 
 
@@ -748,7 +748,7 @@ def test_explicit_comparison_preset_selection_is_strict() -> None:
     presets = [
         ("movies_state_comparisons", {"states": ["movie"]}),
         ("blank_state_comparisons", {"states": ["blank"]}),
-        ("all_requested_comparisons", {"states": ["all"]}),
+        ("all_states", {"states": ["all"]}),
         ("custom", {"states": ["custom"]}),
     ]
     explicit = build_comparison_preset_batch_plan(
@@ -758,7 +758,7 @@ def test_explicit_comparison_preset_selection_is_strict() -> None:
     assert [name for name, _ in explicit.presets] == ["movies_state_comparisons"]
     default = build_comparison_preset_batch_plan(presets)
     assert {name for name, _ in default.presets} >= {
-        "movies_state_comparisons", "blank_state_comparisons", "all_requested_comparisons"
+        "movies_state_comparisons", "blank_state_comparisons", "all_states"
     }
 
 
@@ -805,3 +805,34 @@ def test_soma_shuffle_dataset_is_only_required_for_full_trace():
         {"pairwise_correlation_null_model": "full_trace"},
         [("states", {})],
     )
+
+
+def test_run_timer_records_wall_time_and_persists_manifest_and_report(tmp_path: Path) -> None:
+    import json
+    from analysis.shared.run_timing import RunTimer, attach_timing_to_outputs
+
+    root = tmp_path / "run"
+    (root / "summary").mkdir(parents=True)
+    manifest_path = root / "summary" / "manifest.json"
+    manifest_path.write_text(json.dumps({"output_root": str(root)}))
+    timer = RunTimer("test_pipeline", config_path="config.json", output_root=str(root), preset_names=["all_states"])
+    payload = timer.finish(exit_status="completed")
+    attach_timing_to_outputs(root, payload)
+
+    stored = json.loads((root / "run_timing.json").read_text())
+    manifest = json.loads(manifest_path.read_text())
+    timing = json.loads((root / "timing_report.json").read_text())
+    assert stored["exit_status"] == "completed"
+    assert stored["wall_time_s"] >= 0
+    assert stored["preset_names"] == ["all_states"]
+    assert manifest["run_timing"]["run_started_at"] == stored["run_started_at"]
+    assert timing["wall_time_s"] == stored["wall_time_s"]
+
+
+def test_run_timer_records_failure_metadata() -> None:
+    from analysis.shared.run_timing import RunTimer
+
+    payload = RunTimer("test_pipeline").finish(exit_status="failed", error=RuntimeError("boom"))
+    assert payload["exit_status"] == "failed"
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["error_message"] == "boom"

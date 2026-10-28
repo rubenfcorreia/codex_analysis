@@ -177,3 +177,70 @@ def test_result_layout_uses_sibling_analysis_and_figures_roots(tmp_path: Path):
     assert layout.analysis_root == tmp_path / "run" / "analysis"
     assert layout.figure_root == tmp_path / "run" / "figures"
     assert layout.analysis_root != layout.figure_root
+
+
+def test_cache_isolation_rejects_external_rebuild_path(tmp_path: Path):
+    from analysis.dendrites_pipeline.dendrites_pipeline import validate_cache_location
+    try:
+        validate_cache_location(tmp_path / "outside.npz", tmp_path / "run" / "analysis", {"rebuild": True}, "cache")
+    except ValueError as exc:
+        assert "must be under analysis root" in str(exc)
+    else:
+        raise AssertionError("external rebuild cache must be rejected")
+
+
+def test_figure_export_closes_on_save_failure(monkeypatch, tmp_path):
+    import matplotlib.pyplot as plt
+    import analysis.shared.plots.day_detail as day_detail
+
+    fig = plt.figure()
+    monkeypatch.setattr(day_detail, "save_figure", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("save failed")))
+    try:
+        day_detail._save_and_close_figure(fig, tmp_path / "failed.svg")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("save failure must propagate")
+    assert fig.number not in plt.get_fignums()
+
+
+def test_mixed_model_fallback_is_descriptive_and_non_inferential():
+    import numpy as np
+    from analysis.shared.plots.dendrite_plot_support import (
+        build_fixed_effect_fallback_result,
+        mixed_model_fit_metadata,
+        summarize_mixed_model_result,
+    )
+
+    design = {
+        "X": np.asarray([[1.0, 0.0], [1.0, 1.0], [1.0, 0.0]]),
+        "y": np.asarray([1.0, 2.0, 1.5]),
+        "groups": np.asarray(["a", "a", "b"], dtype=object),
+        "fixed_effect_names": ["Intercept", "state[nrem]"],
+        "response": "mean_activity", "scope": "selected_state",
+        "n_obs": 3, "n_animals": 2, "n_sessions": 2, "n_dendrites": 1,
+    }
+    fit = build_fixed_effect_fallback_result(design, "singular test")
+    assert mixed_model_fit_metadata(fit)["inferential_valid"] is False
+    rows = summarize_mixed_model_result(fit, design)
+    assert rows and rows[0]["fit_status"] == "fallback_descriptive"
+    assert rows[0]["inferential_valid"] is False
+    assert np.isnan(rows[0]["p_value"])
+
+
+def test_audit_filesystem_validator_separates_analysis_and_figures(tmp_path):
+    from analysis.shared.audit_validation import validate_audit_filesystem
+    analysis_root = tmp_path / "analysis"
+    figure_root = tmp_path / "figures"
+    (figure_root / "general").mkdir(parents=True)
+    (analysis_root / "general").mkdir(parents=True)
+    artifact = figure_root / "general" / "figure.svg"
+    artifact.write_text("<svg />")
+    (analysis_root / "general" / "bad.png").write_bytes(b"x")
+    manifest = analysis_root / "manifest.json"
+    manifest.write_text(__import__("json").dumps({"output_root": str(tmp_path), "output_artifacts": [str(artifact)]}))
+    summary = validate_audit_filesystem(tmp_path)
+    assert summary["analysis_image_count"] == 1
+    assert summary["figure_image_count"] == 1
+    assert not summary["missing_manifest_artifacts"]
+    assert not summary["manifest_artifacts_outside_root"]

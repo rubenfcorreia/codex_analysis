@@ -82,19 +82,6 @@
         "rem"
       ]
     },
-    "all_requested_comparisons": {
-      "state_comparison_states": [
-        "quiet_awake_blank",
-        "nrem_blank",
-        "rem_blank",
-        "quiet_awake_movies",
-        "nrem_movies",
-        "rem_movies",
-        "quiet_awake",
-        "nrem",
-        "rem"
-      ]
-    },
     "all_states": {
       "transition_analysis": {
         "enabled": true,
@@ -205,9 +192,10 @@
   "analysis_results_rebuild": false,
   "shared_shuffle_cache_rebuild": false,
   "output_dir": "/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline",
-  "cache_path": "/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline/analysis/cache/sleep_dendrite_spine_cache.npz",
-  "analysis_tables_cache_path": "/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline/analysis/cache/sleep_dendrite_spine_cache_analysis_tables_cache.npz",
-  "analysis_results_cache_path": "/home/rubencorreia/code/codex_analysis/results/dendrites_pipeline/analysis/cache/sleep_dendrite_spine_cache_analysis_results_cache.npz",
+  "cache_path": null,
+  "allow_external_cache_read_only": false,
+  "analysis_tables_cache_path": null,
+  "analysis_results_cache_path": null,
   "spine_coactivity_anchor_state": "quiet_awake_movies",
   "spine_coactivity_abs_threshold": 0.25,
   "source_cache_validate": true,
@@ -242,10 +230,10 @@
   },
   "visual_response_metric": "mean",
   "comparison_preset_names": [
-    "all_states",
     "movies_state_comparisons",
     "blank_state_comparisons",
-    "quiet_vs_sleep_blank_movies"
+    "quiet_vs_sleep_blank_movies",
+    "all_states"
   ],
   "progression_analysis": {
     "enabled": true,

@@ -76,3 +76,18 @@ def test_sleep_progression_concatenates_same_day_and_truncates_to_shortest_day(t
     assert [float(row["elapsed_time_s"]) for row in day_one] == [0.0, 1.0, 2.0]
     assert json.loads(day_one[0]["source_expids"]) == ["2026-01-01_01_A", "2026-01-01_02_A"]
     assert json.loads(day_one[0]["segment_boundaries"])[1]["start_s"] == 1.0
+
+
+def test_dendrite_progression_separates_analysis_and_figure_roots(tmp_path: Path) -> None:
+    expid = "2026-01-01_01_A"
+    cache = {
+        "config": {"movie_expids": [expid]},
+        "experiments": {expid: {"date": "2026-01-01", "trial_meta": [{"time": 0, "duration": 2, "F1_type": "movie", "F1_name": r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"}]}},
+        "animals": {"A": {"dendrites": {"d1": {"observations": {expid: {"time": np.arange(3), "trace": np.array([1., 2., 3.])}}, "spines": {}}}}},
+    }
+    analysis_root = tmp_path / "analysis" / "general" / "progression"
+    figure_root = tmp_path / "figures" / "general" / "progression"
+    result = run_dendrite_spine_progression(cache, analysis_root, {"enabled": True}, figure_root=figure_root)
+    assert result["figures"]
+    assert all(Path(path).is_relative_to(figure_root) for path in result["figures"])
+    assert not list(analysis_root.rglob("*.svg"))

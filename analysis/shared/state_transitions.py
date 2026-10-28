@@ -10,7 +10,7 @@ import numpy as np
 
 from analysis.shared.plots.figure_io import save_figure
 
-TRANSITION_SCHEMA_VERSION = 1
+TRANSITION_SCHEMA_VERSION = 2
 SLEEP_STATE_LABELS = frozenset({"active_awake", "quiet_awake", "wake", "nrem", "rem"})
 
 
@@ -38,12 +38,24 @@ def normalize_transition_config(config: Mapping[str, Any] | None) -> dict[str, A
         metrics = [metrics]
     metrics = [str(value).strip().lower() for value in (metrics or [])]
     metrics = [metric for metric in ("activity", "event_frequency") if metric in metrics]
+    max_event_rows = raw.get("max_event_rows")
+    overflow_policy = str(raw.get("transition_overflow_policy", raw.get("overflow_policy", "fail")) or "fail").strip().lower()
+    if overflow_policy not in {"fail", "partial"}:
+        overflow_policy = "fail"
+    try:
+        max_event_rows = int(max_event_rows) if max_event_rows is not None else None
+    except (TypeError, ValueError):
+        max_event_rows = None
+    if max_event_rows is not None and max_event_rows <= 0:
+        max_event_rows = None
     return {
         "enabled": enabled,
         "window_s": float(window_s),
         "window_modes": list(dict.fromkeys(modes)),
         "scopes": list(dict.fromkeys(scopes)),
         "metrics": list(dict.fromkeys(metrics)),
+        "max_event_rows": max_event_rows,
+        "transition_overflow_policy": overflow_policy,
         "schema_version": TRANSITION_SCHEMA_VERSION,
     }
 

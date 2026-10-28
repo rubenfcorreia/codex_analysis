@@ -1,6 +1,6 @@
 import numpy as np
 
-from analysis.shared.state_transitions import add_window_metadata, aggregate_transition_rows_expday, paired_transition_summaries, transition_events
+from analysis.shared.state_transitions import add_window_metadata, aggregate_transition_rows_expday, normalize_transition_config, paired_transition_summaries, transition_events
 
 
 def test_transitions_stay_within_one_experiment():
@@ -135,3 +135,39 @@ def test_expday_aggregation_balances_transitions_and_entities():
     assert summaries[0]["aggregation_level"] == "expday"
     assert summaries[0]["n_expdays"] == 2
     assert summaries[0]["n_replicates"] == 2
+
+
+def test_transition_config_normalizes_event_row_bound():
+    assert normalize_transition_config({"max_event_rows": "10"})["max_event_rows"] == 10
+    assert normalize_transition_config({"max_event_rows": 0})["max_event_rows"] is None
+
+
+def test_transition_config_normalizes_overflow_policy():
+    from analysis.shared.state_transitions import TRANSITION_SCHEMA_VERSION
+    normalized = normalize_transition_config({"transition_overflow_policy": "partial"})
+    assert normalized["transition_overflow_policy"] == "partial"
+    assert normalized["schema_version"] == TRANSITION_SCHEMA_VERSION
+
+
+def test_transition_partial_bound_returns_structured_result():
+    from analysis.shared.analysis_families.dendrite_transitions import run_transition_analysis
+
+    time = np.arange(240.0)
+    exp_id = "exp-1"
+    cache = {
+        "experiments": {exp_id: {"time": time, "state_masks": {"quiet_awake": time < 120.0, "nrem": time >= 120.0}}},
+        "animals": {"animal": {"dendrites": {"d1": {
+            "compartment": "basal",
+            "observations": {exp_id: {"time": time, "trace": np.ones_like(time), "day_id": "day-1"}},
+            "spines": {},
+        }}}},
+    }
+    result = run_transition_analysis(cache, ["quiet_awake", "nrem"], {
+        "enabled": True, "scopes": ["all_states", "sleep_states"], "window_modes": ["max_available"],
+        "metrics": ["activity"], "max_event_rows": 1, "transition_overflow_policy": "partial",
+    })
+    assert result["status"] == "bounded"
+    assert result["complete"] is False
+    assert result["rows_emitted"] == 1
+    assert result["bound_reason"] == "max_event_rows_exceeded"
+    assert result["alerts"] and result["alerts"][0].startswith("[BOUNDED]")

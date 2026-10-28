@@ -7728,7 +7728,7 @@ def generate_analysis_figures(
     roi_split_results = results.get("roi_split", {})
     roi_run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
     roi_general_enabled = bool(roi_run_params.get("generate_shared_general_figures", False))
-    roi_general_root = Path(roi_run_params.get("general_output_root")) if roi_run_params.get("general_output_root") else None
+    roi_general_root = Path(roi_run_params.get("general_figure_root")) if roi_run_params.get("general_figure_root") else None
     roi_split_target_dir = (roi_general_root / "roi_split") if roi_general_root is not None else (fig_dir / "roi_split")
     roi_split_bundles = (
         roi_split_results.get("bundles", [])
@@ -9650,6 +9650,7 @@ def build_state_masked_event_info(
     *,
     method: Optional[str] = None,
     min_consecutive_frames: int = 3,
+    include_all_methods: bool = True,
 ) -> Dict[str, Any]:
     source_info = full_event_info if isinstance(full_event_info, dict) else {}
     selected_method = get_active_event_detection_method(method or source_info.get("method") or source_info.get("primary_method"))
@@ -9661,6 +9662,7 @@ def build_state_masked_event_info(
         method=selected_method,
         threshold=threshold,
         min_consecutive_frames=min_consecutive_frames,
+        include_all_methods=include_all_methods,
     )
 
 
@@ -14436,6 +14438,25 @@ def shuffle_state_labels_within_blocks(rows: List[Dict[str, Any]], rng: np.rando
         for index, state in zip(indices, permuted):
             shuffled[index]["state"] = state
     return shuffled
+def mixed_model_fit_metadata(fit_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    fit = fit_info or {}
+    fallback = str(fit.get("random_structure_name") or "") == "ols_fallback" or str(fit.get("fit_method") or "") == "ols_fallback"
+    converged = bool(fit.get("converged", False))
+    if fallback:
+        status = "fallback_descriptive"
+    elif converged:
+        status = "ok"
+    elif fit_info is None or fit.get("result") is None:
+        status = "unavailable"
+    else:
+        status = "nonconverged"
+    return {
+        "fit_status": status,
+        "inferential_valid": bool(converged and not fallback),
+        "fallback_reason": fit.get("fallback_reason") if fallback else None,
+    }
+
+
 def summarize_mixed_model_result(
     fit_info: Dict[str, Any],
     design: Dict[str, Any],
@@ -14447,6 +14468,7 @@ def summarize_mixed_model_result(
     cov = np.asarray(result.cov_params(), dtype=float)
     cov_fe = cov[: beta.size, : beta.size]
     rows: List[Dict[str, Any]] = []
+    fit_metadata = mixed_model_fit_metadata(fit_info)
     for index, term in enumerate(design["fixed_effect_names"]):
         estimate = float(beta[index])
         variance = float(cov_fe[index, index]) if index < cov_fe.shape[0] else float("nan")
@@ -14461,9 +14483,10 @@ def summarize_mixed_model_result(
                 "term": term,
                 "estimate": estimate,
                 "se": se,
-                "z": z_value,
-                "p_value": p_value,
+                "z": z_value if fit_metadata["inferential_valid"] else float("nan"),
+                "p_value": p_value if fit_metadata["inferential_valid"] else float("nan"),
                 "random_structure": fit_info.get("random_structure_name"),
+                **fit_metadata,
                 "fit_method": fit_info.get("fit_method"),
                 "converged": bool(fit_info.get("converged", False)),
                 "n_obs": int(design.get("n_obs", 0)),
@@ -14574,6 +14597,12 @@ def run_mixed_model_family(
         else:
             valid_contrast_specs.append(contrast_spec)
     fit_info = fit_mixedlm_with_fallback(design, alerts=alerts, vc_level_keys=vc_level_keys)
+    fit_metadata = mixed_model_fit_metadata(fit_info)
+    if not fit_metadata["inferential_valid"] and fit_metadata["fit_status"] == "fallback_descriptive" and alerts is not None:
+        alerts.append(
+            "[ALERT] Mixed-model output is descriptive/non-inferential for "
+            f"{response} ({scope}); fallback_reason={fit_metadata.get('fallback_reason')}"
+        )
     if fit_info.get("status") == "skipped" or fit_info.get("result") is None:
         return {
             "response": response,
@@ -14587,15 +14616,16 @@ def run_mixed_model_family(
             "equation": mixed_model_equation_string(design, fit_info),
             "tested_terms": list(design.get("fixed_effect_names", [])),
             "tested_contrasts": [contrast_spec.get("kind", "unknown") for contrast_spec in valid_contrast_specs],
+            **fit_metadata,
         }
     summary_rows = summarize_mixed_model_result(fit_info, design)
     contrast_rows: List[Dict[str, Any]] = []
     for contrast_spec in valid_contrast_specs:
         observed = contrast_from_result(fit_info["result"], design, contrast_spec)
-        active_p = observed["classical_p"]
+        active_p = observed["classical_p"] if fit_metadata["inferential_valid"] else float("nan")
         shuffle_n_requested = int(shuffle_n) if effective_p_value_source == "shuffle" else 0
         shuffle_n_success = 0
-        if effective_p_value_source == "shuffle":
+        if effective_p_value_source == "shuffle" and fit_metadata["inferential_valid"]:
             null_effects: List[float] = []
             rng = np.random.default_rng(12345)
             for _ in range(int(shuffle_n)):
@@ -14635,13 +14665,14 @@ def run_mixed_model_family(
             "state": contrast_spec.get("state"),
             "estimate": observed["estimate"],
             "se": observed["se"],
-            "z": observed["z"],
-            "classical_p": observed["classical_p"],
+            "z": observed["z"] if fit_metadata["inferential_valid"] else float("nan"),
+            "classical_p": observed["classical_p"] if fit_metadata["inferential_valid"] else float("nan"),
             "shuffle_p": active_p,
-            "p_value_source": effective_p_value_source,
+            "p_value_source": effective_p_value_source if fit_metadata["inferential_valid"] else "none_descriptive",
             "shuffle_n_requested": shuffle_n_requested,
             "shuffle_n_success": shuffle_n_success,
             "random_structure": fit_info.get("random_structure_name"),
+            **fit_metadata,
             "fit_method": fit_info.get("fit_method"),
             "converged": bool(fit_info.get("converged", False)),
             "model_name": f"{scope}_{response}",
@@ -14658,6 +14689,7 @@ def run_mixed_model_family(
         "fit": fit_info,
         "equation": mixed_model_equation_string(design, fit_info),
         "tested_terms": list(design.get("fixed_effect_names", [])),
+        **fit_metadata,
         "tested_contrasts": [
             (
                 f"{contrast_spec['kind']}:{contrast_spec.get('state_a')}:{contrast_spec.get('state_b')}"
@@ -14815,6 +14847,9 @@ def run_mixed_model_analysis(
                     "random_structure_name": result.get("fit", {}).get("random_structure_name"),
                     "fit_method": result.get("fit", {}).get("fit_method"),
                     "converged": bool(result.get("fit", {}).get("converged", False)),
+                    "fit_status": result.get("fit_status", mixed_model_fit_metadata(result.get("fit")).get("fit_status")),
+                    "inferential_valid": bool(result.get("inferential_valid", mixed_model_fit_metadata(result.get("fit")).get("inferential_valid", False))),
+                    "fallback_reason": result.get("fallback_reason", mixed_model_fit_metadata(result.get("fit")).get("fallback_reason")),
                 }
                 branch["model_equations"][response] = result.get("equation")
                 branch["tested_terms"][response] = list(result.get("tested_terms", []))
@@ -16634,7 +16669,14 @@ def write_analysis_outputs(
                     leaf_results["mixed_model"] = leaf_split_mixed_model
                     leaf_results["mixed_model_selected_state"] = leaf_split_mixed_model
                 leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name)
-                figure_tree_root = Path(figure_root).parents[1] if figure_root is not None else branch_root
+                if figure_root is not None:
+                    figure_tree_root = Path(figure_root).parents[1]
+                else:
+                    # Comparison analysis and figure trees are siblings.  A
+                    # missing parent figure root must not make recursive leaf
+                    # plots fall back into analysis/<preset>/pooled/all.
+                    branch_root_path = Path(branch_root)
+                    figure_tree_root = branch_root_path.parents[1] / "figures" / branch_root_path.name
                 leaf_figure_root = branch_leaf_figure_root(figure_tree_root, branch_name, basis_name)
                 # Shared visual-response and event-example galleries are
                 # generated once at the comparison root; branch leaves only
@@ -16693,7 +16735,24 @@ def write_analysis_outputs(
         # its manifest is written by the outer orchestration layer using the
         # common comparison root. Leaf calls still publish transactionally.
         if not branch_first_figures:
-            write_manifest(output_dir, jsonable(results))
+            # Branch leaves store analysis outputs and figures in sibling
+            # trees. Keep the manifest beside the leaf analysis outputs, but
+            # declare the shared root so validation can include both trees.
+            manifest_root = Path(output_dir)
+            if figure_root is not None:
+                manifest_root = Path(os.path.commonpath([
+                    str(Path(output_dir).resolve()),
+                    str(Path(figure_root).resolve()),
+                ]))
+            manifest_payload = jsonable(results)
+            manifest_payload["output_root"] = str(manifest_root)
+            manifest_payload["output_artifacts"] = [
+                str((Path(output_dir) / str(path)).resolve())
+                if not Path(str(path)).is_absolute()
+                else str(path)
+                for path in written_artifacts
+            ]
+            write_manifest(output_dir, manifest_payload)
         return list(dict.fromkeys(written_artifacts))
     json_path = output_dir / "analysis_results.json"
     with json_path.open("w") as handle:
@@ -18238,12 +18297,9 @@ def run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
             preset_family_stage = family_results_cache_stage_for_selection(preset_config.get("analysis_families"))
             preset_family_cache_path = family_results_cache_path(preset_cache_path, preset_family_stage)
             if not preset_results_cache_path.exists() and not preset_family_cache_path.exists():
-                print(
-                    "[comparison preset] "
-                    f"{preset_name}: plots_only cache missing; rebuilding analysis results for this preset",
-                    file=sys.stderr,
+                raise FileNotFoundError(
+                    f"plots_only requires a valid analysis or family-results cache for preset {preset_name}: " f"{preset_results_cache_path} or {preset_family_cache_path}. Run the analysis pass first."
                 )
-                preset_config["plots_only"] = False
         preset_config["plots_only_include_supporting_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
         preset_config["generate_shared_general_figures"] = bool(generate_once and not preset_config.get("plots_only"))

@@ -336,12 +336,19 @@ def _plot_outputs(root, blank_rows, sleep_rows_by_policy):
                     for ax in axes:
                         ax.grid(alpha=.2); h,l=ax.get_legend_handles_labels()
                         if h: ax.legend(h,l,frameon=False)
-                    out=figroot/f"{base}{suffix}.svg"; fig.savefig(out,format="svg"); plt.close(fig); paths.append(str(out))
+                    out=figroot/f"{base}{suffix}.svg"
+                    try:
+                        fig.savefig(out,format="svg")
+                    finally:
+                        plt.close(fig)
+                    paths.append(str(out))
     return paths
 
 
-def _finalize(root, blank_rows, sleep_rows_by_policy, config, pipeline):
+def _finalize(root, blank_rows, sleep_rows_by_policy, config, pipeline, figure_root=None):
     root.mkdir(parents=True,exist_ok=True)
+    figure_root = Path(figure_root) if figure_root is not None else root
+    figure_root.mkdir(parents=True, exist_ok=True)
     common=sleep_rows_by_policy.get("common_overlap",[])
     compartments=sorted({str(r.get("compartment")) for r in [*blank_rows,*common]})
     for compartment in compartments:
@@ -355,7 +362,7 @@ def _finalize(root, blank_rows, sleep_rows_by_policy, config, pipeline):
             for policy,rows in sleep_rows_by_policy.items():
                 summaries += _add_summary_rows(blank_rows,rows,weighting)
             _write_rows(cr/f"progression_summary_{weighting}.csv",[r for r in summaries if r.get("compartment")==compartment])
-    figures=_plot_outputs(root,blank_rows,sleep_rows_by_policy)
+    figures=_plot_outputs(figure_root,blank_rows,sleep_rows_by_policy)
     sleep_rows_by_policy_counts = {k: len(v) for k, v in sleep_rows_by_policy.items()}
     manifest={"pipeline":pipeline,"config":dict(config),"blank_rows":len(blank_rows),"sleep_rows":len(common),"sleep_rows_by_policy":sleep_rows_by_policy_counts,"figures":figures,"duration_policies":sorted(sleep_rows_by_policy),"summary_weightings":["equal_day","roi_weighted"]}
     (root/"progression_manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True,default=str))
@@ -385,7 +392,7 @@ def run_soma_bouton_progression(contexts: Iterable[Any], output_root: Path, conf
     return _finalize(Path(output_root), blank_rows, sleep_rows_by_policy, cfg, "soma_bouton_pipeline")
 
 
-def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root: Path, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root: Path, config: Mapping[str, Any] | None = None, *, figure_root: Path | None = None) -> dict[str, Any]:
     cfg = _normalise_config(config)
     if not cfg.get("enabled"):
         return {"pipeline": "dendrites_pipeline", "disabled": True}
@@ -441,7 +448,7 @@ def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root:
             if valid:
                 sleep_segments[(compartment, signal, animal_id, date)].append({"expid": expid, "time": times[expid], "matrix": np.vstack(valid)})
     sleep_rows_by_policy = {policy: _sleep_rows_from_segments(pipeline="dendrites_pipeline", segments=sleep_segments, time_step_s=float(cfg["sleep_time_step_s"]), max_duration_s=cfg["max_sleep_duration_s"], duration_policy=policy) for policy in ("common_overlap", "all_available")}
-    return _finalize(Path(output_root), blank_rows, sleep_rows_by_policy, cfg, "dendrites_pipeline")
+    return _finalize(Path(output_root), blank_rows, sleep_rows_by_policy, cfg, "dendrites_pipeline", figure_root=figure_root)
 
 
 __all__ = ["DEFAULT_PROGRESSION_CONFIG", "run_dendrite_spine_progression", "run_soma_bouton_progression"]

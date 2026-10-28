@@ -244,7 +244,11 @@ def load_analysis_results_payload() -> Dict[str, Any]:
 
 
 def _export_single_axis_figure(fig: Any, path: Path) -> Path:
-    save_figure(fig, path, extra_formats=())
+    try:
+        save_figure(fig, path, extra_formats=())
+    finally:
+        if plt is not None:
+            plt.close(fig)
     return path
 
 
@@ -760,9 +764,11 @@ def draw_mixed_model_forest_panel(
 def _save_svg_figure_exact(fig: Any, path: Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=(), format="svg", bbox_inches=None, pad_inches=0)
-    if plt is not None:
-        plt.close(fig)
+    try:
+        save_figure(fig, output_path, dpi=POSTER_DPI, extra_formats=(), format="svg", bbox_inches=None, pad_inches=0)
+    finally:
+        if plt is not None:
+            plt.close(fig)
     return output_path
 
 
