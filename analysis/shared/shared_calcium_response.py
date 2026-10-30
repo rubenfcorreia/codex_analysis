@@ -28,7 +28,9 @@ from analysis.shared.analysis_families.common_helpers import (
     build_event_info,
     build_state_masks_movie,
     choose_locomotion_threshold,
+    classify_movie_name,
     extract_cut_neural_bundle,
+    movie_feature_blocks,
     trial_activity_means,
     welch_ttest_summary,
 )
@@ -40,6 +42,7 @@ VISUAL_RESPONSE_COHORTS = ("all", "responsive", "nonresponsive")
 DEFAULT_VISUAL_RESPONSE_COHORT = "all"
 
 _VISUAL_RESPONSE_CUT_DATA_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+_VISUAL_RESPONSE_CUT_DATA_SCHEMA_VERSION = 2
 
 
 def event_frequency_per_minute(event_count: int, duration_seconds: float) -> float:
@@ -182,28 +185,13 @@ def load_visual_response_cut_data(
         return None
     clean_rows = [row for row in trial_rows if isinstance(row, Mapping)]
     columns = list(clean_rows[0].keys()) if clean_rows else []
-    selected_wheel_path: Optional[Path] = None
-    wheel_path_candidates = (
-        exp_root / "cut" / "wheel.pickle",
-        exp_root / "cut_intertrials" / "wheel.pickle",
-        exp_root / "cut_with_intertrials" / "wheel.pickle",
-    )
-    wheel_bundle = None
-    for wheel_path in wheel_path_candidates:
-        if wheel_path.exists():
-            try:
-                wheel_bundle = read_pickle(wheel_path)
-            except Exception:
-                wheel_bundle = None
-            selected_wheel_path = wheel_path
-            break
     cache_key = stable_hash(
         {
+            "schema_version": _VISUAL_RESPONSE_CUT_DATA_SCHEMA_VERSION,
             "exp_root": str(exp_root),
             "channel": int(channel),
             "locomotion_threshold": float(locomotion_threshold) if locomotion_threshold is not None else None,
             "selected_path": _path_signature(selected_path),
-            "wheel_path": _path_signature(selected_wheel_path),
             "columns": list(columns),
             "trial_rows": clean_rows,
         }
@@ -213,32 +201,37 @@ def load_visual_response_cut_data(
     cut_time, cut_neural, _ = extract_cut_neural_bundle(selected_path)
     cut_time = np.asarray(cut_time, dtype=float)
     cut_neural = np.asarray(cut_neural, dtype=float)
-    wheel_time = find_first_key(wheel_bundle, ["t", "time", "timestamps"]) if isinstance(wheel_bundle, Mapping) else None
-    wheel_speed = find_first_key(wheel_bundle, ["speed", "wheel", "motion", "velocity"]) if isinstance(wheel_bundle, Mapping) else None
-    wheel_interp = None
-    if wheel_time is not None and wheel_speed is not None:
-        wheel_time_arr = np.asarray(wheel_time, dtype=float).ravel()
-        wheel_speed_arr = np.asarray(wheel_speed, dtype=float).ravel()
-        common_len = min(wheel_time_arr.size, wheel_speed_arr.size)
-        if common_len >= 2:
-            wheel_time_arr = wheel_time_arr[:common_len]
-            wheel_speed_arr = wheel_speed_arr[:common_len]
-            wheel_interp = np.asarray(np.interp(cut_time, wheel_time_arr, wheel_speed_arr, left=np.nan, right=np.nan), dtype=float)
-    threshold = choose_locomotion_threshold(
-        locomotion_threshold,
-        [],
-        wheel_interp,
-    )
-    _, trial_meta, _ = build_state_masks_movie(
-        cut_time,
-        clean_rows,
-        columns,
-        None,
-        None,
-        None,
-        threshold,
-    )
+    if cut_neural.ndim < 3:
+        _VISUAL_RESPONSE_CUT_DATA_CACHE[cache_key] = None
+        return None
+    n_cut_trials = int(cut_neural.shape[1])
+    trial_meta: List[Dict[str, Any]] = []
+    for trial_index in range(min(n_cut_trials, len(clean_rows))):
+        row = clean_rows[trial_index]
+        blocks = movie_feature_blocks(row, columns)
+        if len(blocks) != 1:
+            continue
+        video_id = str(blocks[0]["name"])
+        category = classify_movie_name(video_id)
+        duration = row.get("duration")
+        try:
+            duration = float(duration) if duration is not None else None
+        except (TypeError, ValueError):
+            duration = None
+        trial_meta.append(
+            {
+                "trial_index": trial_index,
+                "state_label": category,
+                "category": category,
+                "movie_trial_type": category,
+                "video_id": video_id,
+                "duration": duration,
+                "trial_row": dict(row),
+                "metadata_source": "cut_trial_index",
+            }
+        )
     result = {
+        "schema_version": _VISUAL_RESPONSE_CUT_DATA_SCHEMA_VERSION,
         "cut_time": cut_time,
         "cut_neural": cut_neural,
         "trial_meta": trial_meta,

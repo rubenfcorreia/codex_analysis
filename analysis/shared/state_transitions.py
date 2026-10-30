@@ -327,6 +327,7 @@ def plot_transition_summaries(
     pipeline_name: str,
     trace_segments: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
+    """Write one three-panel figure for each transition/scope/window/compartment."""
     if not event_rows:
         return []
     try:
@@ -334,176 +335,123 @@ def plot_transition_summaries(
     except Exception:
         return []
 
-    balanced_rows = aggregate_transition_rows_expday(event_rows)
-    groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
-    fields = ("scope", "window_mode", "state_before", "state_after", "metric", "compartment")
-    for row in balanced_rows:
-        if row.get("pre_value") is not None and row.get("post_value") is not None:
-            groups[tuple(str(row.get(field, "")) for field in fields)].append(row)
-    summary_lookup = {
-        tuple(str(row.get(field, "")) for field in fields): row
-        for row in paired_transition_summaries(balanced_rows)
-    }
-    saved: list[str] = []
-    for key, rows in sorted(groups.items()):
-        scope, mode, state_before, state_after, metric, compartment = key
-        pre = np.asarray([float(row["pre_value"]) for row in rows], dtype=float)
-        post = np.asarray([float(row["post_value"]) for row in rows], dtype=float)
-        keep = np.isfinite(pre) & np.isfinite(post)
-        pre, post = pre[keep], post[keep]
-        kept_rows = [row for row, keep_row in zip(rows, keep) if keep_row]
-        if pre.size == 0:
+    fields = ("scope", "window_mode", "state_before", "state_after", "compartment")
+    metric_rows: dict[tuple[str, ...], dict[str, list[Mapping[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for row in aggregate_transition_rows_expday(event_rows):
+        if row.get("pre_value") is None or row.get("post_value") is None:
             continue
-        fig, ax = plt.subplots(figsize=(5.8, 4.6))
-        for before, after in zip(pre, post):
-            ax.plot([1.0, 2.0], [before, after], color="#777777", alpha=0.28, linewidth=0.8, zorder=1)
-        ax.scatter(np.ones(pre.size), pre, color="#4c78a8", alpha=0.75, s=18, zorder=2)
-        ax.scatter(np.full(post.size, 2.0), post, color="#e45756", alpha=0.75, s=18, zorder=2)
-        ax.scatter([1.0, 2.0], [np.mean(pre), np.mean(post)], color="#222222", s=42, zorder=3)
-        ax.plot([1.0, 2.0], [np.mean(pre), np.mean(post)], color="#222222", linewidth=2.0, zorder=3)
-        ax.set_xticks([1, 2], ["Before", "After"])
-        ax.set_ylabel(metric)
-        ax.set_title(f"{state_before} → {state_after} | {compartment}\n{scope}, {mode}")
-        summary = summary_lookup.get(key, {})
-        try:
-            p_value = float(summary.get("paired_pvalue", np.nan))
-        except (TypeError, ValueError):
-            p_value = float("nan")
-        stars = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else ""
-        if stars:
-            y_max = float(np.nanmax(np.concatenate((pre, post))))
-            y_min = float(np.nanmin(np.concatenate((pre, post))))
-            y_span = max(y_max - y_min, 1e-9)
-            ax.text(1.5, y_max + 0.12 * y_span, stars, ha="center", va="bottom", fontsize=12)
-        n_expdays = int(summary.get("n_expdays", pre.size))
-        n_animals = int(summary.get("n_animals", len({str(row.get("animal_id", "")) for row in kept_rows if row.get("animal_id")})))
-        n_entities = int(summary.get("n_entities", sum(int(row.get("n_entities", 0) or 0) for row in kept_rows)))
-        n_events = int(summary.get("n_transition_events", len(event_rows)))
-        ax.text(0.02, 0.97, f"expdays n={n_expdays}; animals n={n_animals}; entities n={n_entities}; transitions n={n_events}", transform=ax.transAxes, va="top", fontsize=8)
-        ax.grid(axis="y", alpha=0.2)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        filename = "state_transition_" + "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + ".svg"
-        path = Path(output_root) / scope / mode / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")
-        plt.close(fig)
-        saved.append(str(path))
+        key = tuple(str(row.get(field, "")) for field in fields)
+        metric_rows[key][str(row.get("metric", ""))].append(row)
 
     trace_groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = defaultdict(list)
-    for index, segment in enumerate(trace_segments or ()):
+    for index, raw_segment in enumerate(trace_segments or ()):
+        segment = dict(raw_segment)
         if segment.get("relative_time_s") is None or segment.get("values") is None:
             continue
-        segment = dict(segment)
         segment.setdefault("expday", segment.get("day_id") or segment.get("expid") or f"segment-{index}")
         segment.setdefault("entity_id", f"segment-{index}")
-        trace_groups[tuple(str(segment.get(field, "")) for field in ("scope", "window_mode", "metric", "compartment"))].append(segment)
+        key = tuple(str(segment.get(field, "")) for field in fields)
+        trace_groups[key].append(segment)
 
-    for key, segments in sorted(trace_groups.items()):
-        scope, mode, metric, compartment = key
-        window_s = max(float(segment.get("window_s", 60.0)) for segment in segments)
-        grid = np.linspace(-window_s, window_s, 241)
-        direction_groups: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    saved: list[str] = []
+    colors = ("#2166ac", "#b2182b", "#1b7837", "#762a83", "#e08214")
+    for key in sorted(set(metric_rows) | set(trace_groups)):
+        scope, mode, state_before, state_after, compartment = key
+        fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.8), gridspec_kw={"width_ratios": (1.55, 1.0, 1.0)})
+        ax_trace, ax_activity, ax_frequency = axes
+
+        segments = trace_groups.get(key, [])
+        directions: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
         for segment in segments:
-            direction_groups[(str(segment.get("state_before", "")), str(segment.get("state_after", "")))].append(segment)
-        if not direction_groups:
-            continue
-        fig, (ax, ax_pair) = plt.subplots(1, 2, figsize=(11.5, 4.8), gridspec_kw={"width_ratios": [1.45, 1.0]})
-        for direction_index, (direction, direction_segments) in enumerate(sorted(direction_groups.items())):
-            interpolated: list[tuple[Mapping[str, Any], np.ndarray]] = []
-            for segment in direction_segments:
-                relative = np.asarray(segment["relative_time_s"], dtype=float)
-                values = np.asarray(segment["values"], dtype=float)
-                keep = np.isfinite(relative) & np.isfinite(values)
-                if keep.sum() < 2:
+            directions[(str(segment.get("state_before", state_before)), str(segment.get("state_after", state_after)))].append(segment)
+        if directions:
+            window_s = max(float(segment.get("window_s", 60.0)) for segment in segments)
+            grid = np.linspace(-window_s, window_s, 241)
+            for direction_index, (direction, direction_segments) in enumerate(sorted(directions.items())):
+                matrices = []
+                for segment in direction_segments:
+                    relative = np.asarray(segment["relative_time_s"], dtype=float)
+                    values = np.asarray(segment["values"], dtype=float)
+                    keep = np.isfinite(relative) & np.isfinite(values)
+                    if keep.sum() < 2:
+                        continue
+                    relative, values = relative[keep], values[keep]
+                    order = np.argsort(relative)
+                    relative, values = relative[order], values[order]
+                    unique, indices = np.unique(relative, return_index=True)
+                    if unique.size < 2:
+                        continue
+                    matrix = np.full(grid.shape, np.nan)
+                    valid = (grid >= unique[0]) & (grid <= unique[-1])
+                    matrix[valid] = np.interp(grid[valid], unique, values[indices])
+                    matrices.append(matrix)
+                if not matrices:
                     continue
-                relative, values = relative[keep], values[keep]
-                order = np.argsort(relative)
-                relative, values = relative[order], values[order]
-                unique, unique_indices = np.unique(relative, return_index=True)
-                values = values[unique_indices]
-                if unique.size < 2:
+                matrix = np.asarray(matrices)
+                mean = np.nanmean(matrix, axis=0)
+                count = np.sum(np.isfinite(matrix), axis=0)
+                sem = np.full(mean.shape, np.nan)
+                valid_sem = count > 1
+                if np.any(valid_sem):
+                    sem[valid_sem] = np.nanstd(matrix[:, valid_sem], axis=0, ddof=1) / np.sqrt(count[valid_sem])
+                color = colors[direction_index % len(colors)]
+                label = f"{direction[0]} -> {direction[1]} (n={len(matrices)})"
+                ax_trace.plot(grid, mean, color=color, lw=2.0, label=label)
+                ax_trace.fill_between(grid, mean - sem, mean + sem, color=color, alpha=0.16, linewidth=0)
+            ax_trace.axvline(0, color="#333333", ls="--", lw=1)
+            ax_trace.set_xlim(-window_s, window_s)
+        else:
+            ax_trace.text(0.5, 0.5, "No aligned trace data", transform=ax_trace.transAxes, ha="center", va="center", color="#666666")
+        ax_trace.set_title("Aligned dF/F")
+        ax_trace.set_xlabel("Time from transition (s)")
+        ax_trace.set_ylabel("dF/F")
+        if ax_trace.has_data():
+            ax_trace.legend(frameon=False, fontsize=8)
+
+        for ax, metric, title, ylabel in (
+            (ax_activity, "mean_activity", "Mean activity difference", "After - before"),
+            (ax_frequency, "event_frequency_per_min", "Event-frequency difference", "After - before"),
+        ):
+            grouped = metric_rows.get(key, {}).get(metric, [])
+            direction_groups: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+            for row in grouped:
+                direction_groups[(str(row.get("state_before", "")), str(row.get("state_after", "")))].append(row)
+            plotted = False
+            positions = []
+            labels = []
+            for direction_index, (direction, rows) in enumerate(sorted(direction_groups.items())):
+                pre = np.asarray([row.get("pre_value", np.nan) for row in rows], dtype=float)
+                post = np.asarray([row.get("post_value", np.nan) for row in rows], dtype=float)
+                keep = np.isfinite(pre) & np.isfinite(post)
+                if not np.any(keep):
                     continue
-                matrix = np.full(grid.shape, np.nan, dtype=float)
-                valid_grid = (grid >= unique[0]) & (grid <= unique[-1])
-                matrix[valid_grid] = np.interp(grid[valid_grid], unique, values)
-                interpolated.append((segment, matrix))
-            entity_groups: dict[tuple[str, str], list[np.ndarray]] = defaultdict(list)
-            for segment, matrix in interpolated:
-                entity_groups[(str(segment.get("expday", "")), str(segment.get("entity_id", "")))].append(matrix)
-            expday_matrices: dict[str, list[np.ndarray]] = defaultdict(list)
-            for (expday, _entity_id), matrices in entity_groups.items():
-                matrix = np.asarray(matrices, dtype=float)
-                count = np.sum(np.isfinite(matrix), axis=0)
-                mean = np.full(grid.shape, np.nan, dtype=float)
-                valid = count > 0
-                mean[valid] = np.nansum(matrix[:, valid], axis=0) / count[valid]
-                expday_matrices[expday].append(mean)
-            balanced_traces: list[np.ndarray] = []
-            for matrices in expday_matrices.values():
-                matrix = np.asarray(matrices, dtype=float)
-                count = np.sum(np.isfinite(matrix), axis=0)
-                mean = np.full(grid.shape, np.nan, dtype=float)
-                valid = count > 0
-                mean[valid] = np.nansum(matrix[:, valid], axis=0) / count[valid]
-                balanced_traces.append(mean)
-            if not balanced_traces:
-                continue
-            matrix = np.asarray(balanced_traces, dtype=float)
-            count = np.sum(np.isfinite(matrix), axis=0)
-            mean = np.full(grid.shape, np.nan, dtype=float)
-            sem = np.full(grid.shape, np.nan, dtype=float)
-            valid = count > 0
-            mean[valid] = np.nansum(matrix[:, valid], axis=0) / count[valid]
-            if np.any(count > 1):
-                sem_valid = count > 1
-                centered = matrix[:, sem_valid] - mean[sem_valid]
-                centered[~np.isfinite(centered)] = np.nan
-                sem[sem_valid] = np.sqrt(np.nansum(centered ** 2, axis=0) / (count[sem_valid] - 1)) / np.sqrt(count[sem_valid])
-            color = ("#2166ac", "#b2182b", "#1b7837", "#762a83", "#e08214")[direction_index % 5]
-            label = f"{direction[0]} → {direction[1]} (expdays n={len(balanced_traces)})"
-            for trace in balanced_traces:
-                ax.plot(grid, trace, color=color, alpha=0.12, linewidth=0.7)
-            ax.plot(grid, mean, color=color, linewidth=2.0, label=label)
-            ax.fill_between(grid, mean - sem, mean + sem, color=color, alpha=0.16, linewidth=0)
-        # Keep the aligned trace and the corresponding before/after summary in
-        # one figure so the transition effect is readable in context.
-        pair_rows = [row for row in balanced_rows if tuple(str(row.get(field, "")) for field in fields[:2] + fields[4:]) == (scope, mode, metric, compartment)]
-        for direction_index, (direction, direction_rows) in enumerate(sorted(direction_groups.items())):
-            selected_rows = [row for row in pair_rows if str(row.get("state_before", "")) == direction[0] and str(row.get("state_after", "")) == direction[1]]
-            color = ("#2166ac", "#b2182b", "#1b7837", "#762a83", "#e08214")[direction_index % 5]
-            pre = np.asarray([row.get("pre_value", np.nan) for row in selected_rows], dtype=float)
-            post = np.asarray([row.get("post_value", np.nan) for row in selected_rows], dtype=float)
-            keep = np.isfinite(pre) & np.isfinite(post)
-            if not np.any(keep):
-                continue
-            pre, post = pre[keep], post[keep]
-            for before, after in zip(pre, post):
-                ax_pair.plot([0, 1], [before, after], color=color, alpha=0.22, linewidth=0.8)
-            ax_pair.scatter(np.zeros(pre.size), pre, color=color, s=14, alpha=0.65)
-            ax_pair.scatter(np.ones(post.size), post, color=color, s=14, alpha=0.65)
-            ax_pair.plot([0, 1], [np.mean(pre), np.mean(post)], color=color, linewidth=2.2, label=f"{direction[0]} → {direction[1]}")
-        ax_pair.set_xticks([0, 1], ["Before", "After"])
-        ax_pair.set_ylabel(metric)
-        ax_pair.set_title("Before / after")
-        ax_pair.grid(axis="y", alpha=0.2)
-        ax_pair.spines["top"].set_visible(False); ax_pair.spines["right"].set_visible(False)
-        if ax_pair.has_data():
-            ax_pair.legend(frameon=False, fontsize=7)
-        ax.axvline(0.0, color="#333333", linestyle="--", linewidth=1.0)
-        ax.set_xlim(-window_s, window_s)
-        ax.set_xlabel("Time from transition (s)")
-        n_trace_expdays = len({str(segment.get("expday", "")) for segment in segments})
-        n_trace_entities = len({(str(segment.get("expday", "")), str(segment.get("entity_id", ""))) for segment in segments})
-        n_trace_animals = len({str(segment.get("animal_id", "")) for segment in segments if segment.get("animal_id")})
-        ax.text(0.02, 0.97, f"expdays n={n_trace_expdays}; animals n={n_trace_animals}; entities n={n_trace_entities}; transitions n={len(segments)}", transform=ax.transAxes, va="top", fontsize=8)
-        ax.set_ylabel("dF/F")
-        ax.set_title(f"Experiment-day aligned mean dF/F | {compartment}\n{scope}, {mode}")
-        ax.legend(frameon=False, fontsize=8)
-        ax.grid(axis="y", alpha=0.2)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        filename = "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + "_expday_trace.svg"
+                differences = post[keep] - pre[keep]
+                xpos = direction_index + 1
+                color = colors[direction_index % len(colors)]
+                jitter = np.linspace(-0.08, 0.08, differences.size) if differences.size > 1 else np.asarray([0.0])
+                ax.scatter(np.full(differences.size, xpos) + jitter, differences, s=14, alpha=0.55, color=color)
+                ax.plot([xpos - 0.16, xpos + 0.16], [np.mean(differences)] * 2, color=color, lw=2.4)
+                ax.text(xpos, np.mean(differences), f"delta={np.mean(differences):.3g}", ha="center", va="bottom", fontsize=8)
+                positions.append(xpos)
+                labels.append(f"{direction[0]} ->\n{direction[1]}")
+                plotted = True
+            ax.axhline(0, color="#333333", ls="--", lw=1)
+            ax.set_title(title)
+            ax.set_ylabel(ylabel)
+            if positions:
+                ax.set_xticks(positions)
+                ax.set_xticklabels(labels)
+            if not plotted:
+                ax.text(0.5, 0.5, "No finite values", transform=ax.transAxes, ha="center", va="center", color="#666666")
+            ax.grid(axis="y", alpha=0.2)
+
+        fig.suptitle(f"{state_before} -> {state_after} | {compartment}\n{scope}, {mode}", fontsize=14)
+        for ax in axes:
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=8)
+        fig.subplots_adjust(left=0.055, right=0.995, bottom=0.20, top=0.82, wspace=0.32)
+        filename = "state_transition_" + "_".join(str(part).replace("/", "-") or "all" for part in (pipeline_name,) + key) + ".svg"
         path = Path(output_root) / scope / mode / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         save_figure(fig, path, extra_formats=(), format="svg", bbox_inches="tight")

@@ -232,7 +232,7 @@ DEFAULT_CONFIG = {
     "comparison_preset_names": None,
     "event_detection_method": "amplitude",
     "transition_analysis": {
-        "enabled": False,
+        "enabled": True,
         "window_s": 60,
         "window_modes": ["strict", "max_available"],
         "scopes": ["all_states", "sleep_states"],
@@ -1701,13 +1701,19 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     visual_response_rows = list(table_rows.get("visual_response_rows", []))
                     coincidence_rows = list(table_rows.get("coincidence_rows", []))
                     cached_transition_events = list(table_rows.get("state_transition_event_rows", []))
-                    transition_results = {"event_rows": cached_transition_events, "pooled_summary_rows": paired_transition_summaries(cached_transition_events), "summary_rows": paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events)), "figure_paths": [], "alerts": []}
+                    cached_transition_trace_segments = list(table_rows.get("state_transition_trace_segments", []))
+                    transition_results = {"event_rows": cached_transition_events, "trace_segments": cached_transition_trace_segments, "pooled_summary_rows": paired_transition_summaries(cached_transition_events), "summary_rows": paired_transition_summaries(aggregate_transition_rows_expday(cached_transition_events)), "figure_paths": [], "alerts": []}
+                    if not cached_transition_events:
+                        transition_results["alerts"].append("No valid within-experiment state transitions were found in the cached analysis tables.")
+                    elif not cached_transition_trace_segments:
+                        transition_results["alerts"].append("Cached transition rows contain no aligned trace segments; rerun the analysis pass before regenerating trace figures.")
                     if cached_transition_events:
                         transition_figure_root = (general_figure_root if general_figure_root is not None and generate_shared_general_figures else figure_root)
                         transition_results["figure_paths"] = plot_transition_summaries(
                             cached_transition_events,
                             Path(transition_figure_root),
                             pipeline_name="soma_bouton",
+                            trace_segments=cached_transition_trace_segments,
                         )
                     selected_states_by_mode = dict(table_rows.get("selected_states_by_mode", selected_states_by_mode))
                     state_modes = list(table_rows.get("state_modes", state_modes))
@@ -2030,7 +2036,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     progression_enabled = bool((config.get("progression_analysis") or {}).get("enabled", False))
     progression_general_root = general_figure_root or (figure_root / "general")
-    if progression_enabled and not config.get("plots_only") and (general_output_root is None or generate_shared_general_outputs or not config.get("comparison_preset_name")):
+    if progression_enabled and (general_output_root is None or generate_shared_general_outputs or not config.get("comparison_preset_name")):
         _stage("progression analysis", "soma and bouton mean dF/F")
         run_soma_bouton_progression(transition_contexts, progression_general_root / "progression", config.get("progression_analysis"))
 
@@ -2554,8 +2560,6 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 compartment_dir = ensure_dir(visual_response_fig_dir / compartment)
                 for cohort in ("all", "responsive", "nonresponsive"):
                     cohort_rows = compartment_rows if cohort == "all" else [row for row in compartment_rows if str(row.get("cohort") or "nonresponsive") == cohort]
-                    if not cohort_rows:
-                        continue
                     cohort_dir = ensure_dir(compartment_dir / cohort)
                     plot_visual_response_boxplot_figure(
                         {"rows": cohort_rows},
@@ -3548,6 +3552,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "coincidence_rows": coincidence_rows,
             "coincidence_summary_rows": coincidence_summary_rows,
             "state_transition_event_rows": transition_results.get("event_rows", []),
+            "state_transition_trace_segments": transition_results.get("trace_segments", []),
             "state_transition_summary_rows": transition_results.get("summary_rows", []),
             "activity_summary_rows": activity_summary_rows,
             "state_comparison_summary_rows": state_comparison_summary_rows,

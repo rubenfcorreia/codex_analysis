@@ -292,16 +292,23 @@ def plot_visual_response_boxplot_figure(
             continue
         if np.isfinite(blank) and np.isfinite(visual):
             values.append((blank, visual, bool(row.get("responsive"))))
-    if not values or plt is None:
+    if plt is None:
         return None
     fig, ax = plt.subplots(figsize=(4.6, 4.7))
-    data = [np.asarray([item[0] for item in values]), np.asarray([item[1] for item in values])]
-    bp = ax.boxplot(data, positions=[1, 2], widths=0.58, patch_artist=True, showfliers=False)
-    for patch, color in zip(bp.get("boxes", []), ("#D9D9D9", "#4C78A8")):
-        patch.set_facecolor(color); patch.set_edgecolor("#444444")
-    for blank, visual, responsive in values:
-        ax.plot([1, 2], [blank, visual], color="#2F855A" if responsive else "#888888", alpha=0.2, linewidth=0.9)
-    ax.set_xticks([1, 2]); ax.set_xticklabels(["Blank", "Movies"]); ax.set_ylabel("Mean activity during cut stimulus"); ax.set_title(title); ax.grid(axis="y", alpha=0.2)
+    if values:
+        data = [np.asarray([item[0] for item in values]), np.asarray([item[1] for item in values])]
+        bp = ax.boxplot(data, positions=[1, 2], widths=0.58, patch_artist=True, showfliers=False)
+        for patch, color in zip(bp.get("boxes", []), ("#D9D9D9", "#4C78A8")):
+            patch.set_facecolor(color); patch.set_edgecolor("#444444")
+        for blank, visual, responsive in values:
+            ax.plot([1, 2], [blank, visual], color="#2F855A" if responsive else "#888888", alpha=0.2, linewidth=0.9)
+        ax.set_xticks([1, 2]); ax.set_xticklabels(["Blank", "Movies"])
+        ax.set_ylabel("Mean activity during cut stimulus")
+    else:
+        ax.text(0.5, 0.5, "No finite paired blank/movie values", transform=ax.transAxes, ha="center", va="center", color="#666666")
+        ax.set_xticks([])
+        ax.set_yticks([])
+    ax.set_title(title); ax.grid(axis="y", alpha=0.2)
     output = Path(fig_dir) / output_name
     save_figure(fig, output, extra_formats=(), bbox_inches="tight", facecolor="white")
     plt.close(fig)

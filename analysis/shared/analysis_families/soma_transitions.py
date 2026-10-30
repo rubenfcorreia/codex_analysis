@@ -109,6 +109,7 @@ def run_transition_analysis(
         "event_rows": [],
         "summary_rows": [],
         "figure_paths": [],
+        "trace_segments": [],
         "alerts": [],
     }
     if not transition_config["enabled"]:
@@ -151,6 +152,7 @@ def run_transition_analysis(
                         entity_id = make_global_bouton_id(animal_id=ctx.animal_id, day_id=ctx.day_id, channel=ctx.bouton_channel, roi_id=roi_id)
                         _append_entity_rows(event_rows, ctx=ctx, event=event, trace=np.asarray(trace, dtype=float), time=bouton_time, compartment="bouton", entity_id=entity_id, event_method=event_detection_method, metrics=transition_config["metrics"], trace_segments=trace_segments)
     result["event_rows"] = event_rows
+    result["trace_segments"] = trace_segments
     result["pooled_summary_rows"] = paired_transition_summaries(event_rows)
     balanced_rows = aggregate_transition_rows_expday(event_rows)
     result["summary_rows"] = paired_transition_summaries(balanced_rows)
