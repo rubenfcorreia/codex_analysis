@@ -25,12 +25,26 @@ def iter_branch_basis_leaves(
 
 def branch_leaf_root(result_root: Path | str, branch_name: Any, basis_name: Any, preset_name: Any | None = None) -> Path:
     root = Path(result_root) / safe_filename_component(branch_name)
-    root /= safe_filename_component(basis_name)
+    # pooled is already the combined, non-state-specific scope.
+    if str(branch_name or "").strip().lower() != "pooled":
+        root /= safe_filename_component(basis_name)
     preset_text = str(preset_name or '').strip()
     if preset_text:
         root /= safe_filename_component(preset_text)
     return root
 
+
+
+def validate_pooled_analysis_layout(analysis_root: Path | str) -> Dict[str, Any]:
+    """Describe the flat pooled analysis layout without deleting legacy folders."""
+    pooled_root = Path(analysis_root) / "pooled"
+    legacy_paths = [pooled_root / state for state in ("all", "nrem", "rem") if (pooled_root / state).exists()]
+    return {
+        "status": "ok" if not legacy_paths else "flat_root_with_legacy_state_subdirs",
+        "expected_root": str(pooled_root),
+        "legacy_state_subdirs": [str(path) for path in legacy_paths],
+        "legacy_preserved": True,
+    }
 
 def branch_leaf_figure_root(result_root: Path | str, branch_name: Any, basis_name: Any, preset_name: Any | None = None) -> Path:
     return branch_leaf_root(result_root, branch_name, basis_name, preset_name=preset_name)

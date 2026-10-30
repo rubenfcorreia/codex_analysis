@@ -33,11 +33,12 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 from analysis.shared.analysis_families.correlation import correlation_analysis_for_observation as _canonical_correlation_analysis, validate_correlation_settings
 from analysis.shared.analysis_families.matrix_similarity import shuffle_matrix_similarity as _canonical_matrix_similarity
+from analysis.shared.analysis_families.mixed_model import assess_mixed_model_branch
 from analysis.shared.analysis_families.mixed_model import run_mixed_model_family as _canonical_mixed_model_family
 from analysis.shared.statistics import apply_bh_fdr_rows, resolve_inferential_p_value
 from analysis.compartment_common import normalize_comparison_presets
 from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
-from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scoped_branch_results, select_roi_split_leaf
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, validate_pooled_analysis_layout, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.run_timing import RunTimer, attach_timing_to_outputs, write_timing_report
 from analysis.shared.plot_profiles import apply_plot_profile
@@ -3556,8 +3557,15 @@ results: Dict[str, Any], review: bool = False) -> List[Dict[str, Any]]:
     for branch in branch_configs:
         branch_data = results.get(branch["key"], {})
         if not isinstance(branch_data, dict):
-            continue
-        if not (branch_data.get("designs") or branch_data.get("contrast_rows") or any(branch_data.get("summary_rows", {}).values())):
+            branch_data = {}
+        diagnostics = results.setdefault("mixed_model_figure_diagnostics", {})
+        branch_diagnostic = assess_mixed_model_branch(branch_data)
+        branch_data["available"] = branch_diagnostic["status"] == "available"
+        branch_data["availability_status"] = branch_diagnostic["status"]
+        branch_data["availability_reason"] = branch_diagnostic["reason"]
+        branch_data["response_diagnostics"] = branch_diagnostic["response_diagnostics"]
+        diagnostics[branch["name"]] = {"status": branch_diagnostic["status"], "reason": branch_diagnostic["reason"], "scope": branch["scope"], "response_diagnostics": branch_diagnostic["response_diagnostics"]}
+        if branch_diagnostic["status"] != "available":
             continue
         specs.extend(
             [
@@ -6938,9 +6946,10 @@ def plot_correlation_summary(
                 for split_group in split_groups:
                     subset = [row for row in analysis_rows if str(row.get("split_group") or "").strip() == split_group]
                     r_arr = np.asarray([float(row.get("r", float("nan"))) for row in subset], dtype=float)
-                    p_arr = np.asarray([float(row.get("shuffle_p", float("nan"))) for row in subset], dtype=float)
-                    r_arr = r_arr[np.isfinite(r_arr)]
-                    p_arr = p_arr[np.isfinite(p_arr)]
+                    p_arr = np.asarray([float(resolve_inferential_p_value(row)[0]) if resolve_inferential_p_value(row)[0] is not None else float("nan") for row in subset], dtype=float)
+                    valid = np.isfinite(r_arr)
+                    r_arr = r_arr[valid]
+                    p_arr = p_arr[valid]
                     if r_arr.size == 0 and p_arr.size == 0:
                         continue
                     labels.append(f"{label_lookup.get(analysis, analysis.replace('_', ' '))} | {split_display.get(split_group, split_group)}")
@@ -6948,9 +6957,10 @@ def plot_correlation_summary(
                     p_values.append(p_arr if p_arr.size else np.asarray([np.nan], dtype=float))
                 continue
         r_arr = np.asarray([float(row.get("r", float("nan"))) for row in analysis_rows], dtype=float)
-        p_arr = np.asarray([float(row.get("shuffle_p", float("nan"))) for row in analysis_rows], dtype=float)
-        r_arr = r_arr[np.isfinite(r_arr)]
-        p_arr = p_arr[np.isfinite(p_arr)]
+        p_arr = np.asarray([float(resolve_inferential_p_value(row)[0]) if resolve_inferential_p_value(row)[0] is not None else float("nan") for row in analysis_rows], dtype=float)
+        valid = np.isfinite(r_arr)
+        r_arr = r_arr[valid]
+        p_arr = p_arr[valid]
         if r_arr.size == 0 and p_arr.size == 0:
             continue
         labels.append(label_lookup.get(analysis, analysis.replace("_", " ")))
@@ -6958,7 +6968,7 @@ def plot_correlation_summary(
         p_values.append(p_arr if p_arr.size else np.asarray([np.nan], dtype=float))
     if not labels:
         return None
-    fig, axes = plt.subplots(1, 2, figsize=(11.6, 5.4), squeeze=False, gridspec_kw={"wspace": 0.30})
+    fig, axes = plt.subplots(1, 1, figsize=(8.8, 5.4), squeeze=False)
     x = np.arange(1, len(labels) + 1)
     palette = plt.get_cmap("Set1")
     ax = axes[0, 0]
@@ -6970,6 +6980,8 @@ def plot_correlation_summary(
         jitter = np.random.default_rng(11).uniform(-0.12, 0.12, size=arr.size)
         ax.scatter(np.full(arr.size, pos) + jitter, arr, s=12, alpha=0.45, color="#444444", edgecolor="none")
         ax.text(pos, np.nanmax(arr), f"n={arr.size}", ha="center", va="bottom", fontsize=POSTER_NOTE_SIZE)
+        if np.isfinite(p_values[pos - 1]).any() and np.nanmin(p_values[pos - 1]) < REPORT_SIGNIFICANCE_ALPHA:
+            ax.text(pos, 0.98, "*", transform=ax.get_xaxis_transform(), ha="center", va="top", color="#8b0000", fontsize=14, fontweight="bold")
     ax.axhline(0.0, color="#333333", linewidth=1)
     ax.set_title("Correlation coefficients", fontsize=POSTER_TITLE_SIZE)
     ax.set_ylabel("Pearson r", fontsize=POSTER_LABEL_SIZE)
@@ -6979,28 +6991,8 @@ def plot_correlation_summary(
     ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
     ax.grid(axis="y", alpha=0.25)
     set_sparse_numeric_ticks(ax, axis="y", nbins=5)
-    ax = axes[0, 1]
-    bp = ax.boxplot(p_values, positions=x, widths=0.6, patch_artist=True, showfliers=False)
-    _set_boxplot_colors(bp, [palette(i % palette.N) for i in range(len(labels))])
-    for pos, arr in zip(x, p_values):
-        if arr.size == 0:
-            continue
-        jitter = np.random.default_rng(12).uniform(-0.12, 0.12, size=arr.size)
-        ax.scatter(np.full(arr.size, pos) + jitter, arr, s=12, alpha=0.45, color="#444444", edgecolor="none")
-        ax.text(pos, np.nanmax(arr), f"n={arr.size}", ha="center", va="bottom", fontsize=POSTER_NOTE_SIZE)
-        if np.nanmin(arr) < REPORT_SIGNIFICANCE_ALPHA:
-            ax.scatter(pos, min(1.0, np.nanmax(arr) + 0.04), s=90, marker="*", color="#8b0000", zorder=4)
-    ax.axhline(0.05, color="#8b0000", linestyle="--", linewidth=1)
-    ax.set_title("Shuffle p-values", fontsize=POSTER_TITLE_SIZE)
-    ax.set_ylabel("p", fontsize=POSTER_LABEL_SIZE)
-    ax.set_xticks(x)
-    ax.set_xticklabels([label.replace(" vs ", "\nvs ").replace(" activity", "\nactivity") for label in labels], rotation=28, ha="right", fontsize=max(POSTER_FONT_SIZE - 1, 9))
-    ax.set_ylim(-0.02, 1.05)
-    ax.tick_params(axis="both", labelsize=POSTER_FONT_SIZE)
-    ax.grid(axis="y", alpha=0.25)
-    set_sparse_numeric_ticks(ax, axis="y", nbins=5)
     output_path = fig_dir / output_name
-    fig.subplots_adjust(left=0.09, right=0.98, bottom=0.30, top=0.90)
+    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.30, top=0.90)
     save_figure(fig, output_path, extra_formats=())
     plt.close(fig)
     return str(output_path)
@@ -7434,10 +7426,10 @@ def generate_analysis_figures(
     roi_run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
     roi_general_enabled = bool(roi_run_params.get("generate_shared_general_figures", False))
     roi_general_root = Path(roi_run_params.get("general_figure_root")) if roi_run_params.get("general_figure_root") else None
-    roi_split_target_dir = (roi_general_root / "roi_split") if roi_general_root is not None else (fig_dir / "roi_split")
+    roi_split_target_dir = roi_general_root if roi_general_enabled and roi_general_root is not None else fig_dir
     roi_split_bundles = (
         roi_split_results.get("bundles", [])
-        if roi_general_enabled and isinstance(roi_split_results, dict)
+        if isinstance(roi_split_results, dict)
         else []
     )
     for plot_idx, bundle in enumerate(roi_split_bundles, start=1):
@@ -7500,7 +7492,7 @@ def generate_analysis_figures(
             if output_path:
                 saved.append(output_path)
     matrix_review_rows = results.get("matrix_similarity", [])
-    matrix_review_compartments = matrix_similarity_output_compartments(matrix_review_rows)
+    matrix_review_compartments = []  # canonical distributions are rendered by the family renderer
     for comp_idx, compartment in enumerate(matrix_review_compartments, start=1):
         with step_scope(
             f"figure plotter: matrix_similarity_distribution[{gallery_compartment_suffix(compartment)}]",
@@ -7585,7 +7577,7 @@ def generate_analysis_figures(
                 if distribution_path:
                     saved.append(distribution_path)
                 else:
-                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or 'review'}")
                 distribution_pvalue_path = plot_spine_coactivity_distribution_figure(
                     compartment_results,
                     spine_coactivity_figure_dir(coactivity_dir, "distribution"),
@@ -7880,6 +7872,7 @@ def generate_review_figures(
             "results": (basal_results, apical_results),
         }
     )
+    review_specs = []  # review output is reserved for unique diagnostics
     for plot_idx, spec in enumerate(review_specs, start=1):
         compartment = spec.get("compartment")
         scope_label = gallery_compartment_suffix(compartment) if spec["kind"] == "overview" else "basal_vs_apical"
@@ -7916,7 +7909,7 @@ def generate_review_figures(
                 eprint(f"[ALERT] Failed to create review figure ({scope_label}): {exc}")
                 continue
             if not output_path:
-                step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or 'review'}")
                 continue
             output_path_obj = Path(output_path)
             saved.append(str(output_path_obj))
@@ -7966,7 +7959,7 @@ def generate_review_figures(
                     eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
                     continue
                 if not output_path:
-                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or 'review'}")
                     continue
                 output_path_obj = Path(output_path)
                 saved.append(str(output_path_obj))
@@ -7983,6 +7976,7 @@ def generate_review_figures(
     with step_scope("review family: mixed model figures"):
         mixed_model_review_dir = figure_family_dir(review_dir, DEFAULT_MIXED_MODEL_FIGURES_DIRNAME)
         mixed_model_specs = mixed_model_branch_render_specs(results, review=True)
+        mixed_model_specs = []  # canonical mixed-model figures already exist
         for plot_idx, spec in enumerate(mixed_model_specs, start=1):
             scope = str(spec.get("scope") or "all")
             is_shared_scope = mixed_model_scope_is_shared(scope)
@@ -8005,125 +7999,15 @@ def generate_review_figures(
                     eprint(f"[ALERT] Failed to create review figure ({spec['name']}): {exc}")
                     continue
                 if not output_path:
-                    step_message(f"plotter returned no output: {spec.get('name', scope_label)}")
+                    step_message(f"plotter returned no output: {spec.get('name') or spec.get('output_name') or 'review'}")
                     continue
                 output_path_obj = Path(output_path)
                 saved.append(str(output_path_obj))
                 svg_path = output_path_obj.with_suffix(".svg")
                 if svg_path.exists():
                     saved.append(str(svg_path))
-    with step_scope("review family: spine coactivity figures"):
-        coactivity_review_dir = review_dir
-        coactivity_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-        coactivity_compartments = spine_coactivity_output_compartments(coactivity_rows)
-        for plot_idx, compartment in enumerate(coactivity_compartments, start=1):
-            with step_scope(
-                f"review figure plotter: spine_coactivity[{gallery_compartment_suffix(compartment)}]",
-                index=plot_idx,
-                total=len(coactivity_compartments),
-            ):
-                try:
-                    compartment_results = cached_spine_coactivity_results(compartment)
-                    distribution_path = plot_spine_coactivity_distribution_figure(
-                        compartment_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
-                        output_name=f"review_spine_coactivity_distribution_{gallery_compartment_suffix(compartment)}.svg",
-                        title=f"Review: Spine coactivity distributions - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                    )
-                    if distribution_path:
-                        saved.append(distribution_path)
-                    heatmap_path = plot_spine_coactivity_tendency_figure(
-                        compartment_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
-                        output_name=f"review_spine_coactivity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
-                        title=f"Review: Derived state-state similarity of coactivity coefficient - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                    )
-                    if heatmap_path:
-                        saved.append(heatmap_path)
-                    pair_heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
-                        compartment_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
-                        output_name=f"review_spine_coactivity_pair_state_heatmap_{gallery_compartment_suffix(compartment)}.svg",
-                        title=f"Review: Spine coactivity coefficient across selected states - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                    )
-                    if pair_heatmap_path:
-                        saved.append(pair_heatmap_path)
-                    else:
-                        step_message(f"plotter returned no output: spine_coactivity_pair_state_heatmap[{gallery_compartment_suffix(compartment)}]")
-                    pair_summary_path = plot_spine_coactivity_pair_state_summary_figure(
-                        compartment_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
-                        output_name=f"review_spine_coactivity_pair_state_summary_{gallery_compartment_suffix(compartment)}.svg",
-                        title=f"Review: Spine coactivity state-change summary - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                    )
-                    if pair_summary_path:
-                        saved.append(pair_summary_path)
-                    else:
-                        step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
-                except Exception as exc:
-                    eprint(f"[ALERT] Failed to create review figure (spine_coactivity[{compartment}]): {exc}")
-        anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
-        if spine_coactivity_anchor_compartments is None:
-            spine_coactivity_anchor_compartments = spine_coactivity_anchor_state_compartments(anchor_rows)
-        for plot_idx, compartment in enumerate(spine_coactivity_anchor_compartments, start=1):
-            with step_scope(
-                f"review figure plotter: spine_coactivity_anchor[{gallery_compartment_suffix(compartment)}]",
-                index=plot_idx,
-                total=len(spine_coactivity_anchor_compartments),
-            ):
-                try:
-                    scope_results = results if compartment is None else cached_spine_coactivity_results(compartment)
-                    distribution_path = plot_spine_coactivity_distribution_figure(
-                        scope_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "distribution"),
-                        output_name=spine_coactivity_pair_state_output_name("anchor_distribution", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
-                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                        state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-                        coactive_only=True,
-                    )
-                    if distribution_path:
-                        saved.append(distribution_path)
-                    heatmap_path = plot_spine_coactivity_pair_state_heatmap_figure(
-                        scope_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_heatmap"),
-                        output_name=spine_coactivity_pair_state_output_name("pair_state_heatmap", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
-                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive pairs across states - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-                        coactive_only=True,
-                    )
-                    if heatmap_path:
-                        saved.append(heatmap_path)
-                    summary_path = plot_spine_coactivity_pair_state_summary_figure(
-                        scope_results,
-                        spine_coactivity_figure_dir(coactivity_review_dir, "pair_state_summary"),
-                        output_name=spine_coactivity_pair_state_output_name("pair_state_summary", SPINE_COACTIVITY_ANCHOR_STATE, compartment, True),
-                        title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair summary - {gallery_compartment_title(compartment)}",
-                        compartment_filter=compartment,
-                        anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-                        coactive_only=True,
-                    )
-                    if summary_path:
-                        saved.append(summary_path)
-                    else:
-                        step_message(f"plotter returned no output: spine_coactivity_pair_state_summary[{gallery_compartment_suffix(compartment)}]")
-                except Exception as exc:
-                    eprint(f"[ALERT] Failed to create quiet-awake-movies coactivity review figures ({gallery_compartment_suffix(compartment)}): {exc}")
-        basal_vs_apical_path = plot_spine_coactivity_basal_apical_distribution_figure(
-            results,
-            spine_coactivity_figure_dir(coactivity_review_dir, "basal_apical_distribution"),
-            output_name=spine_coactivity_basal_apical_distribution_output_name(SPINE_COACTIVITY_ANCHOR_STATE, True),
-            title=f"{format_requested_state_label(SPINE_COACTIVITY_ANCHOR_STATE)} coactive-pair distribution - basal vs apical",
-            anchor_state_filter=SPINE_COACTIVITY_ANCHOR_STATE,
-            coactive_only=True,
-        )
-        if basal_vs_apical_path:
-            saved.append(basal_vs_apical_path)
+    # Canonical spine-coactivity figures are generated in the main figure family; review output keeps only unique diagnostics.
+
     return saved
 
 
@@ -8804,78 +8688,8 @@ def generate_checkpoint_gallery(
     # Basal/apical summary checkpoint.
     path = plot_basal_apical_summary(results, gallery_dir)
     append_entry("basal_apical_summary", "combined", path)
-    # Correlation checkpoint examples.
-    for compartment in gallery_compartments:
-        corr_results = build_filtered_correlation_results(results, compartment)
-        path = plot_correlation_summary(
-            corr_results,
-            figure_family_dir(gallery_dir, DEFAULT_CORRELATION_FIGURES_DIRNAME),
-            output_name=f"05_correlation_summary_{gallery_compartment_suffix(compartment)}.svg",
-            title=f"Correlation summaries - {gallery_compartment_title(compartment)}",
-        )
-        rep = select_representative_trace_record(cache, compartment_filter=compartment, require_spine=True)
-        append_entry(
-            "correlation_summary",
-            gallery_compartment_suffix(compartment),
-            path,
-            compartment=compartment,
-            animal_id=None if rep is None else rep["animal_id"],
-            exp_id=None if rep is None else rep["exp_id"],
-            global_dendrite_id=None if rep is None else rep["global_dendrite_id"],
-            global_spine_id=None if rep is None else rep["global_spine_id"],
-        )
-    # Spine-spine matrix similarity checkpoint examples.
-    matrix_rows = results.get("matrix_similarity", [])
-    for compartment in matrix_similarity_output_compartments(matrix_rows):
-        matrix_results = cached_matrix_similarity_results(compartment)
-        heatmap_path = plot_matrix_similarity_heatmap(
-            matrix_results,
-            figure_family_dir(gallery_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
-            output_name=f"06_matrix_similarity_heatmap_{gallery_compartment_suffix(compartment)}.svg",
-            title=f"Derived matrix similarity state-state r - {gallery_compartment_title(compartment)}",
-            compartment_filter=compartment,
-        )
-        rep = None
-        if matrix_results.get("matrix_similarity"):
-            rep = sorted(
-                matrix_results["matrix_similarity"],
-                key=lambda row: (
-                    str(row.get("animal_id", "")),
-                    str(row.get("exp_id", "")),
-                    str(row.get("global_dendrite_id", "")),
-                    str(row.get("state_a", "")),
-                    str(row.get("state_b", "")),
-                ),
-            )[0]
-        append_entry(
-            "matrix_similarity_heatmap",
-            gallery_compartment_suffix(compartment),
-            heatmap_path,
-            compartment=compartment,
-            animal_id=None if rep is None else rep.get("animal_id"),
-            exp_id=None if rep is None else rep.get("exp_id"),
-            global_dendrite_id=None if rep is None else rep.get("global_dendrite_id"),
-        )
-    dist_results = results.get("matrix_similarity", [])
-    for compartment in matrix_similarity_output_compartments(dist_results):
-        compartment_results = cached_matrix_similarity_results(compartment)
-        dist_path = plot_matrix_similarity_distribution(
-            compartment_results,
-            figure_family_dir(gallery_dir, DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME),
-            output_name=f"06_matrix_similarity_distribution_{gallery_compartment_suffix(compartment)}.svg",
-            title=f"Spine-spine coefficient distributions - {gallery_compartment_title(compartment)}",
-            compartment_filter=compartment,
-        )
-        rep = select_representative_trace_record(cache, compartment_filter=compartment, require_spine=True)
-        append_entry(
-            "matrix_similarity_distribution",
-            gallery_compartment_suffix(compartment),
-            dist_path,
-            compartment=compartment,
-            animal_id=None if rep is None else rep["animal_id"],
-            exp_id=None if rep is None else rep["exp_id"],
-            global_dendrite_id=None if rep is None else rep["global_dendrite_id"],
-        )
+    # Correlation summaries are rendered once by the canonical family renderer.
+    # Matrix heatmaps and distributions are rendered once by their canonical family renderers.
     # Quiet-awake-movies spine coactivity checkpoint examples.
     anchor_rows = results.get("spine_coactivity", {}).get("table_rows", [])
     if spine_coactivity_anchor_compartments is None:
@@ -16355,6 +16169,8 @@ def write_analysis_outputs(
             else:
                 comparison_leaf = None
             for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
+                if branch_name == "pooled" and basis_name != "all":
+                    continue
                 if comparison_leaf is not None and (branch_name, basis_name) != comparison_leaf:
                     continue
                 leaf_results = scoped_branch_results(results, branch_name=branch_name, basis_name=basis_name, sleep_expids=sleep_expids)
@@ -16379,6 +16195,25 @@ def write_analysis_outputs(
                 if leaf_split_mixed_model.get("available"):
                     leaf_results["mixed_model"] = leaf_split_mixed_model
                     leaf_results["mixed_model_selected_state"] = leaf_split_mixed_model
+                for cohort_name in ("responsive", "nonresponsive"):
+                    try:
+                        cohort_model = run_split_family(
+                            leaf_roi_split.get("subject_state_rows", []),
+                            leaf_roi_split.get("membership_rows", []),
+                            response_columns=split_response_columns,
+                            state_comparison_states=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", analysis_state_comparison_states)),
+                            shuffle_n=shuffle_n,
+                            mixed_model_contrast_p_source=mixed_model_contrast_p_source,
+                            state_filter=list(leaf_results.get("analysis_state_selection", {}).get("state_comparison_states", analysis_state_comparison_states)),
+                            vc_level_keys=None,
+                            visual_response_cohort=cohort_name,
+                        )
+                    except Exception:
+                        logger.exception("Failed to build %s split mixed-model leaf results for %s/%s", cohort_name, branch_name, basis_name)
+                        cohort_model = {}
+                    if cohort_model.get("available"):
+                        leaf_results[f"mixed_model_visual_response_{cohort_name}"] = cohort_model
+                        leaf_results[f"mixed_model_visual_response_{cohort_name}_selected_state"] = cohort_model
                 leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name)
                 # ``branch_root`` is the analysis tree. In comparison runs
                 # the corresponding figure tree is rooted beside it, and
@@ -16460,6 +16295,8 @@ def write_analysis_outputs(
                     str(Path(output_dir).resolve()),
                     str(Path(figure_root).resolve()),
                 ]))
+            if branch_first_figures:
+                results["analysis_layout_validation"] = validate_pooled_analysis_layout(output_dir)
             manifest_payload = jsonable(results)
             manifest_payload["output_root"] = str(manifest_root)
             manifest_payload["output_artifacts"] = [
@@ -19159,6 +18996,8 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
         "caches": cache_summary,
     }), indent=2, sort_keys=True) + "\n")
     results["output_artifacts"].append(report_relative_path(cache_key_manifest_path, output_dir))
+    if bool(results.get("run_parameters", {}).get("branch_first_figures", False)):
+        results["analysis_layout_validation"] = validate_pooled_analysis_layout(output_dir)
     manifest_payload = jsonable(results)
     manifest_payload["output_root"] = str(manifest_root)
     manifest_payload["output_artifacts"] = collect_output_artifacts(manifest_root)

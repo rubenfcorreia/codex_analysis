@@ -47,7 +47,7 @@ from analysis.shared.comparison_preset_flow import (
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.run_timing import RunTimer, attach_timing_to_outputs, write_timing_report
 from analysis.shared.result_layout import resolve_result_layout
-from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results
+from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, scope_rows_for_basis, scoped_branch_results, validate_pooled_analysis_layout
 from analysis.shared.state_utils import canonical_state_label, resolve_analysis_state_selections, resolve_repo_path, safe_filename_component, state_display_color, state_display_label
 from analysis.shared.union_rows import filter_rows_by_states, load_union_rows_cache, save_union_rows_cache, union_rows_meta, union_state_labels
 from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_split_results
@@ -3239,6 +3239,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                             )
 
         for branch_name, basis_name in iter_branch_basis_leaves(ANALYSIS_BRANCHES, ANALYSIS_BASES):
+            if branch_name == "pooled" and basis_name != "all":
+                continue
             if figure_root != result_root and branch_name == "pooled" and basis_name == "all":
                 continue
             render_branch_first_leaf_figures(branch_name, basis_name)
@@ -3340,6 +3342,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         ).as_dict(),
         "output_artifacts": collect_output_artifacts(result_root),
         "figure_output_root": str(figure_root),
+        "analysis_layout_validation": validate_pooled_analysis_layout(result_root),
         "figure_artifacts": collect_output_artifacts(figure_root),
         "figure_inventory": _figure_inventory(figure_root),
         "general_figure_output_root": str(general_figure_root) if general_figure_root is not None else None,

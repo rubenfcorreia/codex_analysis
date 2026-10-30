@@ -685,22 +685,6 @@ def plot_state_correlation(*args: Any, **kwargs: Any) -> list[Path]:
                 comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
             )
         )
-        generated.extend(
-            _plot_multi_panel_grouped_state_figure(
-                frame,
-                state_col=state_col,
-                value_col=value_col,
-                group_col=group_col,
-                output_dir=correlation_dir,
-                stem=f"{output_stem}_multi_panel_split_groups",
-                title=f"{title} by split group and state",
-                ylabel="Correlation",
-                title_color="#334155",
-                edge_color="#334155",
-                state_order=state_order,
-                comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
-            )
-        )
         return generated
     return _plot_boxplot(
         frame,

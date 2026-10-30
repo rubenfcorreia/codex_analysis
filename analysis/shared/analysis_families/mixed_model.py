@@ -340,6 +340,74 @@ def _mixed_model_table_from_rows(rows: Sequence[Mapping[str, Any]], compartment:
     return table_rows
 
 
+
+def assess_mixed_model_branch(branch: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Assess whether a mixed-model branch contains renderable fitted results."""
+    branch = branch if isinstance(branch, Mapping) else {}
+    designs = branch.get("designs", {})
+    summary_rows = branch.get("summary_rows", {})
+    designs = designs if isinstance(designs, Mapping) else {}
+    summary_rows = summary_rows if isinstance(summary_rows, Mapping) else {}
+    responses = sorted(set(str(key) for key in designs) | set(str(key) for key in summary_rows))
+    response_diagnostics: Dict[str, Dict[str, Any]] = {}
+    valid_responses: List[str] = []
+    for response in responses:
+        design = designs.get(response, {})
+        rows = summary_rows.get(response, [])
+        rows = rows if isinstance(rows, list) else []
+        terms = [str(term) for term in (design.get("fixed_effect_names", []) if isinstance(design, Mapping) else []) if str(term)]
+        row_by_term = {str(row.get("term")): row for row in rows if isinstance(row, Mapping)}
+        missing_terms = [term for term in terms if term not in row_by_term]
+        nonfinite_terms = []
+        for term in terms:
+            if term not in row_by_term:
+                continue
+            try:
+                estimate = float(row_by_term[term].get("estimate"))
+            except (TypeError, ValueError):
+                estimate = float("nan")
+            if not np.isfinite(estimate):
+                nonfinite_terms.append(term)
+        preflight = design.get("preflight", {}) if isinstance(design, Mapping) else {}
+        response_status = "available"
+        if not rows:
+            response_status = "no_input_rows" if int(preflight.get("n_rows", 0) or 0) == 0 else "invalid_model_rows"
+        elif not terms or missing_terms or nonfinite_terms:
+            response_status = "invalid_model_rows"
+        if response_status == "available":
+            valid_responses.append(response)
+        response_diagnostics[response] = {
+            "status": response_status,
+            "summary_row_count": len(rows),
+            "fixed_effect_count": len(terms),
+            "missing_fixed_effects": missing_terms,
+            "nonfinite_estimates": nonfinite_terms,
+            "preflight_status": preflight.get("status") if isinstance(preflight, Mapping) else None,
+            "preflight_rows": int(preflight.get("n_rows", 0) or 0) if isinstance(preflight, Mapping) else 0,
+        }
+    if valid_responses:
+        status, reason = "available", "at least one response has complete finite fitted-model rows"
+    elif not responses:
+        status, reason = "no_input_rows", "branch has no model responses"
+    elif all(item["status"] == "no_input_rows" for item in response_diagnostics.values()):
+        status, reason = "no_input_rows", "all model responses have no finite input rows"
+    else:
+        status, reason = "invalid_model_rows", "no response has complete finite fitted-model rows"
+    return {"status": status, "reason": reason, "valid_responses": valid_responses, "response_diagnostics": response_diagnostics}
+
+
+def finalize_mixed_model_branch(branch: Dict[str, Any], *, has_input_rows: bool) -> Dict[str, Any]:
+    """Attach authoritative availability/status diagnostics to a model branch."""
+    diagnostic = assess_mixed_model_branch(branch)
+    if not has_input_rows and diagnostic["status"] == "invalid_model_rows":
+        diagnostic["status"] = "no_input_rows"
+        diagnostic["reason"] = "branch has no rows after state/cohort filtering"
+    branch["available"] = diagnostic["status"] == "available"
+    branch["availability_status"] = diagnostic["status"]
+    branch["availability_reason"] = diagnostic["reason"]
+    branch["response_diagnostics"] = diagnostic["response_diagnostics"]
+    return branch
+
 def _contrast_specs(state_comparison_states: Sequence[str], include_visual_response: bool) -> List[Dict[str, Any]]:
     state_pairs = [
         {"kind": "state_pair", "state_a": state_a, "state_b": state_b}
@@ -390,7 +458,7 @@ def _run_branch(
         state_filter_set = {str(state).strip() for state in state_filter if state is not None and str(state).strip()}
         working_rows = [row for row in working_rows if str(row.get("state")) in state_filter_set]
     if not working_rows:
-        return branch
+        return finalize_mixed_model_branch(branch, has_input_rows=False)
     if not state_order:
         state_order = sorted({str(row.get("state") or "") for row in working_rows if row.get("state")})
     valid_state_order = [state for state in state_order if any(str(row.get("state")) == state for row in working_rows)]
@@ -418,7 +486,7 @@ def _run_branch(
         branch["p_value_source"] = result.get("p_value_source", p_value_source)
         branch["p_value_source_requested"] = result.get("p_value_source_requested", p_value_source)
         branch["validation_rows"].extend(result.get("validation_rows", []))
-    return branch
+    return finalize_mixed_model_branch(branch, has_input_rows=bool(working_rows))
 
 
 def run_family(
@@ -470,12 +538,16 @@ def run_split_family(
     state_filter: Sequence[str] | None = None,
     vc_level_keys: Sequence[str] | None = ("unit_id",),
     split_group_column: str = "split_group",
+    visual_response_cohort: str | None = None,
 ) -> Dict[str, Any]:
     annotated_rows = annotate_rows_with_split_group(table_rows, membership_rows, group_column=split_group_column)
     working_rows = [row for row in annotated_rows if str(row.get(split_group_column) or "").strip()]
     if state_filter is not None:
         state_filter_set = {str(state).strip() for state in state_filter if state is not None and str(state).strip()}
         working_rows = [row for row in working_rows if str(row.get("state")) in state_filter_set]
+    cohort_key = str(visual_response_cohort or "").strip().lower()
+    if cohort_key in {"responsive", "nonresponsive"}:
+        working_rows = [row for row in working_rows if str(row.get("visual_response_cohort") or "nonresponsive").strip().lower() == cohort_key]
     response_names = [str(column).strip() for column in response_columns if str(column).strip()]
     p_value_source = str(mixed_model_contrast_p_source or "classical").strip().lower()
     if p_value_source not in {"classical", "shuffle"}:
@@ -495,6 +567,7 @@ def run_split_family(
             "split_group_column": split_group_column,
             "split_group_levels": [],
             "split_group_reference": None,
+            "visual_response_cohort": cohort_key or "all",
         },
         "validation_rows": [],
         "alerts": [],
@@ -502,7 +575,7 @@ def run_split_family(
     }
     alerts: List[str] = branch["alerts"]
     if not working_rows or not response_names:
-        return branch
+        return finalize_mixed_model_branch(branch, has_input_rows=False)
     state_order = [canonical_state_label(state) for state in state_comparison_states if canonical_state_label(state)]
     if not state_order:
         state_order = [canonical_state_label(row.get("state")) for row in working_rows if canonical_state_label(row.get("state"))]
@@ -581,7 +654,7 @@ def run_split_family(
         branch["p_value_source"] = result.get("p_value_source", p_value_source)
         branch["p_value_source_requested"] = result.get("p_value_source_requested", p_value_source)
         branch["validation_rows"].extend(result.get("validation_rows", []))
-    return branch
+    return finalize_mixed_model_branch(branch, has_input_rows=bool(working_rows))
 
 
-__all__ = ["run_family", "run_split_family"]
+__all__ = ["run_family", "run_split_family", "assess_mixed_model_branch", "finalize_mixed_model_branch"]
