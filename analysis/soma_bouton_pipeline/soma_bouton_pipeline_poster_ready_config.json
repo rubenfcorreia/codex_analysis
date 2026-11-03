@@ -42,7 +42,103 @@
   "plots_only": false,
   "poster_ready_only": true,
   "comparison_preset_names": null,
-  "comparison_presets": null,
+  "comparison_presets": {
+    "movies_state_comparisons": {
+      "transition_analysis": {
+        "enabled": true,
+        "window_s": 60,
+        "window_modes": [
+          "strict",
+          "max_available"
+        ],
+        "scopes": [
+          "all_states"
+        ],
+        "metrics": [
+          "activity",
+          "event_frequency"
+        ]
+      },
+      "state_comparison_states": [
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies"
+      ],
+      "compartment_states": [
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies"
+      ]
+    },
+    "blank_state_comparisons": {
+      "state_comparison_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank"
+      ],
+      "compartment_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank"
+      ]
+    },
+    "quiet_vs_sleep_blank_movies": {
+      "state_comparison_states": [
+        "quiet_awake_blank",
+        "quiet_awake_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ],
+      "compartment_states": [
+        "quiet_awake_blank",
+        "quiet_awake_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ]
+    },
+    "all_states": {
+      "transition_analysis": {
+        "enabled": true,
+        "window_s": 60,
+        "window_modes": [
+          "strict",
+          "max_available"
+        ],
+        "scopes": [
+          "all_states",
+          "sleep_states"
+        ],
+        "metrics": [
+          "activity",
+          "event_frequency"
+        ]
+      },
+      "state_comparison_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ],
+      "compartment_states": [
+        "quiet_awake_blank",
+        "nrem_blank",
+        "rem_blank",
+        "quiet_awake_movies",
+        "nrem_movies",
+        "rem_movies",
+        "quiet_awake",
+        "nrem",
+        "rem"
+      ]
+    }
+  },
   "event_detection_method": "amplitude",
   "visual_response_metric": "mean",
   "visual_response_cohort": "all",

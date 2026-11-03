@@ -39,6 +39,7 @@ from analysis.compartment_common import (
     write_csv_rows,
 )
 from analysis.shared.comparison_preset_flow import (
+    POSTER_REFERENCE_COMPARISON_PRESETS,
     POSTER_REQUIRED_COMPARISON_PRESETS,
     build_comparison_preset_batch_plan,
     load_all_state_comparison_rows,
@@ -422,12 +423,21 @@ def _requires_full_trace_shuffle_dataset(config: Mapping[str, Any], presets: Seq
 def _run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     preset_names = _preset_selection_names(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
-    plan = build_comparison_preset_batch_plan(
-        presets,
-        selected_names=preset_names,
-        poster_ready_only=bool(config.get("poster_ready_only")),
-        poster_required_names=POSTER_REQUIRED_COMPARISON_PRESETS,
-    )
+    poster_mode = bool(config.get("poster_ready_only")) and not bool(preset_names)
+    poster_required_names = POSTER_REQUIRED_COMPARISON_PRESETS
+    poster_reference_names = None
+    if poster_mode:
+        quiet_preset_name = "quiet_vs_sleep_blank_movies"
+        poster_required_names = tuple(dict.fromkeys((*POSTER_REQUIRED_COMPARISON_PRESETS, quiet_preset_name)))
+        poster_reference_names = (quiet_preset_name, *POSTER_REFERENCE_COMPARISON_PRESETS)
+    plan_kwargs = {
+        "selected_names": preset_names,
+        "poster_ready_only": poster_mode,
+        "poster_required_names": poster_required_names,
+    }
+    if poster_reference_names is not None:
+        plan_kwargs["poster_reference_names"] = poster_reference_names
+    plan = build_comparison_preset_batch_plan(presets, **plan_kwargs)
     if not plan.presets:
         return []
     resolved_names = [name for name, _ in plan.presets]

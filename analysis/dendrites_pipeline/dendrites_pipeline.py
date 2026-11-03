@@ -37,7 +37,7 @@ from analysis.shared.analysis_families.mixed_model import assess_mixed_model_bra
 from analysis.shared.analysis_families.mixed_model import run_mixed_model_family as _canonical_mixed_model_family
 from analysis.shared.statistics import apply_bh_fdr_rows, resolve_inferential_p_value
 from analysis.compartment_common import normalize_comparison_presets
-from analysis.shared.comparison_preset_flow import POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
+from analysis.shared.comparison_preset_flow import POSTER_REFERENCE_COMPARISON_PRESETS, POSTER_REQUIRED_COMPARISON_PRESETS, build_comparison_preset_batch_plan, load_comparison_preset_csv_rows
 from analysis.shared.branch_tree import ANALYSIS_BASES, ANALYSIS_BRANCHES, branch_leaf_figure_root, branch_leaf_root, comparison_leaf_root, iter_branch_basis_leaves, validate_pooled_analysis_layout, scoped_branch_results, select_roi_split_leaf
 from analysis.shared.result_manifest import AnalysisJobSpec, collect_output_artifacts, write_manifest
 from analysis.shared.run_timing import RunTimer, attach_timing_to_outputs, write_timing_report
@@ -16220,14 +16220,11 @@ def write_analysis_outputs(
                 # ``figure_root`` points at the current pooled/all leaf.
                 # Deriving the figure parent from that leaf keeps recursive
                 # branch rendering out of ``analysis/...``.
-                if figure_root is not None:
-                    figure_tree_root = Path(figure_root).parents[1]
-                else:
-                    # Comparison analysis and figure trees are siblings.  A
-                    # missing parent figure root must not make recursive leaf
-                    # plots fall back into analysis/<preset>/pooled/all.
-                    branch_root_path = Path(branch_root)
-                    figure_tree_root = branch_root_path.parents[1] / "figures" / branch_root_path.name
+                # Comparison analysis and figure trees are siblings.  Derive
+                # the figure tree from the preset analysis root so the flat
+                # pooled leaf does not lose its preset component.
+                branch_root_path = Path(branch_root)
+                figure_tree_root = branch_root_path.parents[1] / "figures" / branch_root_path.name
                 leaf_figure_root = branch_leaf_figure_root(figure_tree_root, branch_name, basis_name)
                 # Shared visual-response and event-example galleries are
                 # generated once at the comparison root; branch leaves only
@@ -16525,7 +16522,9 @@ def write_poster_ready_figures(
     )
 
     poster_run_params = results.get("run_parameters", {}) if isinstance(results.get("run_parameters"), dict) else {}
-    poster_root = Path(poster_run_params.get("general_output_root")) if poster_run_params.get("general_output_root") else Path(results.get("figure_output_root") or output_dir)
+    # Poster figures belong to the current run's figure leaf.  The general
+    # output root is shared across presets and must not bypass that leaf.
+    poster_root = Path(results.get("figure_output_root") or output_dir)
     poster_output_dir = ensure_dir(poster_root / "poster_ready")
     poster_result_root = Path(results.get("output_root") or output_dir)
 
@@ -17904,12 +17903,21 @@ def _build_dendrite_shuffle_dataset(
 def _run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     preset_names = parse_list_argument(config.get("comparison_preset_names"))
     presets = normalize_comparison_presets(config.get("comparison_presets"))
-    plan = build_comparison_preset_batch_plan(
-        presets,
-        selected_names=preset_names,
-        poster_ready_only=bool(config.get("poster_ready_only")) and not bool(preset_names),
-        poster_required_names=POSTER_REQUIRED_COMPARISON_PRESETS,
-    )
+    poster_mode = bool(config.get("poster_ready_only")) and not bool(preset_names)
+    poster_required_names = POSTER_REQUIRED_COMPARISON_PRESETS
+    poster_reference_names = None
+    if poster_mode:
+        quiet_preset_name = "quiet_vs_sleep_blank_movies"
+        poster_required_names = tuple(dict.fromkeys((*POSTER_REQUIRED_COMPARISON_PRESETS, quiet_preset_name)))
+        poster_reference_names = (quiet_preset_name, *POSTER_REFERENCE_COMPARISON_PRESETS)
+    plan_kwargs = {
+        "selected_names": preset_names,
+        "poster_ready_only": poster_mode,
+        "poster_required_names": poster_required_names,
+    }
+    if poster_reference_names is not None:
+        plan_kwargs["poster_reference_names"] = poster_reference_names
+    plan = build_comparison_preset_batch_plan(presets, **plan_kwargs)
     if not plan.presets:
         return False
     resolved_names = [name for name, _ in plan.presets]
@@ -18009,7 +18017,7 @@ def _run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
                 )
         preset_config["plots_only_include_supporting_figures"] = True
         preset_config["generate_poster_ready_figures"] = False
-        preset_config["generate_shared_general_figures"] = bool(generate_once and not preset_config.get("plots_only"))
+        preset_config["generate_shared_general_figures"] = generate_once
         preset_config["source_cache_validate"] = bool(config.get("source_cache_validate", True)) if generate_once else False
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
