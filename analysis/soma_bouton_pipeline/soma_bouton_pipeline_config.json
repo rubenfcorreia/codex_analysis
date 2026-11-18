@@ -72,8 +72,8 @@
   "pairwise_correlation_shuffle_n": 100,
   "pairwise_correlation_batch_size": 64,
   "pairwise_correlation_shift_block_size": 8,
-  "rebuild": true,
-  "plots_only": false,
+  "rebuild": false,
+  "plots_only": true,
   "comparison_preset_name": null,
   "comparison_preset_names": [
     "movies_state_comparisons",

@@ -112,3 +112,7 @@ The CLI supports --plot-profile full (default), analysis_only, and poster_only.
 ### Mixed-model preflight
 
 Dendrite mixed-model fits use the shared preflight checks before fitting. The diagnostics record finite observations, animal/group replication, state and interaction levels, design rank, condition number, and contrast estimability. Invalid designs are skipped with structured statuses (insufficient_data, insufficient_groups, single_level_factor, rank_deficient, or all_missing); near_singular_warning eligible designs are fit as before and carry a diagnostic. These checks are diagnostic and do not change valid model formulas or exported result schemas.
+
+Progression outputs also include trace-free mean ± SEM companion figures and first-versus-last 10% endpoint CSV/figures with paired animal-day t-test and Wilcoxon results.
+
+Dendrite/spine progression outputs are separated into canonical overall/, basal/, and apical/ roots, with pooled compatibility copies at the historical paths.

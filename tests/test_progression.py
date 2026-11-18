@@ -91,3 +91,84 @@ def test_dendrite_progression_separates_analysis_and_figure_roots(tmp_path: Path
     assert result["figures"]
     assert all(Path(path).is_relative_to(figure_root) for path in result["figures"])
     assert not list(analysis_root.rglob("*.svg"))
+
+
+def test_progression_writes_mean_sem_and_endpoint_outputs(tmp_path: Path) -> None:
+    contexts = [
+        SimpleNamespace(
+            expid="2026-01-01_01_A", animal_id="A", date="2026-01-01", mode="sleep", state_bundle={},
+            soma=_Bundle([[1, 2, 3]], [0, 1, 2]), bouton=_Bundle([[2, 4, 6]], [0, 1, 2]),
+        ),
+        SimpleNamespace(
+            expid="2026-01-02_01_A", animal_id="A", date="2026-01-02", mode="sleep", state_bundle={},
+            soma=_Bundle([[2, 4, 6]], [0, 1, 2]), bouton=_Bundle([[4, 8, 12]], [0, 1, 2]),
+        ),
+    ]
+    root = tmp_path / "progression"
+    result = run_soma_bouton_progression(contexts, root, {"enabled": True})
+    figure_root = root / "soma" / "figures"
+    assert (figure_root / "soma_progression_mean_sem.svg").exists()
+    assert (figure_root / "soma_progression_first_last_tenth.svg").exists()
+    assert result["endpoint_rows"] == 8
+    with (root / "soma" / "progression_endpoints.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    equal_day = [row for row in rows if row["weighting"] == "equal_day" and row["duration_policy"] == "common_overlap"]
+    assert len(equal_day) == 1
+    assert float(equal_day[0]["first_mean_dff"]) == 1.5
+    assert float(equal_day[0]["last_mean_dff"]) == 4.5
+
+
+def test_dendrite_progression_separates_overall_basal_and_apical_outputs(tmp_path: Path) -> None:
+    exp_basal = "2026-01-01_01_A"
+    exp_apical = "2026-01-02_01_A"
+    cache = {
+        "config": {"sleep_expids": [exp_basal, exp_apical]},
+        "experiments": {
+            exp_basal: {"date": "2026-01-01"},
+            exp_apical: {"date": "2026-01-02"},
+        },
+        "animals": {
+            "A": {
+                "dendrites": {
+                    "basal_d": {
+                        "observations": {
+                            exp_basal: {"time": np.arange(3), "trace": np.array([1., 2., 3.]), "compartment": "basal"}
+                        },
+                        "spines": {
+                            "basal_s": {
+                                "observations": {
+                                    exp_basal: {"time": np.arange(3), "trace": np.array([2., 3., 4.]), "compartment": "basal"}
+                                }
+                            }
+                        },
+                    },
+                    "apical_d": {
+                        "observations": {
+                            exp_apical: {"time": np.arange(3), "trace": np.array([4., 5., 6.]), "compartment": "apical"}
+                        },
+                        "spines": {
+                            "apical_s": {
+                                "observations": {
+                                    exp_apical: {"time": np.arange(3), "trace": np.array([5., 6., 7.]), "compartment": "apical"}
+                                }
+                            }
+                        },
+                    },
+                }
+            }
+        },
+    }
+    root = tmp_path / "progression"
+    result = run_dendrite_spine_progression(cache, root, {"enabled": True})
+    assert result["anatomical_levels"] == ["overall", "basal", "apical"]
+    for level in ("overall", "basal", "apical"):
+        assert (root / level / "dendrite" / "sleep_expid_progression.csv").exists()
+        assert (root / level / "dendrite" / "figures" / "dendrite_progression_mean_sem.svg").exists()
+        assert (root / level / "dendrite" / "figures" / "dendrite_progression_first_last_tenth.svg").exists()
+    assert (root / "dendrite" / "sleep_expid_progression.csv").exists()
+    with (root / "basal" / "dendrite" / "sleep_expid_progression.csv").open(newline="") as handle:
+        basal_rows = list(csv.DictReader(handle))
+    with (root / "apical" / "dendrite" / "sleep_expid_progression.csv").open(newline="") as handle:
+        apical_rows = list(csv.DictReader(handle))
+    assert {row["anatomical_compartment"] for row in basal_rows} == {"basal"}
+    assert {row["anatomical_compartment"] for row in apical_rows} == {"apical"}
