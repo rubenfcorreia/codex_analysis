@@ -25,6 +25,7 @@ See also: [../../README.md](../../README.md), [../../analysis/README.md](../../a
 - writes fraction-vs-time figures that show 5-minute elapsed-time profiles, plus matching elapsed-time percent views
 - writes a Markdown report with the full REM transition summary tables, probability curves, and REM-specific plots
 - aligns the combined plots by within-animal day index so the trajectory shapes are easier to compare across animals
+- for movie expIDs, pupil diameter is aligned to Timeline and averaged over each complete blank or movie trial; raw diameter and per-animal z-score fields are retained
 
 ## Methods
 
@@ -66,6 +67,7 @@ The run writes:
 - REM latency SVG + PNG figures for per-animal and combined summaries
 - REM probability SVG + PNG figures for per-animal and combined summaries
 - REM fraction SVG + PNG figures for per-animal and combined summaries
+- blank/movie trial pupil CSV summaries and a normalized pupil comparison figure
 - a REM day-presence pie chart in SVG + PNG
 - an overall sleep-state composition pie chart in SVG + PNG
 - the stacked-area figures live under `results/sleep_state_across_days/figures/stacked_area/`

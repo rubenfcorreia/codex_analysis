@@ -165,6 +165,8 @@ DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_DIRNAME = "movie_prev_group_wake_state"
 DEFAULT_MOVIE_WAKE_PREV_GROUP_FIGURE_STEM = "movie_prev_group_post_clip_wake_up"
 DEFAULT_MOVIE_PUPIL_STATE_FIGURE_DIRNAME = "movie_pupil_state"
 DEFAULT_MOVIE_PUPIL_STATE_FIGURE_STEM = "movie_pupil_by_state"
+DEFAULT_MOVIE_TRIAL_PUPIL_FIGURE_DIRNAME = "movie_trial_pupil"
+DEFAULT_MOVIE_TRIAL_PUPIL_FIGURE_STEM = "pupil_by_trial_type"
 DEFAULT_MOVIE_PUPIL_TRANSITION_FIGURE_DIRNAME = "movie_pupil_transition"
 DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_DIRNAME = "sleep_pupil_transition"
 DEFAULT_PUPIL_STATE_PERCENTILE_FIGURE_DIRNAME = "sleep_pupil_state_percentile"
@@ -3099,6 +3101,90 @@ def summarize_movie_pupil_state(
         )
     return per_exp_rows, pooled_rows, checks
 
+
+
+def summarize_movie_trial_pupil(
+    movie_exp_summaries: Sequence[SessionSummary],
+    movie_trial_rows: Sequence[MutableMapping[str, Any]],
+    repo_base: Path,
+    animal_pupil_normalization: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    load_cache: Optional[SleepAnalysisCache] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """Summarize aligned pupil diameter over complete blank and movie trials."""
+    if animal_pupil_normalization is None:
+        animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base, load_cache=load_cache)
+    summaries_by_exp = {str(summary.exp_ids[0]): summary for summary in movie_exp_summaries if summary.exp_ids}
+    rows_by_exp: Dict[str, List[MutableMapping[str, Any]]] = defaultdict(list)
+    for row in movie_trial_rows:
+        category = str(row.get('trial_category') or '').strip().lower()
+        if category in {'blank', 'movies'}:
+            rows_by_exp[str(row.get('exp_id') or '')].append(row)
+    per_trial_rows: List[Dict[str, Any]] = []
+    pooled_values: Dict[str, List[float]] = defaultdict(list)
+    checks: Dict[str, Any] = {
+        'n_movie_expids': int(len(movie_exp_summaries)),
+        'n_expids_with_pupil': 0,
+        'n_expids_with_trial_pupil': 0,
+        'n_blank_trials_with_pupil': 0,
+        'n_movie_trials_with_pupil': 0,
+        'n_skipped_trials': 0,
+        'pupil_source_counts': defaultdict(int),
+    }
+    for exp_id, summary in summaries_by_exp.items():
+        exp_root = resolve_repo_root(repo_base, summary.animal_id, exp_id)
+        bundle, loaded_sleep_state_path, _ = load_sleep_state_bundle(exp_root, cache=load_cache)
+        pupil_t, pupil_diameter, pupil_source = load_session_pupil_series(exp_root, summary.category, cache=load_cache)
+        exp_rows = rows_by_exp.get(exp_id, [])
+        if bundle is None or loaded_sleep_state_path is None or pupil_t is None or pupil_diameter is None or pupil_source is None:
+            checks['n_skipped_trials'] += len(exp_rows)
+            for row in exp_rows:
+                row.update({'pupil_sample_count': 0, 'pupil_mean_diameter': float('nan'), 'pupil_sem_diameter': float('nan'), 'pupil_mean_z': float('nan'), 'pupil_sem_z': float('nan'), 'pupil_source': '', 'pupil_status': 'missing pupil or sleep-state data'})
+                per_trial_rows.append(dict(row))
+            continue
+        state_t, _, _ = load_sleep_state_timeline(bundle)
+        aligned_pupil = align_movie_pupil_series_to_timeline(pupil_t, pupil_diameter, state_t)
+        finite_full = np.asarray(aligned_pupil, dtype=float)
+        finite_full = finite_full[np.isfinite(finite_full)]
+        animal_norm = dict((animal_pupil_normalization or {}).get(str(summary.animal_id), {}))
+        center = as_float(animal_norm.get('center'))
+        scale = as_float(animal_norm.get('scale'))
+        if center is None or scale is None or not np.isfinite(center) or not np.isfinite(scale) or scale <= 0:
+            center = float(np.nanmean(finite_full)) if finite_full.size else float('nan')
+            scale = float(np.nanstd(finite_full, ddof=0)) if finite_full.size else float('nan')
+        aligned_z = ((aligned_pupil - center) / scale) if np.isfinite(scale) and scale > 0 else np.full(aligned_pupil.shape, np.nan, dtype=float)
+        checks['n_expids_with_pupil'] += 1
+        checks['pupil_source_counts'][pupil_source] += 1
+        exp_has_trial_pupil = False
+        for row in exp_rows:
+            start_s = as_float(row.get('trial_time_s'))
+            end_s = as_float(row.get('trial_end_s'))
+            category = str(row.get('trial_category') or '').strip().lower()
+            mask = interval_mask(state_t, start_s, end_s) if start_s is not None and end_s is not None and end_s > start_s else np.zeros(state_t.shape, dtype=bool)
+            raw_values = np.asarray(aligned_pupil[mask], dtype=float)
+            z_values = np.asarray(aligned_z[mask], dtype=float)
+            raw_values = raw_values[np.isfinite(raw_values)]
+            z_values = z_values[np.isfinite(z_values)]
+            raw_mean, raw_sem = finite_mean_and_sem(raw_values)
+            z_mean, z_sem = finite_mean_and_sem(z_values)
+            status = 'ok' if raw_values.size else 'no pupil samples in trial window'
+            if raw_values.size:
+                exp_has_trial_pupil = True
+                check_key = 'n_movie_trials_with_pupil' if category == 'movies' else f'n_{category}_trials_with_pupil'
+                checks[check_key] += 1
+                pooled_values[category].append(z_mean)
+            else:
+                checks['n_skipped_trials'] += 1
+            row.update({'pupil_sample_count': int(raw_values.size), 'pupil_mean_diameter': raw_mean, 'pupil_sem_diameter': raw_sem, 'pupil_mean_z': z_mean, 'pupil_sem_z': z_sem, 'pupil_source': pupil_source, 'pupil_status': status})
+            per_trial_rows.append(dict(row))
+        if exp_has_trial_pupil:
+            checks['n_expids_with_trial_pupil'] += 1
+    pooled_rows: List[Dict[str, Any]] = []
+    for category, display in (('blank', 'Blank'), ('movies', 'Movies')):
+        values = np.asarray(pooled_values.get(category, []), dtype=float)
+        mean_value, sem_value = finite_mean_and_sem(values)
+        pooled_rows.append({'trial_category': category, 'trial_category_display': display, 'n_trials': int(values.size), 'mean_pupil_z': mean_value, 'sem_pupil_z': sem_value, 'analysis': 'pooled_over_trial_means'})
+    per_trial_rows.sort(key=lambda row: (str(row.get('animal_id')), str(row.get('date')), str(row.get('exp_id')), int(row.get('trial_index', 0))))
+    return per_trial_rows, pooled_rows, checks
 
 
 def summarize_movie_pupil_transitions(
@@ -6597,6 +6683,54 @@ def plot_movie_pupil_state_summary(
 
 
 
+def plot_movie_trial_pupil_summary(
+    per_trial_rows: Sequence[Mapping[str, Any]],
+    pooled_rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> List[Path]:
+    if plt is None:
+        raise RuntimeError('matplotlib is required to generate figures')
+    categories = [('blank', 'Blank', '#7A7A7A'), ('movies', 'Movies', '#4C78A8')]
+    pooled = {str(row.get('trial_category')): row for row in pooled_rows}
+    values_by_category: Dict[str, List[float]] = defaultdict(list)
+    for row in per_trial_rows:
+        category = str(row.get('trial_category') or '').strip().lower()
+        value = as_float(row.get('pupil_mean_z'))
+        if category in pooled and value is not None and np.isfinite(value):
+            values_by_category[category].append(float(value))
+    fig, ax = plt.subplots(figsize=(8.8, 6.2))
+    x = np.arange(len(categories), dtype=float)
+    means = [as_float(pooled.get(category, {}).get('mean_pupil_z')) for category, _, _ in categories]
+    errors = [as_float(pooled.get(category, {}).get('sem_pupil_z')) for category, _, _ in categories]
+    means_arr = np.asarray([value if value is not None else np.nan for value in means], dtype=float)
+    errors_arr = np.asarray([value if value is not None else np.nan for value in errors], dtype=float)
+    if not np.isfinite(means_arr).any():
+        ax.text(0.5, 0.5, 'No pupil data', transform=ax.transAxes, ha='center', va='center', fontsize=POSTER_NOTE_SIZE, color='#666666')
+    else:
+        for idx, (category, display, color) in enumerate(categories):
+            values = np.asarray(values_by_category.get(category, []), dtype=float)
+            if values.size:
+                jitter = np.linspace(-0.13, 0.13, values.size) if values.size > 1 else np.asarray([0.0])
+                ax.scatter(np.full(values.size, x[idx]) + jitter, values, s=24, color='#333333', alpha=0.5, edgecolors='none', zorder=3)
+            if np.isfinite(means_arr[idx]):
+                error = errors_arr[idx] if np.isfinite(errors_arr[idx]) else 0.0
+                ax.bar(x[idx], means_arr[idx], yerr=error, width=0.62, color=color, alpha=0.82, capsize=4, edgecolor='white', linewidth=0.8, zorder=2)
+                ax.text(x[idx], means_arr[idx] + error + 0.05, f"n={len(values)}", ha='center', va='bottom', fontsize=max(9, POSTER_NOTE_SIZE - 3), color='#444444')
+        ax.axhline(0.0, color='#555555', linewidth=0.8, alpha=0.6)
+        ax.grid(axis='y', alpha=0.2)
+    ax.set_xticks(x)
+    ax.set_xticklabels([display for _, display, _ in categories], fontsize=POSTER_FONT_SIZE)
+    ax.set_xlabel('Trial type', fontsize=POSTER_LABEL_SIZE)
+    ax.set_ylabel('Normalized pupil diameter (z-score per animal)', fontsize=POSTER_LABEL_SIZE)
+    ax.set_title('Pupil size during blank and movie trials', fontsize=POSTER_TITLE_SIZE, loc='left', pad=10)
+    ax.tick_params(axis='y', labelsize=POSTER_FONT_SIZE)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    fig.tight_layout(rect=[0.03, 0.04, 0.98, 0.96])
+    figure_dir = figure_output_dir(output_dir, DEFAULT_MOVIES_FIGURE_DIRNAME, DEFAULT_MOVIE_TRIAL_PUPIL_FIGURE_DIRNAME)
+    return _save_svg_and_png(fig, figure_dir / f'{DEFAULT_MOVIE_TRIAL_PUPIL_FIGURE_STEM}.svg', dpi=POSTER_DPI)
+
+
 def _plot_pupil_state_distribution(
     sample_rows: Sequence[Mapping[str, Any]],
     summary_rows: Sequence[Mapping[str, Any]],
@@ -7198,6 +7332,8 @@ def write_sleep_state_report(
     append_kv("pupil expIDs with state and pupil", manifest.get("movie_pupil_state_expids_with_state_and_pupil", 0))
     append_kv("pupil state-by-exp rows", manifest.get("movie_pupil_state_by_exp_row_count", 0))
     append_kv("pupil state summary rows", manifest.get("movie_pupil_state_row_count", 0))
+    append_kv("blank/movie trial pupil rows", manifest.get("movie_trial_pupil_row_count", 0))
+    append_kv("blank/movie trial pupil summary rows", manifest.get("movie_trial_pupil_summary_row_count", 0))
     append_kv("pupil transition rows", manifest.get("movie_pupil_transition_row_count", 0))
     append_kv("pupil transition example rows", manifest.get("movie_pupil_transition_example_row_count", 0))
     append_kv("sleep pupil transition rows", manifest.get("sleep_pupil_transition_row_count", 0))
@@ -7217,6 +7353,9 @@ def write_sleep_state_report(
     append_kv("movie previous-trial post-clip wake-up comparison CSV", report_relative_path(manifest.get("movie_prev_group_post_clip_wake_comparison_path"), output_dir))
     append_kv("movie pupil state-by-exp CSV", report_relative_path(manifest.get("movie_pupil_state_by_exp_summary_path"), output_dir))
     append_kv("movie pupil state summary CSV", report_relative_path(manifest.get("movie_pupil_state_summary_path"), output_dir))
+    append_kv("movie trial pupil CSV", report_relative_path(manifest.get("movie_trial_pupil_summary_path"), output_dir))
+    append_kv("movie trial pupil pooled CSV", report_relative_path(manifest.get("movie_trial_pupil_pooled_summary_path"), output_dir))
+    append_kv("movie trial pupil figure", format_report_list(manifest.get("movie_trial_pupil_artifacts")))
     append_kv("movie pupil transition summary CSV", report_relative_path(manifest.get("movie_pupil_transition_summary_path"), output_dir))
     append_kv("movie pupil transition examples CSV", report_relative_path(manifest.get("movie_pupil_transition_example_summary_path"), output_dir))
     append_kv("sleep pupil transition summary CSV", report_relative_path(manifest.get("sleep_pupil_transition_summary_path"), output_dir))
@@ -7928,6 +8067,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_animal_pupil_normalization = compute_animal_pupil_normalization(movie_exp_summaries, repo_base, load_cache=load_cache)
     sleep_animal_pupil_normalization = compute_animal_pupil_normalization(sleep_exp_summaries, repo_base, load_cache=load_cache)
     movie_pupil_state_by_exp_rows, movie_pupil_state_rows, movie_pupil_state_checks = summarize_movie_pupil_state(pupil_exp_summaries, repo_base, animal_pupil_normalization=movie_animal_pupil_normalization, load_cache=load_cache)
+    movie_trial_pupil_rows, movie_trial_pupil_summary_rows, movie_trial_pupil_checks = summarize_movie_trial_pupil(movie_exp_summaries, movie_trial_rows, repo_base, animal_pupil_normalization=movie_animal_pupil_normalization, load_cache=load_cache)
     movie_pupil_transition_rows, movie_pupil_transition_example_rows, movie_pupil_transition_example_traces, movie_pupil_transition_example_per_exp_traces, movie_pupil_transition_checks = summarize_movie_pupil_transitions(movie_exp_summaries, repo_base, animal_pupil_normalization=movie_animal_pupil_normalization, load_cache=load_cache)
     sleep_pupil_transition_rows, sleep_pupil_transition_example_rows, sleep_pupil_transition_example_traces, sleep_pupil_transition_example_per_exp_traces, sleep_pupil_transition_checks = summarize_movie_pupil_transitions(sleep_exp_summaries, repo_base, animal_pupil_normalization=sleep_animal_pupil_normalization, load_cache=load_cache)
 
@@ -7973,6 +8113,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_skip_table_path = output_dir / 'movie_trial_skip_summary.csv'
     movie_pupil_state_by_exp_table_path = output_dir / 'movie_pupil_state_by_exp_summary.csv'
     movie_pupil_state_table_path = output_dir / 'movie_pupil_state_summary.csv'
+    movie_trial_pupil_table_path = output_dir / 'movie_trial_pupil_summary.csv'
+    movie_trial_pupil_pooled_table_path = output_dir / 'movie_trial_pupil_pooled_summary.csv'
     movie_pupil_transition_table_path = output_dir / 'movie_pupil_transition_summary.csv'
     movie_pupil_transition_example_table_path = output_dir / 'movie_pupil_transition_examples.csv'
     sleep_pupil_transition_table_path = output_dir / 'sleep_pupil_transition_summary.csv'
@@ -8029,6 +8171,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         'sleep_fraction',
         'awake_fraction',
         'unclassified_fraction',
+        'pupil_sample_count',
+        'pupil_mean_diameter',
+        'pupil_sem_diameter',
+        'pupil_mean_z',
+        'pupil_sem_z',
+        'pupil_source',
+        'pupil_status',
     ]
     movie_trial_wake_fieldnames = movie_trial_fieldnames + [
         'next_trial_start_s',
@@ -8270,6 +8419,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         'sem_pupil_diameter',
         'analysis',
     ]
+    movie_trial_pupil_fieldnames = [
+        'exp_id', 'animal_id', 'date', 'category', 'trial_index',
+        'trial_category', 'video_id', 'trial_time_s', 'trial_end_s',
+        'pupil_sample_count', 'pupil_mean_diameter', 'pupil_sem_diameter',
+        'pupil_mean_z', 'pupil_sem_z', 'pupil_source', 'pupil_status',
+    ]
+    movie_trial_pupil_pooled_fieldnames = [
+        'trial_category', 'trial_category_display', 'n_trials',
+        'mean_pupil_z', 'sem_pupil_z', 'analysis',
+    ]
     movie_pupil_transition_fieldnames = [
         'transition_rank',
         'transition_from',
@@ -8328,6 +8487,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_csv_rows(movie_skip_table_path, movie_trial_skip_rows, fieldnames=movie_skip_fieldnames)
     write_csv_rows(movie_pupil_state_by_exp_table_path, movie_pupil_state_by_exp_rows, fieldnames=movie_pupil_state_by_exp_fieldnames)
     write_csv_rows(movie_pupil_state_table_path, movie_pupil_state_rows, fieldnames=movie_pupil_state_fieldnames)
+    write_csv_rows(movie_trial_pupil_table_path, movie_trial_pupil_rows, fieldnames=movie_trial_pupil_fieldnames)
+    write_csv_rows(movie_trial_pupil_pooled_table_path, movie_trial_pupil_summary_rows, fieldnames=movie_trial_pupil_pooled_fieldnames)
     write_csv_rows(movie_pupil_transition_table_path, movie_pupil_transition_rows, fieldnames=movie_pupil_transition_fieldnames)
     write_csv_rows(movie_pupil_transition_example_table_path, movie_pupil_transition_example_rows, fieldnames=movie_pupil_transition_example_fieldnames)
     write_csv_rows(sleep_pupil_transition_table_path, sleep_pupil_transition_rows, fieldnames=movie_pupil_transition_fieldnames)
@@ -8352,6 +8513,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_onset_video_artifacts: List[str] = []
     movie_wake_prev_group_artifacts: List[str] = []
     movie_pupil_state_artifacts: List[str] = []
+    movie_trial_pupil_artifacts: List[str] = []
     movie_pupil_transition_artifacts: List[str] = []
     movie_pupil_transition_example_artifacts: List[str] = []
     movie_pupil_transition_example_per_exp_artifacts: List[str] = []
@@ -8431,6 +8593,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     movie_wake_prev_group_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_state_summary(movie_pupil_state_by_exp_rows, movie_pupil_state_rows, output_dir)
     movie_pupil_state_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
+    saved = plot_movie_trial_pupil_summary(movie_trial_pupil_rows, movie_trial_pupil_summary_rows, output_dir)
+    movie_trial_pupil_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_summary(movie_pupil_transition_rows, output_dir, figure_dirname=f'{DEFAULT_MOVIES_FIGURE_DIRNAME}/movie_pupil_transition')
     movie_pupil_transition_artifacts.extend(report_relative_path(path, output_dir) for path in saved)
     saved = plot_movie_pupil_transition_summary(sleep_pupil_transition_rows, output_dir, figure_dirname=f'{DEFAULT_SLEEP_FIGURE_DIRNAME}/sleep_pupil_transition', figure_stem=DEFAULT_SLEEP_PUPIL_TRANSITION_FIGURE_STEM)
@@ -8534,7 +8698,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sleep_pupil_transition_artifacts = sorted(set(sleep_pupil_transition_artifacts))
     sleep_pupil_transition_example_artifacts = sorted(set(sleep_pupil_transition_example_artifacts))
     sleep_pupil_transition_example_per_exp_artifacts = sorted(set(sleep_pupil_transition_example_per_exp_artifacts))
-    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + sleep_pupil_transition_artifacts + sleep_pupil_transition_example_artifacts + sleep_pupil_transition_example_per_exp_artifacts + movie_pupil_percentile_artifacts + movie_pupil_z_artifacts + sleep_pupil_percentile_artifacts + sleep_pupil_z_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
+    all_figure_artifacts = sorted(set(figure_artifacts + stacked_area_artifacts + probability_all_artifacts + rem_artifacts + within_day_fraction_artifacts + composition_artifacts + movie_video_artifacts + movie_prev_group_artifacts + movie_wake_video_artifacts + movie_onset_video_artifacts + movie_wake_prev_group_artifacts + movie_pupil_state_artifacts + movie_trial_pupil_artifacts + movie_pupil_transition_artifacts + movie_pupil_transition_example_artifacts + movie_pupil_transition_example_per_exp_artifacts + sleep_pupil_transition_artifacts + sleep_pupil_transition_example_artifacts + sleep_pupil_transition_example_per_exp_artifacts + movie_pupil_percentile_artifacts + movie_pupil_z_artifacts + sleep_pupil_percentile_artifacts + sleep_pupil_z_artifacts + state_montage_artifacts + poster_ready_artifacts + review_state_montage_artifacts))
 
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -8562,6 +8726,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_onset_video_artifacts": movie_onset_video_artifacts,
         "movie_wake_prev_group_artifacts": movie_wake_prev_group_artifacts,
         "movie_pupil_state_artifacts": movie_pupil_state_artifacts,
+        "movie_trial_pupil_artifacts": movie_trial_pupil_artifacts,
         "movie_pupil_transition_artifacts": movie_pupil_transition_artifacts,
         "movie_pupil_transition_example_artifacts": movie_pupil_transition_example_artifacts,
         "movie_pupil_transition_example_per_exp_artifacts": movie_pupil_transition_example_per_exp_artifacts,
@@ -8610,6 +8775,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "sleep_pupil_percentile_expids_with_data": int(pupil_percentile_outputs['sleep']['checks'].get('n_expids_with_data', 0)),
         "movie_pupil_state_by_exp_row_count": len(movie_pupil_state_by_exp_rows),
         "movie_pupil_state_row_count": len(movie_pupil_state_rows),
+        "movie_trial_pupil_row_count": len(movie_trial_pupil_rows),
+        "movie_trial_pupil_summary_row_count": len(movie_trial_pupil_summary_rows),
+        "movie_trial_pupil_expids_with_pupil": int(movie_trial_pupil_checks.get("n_expids_with_pupil", 0)),
+        "movie_trial_pupil_expids_with_trial_pupil": int(movie_trial_pupil_checks.get("n_expids_with_trial_pupil", 0)),
+        "movie_trial_pupil_blank_trials_with_pupil": int(movie_trial_pupil_checks.get("n_blank_trials_with_pupil", 0)),
+        "movie_trial_pupil_movie_trials_with_pupil": int(movie_trial_pupil_checks.get("n_movie_trials_with_pupil", 0)),
         "movie_pupil_transition_row_count": len(movie_pupil_transition_rows),
         "movie_pupil_transition_example_row_count": len(movie_pupil_transition_example_rows),
         "sleep_pupil_transition_row_count": len(sleep_pupil_transition_rows),
@@ -8635,6 +8806,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_prev_group_post_clip_wake_summary_rows": movie_prev_group_post_clip_wake_rows,
         "movie_prev_group_post_clip_wake_comparison_rows": movie_prev_group_post_clip_wake_comparison_rows,
         "movie_pupil_state_summary_rows": movie_pupil_state_rows,
+        "movie_trial_pupil_summary_rows": movie_trial_pupil_summary_rows,
         "movie_pupil_transition_summary_rows": movie_pupil_transition_rows,
         "movie_pupil_transition_example_rows": movie_pupil_transition_example_rows,
         "sleep_pupil_transition_summary_rows": sleep_pupil_transition_rows,
@@ -8663,6 +8835,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             report_relative_path(movie_prev_group_post_clip_wake_comparison_table_path, output_dir),
             report_relative_path(movie_pupil_state_by_exp_table_path, output_dir),
             report_relative_path(movie_pupil_state_table_path, output_dir),
+            report_relative_path(movie_trial_pupil_table_path, output_dir),
+            report_relative_path(movie_trial_pupil_pooled_table_path, output_dir),
             report_relative_path(movie_pupil_transition_table_path, output_dir),
             report_relative_path(movie_pupil_transition_example_table_path, output_dir),
             report_relative_path(sleep_pupil_transition_table_path, output_dir),
@@ -8692,6 +8866,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "movie_prev_group_post_clip_wake_comparison_path": report_relative_path(movie_prev_group_post_clip_wake_comparison_table_path, output_dir),
         "movie_pupil_state_by_exp_summary_path": report_relative_path(movie_pupil_state_by_exp_table_path, output_dir),
         "movie_pupil_state_summary_path": report_relative_path(movie_pupil_state_table_path, output_dir),
+        "movie_trial_pupil_summary_path": report_relative_path(movie_trial_pupil_table_path, output_dir),
+        "movie_trial_pupil_pooled_summary_path": report_relative_path(movie_trial_pupil_pooled_table_path, output_dir),
         "movie_pupil_transition_summary_path": report_relative_path(movie_pupil_transition_table_path, output_dir),
         "movie_pupil_transition_example_summary_path": report_relative_path(movie_pupil_transition_example_table_path, output_dir),
         "sleep_pupil_transition_summary_path": report_relative_path(sleep_pupil_transition_table_path, output_dir),
