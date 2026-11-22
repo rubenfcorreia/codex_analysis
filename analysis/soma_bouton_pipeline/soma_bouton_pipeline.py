@@ -101,7 +101,7 @@ from analysis.shared.plots.poster_ready import (
     write_state_mixed_model_poster_figure,
     write_visual_response_poster_figure,
 )
-from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, run_family as run_coincidence_family
+from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, prepare_event_info, run_family as run_coincidence_family
 from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
 from analysis.shared.plots.dff_heatmaps import records_from_soma_contexts, render_dff_heatmaps
@@ -215,6 +215,7 @@ DEFAULT_CONFIG = {
     "dff_heatmap_max_rois_per_class": 10,
     "dff_heatmap_max_trace_points": None,
     "dff_heatmap_output_formats": ["svg", "png"],
+    "write_detailed_csv": False,
     "progression_analysis": {
         "enabled": False,
         "blank_bin_s": 1.0,
@@ -886,11 +887,11 @@ def _build_coincidence_rows_for_context(
             state_time = shared_time[:usable]
             state_mask = mask_array[:usable]
         soma_event_infos = [
-            _masked_event_summary_for_trace(trace[:usable], state_time, state_mask, event_detection_method=event_detection_method)
+            prepare_event_info(_masked_event_summary_for_trace(trace[:usable], state_time, state_mask, event_detection_method=event_detection_method))
             for trace in soma_matrix
         ]
         bouton_event_infos = [
-            _masked_event_summary_for_trace(trace[:usable], state_time, state_mask, event_detection_method=event_detection_method)
+            prepare_event_info(_masked_event_summary_for_trace(trace[:usable], state_time, state_mask, event_detection_method=event_detection_method))
             for trace in bouton_matrix
         ]
         for soma_index, soma_event_info in enumerate(soma_event_infos):
@@ -1707,6 +1708,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     experiment_rows = list(table_rows.get("experiment_rows", []))
                     activity_rows = list(table_rows.get("activity_rows", []))
                     correlation_rows = list(table_rows.get("correlation_rows", []))
+                    soma_pairwise_rows = list(table_rows.get("soma_pairwise_rows", []))
+                    bouton_pairwise_rows = list(table_rows.get("bouton_pairwise_rows", []))
                     lag_rows = list(table_rows.get("lag_rows", []))
                     visual_response_rows = list(table_rows.get("visual_response_rows", []))
                     coincidence_rows = list(table_rows.get("coincidence_rows", []))
@@ -2025,6 +2028,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 ("soma_bouton_coincidence_by_roi.csv", "coincidence_rows"),
                 ("visual_response_by_roi.csv", "visual_response_rows"),
             ):
+                if not bool(config.get("write_detailed_csv", DEFAULT_CONFIG["write_detailed_csv"])) and family in {"soma_pairwise_rows", "bouton_pairwise_rows", "lag_rows", "coincidence_rows"}:
+                    continue
                 rows = union_rows_for_shared_output.get(family, [])
                 if rows:
                     write_csv_rows(general_csv_root / filename, rows, sorted({key for row in rows for key in row.keys()}))
@@ -2365,16 +2370,17 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         if write_general_tables:
             _stage("writing csv", "general state_activity_by_experiment")
             write_csv_rows(general_csv_root / "state_activity_by_experiment.csv", activity_rows, ["expid", "mode", "animal_id", "date", "day_id", "channel", "state", "state_display", "state_color", "state_n_frames", "state_duration_s", "compartment", "split_group", "split_group_display", "split_group_color", "split_group_rank", "roi_index", "roi_id", "unit_id", "roi_key", "soma_id", "bouton_id", "global_soma_id", "global_bouton_id", "n", "mean", "median", "std", "min", "max", "event_count", "event_frequency_per_min"])
-    if correlation_rows and write_general_tables:
+    write_detailed_csv = bool(config.get("write_detailed_csv", DEFAULT_CONFIG["write_detailed_csv"]))
+    if correlation_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(general_csv_root / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
-    if soma_pairwise_rows and write_general_tables:
+    if soma_pairwise_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "soma_pairwise_correlation_by_roi")
         write_csv_rows(general_csv_root / "soma_pairwise_correlation_by_roi.csv", soma_pairwise_rows, list(soma_pairwise_rows[0].keys()))
-    if bouton_pairwise_rows and write_general_tables:
+    if bouton_pairwise_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "bouton_pairwise_correlation_by_roi")
         write_csv_rows(general_csv_root / "bouton_pairwise_correlation_by_roi.csv", bouton_pairwise_rows, list(bouton_pairwise_rows[0].keys()))
-    if lag_rows and write_general_tables:
+    if lag_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "bouton_soma_lag_scan_by_roi")
         write_csv_rows(general_csv_root / "bouton_soma_lag_scan_by_roi.csv", lag_rows, list(lag_rows[0].keys()))
     for table_name, rows in (("events", transition_results.get("event_rows", [])), ("comparisons", transition_results.get("summary_rows", [])), ("pooled_comparisons", transition_results.get("pooled_summary_rows", []))):
@@ -2450,11 +2456,12 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             if not cohort_rows:
                 continue
             cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
-            write_csv_rows(cohort_csv_dir / "bouton_soma_lag_scan_by_roi.csv", cohort_rows, list(cohort_rows[0].keys()))
+            if write_detailed_csv:
+                write_csv_rows(cohort_csv_dir / "bouton_soma_lag_scan_by_roi.csv", cohort_rows, list(cohort_rows[0].keys()))
             cohort_lag_summary_rows = lag_summary_rows(cohort_rows)
             if cohort_lag_summary_rows:
                 write_csv_rows(cohort_csv_dir / "bouton_soma_lag_summary_by_day.csv", cohort_lag_summary_rows, list(cohort_lag_summary_rows[0].keys()))
-    if coincidence_rows and write_general_tables:
+    if coincidence_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "general soma_bouton_coincidence_by_roi")
         write_csv_rows(general_csv_root / "soma_bouton_coincidence_by_roi.csv", coincidence_rows, list(coincidence_rows[0].keys()))
     if coincidence_summary_rows:
@@ -3557,6 +3564,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "experiment_rows": experiment_rows,
             "activity_rows": activity_rows,
             "correlation_rows": correlation_rows,
+            "soma_pairwise_rows": soma_pairwise_rows,
+            "bouton_pairwise_rows": bouton_pairwise_rows,
             "lag_rows": lag_rows,
             "visual_response_rows": visual_response_rows,
             "coincidence_rows": coincidence_rows,

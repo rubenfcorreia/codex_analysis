@@ -12,7 +12,7 @@ from analysis.shared.cache_utils import array_signature, stable_hash
 from analysis.shared.shuffle_dataset import MaskAwareShuffleDataset, ShuffleDataset, mask_aware_entry_key
 
 SUPPORTED_CORRELATION_METHODS = {"pearson"}
-SUPPORTED_CORRELATION_INFERENCE = {"circular_shift", "none"}
+SUPPORTED_CORRELATION_INFERENCE = {"circular_shift", "classical", "none"}
 SUPPORTED_NULL_MODELS = {"mask_aware", "full_trace"}
 
 
@@ -32,7 +32,7 @@ def validate_correlation_settings(method: str = "pearson", inference: str = "cir
     if method not in SUPPORTED_CORRELATION_METHODS:
         raise ValueError(f"Unsupported correlation_method={method!r}; supported methods: pearson")
     if inference not in SUPPORTED_CORRELATION_INFERENCE:
-        raise ValueError(f"Unsupported correlation_inference={inference!r}; supported methods: circular_shift, none")
+        raise ValueError(f"Unsupported correlation_inference={inference!r}; supported methods: circular_shift, classical, none")
     return method, inference
 
 
@@ -80,13 +80,13 @@ def correlation_analysis_for_observation(
     n_valid = int(fixed_mask.sum())
     base = {
         "correlation_method": method,
-        "p_value_source": "circular_shift" if configured_inference == "circular_shift" else "none_descriptive",
+        "p_value_source": "circular_shift" if configured_inference == "circular_shift" else ("classical" if configured_inference == "classical" else "none_descriptive"),
         "null_model": configured_null_model,
         "shuffle_seed": int(shuffle_seed),
         "shuffle_n_requested": int(shuffle_n) if configured_inference == "circular_shift" else 0,
         "shuffle_n_success": 0,
         "n_valid_samples": n_valid,
-        "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else "descriptive",
+        "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else ("sample_pearson" if configured_inference == "classical" else "descriptive"),
         "correction_family": "correlation_time_series",
     }
     if signal_keys and isinstance(shared_shuffle_cache, dict) and shared_shuffle_cache.get("shuffle_dataset_path"):
@@ -174,7 +174,7 @@ def correlation_analysis_for_observation(
         "effect_size": observed,
         "classical_p": float(observed_result.pvalue),
         "shuffle_p": shuffle_p,
-        "p_value": shuffle_p if configured_inference == "circular_shift" else float("nan"),
+        "p_value": shuffle_p if configured_inference == "circular_shift" else (float(observed_result.pvalue) if configured_inference == "classical" else float("nan")),
         "lower_ci": lower_ci,
         "upper_ci": upper_ci,
         "n": n_valid,
@@ -337,13 +337,13 @@ def correlation_analysis_for_batch(
         n_valid = int(fixed_mask.sum())
         base = {
             "correlation_method": method,
-            "p_value_source": "circular_shift" if configured_inference == "circular_shift" else "none_descriptive",
+            "p_value_source": "circular_shift" if configured_inference == "circular_shift" else ("classical" if configured_inference == "classical" else "none_descriptive"),
             "null_model": configured_null_model,
             "shuffle_seed": int(shuffle_seed),
             "shuffle_n_requested": int(shuffle_n) if configured_inference == "circular_shift" else 0,
             "shuffle_n_success": 0,
             "n_valid_samples": n_valid,
-            "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else "descriptive",
+            "inferential_unit": "temporal_circular_shift" if configured_inference == "circular_shift" else ("sample_pearson" if configured_inference == "classical" else "descriptive"),
             "correction_family": "correlation_time_series",
         }
         mask_signature = stable_hash({
@@ -474,8 +474,12 @@ def correlation_analysis_for_batch(
                     b_values = np.where(valid, b_null, 0.0)
                     a_mean = np.divide(a_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
                     b_mean = np.divide(b_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
-                    a_centered = np.where(valid, a_null - a_mean[:, :, None], 0.0)
-                    b_centered = np.where(valid, b_null - b_mean[:, :, None], 0.0)
+                    np.subtract(a_null, a_mean[:, :, None], out=a_null)
+                    np.subtract(b_null, b_mean[:, :, None], out=b_null)
+                    a_null[~valid] = 0.0
+                    b_null[~valid] = 0.0
+                    a_centered = a_null
+                    b_centered = b_null
                     numerator = np.sum(a_centered * b_centered, axis=2)
                     denominator = np.sqrt(np.sum(a_centered * a_centered, axis=2) * np.sum(b_centered * b_centered, axis=2))
                     values = np.divide(numerator, denominator, out=np.full((len(chunk), a_null.shape[1]), np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
@@ -493,8 +497,12 @@ def correlation_analysis_for_batch(
                     b_values = np.where(valid, shifted, 0.0)
                     a_mean = np.divide(a_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
                     b_mean = np.divide(b_values.sum(axis=2), counts, out=np.zeros_like(counts, dtype=float), where=counts > 0)
-                    a_centered = np.where(valid, a_stack[:, None, :] - a_mean[:, :, None], 0.0)
-                    b_centered = np.where(valid, shifted - b_mean[:, :, None], 0.0)
+                    a_centered = np.broadcast_to(a_stack[:, None, :], valid.shape).copy()
+                    np.subtract(a_centered, a_mean[:, :, None], out=a_centered)
+                    np.subtract(shifted, b_mean[:, :, None], out=shifted)
+                    a_centered[~valid] = 0.0
+                    shifted[~valid] = 0.0
+                    b_centered = shifted
                     numerator = np.sum(a_centered * b_centered, axis=2)
                     denominator = np.sqrt(np.sum(a_centered * a_centered, axis=2) * np.sum(b_centered * b_centered, axis=2))
                     values = np.divide(numerator, denominator, out=np.full((len(chunk), len(shift_block)), np.nan, dtype=float), where=(counts >= 3) & (denominator > 0))
@@ -517,7 +525,7 @@ def correlation_analysis_for_batch(
                     "effect_size": observed,
                     "classical_p": item["classical_p"],
                     "shuffle_p": shuffle_p,
-                    "p_value": shuffle_p if configured_inference == "circular_shift" else float("nan"),
+                    "p_value": shuffle_p if configured_inference == "circular_shift" else (float(observed_result.pvalue) if configured_inference == "classical" else float("nan")),
                     "lower_ci": item["lower_ci"],
                     "upper_ci": item["upper_ci"],
                     "n": int(item["fixed_mask"].sum()),

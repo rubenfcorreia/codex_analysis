@@ -41,6 +41,15 @@ def _normalize_event_runs(runs: Any) -> List[Tuple[int, int]]:
     normalized.sort(key=lambda item: (item[0], item[1]))
     return normalized
 
+_PREPARED_EVENT_RUNS_KEY = "__prepared_event_runs"
+
+
+def prepare_event_info(event_info: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Copy event metadata and cache normalized runs for repeated pair matching."""
+    prepared = dict(event_info or {})
+    prepared[_PREPARED_EVENT_RUNS_KEY] = _normalize_event_runs(prepared.get("event_runs"))
+    return prepared
+
 
 def coincident_event_runs(source_event_info: Mapping[str, Any] | None, reference_event_info: Mapping[str, Any] | None) -> List[Tuple[int, int]]:
     source_runs = _normalize_event_runs((source_event_info or {}).get("event_runs"))
@@ -80,9 +89,13 @@ def annotate_event_coincidence(
     source_name = str(source_name).strip() or "source"
     reference_name = str(reference_name).strip() or "reference"
     event_info: Dict[str, Any] = dict(source_event_info or {})
-    source_runs = _normalize_event_runs(event_info.get("event_runs"))
+    source_runs = event_info.get(_PREPARED_EVENT_RUNS_KEY)
+    if source_runs is None:
+        source_runs = _normalize_event_runs(event_info.get("event_runs"))
     reference_event_info = dict(reference_event_info or {})
-    reference_runs = _normalize_event_runs(reference_event_info.get("event_runs"))
+    reference_runs = reference_event_info.get(_PREPARED_EVENT_RUNS_KEY)
+    if reference_runs is None:
+        reference_runs = _normalize_event_runs(reference_event_info.get("event_runs"))
     reference_onsets = {int(start) for start, _ in reference_runs}
     coincident_runs = [run for run in source_runs if int(run[0]) in reference_onsets]
 
@@ -141,6 +154,7 @@ def annotate_event_coincidence(
             )
         event_info["methods"] = annotated_methods
 
+    event_info.pop(_PREPARED_EVENT_RUNS_KEY, None)
     return event_info
 
 
@@ -308,6 +322,7 @@ def run_family(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
 
 __all__ = [
     "annotate_event_coincidence",
+    "prepare_event_info",
     "annotate_spine_event_info",
     "build_bidirectional_coincidence_metrics",
     "build_coincidence_family_results",

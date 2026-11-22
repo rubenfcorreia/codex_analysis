@@ -158,6 +158,30 @@ def _masked_trace_values(member: PairwiseMember, mask: np.ndarray, usable: int) 
     return trace[:usable][state_mask]
 
 
+def _finite_pairwise_correlations(
+    left_members: Sequence[PairwiseMember],
+    right_members: Sequence[PairwiseMember] | None,
+    state_member_values: Mapping[str, np.ndarray],
+) -> Dict[tuple[int, int], float] | None:
+    # Calculate a complete finite-state correlation matrix once.
+    members = list(left_members)
+    if right_members is not None and right_members is not left_members:
+        members.extend(right_members)
+    if not members:
+        return None
+    values = [np.asarray(state_member_values[member.unit_id], dtype=float) for member in members]
+    if any(value.ndim != 1 or value.size < 2 or not np.isfinite(value).all() or np.allclose(value, value[0]) for value in values):
+        return None
+    matrix = np.corrcoef(np.stack(values, axis=0))
+    index = {id(member): position for position, member in enumerate(members)}
+    result: Dict[tuple[int, int], float] = {}
+    pair_right = left_members if right_members is None or right_members is left_members else right_members
+    for left in left_members:
+        for right in pair_right:
+            result[(id(left), id(right))] = float(matrix[index[id(left)], index[id(right)]])
+    return result
+
+
 def _ensure_correlation_shuffle_entry(
     shared_shuffle_cache: Dict[str, Any] | None,
     key: str,
@@ -229,6 +253,7 @@ def build_pairwise_correlation_rows(
                 member.unit_id: _masked_trace_values(member, mask_array, usable)
                 for member in pair_members
             }
+        fast_correlations = _finite_pairwise_correlations(left_members, right_members, state_member_values) if correlation_inference == "none" and state_member_values is not None and len(pair_members) <= 256 else None
         state_started = time.perf_counter()
         pending: List[Dict[str, Any]] = []
         for left, right in _pair_iter(left_members, right_members):
@@ -246,7 +271,10 @@ def build_pairwise_correlation_rows(
                 left_values, right_values, n_timepoints = _paired_trace_values(left, right, mask_array)
                 if n_timepoints <= 0:
                     continue
-            corr = pairwise_correlation(left_values, right_values)
+            if fast_correlations is not None:
+                corr = fast_correlations[(id(left), id(right))]
+            else:
+                corr = pairwise_correlation(left_values, right_values)
             n_timepoints = int(left_values.size)
             pair_key = _pair_unit_id(ctx, comparison_name, left, right)
             shuffle_key = build_shared_shift_schedule_key(

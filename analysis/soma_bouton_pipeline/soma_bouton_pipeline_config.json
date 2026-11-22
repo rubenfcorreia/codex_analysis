@@ -74,12 +74,14 @@
   "pairwise_correlation_shift_block_size": 8,
   "rebuild": false,
   "plots_only": true,
+  "write_detailed_csv": false,
   "comparison_preset_name": null,
   "comparison_preset_names": [
     "movies_state_comparisons",
     "blank_state_comparisons",
     "quiet_vs_sleep_blank_movies",
-    "all_states"
+    "all_states",
+    "pupil_nrem_substates"
   ],
   "comparison_presets": {
     "movies_state_comparisons": {
@@ -134,6 +136,26 @@
         "quiet_awake_movies",
         "quiet_awake",
         "nrem",
+        "rem"
+      ]
+    },
+    "pupil_nrem_substates": {
+      "state_comparison_states": [
+        "quiet_awake",
+        "nrem_pupil_extra_small",
+        "nrem_pupil_small",
+        "nrem_pupil_medium",
+        "nrem_pupil_big",
+        "nrem_pupil_extra_big",
+        "rem"
+      ],
+      "compartment_states": [
+        "quiet_awake",
+        "nrem_pupil_extra_small",
+        "nrem_pupil_small",
+        "nrem_pupil_medium",
+        "nrem_pupil_big",
+        "nrem_pupil_extra_big",
         "rem"
       ]
     },
