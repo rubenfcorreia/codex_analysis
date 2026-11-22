@@ -285,6 +285,10 @@ DEFAULT_REVIEW_FIGURES_DIR = ROOT_DIR / DEFAULT_REVIEW_FIGURES_DIRNAME
 # These labels are reused everywhere so the cache, analysis, and plots stay aligned.
 MOVIE_TRIAL_TYPES = ["blank", "grating", "zebra", "movies"]
 SLEEP_STATE_LABELS = ["active_awake", "quiet_awake", "nrem", "rem"]
+PUPIL_NREM_STATE_LABELS = [
+    "nrem_pupil_extra_small", "nrem_pupil_small", "nrem_pupil_medium",
+    "nrem_pupil_big", "nrem_pupil_extra_big",
+]
 SPINE_COACTIVITY_ANCHOR_STATE = "quiet_awake_movies"
 SPINE_COACTIVITY_QUIET_ANCHOR_SELECTION_FIELD = "quiet_awake_movies_selected"
 DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD = 0.05
@@ -450,6 +454,7 @@ PRIMARY_QUIET_STATES = [
 ALL_REQUESTED_STATES = [
     *MOVIE_STATE_LABELS,
     *SLEEP_STATE_LABELS,
+    *PUPIL_NREM_STATE_LABELS,
 ]
 # Basal/apical comparisons default to all requested states, but callers can still override them.
 DEFAULT_BASAL_APICAL_STATES = list(ALL_REQUESTED_STATES)
@@ -9489,36 +9494,10 @@ def build_state_masks_movie(
         exp_time, trial_rows, columns, wheel_time, wheel_speed, sleep_state, locomotion_threshold
     )
 
-def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-    sleep_t = np.asarray(sleep_state["state_10hz_t"], dtype=float).reshape(-1)
-    sleep_codes = np.asarray(sleep_state["state_10hz"], dtype=float).reshape(-1)
-    n = min(sleep_t.size, sleep_codes.size)
-    sleep_t = sleep_t[:n]
-    sleep_codes = sleep_codes[:n]
-    valid = np.isfinite(sleep_t) & np.isfinite(sleep_codes)
-    sleep_t = sleep_t[valid]
-    sleep_codes = sleep_codes[valid]
-    order = np.argsort(sleep_t, kind="mergesort")
-    sleep_t = sleep_t[order]
-    sleep_codes = sleep_codes[order]
-    if sleep_t.size == 0:
-        codes = np.full(exp_time.shape, -1, dtype=int)
-        masks = {label: codes == code for code, label in SLEEP_STATE_MAP.items()}
-        return masks, {"sleep_state_keys": sorted(list(sleep_state.keys())), "state_labels": dict(SLEEP_STATE_MAP), "state_10hz_t": sleep_t, "state_10hz": sleep_codes, "state_codes_on_calcium_time": codes, "state_mapping_status": "no_valid_samples"}
-    inside = (exp_time >= sleep_t.min()) & (exp_time <= sleep_t.max())
-    codes = np.full(exp_time.shape, -1, dtype=int)
-    if inside.any():
-        interpolated = np.interp(exp_time[inside], sleep_t, sleep_codes)
-        codes[inside] = np.rint(interpolated).astype(int)
-    masks = {label: codes == code for code, label in SLEEP_STATE_MAP.items()}
-    meta = {
-        "sleep_state_keys": sorted(list(sleep_state.keys())),
-        "state_labels": dict(SLEEP_STATE_MAP),
-        "state_10hz_t": sleep_t,
-        "state_10hz": sleep_codes,
-        "state_codes_on_calcium_time": codes,
-    }
-    return masks, meta
+def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Dict[str, Any], exp_root: Optional[Path] = None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    from analysis.shared.analysis_families.common_helpers import build_state_masks_sleep as _shared_build_state_masks_sleep
+    return _shared_build_state_masks_sleep(exp_time, sleep_state, exp_root=exp_root)
+
 def choose_locomotion_threshold(
     explicit_threshold: Optional[float],
     sleep_state_thresholds: Sequence[float],
@@ -10616,8 +10595,9 @@ def process_experiment(
         )
         for key, mask in state_masks_movie.items():
             state_masks[key] = mask
+    sleep_meta: Dict[str, Any] = {}
     if sleep_state is not None:
-        state_masks_sleep, sleep_meta = build_state_masks_sleep(exp_time, sleep_state)
+        state_masks_sleep, sleep_meta = build_state_masks_sleep(exp_time, sleep_state, exp_root=exp_root)
         state_masks.update(state_masks_sleep)
     trial_state_indices: Dict[str, List[int]] = defaultdict(list)
     for meta in trial_meta:
@@ -10658,6 +10638,7 @@ def process_experiment(
         },
         "sleep_state": {
             "available": bool(sleep_state is not None),
+            "mapping_metadata": cacheable(sleep_meta),
             "alert": sleep_alert,
             "bundle": cacheable(sleep_state) if sleep_state is not None else None,
         },

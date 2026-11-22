@@ -10,6 +10,7 @@ import numpy as np
 from analysis.shared.shared_calcium_response import build_masked_event_summary
 from analysis.shared.state_transitions import (
     SLEEP_STATE_LABELS,
+    is_sleep_state_label,
     add_window_metadata,
     aggregate_transition_rows_expday,
     aligned_trace_segment,
@@ -125,7 +126,7 @@ def run_transition_analysis(
         if time.size < 2 or not masks:
             continue
         for scope in transition_config["scopes"]:
-            scoped_states = selected if scope == "all_states" else [state for state in selected if state.lower() in SLEEP_STATE_LABELS]
+            scoped_states = selected if scope == "all_states" else [state for state in selected if is_sleep_state_label(state)]
             if len(scoped_states) < 2:
                 continue
             raw_events = transition_events(time, masks, scoped_states, scope=scope, window_s=transition_config["window_s"])

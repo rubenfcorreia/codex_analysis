@@ -9,6 +9,7 @@ import numpy as np
 
 from analysis.shared.state_transitions import (
     SLEEP_STATE_LABELS,
+    is_sleep_state_label,
     add_window_metadata,
     aggregate_transition_rows_expday,
     aligned_trace_segment,
@@ -142,7 +143,7 @@ def _run_transition_analysis_impl(
                     continue
                 compartment = observation_compartment(cache, exp_id, d_obs) or str(exp_meta.get("compartment") or "")
                 for scope in transition_config["scopes"]:
-                    scoped_states = [str(state) for state in selected_states if scope == "all_states" or str(state).lower() in SLEEP_STATE_LABELS]
+                    scoped_states = [str(state) for state in selected_states if scope == "all_states" or is_sleep_state_label(state)]
                     if len(scoped_states) < 2:
                         continue
                     raw_events = transition_events(time, state_masks, scoped_states, scope=scope, window_s=transition_config["window_s"])

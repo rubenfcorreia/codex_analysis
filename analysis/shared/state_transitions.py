@@ -13,6 +13,10 @@ from analysis.shared.plots.figure_io import save_figure
 TRANSITION_SCHEMA_VERSION = 2
 SLEEP_STATE_LABELS = frozenset({"active_awake", "quiet_awake", "wake", "nrem", "rem"})
 
+def is_sleep_state_label(label: Any) -> bool:
+    value = str(label).lower()
+    return value in SLEEP_STATE_LABELS or value.startswith("nrem_pupil_")
+
 
 def normalize_transition_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     raw = dict(config or {})

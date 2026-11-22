@@ -53,7 +53,8 @@
           "max_available"
         ],
         "scopes": [
-          "all_states"
+          "all_states",
+    "pupil_nrem_substates"
         ],
         "metrics": [
           "activity",
@@ -79,6 +80,26 @@
         "quiet_awake_movies",
         "quiet_awake",
         "nrem",
+        "rem"
+      ]
+    },
+    "pupil_nrem_substates": {
+      "state_comparison_states": [
+        "quiet_awake",
+        "nrem_pupil_extra_small",
+        "nrem_pupil_small",
+        "nrem_pupil_medium",
+        "nrem_pupil_big",
+        "nrem_pupil_extra_big",
+        "rem"
+      ],
+      "basal_apical_states": [
+        "quiet_awake",
+        "nrem_pupil_extra_small",
+        "nrem_pupil_small",
+        "nrem_pupil_medium",
+        "nrem_pupil_big",
+        "nrem_pupil_extra_big",
         "rem"
       ]
     },
@@ -233,7 +254,8 @@
     "movies_state_comparisons",
     "blank_state_comparisons",
     "quiet_vs_sleep_blank_movies",
-    "all_states"
+    "all_states",
+    "pupil_nrem_substates"
   ],
   "progression_analysis": {
     "enabled": true,

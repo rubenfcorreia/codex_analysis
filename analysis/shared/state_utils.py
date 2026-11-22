@@ -45,7 +45,15 @@ def state_family_label(label: Any) -> str:
 
 
 def state_display_label(label: Any) -> str:
-    return str(label).replace("_", " ").strip().title()
+    canonical = canonical_state_label(label)
+    pupil_labels = {
+        "nrem_pupil_extra_small": "Extra-small pupil NREM",
+        "nrem_pupil_small": "Small pupil NREM",
+        "nrem_pupil_medium": "Medium pupil NREM",
+        "nrem_pupil_big": "Big pupil NREM",
+        "nrem_pupil_extra_big": "Extra-big pupil NREM",
+    }
+    return pupil_labels.get(canonical, str(label).replace("_", " ").strip().title())
 
 
 def state_display_color(label: Any) -> str:

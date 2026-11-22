@@ -106,7 +106,94 @@ def choose_locomotion_threshold(explicit_threshold: Optional[float], thresholds:
     return 0.0
 
 
-def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+
+PUPIL_NREM_CATEGORY_SLUGS = {0: "extra_small", 1: "small", 2: "medium", 3: "big", 4: "extra_big"}
+
+def _nearest_categorical_interpolation(target_t: np.ndarray, source_t: np.ndarray, source_values: np.ndarray, fill_value: int = -1) -> np.ndarray:
+    target = np.asarray(target_t, dtype=float).reshape(-1)
+    source_t = np.asarray(source_t, dtype=float).reshape(-1)
+    source_values = np.asarray(source_values).reshape(-1)
+    usable = min(source_t.size, source_values.size)
+    result = np.full(target.shape, fill_value, dtype=int)
+    if usable == 0:
+        return result
+    source_t, source_values = source_t[:usable], source_values[:usable]
+    valid = np.isfinite(source_t) & np.isfinite(source_values.astype(float, copy=False))
+    if not np.any(valid):
+        return result
+    source_t, source_values = source_t[valid], np.rint(source_values[valid]).astype(int)
+    order = np.argsort(source_t, kind="stable")
+    source_t, source_values = source_t[order], source_values[order]
+    positions = np.searchsorted(source_t, target, side="left")
+    right = np.clip(positions, 0, source_t.size - 1)
+    left = np.clip(positions - 1, 0, source_t.size - 1)
+    nearest = np.where(np.abs(source_t[right] - target) < np.abs(target - source_t[left]), right, left)
+    inside = (target >= source_t[0]) & (target <= source_t[-1])
+    result[inside] = source_values[nearest[inside]]
+    return result
+
+def build_pupil_nrem_substate_masks(
+    exp_time: np.ndarray,
+    sleep_state: Mapping[str, Any],
+    *,
+    eye_bundle: Optional[Mapping[str, Any]] = None,
+    eye_path: Optional[Path] = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    time = np.asarray(exp_time, dtype=float).reshape(-1)
+    unavailable = {"pupil_nrem_available": False, "pupil_nrem_state_labels": {}, "pupil_nrem_category_counts": {}, "pupil_nrem_mapping_status": "unavailable"}
+    categories = sleep_state.get("pupil_nrem_category")
+    if categories is None:
+        return {}, unavailable
+    categories = np.asarray(categories).reshape(-1)
+    if categories.size == 0:
+        return {}, unavailable
+    if eye_bundle is None and eye_path is not None and eye_path.exists():
+        try:
+            loaded = read_pickle(eye_path)
+            eye_bundle = loaded if isinstance(loaded, Mapping) else None
+        except Exception:
+            eye_bundle = None
+    if not isinstance(eye_bundle, Mapping):
+        return {}, {**unavailable, "pupil_nrem_mapping_status": "missing_eye_bundle"}
+    frames = np.asarray(eye_bundle.get("frame", []), dtype=float).reshape(-1)
+    if frames.size == 0:
+        return {}, {**unavailable, "pupil_nrem_mapping_status": "missing_eye_frame"}
+    state_time = np.asarray(sleep_state.get("state_10hz_t", []), dtype=float).reshape(-1)
+    state_codes = np.asarray(sleep_state.get("state_10hz", []), dtype=float).reshape(-1)
+    usable = min(state_time.size, state_codes.size, frames.size)
+    if usable == 0:
+        return {}, {**unavailable, "pupil_nrem_mapping_status": "missing_sleep_timeline"}
+    state_time, state_codes, frames = state_time[:usable], state_codes[:usable], frames[:usable]
+    finite_frame = np.isfinite(frames)
+    frame_index = np.zeros(frames.shape, dtype=np.int64)
+    frame_index[finite_frame] = np.rint(frames[finite_frame]).astype(np.int64)
+    valid_frame = finite_frame & (frame_index >= 0) & (frame_index < categories.size)
+    category_on_state = np.full(usable, -1, dtype=int)
+    category_on_state[valid_frame] = np.rint(categories[frame_index[valid_frame]]).astype(int)
+    category_labels = sleep_state.get("pupil_nrem_category_labels", {})
+    if not isinstance(category_labels, Mapping):
+        category_labels = {}
+    labels = {}
+    for category, slug in PUPIL_NREM_CATEGORY_SLUGS.items():
+        raw = category_labels.get(category, category_labels.get(str(category), f"{slug.replace('_', '-')} pupil NREM"))
+        labels[category] = {"state": f"nrem_pupil_{slug}", "display": str(raw)}
+    category_on_time = _nearest_categorical_interpolation(time, state_time, category_on_state)
+    sleep_on_time = _nearest_categorical_interpolation(time, state_time, state_codes)
+    masks, counts = {}, {}
+    for category, payload in labels.items():
+        mask = (category_on_time == category) & (sleep_on_time == 2)
+        masks[payload["state"]] = mask
+        counts[payload["state"]] = int(np.count_nonzero(mask))
+    return masks, {
+        "pupil_nrem_available": True,
+        "pupil_nrem_state_labels": {payload["state"]: payload["display"] for payload in labels.values()},
+        "pupil_nrem_category_counts": counts,
+        "pupil_nrem_sextiles": np.asarray(sleep_state.get("pupil_nrem_sextiles", []), dtype=float).tolist(),
+        "pupil_nrem_analysis_version": sleep_state.get("pupil_nrem_analysis_version"),
+        "pupil_nrem_mapping_status": "mapped",
+    }
+
+def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any], *, exp_root: Optional[Path] = None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
     time = np.asarray(exp_time, dtype=float)
     state_time = np.asarray(sleep_state.get("state_10hz_t", []), dtype=float)
     state_codes = np.asarray(sleep_state.get("state_10hz", []), dtype=float)
@@ -128,7 +215,16 @@ def build_state_masks_sleep(exp_time: np.ndarray, sleep_state: Mapping[str, Any]
     labels = {0: "active_awake", 1: "quiet_awake", 2: "nrem", 3: "rem"}
     masks = {label: codes == code for code, label in labels.items()}
     masks["all"] = np.ones(time.shape, dtype=bool)
-    return masks, {"state_labels": labels, "state_codes_on_calcium_time": codes}
+    eye_path = None
+    if exp_root is not None:
+        for candidate in ('dlcEyeLeft_resampled.pickle', 'dlcEyeRight_resampled.pickle'):
+            path = Path(exp_root) / 'recordings' / candidate
+            if path.exists():
+                eye_path = path
+                break
+    pupil_masks, pupil_meta = build_pupil_nrem_substate_masks(time, sleep_state, eye_path=eye_path)
+    masks.update(pupil_masks)
+    return masks, {'state_labels': labels, 'state_codes_on_calcium_time': codes, **pupil_meta}
 
 
 def _movie_state_segments(time: np.ndarray, trial_mask: np.ndarray, sleep_codes: Optional[np.ndarray], sleep_labels: Mapping[int, str]) -> List[Tuple[np.ndarray, Optional[str], Optional[int]]]:
