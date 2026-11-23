@@ -197,6 +197,8 @@ DEFAULT_CONFIG = {
     "pairwise_correlation_shuffle_n": 100,
     "pairwise_correlation_batch_size": 64,
     "pairwise_correlation_shift_block_size": 8,
+    "correlation_types": None,
+    "skip_shuffle_dataset": False,
     "rebuild": False,
     "cache_path": None,
     "analysis_results_cache_path": None,
@@ -474,7 +476,8 @@ def _run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any
     union_states_by_mode = union_state_labels(preset_state_maps)
     shared_union_rows_cache_path = base_result_root / "analysis" / "general" / "cache" / "soma_bouton_union_rows_cache.npz"
     all_expids_by_mode = {mode: list(dict.fromkeys([*config.get(f"{mode}_expids", []), *[expid for _, overrides in plan.presets for expid in overrides.get(f"{mode}_expids", [])]])) for mode in ("movie", "sleep")}
-    requires_shuffle_dataset = _requires_full_trace_shuffle_dataset(config, plan.presets)
+    skip_shuffle_dataset = bool(config.get("skip_shuffle_dataset", False))
+    requires_shuffle_dataset = not skip_shuffle_dataset and _requires_full_trace_shuffle_dataset(config, plan.presets)
     try:
         if not bool(config.get("plots_only")):
             _build_soma_source_cache(
@@ -483,9 +486,13 @@ def _run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any
                 shared_source_cache_path,
                 all_expids_by_mode,
             )
-        mask_aware_dataset_info = _build_soma_mask_aware_shuffle_dataset(
-            config, repo_root, base_result_root, all_expids_by_mode, union_states_by_mode
-        )
+        if skip_shuffle_dataset:
+            print("SHUFFLE DATASET: creation skipped | reason=explicit_config", file=sys.stderr)
+            mask_aware_dataset_info = {"path": "", "sha256": "", "replicates": 0, "source_signature": ""}
+        else:
+            mask_aware_dataset_info = _build_soma_mask_aware_shuffle_dataset(
+                config, repo_root, base_result_root, all_expids_by_mode, union_states_by_mode
+            )
         if requires_shuffle_dataset:
             shuffle_dataset_info = _build_soma_shuffle_dataset(
                 config, repo_root, base_result_root, all_expids_by_mode, len(plan.presets)
@@ -538,7 +545,7 @@ def _run_comparison_preset_runs(config: Mapping[str, Any]) -> List[Dict[str, Any
         preset_config["shuffle_dataset_sha256"] = str(shuffle_dataset_info["sha256"])
         preset_config["shuffle_dataset_replicates"] = int(shuffle_dataset_info["replicates"])
         preset_config["shuffle_dataset_source_signature"] = str(shuffle_dataset_info.get("source_signature", ""))
-        preset_config["mask_aware_shuffle_dataset_path"] = str(mask_aware_dataset_info["path"])
+        preset_config["mask_aware_shuffle_dataset_path"] = str(mask_aware_dataset_info.get("path", ""))
         preset_config["shared_union_rows_cache_path"] = str(shared_union_rows_cache_path)
         preset_config["union_state_labels_by_mode"] = union_states_by_mode
         preset_config["union_rows_cache_builder"] = preset_index == 0 and not bool(config.get("plots_only"))
@@ -1126,6 +1133,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "soma_channel": int(config.get("soma_channel", 1)),
         "bouton_channel": int(config.get("bouton_channel", 0)),
         "pairwise_correlation_schema_version": 3,
+        "correlation_types": sorted(set(config.get("correlation_types") or ("soma_bouton", "soma_pairwise", "bouton_pairwise"))),
         "coincidence_family_schema_version": 1,
         "coincidence_example_top_n": int(coincidence_example_top_n),
         "null_model": str(config.get("null_model", config.get("pairwise_correlation_null_model", "mask_aware"))),
@@ -1513,6 +1521,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     pairwise_correlation_inference = str(config.get("pairwise_correlation_inference", correlation_inference))
     pairwise_correlation_batch_size = max(1, int(config.get("pairwise_correlation_batch_size", 64)))
     pairwise_correlation_shift_block_size = max(1, int(config.get("pairwise_correlation_shift_block_size", 8)))
+    configured_correlation_types = config.get("correlation_types")
+    correlation_types = set(configured_correlation_types or ("soma_bouton", "soma_pairwise", "bouton_pairwise"))
     correlation_shuffle_seed = int(config.get("correlation_shuffle_seed", 12345))
     correlation_min_shift_frames = int(config.get("correlation_min_shift_frames", 1))
     analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
@@ -1526,7 +1536,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise SystemExit("figures_only requires new-layout analysis artifacts; missing: " + ", ".join(missing))
     shared_shuffle_cache_file = _shared_shuffle_cache_path(source_cache_file, str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))))
     pairwise_null_model = str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))).strip().lower()
-    requires_shuffle_dataset = pairwise_null_model == "full_trace"
+    skip_shuffle_dataset = bool(config.get("skip_shuffle_dataset", False))
+    requires_shuffle_dataset = not skip_shuffle_dataset and pairwise_null_model == "full_trace"
     configured_shuffle_dataset = config.get("shuffle_dataset_path") if requires_shuffle_dataset else None
     shuffle_dataset_file = (resolve_repo_path(configured_shuffle_dataset, repo_root) if configured_shuffle_dataset else _shuffle_dataset_path(source_cache_file)) if requires_shuffle_dataset else None
     expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "") if requires_shuffle_dataset else ""
@@ -1555,11 +1566,18 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
     cache_timings: Dict[str, float] = {}
     cache_started = time.perf_counter()
-    shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = _load_or_build_shared_permutation_cache(
-        shared_shuffle_cache_file,
-        metadata=shared_shuffle_metadata,
-        rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
-    )
+    if skip_shuffle_dataset:
+        shared_shuffle_cache = {}
+        shared_shuffle_cache_rebuilt = False
+        shared_shuffle_cache_status = "disabled"
+        cache_timings["shared_shuffle"] = 0.0
+        print("SHUFFLE DATASET: consumer disabled | reason=explicit_config", file=sys.stderr)
+    else:
+        shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = _load_or_build_shared_permutation_cache(
+            shared_shuffle_cache_file,
+            metadata=shared_shuffle_metadata,
+            rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
+        )
     cache_timings["shared_shuffle"] = time.perf_counter() - cache_started
     if requires_shuffle_dataset:
         if not shuffle_dataset_file.exists() and not configured_shuffle_dataset:
@@ -1849,42 +1867,45 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 )
             if pairwise_family_rows is None:
                 step_message(f"PROCESS correlations: {mode} | {expid}")
-                with step_scope("soma-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_bouton"}):
-                    correlation_rows.extend(bouton_soma_correlation_rows(
-                        ctx, row_states, state_masks=state_masks,
-                        correlation_shuffle_n=pairwise_correlation_shuffle_n,
-                        correlation_method=correlation_method,
-                        correlation_inference=pairwise_correlation_inference,
-                        correlation_batch_size=pairwise_correlation_batch_size,
-                        correlation_shift_block_size=pairwise_correlation_shift_block_size,
-                        correlation_shuffle_seed=correlation_shuffle_seed,
-                        correlation_min_shift_frames=correlation_min_shift_frames,
-                        shared_shuffle_cache=shared_shuffle_cache,
-                    ))
-                with step_scope("soma-soma correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_pairwise"}):
-                    soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
-                        ctx, row_states, state_masks=state_masks,
-                        correlation_shuffle_n=pairwise_correlation_shuffle_n,
-                        correlation_method=correlation_method,
-                        correlation_inference=pairwise_correlation_inference,
-                        correlation_batch_size=pairwise_correlation_batch_size,
-                        correlation_shift_block_size=pairwise_correlation_shift_block_size,
-                        correlation_shuffle_seed=correlation_shuffle_seed,
-                        correlation_min_shift_frames=correlation_min_shift_frames,
-                        shared_shuffle_cache=shared_shuffle_cache,
-                    ))
-                with step_scope("bouton-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "bouton_pairwise"}):
-                    bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
-                        ctx, row_states, state_masks=state_masks,
-                        correlation_shuffle_n=pairwise_correlation_shuffle_n,
-                        correlation_method=correlation_method,
-                        correlation_inference=pairwise_correlation_inference,
-                        correlation_batch_size=pairwise_correlation_batch_size,
-                        correlation_shift_block_size=pairwise_correlation_shift_block_size,
-                        correlation_shuffle_seed=correlation_shuffle_seed,
-                        correlation_min_shift_frames=correlation_min_shift_frames,
-                        shared_shuffle_cache=shared_shuffle_cache,
-                    ))
+                if "soma_bouton" in correlation_types:
+                    with step_scope("soma-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_bouton"}):
+                        correlation_rows.extend(bouton_soma_correlation_rows(
+                            ctx, row_states, state_masks=state_masks,
+                            correlation_shuffle_n=pairwise_correlation_shuffle_n,
+                            correlation_method=correlation_method,
+                            correlation_inference=pairwise_correlation_inference,
+                            correlation_batch_size=pairwise_correlation_batch_size,
+                            correlation_shift_block_size=pairwise_correlation_shift_block_size,
+                            correlation_shuffle_seed=correlation_shuffle_seed,
+                            correlation_min_shift_frames=correlation_min_shift_frames,
+                            shared_shuffle_cache=shared_shuffle_cache,
+                        ))
+                if "soma_pairwise" in correlation_types:
+                    with step_scope("soma-soma correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_pairwise"}):
+                        soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
+                            ctx, row_states, state_masks=state_masks,
+                            correlation_shuffle_n=pairwise_correlation_shuffle_n,
+                            correlation_method=correlation_method,
+                            correlation_inference=pairwise_correlation_inference,
+                            correlation_batch_size=pairwise_correlation_batch_size,
+                            correlation_shift_block_size=pairwise_correlation_shift_block_size,
+                            correlation_shuffle_seed=correlation_shuffle_seed,
+                            correlation_min_shift_frames=correlation_min_shift_frames,
+                            shared_shuffle_cache=shared_shuffle_cache,
+                        ))
+                if "bouton_pairwise" in correlation_types:
+                    with step_scope("bouton-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "bouton_pairwise"}):
+                        bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
+                            ctx, row_states, state_masks=state_masks,
+                            correlation_shuffle_n=pairwise_correlation_shuffle_n,
+                            correlation_method=correlation_method,
+                            correlation_inference=pairwise_correlation_inference,
+                            correlation_batch_size=pairwise_correlation_batch_size,
+                            correlation_shift_block_size=pairwise_correlation_shift_block_size,
+                            correlation_shuffle_seed=correlation_shuffle_seed,
+                            correlation_min_shift_frames=correlation_min_shift_frames,
+                            shared_shuffle_cache=shared_shuffle_cache,
+                        ))
             step_message(f"PROCESS lag scan: {mode} | {expid}")
             with step_scope("lag scans", task="lag", metadata={"mode": mode, "expid": expid}):
                 lag_rows.extend(

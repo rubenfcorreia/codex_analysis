@@ -272,5 +272,9 @@
   "pairwise_correlation_null_model": "mask_aware",
   "generate_shared_general_outputs": true,
   "generate_shared_general_figures": true,
-  "poster_ready_only": false
+  "poster_ready_only": false,
+  "correlation_types": [
+    "soma_bouton"
+  ],
+  "skip_shuffle_dataset": true
 }

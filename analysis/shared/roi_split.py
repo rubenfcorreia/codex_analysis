@@ -753,6 +753,11 @@ def build_roi_split_results(
             duration_column=duration_column,
             n_frames_column=n_frames_column,
         )
+        # Do not count placeholder rows for states with no samples.
+        window_subject_state_rows = [
+            row for row in window_subject_state_rows
+            if int(row.get(n_frames_column, 0) or 0) > 0
+        ]
         window_subject_state_lookup: Dict[Tuple[str, str], Dict[str, Any]] = {
             (str(row['subject_id']), str(row['state'])): dict(row)
             for row in window_subject_state_rows

@@ -295,13 +295,16 @@ def build_state_masks_movie(
         trial_wheel = wheel[trial_mask] if wheel is not None else np.asarray([], dtype=float)
         wheel_score = float(np.nanmedian(np.abs(trial_wheel))) if np.isfinite(trial_wheel).any() else float("nan")
         segments = _movie_state_segments(time, trial_mask, sleep_codes_on_time, sleep_labels)
-        if sleep_codes_on_time is None or not any(label is not None for _, label, _ in segments):
+        if sleep_codes_on_time is None:
             fallback = "quiet_awake" if not np.isfinite(wheel_score) or wheel_score < locomotion_threshold else "active_awake"
             segments = [(trial_mask, fallback, None)]
+        else:
+            # A sleep timeline is authoritative: code -1 is an explicitly
+            # unassigned interval and must not be relabeled from locomotion.
+            segments = [segment for segment in segments if segment[1] is not None]
         for segment_index, (segment_mask, sleep_label, sleep_code) in enumerate(segments):
             if not np.any(segment_mask):
                 continue
-            sleep_label = sleep_label or ("quiet_awake" if not np.isfinite(wheel_score) or wheel_score < locomotion_threshold else "active_awake")
             key = combined_movie_state_label(sleep_label, category) or "quiet_awake_movies"
             masks.setdefault(key, np.zeros(time.shape, dtype=bool))
             masks[key] |= segment_mask

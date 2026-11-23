@@ -533,6 +533,7 @@ USER_EDITABLE_DEFAULTS = {
     "correlation_shuffle_seed": 12345,
     "correlation_min_shift_frames": 1,
     "correlation_batch_size": 64,
+    "skip_shuffle_dataset": False,
     "cpu_thread_limit": DEFAULT_CPU_THREAD_LIMIT,
     "locomotion_threshold": None,
     "rebuild": False,
@@ -17946,7 +17947,11 @@ def _run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
     # experiment cache. Build the shared signal dataset from that same
     # representation so producer and consumer use identical IDs and traces.
     dendrite_analysis_cache = build_day_pooled_cache(dendrite_source_cache)
-    shuffle_dataset_info = _build_dendrite_shuffle_dataset(dendrite_analysis_cache, config, base_output_dir, len(plan.presets))
+    if bool(config.get("skip_shuffle_dataset", False)):
+        print("SHUFFLE DATASET: creation skipped | reason=explicit_config", file=sys.stderr)
+        shuffle_dataset_info = {"path": "", "sha256": "", "replicates": 0, "source_signature": ""}
+    else:
+            shuffle_dataset_info = _build_dendrite_shuffle_dataset(dendrite_analysis_cache, config, base_output_dir, len(plan.presets))
     for preset_index, (preset_name, overrides) in enumerate(plan.presets):
         safe_name = safe_filename_component(preset_name)
         preset_output_dir = base_output_dir / "analysis" / safe_name
@@ -18483,7 +18488,8 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
     shared_shuffle_cache = None
     shared_shuffle_cache_file = None
     shared_shuffle_cache_rebuilt = False
-    if not plots_only:
+    skip_shuffle_dataset = bool(config.get("skip_shuffle_dataset", False))
+    if not plots_only and not skip_shuffle_dataset:
         with step_scope("shared circular-shift cache"):
             shared_shuffle_cache, shared_shuffle_cache_file, shared_shuffle_cache_rebuilt = load_or_build_shared_shuffle_cache(
                 analysis_cache,
@@ -18494,28 +18500,33 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
             )
     else:
         shared_shuffle_cache = None
+        if skip_shuffle_dataset:
+            print("SHUFFLE DATASET: consumer disabled | reason=explicit_config", file=sys.stderr)
     if not isinstance(shared_shuffle_cache, dict):
         shared_shuffle_cache = {"entries": {}, "null_results": {}, "null_result_stats": {"hits": 0, "misses": 0, "builds": 0}}
     mask_aware_dataset_file = cache_path.with_name(f"{cache_path.stem}_mask_aware_shuffle_dataset.h5")
-    if not plots_only:
+    if not plots_only and not skip_shuffle_dataset:
         mask_aware_info = build_mask_aware_dataset_from_cache(analysis_cache, mask_aware_dataset_file, shared_shuffle_state_labels, shuffle_n, int(config.get("correlation_shuffle_seed", 12345)), int(config.get("correlation_min_shift_frames", 1)))
         shared_shuffle_cache["mask_aware_shuffle_dataset_path"] = str(mask_aware_info["path"])
     configured_shuffle_dataset = config.get("shuffle_dataset_path")
-    shuffle_dataset_file = resolve_repo_path(configured_shuffle_dataset, REPO_ROOT) if configured_shuffle_dataset else (shared_shuffle_cache_file.with_name(f"{shared_shuffle_cache_file.stem.replace('_shuffle_cache', '')}_shuffle_dataset.h5") if shared_shuffle_cache_file is not None else None)
-    if shuffle_dataset_file is None or not shuffle_dataset_file.exists():
-        raise FileNotFoundError(f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={shuffle_dataset_file}")
-    expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "")
-    if expected_shuffle_sha256:
-        digest = hashlib.sha256()
-        with shuffle_dataset_file.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        actual_shuffle_sha256 = digest.hexdigest()
-        if actual_shuffle_sha256 != expected_shuffle_sha256:
-            raise ValueError(f"SHUFFLE DATASET: validation failure | reason=hash_mismatch | action=reject | path={shuffle_dataset_file}")
-        print(f"SHUFFLE DATASET: preset reuse | preset={config.get('comparison_preset_name') or 'default'} | path={shuffle_dataset_file} | sha256={actual_shuffle_sha256} | status=reused", file=sys.stderr)
+    shuffle_dataset_file = None
+    if not skip_shuffle_dataset:
+        shuffle_dataset_file = resolve_repo_path(configured_shuffle_dataset, REPO_ROOT) if configured_shuffle_dataset else (shared_shuffle_cache_file.with_name(f"{shared_shuffle_cache_file.stem.replace('_shuffle_cache', '')}_shuffle_dataset.h5") if shared_shuffle_cache_file is not None else None)
+        if shuffle_dataset_file is None or not shuffle_dataset_file.exists():
+            raise FileNotFoundError(f"SHUFFLE DATASET: validation failure | reason=missing | action=reject | path={shuffle_dataset_file}")
+        expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "")
+        if expected_shuffle_sha256:
+            digest = hashlib.sha256()
+            with shuffle_dataset_file.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual_shuffle_sha256 = digest.hexdigest()
+            if actual_shuffle_sha256 != expected_shuffle_sha256:
+                raise ValueError(f"SHUFFLE DATASET: validation failure | reason=hash_mismatch | action=reject | path={shuffle_dataset_file}")
+            print(f"SHUFFLE DATASET: preset reuse | preset={config.get('comparison_preset_name') or 'default'} | path={shuffle_dataset_file} | sha256={actual_shuffle_sha256} | status=reused", file=sys.stderr)
     shared_shuffle_cache["null_model"] = str(config.get("null_model", "mask_aware"))
-    shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
+    if shuffle_dataset_file is not None:
+        shared_shuffle_cache["shuffle_dataset_path"] = str(shuffle_dataset_file)
     shared_shuffle_cache["shuffle_dataset_metadata"] = {}
     from analysis_families.core import run_cached_analysis
     source_signature = source_cache_signature(source_cache)

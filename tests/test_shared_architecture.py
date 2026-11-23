@@ -171,6 +171,44 @@ def test_movie_trial_is_split_at_sleep_state_boundary() -> None:
     assert masks["nrem_movies"].sum() == 3
 
 
+def test_movie_trial_omits_unassigned_sleep_state_segments() -> None:
+    import numpy as np
+
+    masks, metadata, _ = build_state_masks_movie(
+        np.arange(6.0),
+        [{"time": 0, "duration": 6, "F1_type": "movie", "F1_name": r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00303"}],
+        ["time", "duration", "F1_type", "F1_name"],
+        np.arange(6.0),
+        np.full(6, 0.1),
+        {"state_10hz_t": np.arange(6.0), "state_10hz": np.array([-1, -1, 1, 1, 2, 2])},
+        0.0,
+    )
+
+    assert [row["sleep_state_label"] for row in metadata] == ["quiet_awake", "nrem"]
+    assert [row["sleep_code"] for row in metadata] == [1, 2]
+    assert masks["quiet_awake_movies"].sum() == 2
+    assert masks["nrem_movies"].sum() == 2
+    assert not any("active_awake" in key for key in masks)
+
+
+def test_all_unassigned_movie_trial_is_omitted() -> None:
+    import numpy as np
+
+    masks, metadata, _ = build_state_masks_movie(
+        np.arange(4.0),
+        [{"time": 0, "duration": 4, "F1_type": "movie", "F1_name": r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00303"}],
+        ["time", "duration", "F1_type", "F1_name"],
+        np.arange(4.0),
+        np.full(4, 0.1),
+        {"state_10hz_t": np.arange(4.0), "state_10hz": np.full(4, -1)},
+        0.0,
+    )
+
+    assert metadata == []
+    assert list(masks) == ["all"]
+    assert masks["all"].sum() == 4
+
+
 def test_result_layout_uses_sibling_analysis_and_figures_roots(tmp_path: Path):
     from analysis.shared.result_layout import resolve_result_layout
     layout = resolve_result_layout({"output_dir": str(tmp_path / "run")})
