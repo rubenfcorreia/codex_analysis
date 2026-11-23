@@ -74,6 +74,7 @@ from poster_plotting import (
     set_sparse_numeric_ticks,
 )
 from analysis.shared.result_layout import resolve_result_layout
+from analysis.shared.cache_utils import ensure_numpy_pickle_compatibility
 
 if plt is not None:
     configure_poster_matplotlib()
@@ -403,6 +404,7 @@ def write_text_report(path: Path, lines: Sequence[str]) -> None:
 
 
 def load_pickle(path: Path) -> Any:
+    ensure_numpy_pickle_compatibility()
     with path.open("rb") as handle:
         return pickle.load(handle)
 
