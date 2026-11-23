@@ -408,7 +408,7 @@ def _plot_multi_panel_grouped_state_figure(
         return []
 
     state_set = set(working["_state_key"])
-    states = ordered_state_labels(list(state_order or []) + working["_state_key"].dropna().tolist())
+    states = ordered_state_labels(state_order) if state_order else ordered_state_labels(working["_state_key"].dropna().tolist())
     states = [state for state in states if state in state_set]
     if not states:
         return []

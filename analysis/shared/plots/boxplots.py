@@ -659,6 +659,9 @@ def plot_grouped_boxplot_series(
         if not state_key:
             continue
         if state_key not in state_rows:
+            # An explicit state_order is a filter, not just a preferred order.
+            if state_keys:
+                continue
             state_rows[state_key] = []
             state_keys.append(state_key)
         state_rows[state_key].append(row)

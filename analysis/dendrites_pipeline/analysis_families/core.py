@@ -307,10 +307,9 @@ def _render_visual_response_state_summary_figures(
     figure_root: Optional[Any] = None,
 ) -> None:
     fig_root = Path(figure_root) if figure_root is not None else (Path(output_dir) / "figures")
-    state_groups = (
-        ("selected_states", selected_matrix_state_labels(results)),
-        ("all_states", list(ALL_REQUESTED_STATES)),
-    )
+    # The focused dendrite run is configured around the selected comparison
+    # states; do not add an unintended all-state summary branch.
+    state_groups = (("selected_states", selected_matrix_state_labels(results)),)
     cohort_specs = (
         ("dendrites", "dendrite_visual_response", "global_dendrite_id", "dendrite"),
         ("spines", "spine_visual_response", "global_spine_id", "spine"),
