@@ -172,3 +172,16 @@ def test_family_cache_indexes_nested_table_rows(tmp_path: Path):
     )
     reusable = load_reusable_family_scope_rows(cache_path, "spine_coactivity", {"e1|d1": "sig-1"})
     assert reusable["e1|d1"][0]["value"] == 3
+
+
+def test_relative_external_registries_fallback_to_canonical_pipeline_files(tmp_path: Path):
+    import json
+    copied_config = tmp_path / "pipeline_config.json"
+    copied_config.write_text(json.dumps({
+        "pipeline": {"name": "dendrites"},
+        "analysis": {"families_file": "analysis_families.json"},
+        "plots": {"config_file": "plot_config.json"},
+    }))
+    config = normalize_staged_config(json.loads(copied_config.read_text()), pipeline="dendrites", base_dir=tmp_path)
+    assert config["analysis_families_file"].endswith("analysis/dendrites_pipeline/analysis_families.json")
+    assert config["plot_config_file"].endswith("analysis/dendrites_pipeline/plot_config.json")

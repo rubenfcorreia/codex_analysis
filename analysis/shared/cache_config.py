@@ -71,6 +71,10 @@ def normalize_staged_config(raw: Mapping[str, Any], *, pipeline: str, base_dir: 
         families_path = Path(str(families_file))
         if not families_path.is_absolute():
             families_path = base_dir / families_path
+        if not families_path.exists() and not Path(str(families_file)).is_absolute():
+            canonical_path = Path(__file__).resolve().parents[1] / f"{pipeline}_pipeline" / Path(str(families_file)).name
+            if canonical_path.exists():
+                families_path = canonical_path
         if not families_path.exists():
             raise FileNotFoundError(f"Analysis-family config does not exist: {families_path}")
         import json
@@ -146,6 +150,10 @@ def normalize_staged_config(raw: Mapping[str, Any], *, pipeline: str, base_dir: 
         plot_path = Path(str(plot_config_file))
         if not plot_path.is_absolute():
             plot_path = base_dir / plot_path
+        if not plot_path.exists() and not Path(str(plot_config_file)).is_absolute():
+            canonical_path = Path(__file__).resolve().parents[1] / f"{pipeline}_pipeline" / Path(str(plot_config_file)).name
+            if canonical_path.exists():
+                plot_path = canonical_path
         if not plot_path.exists():
             raise FileNotFoundError(f"Plot config does not exist: {plot_path}")
         import json
