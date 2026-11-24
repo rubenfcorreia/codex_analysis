@@ -115,7 +115,10 @@ from analysis.shared.analysis_cache import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, load_family_results_cache, load_npz_cache, save_family_results_cache, save_npz_cache
+from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, load_family_results_cache, load_reusable_family_scope_rows, load_npz_cache, save_family_results_cache, save_npz_cache
+from analysis.shared.cache_config import normalize_staged_config
+from analysis.cache_builders.incremental_soma_shuffle import load_or_build as load_or_build_soma_shuffle_incremental
+from analysis.shared.classification_cache import apply_cached_visual_classification, load_classification_records
 from analysis.shared.progression import run_soma_bouton_progression
 from analysis.shared.plot_profiles import apply_plot_profile
 from analysis.shared.runtime_diagnostics import annotate_cache_records, finish as finish_runtime_diagnostics, snapshot as snapshot_runtime_diagnostics, summarize_stage_groups
@@ -226,8 +229,9 @@ DEFAULT_CONFIG = {
         "max_blank_duration_s": None,
         "spine_signals": ["raw", "spine_specific"],
     },
-    "generate_visual_response_entity_figures": True,
+    "generate_visual_response_entity_figures": False,
     "visual_response_entity_max_trace_points": None,
+    "visual_response_entity_max_figures": 25,
     "plots_only": False,
     "figures_only": False,
     "poster_ready_only": False,
@@ -275,12 +279,12 @@ DEFAULT_CONFIG = {
 
 def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return dict(DEFAULT_CONFIG)
+        return normalize_staged_config(dict(DEFAULT_CONFIG), pipeline="soma_bouton")
     with path.open() as fh:
         cfg = json.load(fh)
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg)
-    return merged
+    return normalize_staged_config(merged, pipeline="soma_bouton", base_dir=path.parent)
 
 
 def _preset_selection_names(value: Any) -> List[str] | None:
@@ -1103,6 +1107,31 @@ def _generate_coincidence_example_figures(
     return saved
 
 
+def _family_scope_signatures(rows: Sequence[Mapping[str, Any]]) -> Dict[str, str]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        expid = row.get("expid") or row.get("exp_id")
+        if expid is None:
+            continue
+        day_id = row.get("day_id") or row.get("date") or expid
+        scope = f"{expid}|{day_id}"
+        grouped.setdefault(scope, []).append(dict(row))
+    return {scope: analysis_cache_meta_hash(sorted(values, key=lambda value: json.dumps(value, sort_keys=True, default=str))) for scope, values in grouped.items()}
+
+
+def _merge_reusable_family_rows(rows: Sequence[Mapping[str, Any]], reusable: Mapping[str, Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+    reusable_scopes = set(reusable)
+    merged = [dict(row) for scope_rows in reusable.values() for row in scope_rows]
+    for row in rows or []:
+        expid = row.get("expid") or row.get("exp_id")
+        day_id = row.get("day_id") or row.get("date") or expid
+        if expid is None or f"{expid}|{day_id}" not in reusable_scopes:
+            merged.append(dict(row))
+    return merged
+
+
 def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str, coincidence_example_top_n: int) -> Dict[str, Any]:
     return {
         "methodology_version": METHODOLOGY_VERSION,
@@ -1573,10 +1602,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         cache_timings["shared_shuffle"] = 0.0
         print("SHUFFLE DATASET: consumer disabled | reason=explicit_config", file=sys.stderr)
     else:
-        shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = _load_or_build_shared_permutation_cache(
+        shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = load_or_build_soma_shuffle_incremental(_load_or_build_shared_permutation_cache,
             shared_shuffle_cache_file,
             metadata=shared_shuffle_metadata,
             rebuild=bool(config.get("shared_shuffle_cache_rebuild")),
+            metadata_hash=analysis_cache_meta_hash,
         )
     cache_timings["shared_shuffle"] = time.perf_counter() - cache_started
     if requires_shuffle_dataset:
@@ -1644,6 +1674,16 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         visual_response_metric,
         coincidence_example_top_n,
     )
+    family_source_signature = analysis_cache_meta_hash({
+        "movie_expids": list(expids_by_mode.get("movie", [])),
+        "sleep_expids": list(expids_by_mode.get("sleep", [])),
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+    })
+    visual_family_cache_file = family_results_cache_path(analysis_results_cache_file, "visual_response")
+    visual_family_meta = dict(analysis_results_meta)
+    visual_family_meta["source_signature"] = family_source_signature
+    visual_family_meta["family_result_stage"] = "visual_response"
     pairwise_family_cache_file = family_results_cache_path(analysis_results_cache_file, "pairwise_correlation")
     pairwise_family_meta = {
         "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
@@ -1654,6 +1694,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "bouton_channel": int(config.get("bouton_channel", 0)),
         "pairwise_correlation_schema_version": 3,
         "family_result_stage": "pairwise_correlation",
+        "source_signature": family_source_signature,
+        "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
     }
     coincidence_family_cache_file = family_results_cache_path(analysis_results_cache_file, "coincidence")
     coincidence_family_meta = {
@@ -1666,6 +1708,8 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "event_detection_method": str(event_detection_method),
         "coincidence_family_schema_version": 1,
         "family_result_stage": "coincidence",
+        "source_signature": family_source_signature,
+        "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
     }
     pairwise_family_cache: Dict[str, Any] | None = None
     pairwise_family_rows: Dict[str, List[Dict[str, Any]]] | None = None
@@ -2095,16 +2139,56 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     lag_rows = _normalize_scoped_unit_ids(lag_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     visual_response_rows = _normalize_scoped_unit_ids(visual_response_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     visual_response_rows = apply_visual_response_fdr(visual_response_rows)
+    staged_classification = load_classification_records(config.get("classification_cache_path"))
+    if staged_classification:
+        visual_response_rows = apply_cached_visual_classification(visual_response_rows, staged_classification)
 
-    coincidence_family_results = run_coincidence_family(coincidence_rows)
-    coincidence_summary_rows = list(coincidence_family_results.get("summary_rows", []))
-
-    visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
-    visual_response_family = run_visual_response_family(
-        visual_response_rows,
-        cohort=visual_response_cohort,
-        response_metric=visual_response_metric,
+    visual_scope_signatures = _family_scope_signatures(visual_response_rows)
+    coincidence_scope_signatures = _family_scope_signatures(coincidence_rows)
+    visual_family_meta["scope_signatures"] = visual_scope_signatures
+    coincidence_family_meta["scope_signatures"] = coincidence_scope_signatures
+    visual_family_cache = None
+    visual_reusable_rows = load_reusable_family_scope_rows(
+        analysis_results_cache_file, "visual_response", visual_scope_signatures,
+        rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
     )
+    if not bool(config.get("rebuild")):
+        visual_family_cache, visual_family_status = load_family_results_cache(
+            visual_family_cache_file,
+            expected_meta=visual_family_meta,
+            rebuild=bool(config.get("analysis_results_rebuild")),
+        )
+    if isinstance(visual_family_cache, dict) and isinstance(visual_family_cache.get("analysis_results"), dict):
+        visual_response_family = dict(visual_family_cache["analysis_results"])
+        visual_response_day_rows = list(visual_response_family.get("day_rows", []))
+        visual_response_rows = list(visual_response_family.get("rows", visual_response_rows))
+    else:
+        visual_response_rows = _merge_reusable_family_rows(visual_response_rows, visual_reusable_rows)
+        visual_response_day_rows = shared_visual_response_day_rows(visual_response_rows)
+        visual_response_family = run_visual_response_family(
+            visual_response_rows,
+            cohort=visual_response_cohort,
+            response_metric=visual_response_metric,
+        )
+        visual_response_family["day_rows"] = visual_response_day_rows
+
+    coincidence_family_cache, coincidence_family_status = (None, "not_checked")
+    coincidence_reusable_rows = load_reusable_family_scope_rows(
+        analysis_results_cache_file, "coincidence", coincidence_scope_signatures,
+        rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+    )
+    if not bool(config.get("rebuild")):
+        coincidence_family_cache, coincidence_family_status = load_family_results_cache(
+            coincidence_family_cache_file,
+            expected_meta=coincidence_family_meta,
+            rebuild=bool(config.get("analysis_results_rebuild")),
+        )
+    if isinstance(coincidence_family_cache, dict) and isinstance(coincidence_family_cache.get("analysis_results"), dict):
+        coincidence_family_results = dict(coincidence_family_cache["analysis_results"])
+    else:
+        coincidence_rows = _merge_reusable_family_rows(coincidence_rows, coincidence_reusable_rows)
+        coincidence_family_results = run_coincidence_family(coincidence_rows)
+    coincidence_summary_rows = list(coincidence_family_results.get("summary_rows", []))
 
     movie_activity_rows = [row for row in activity_rows if str(row.get("mode") or "") == "movie"]
     sleep_activity_rows = [row for row in activity_rows if str(row.get("mode") or "") == "sleep"]
@@ -2146,12 +2230,20 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     bouton_pairwise_summary = pairwise_correlation_summary_rows(bouton_pairwise_rows)
     lag_summary = lag_summary_rows(lag_rows)
     coincidence_counts = dict(coincidence_family_results.get("counts", {}))
-    save_family_results_cache(
-        analysis_results_cache_file,
-        "coincidence",
-        coincidence_family_results,
-        base_meta=coincidence_family_meta,
-    )
+    if coincidence_family_cache is None:
+        save_family_results_cache(
+            analysis_results_cache_file,
+            "coincidence",
+            coincidence_family_results,
+            base_meta=coincidence_family_meta,
+        )
+    if visual_family_cache is None:
+        save_family_results_cache(
+            analysis_results_cache_file,
+            "visual_response",
+            visual_response_family,
+            base_meta=visual_family_meta,
+        )
     if pairwise_family_rows is None:
         save_family_results_cache(
             analysis_results_cache_file,
@@ -3091,7 +3183,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 if not rows:
                     return []
                 if branch_name in SPLIT_BRANCHES and not roi_split_membership_rows:
-                    raise ValueError(f"{branch_name}/{basis_name} has no split membership rows")
+                    return []
                 if not roi_split_membership_rows:
                     return [dict(row) for row in rows]
                 scoped_rows = []
@@ -3229,12 +3321,14 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                             max_trace_points=config.get("visual_response_entity_max_trace_points"),
                         )
                         if bool(config.get("generate_visual_response_entity_figures", True)):
+
                             render_visual_response_entity_figures(
                             cohort_rows,
                             cohort_dir / "entities",
                             cohort_label=cohort,
                             kind=compartment,
                             max_trace_points=config.get("visual_response_entity_max_trace_points"),
+                            max_figures=config.get("visual_response_entity_max_figures"),
                         )
 
             if branch_first_mixed_model_results:
@@ -3726,7 +3820,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 def _main_impl(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Compare soma (ch2) and bouton (ch1) activity across movie and sleep states.")
-    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline_config.json"))
+    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("pipeline_config.json"))
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding outputs even if caches exist.")
     parser.add_argument("--plots-only", action="store_true", help="Skip metric recomputation and regenerate plots from written CSVs only.")
     parser.add_argument("--figures-only", action="store_true", help="Regenerate only figures from the new-layout analysis caches.")
@@ -3778,7 +3872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         index = args_list.index("--config")
         if index + 1 < len(args_list):
             config_path = Path(args_list[index + 1])
-    config_path = config_path or Path(__file__).with_name("soma_bouton_pipeline_config.json")
+    config_path = config_path or Path(__file__).with_name("pipeline_config.json")
     file_config = load_config(config_path)
     preset_names = _preset_selection_names(file_config.get("comparison_preset_names"))
     repo_root = resolve_repo_root(Path(__file__))

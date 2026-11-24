@@ -48,7 +48,7 @@ class PCAConfig:
     metric: str = "dF"
     thread_limit: int = 1
     auto_discover_expids: bool = True
-    source_configs: Sequence[str] = ("analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json", "analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json")
+    source_configs: Sequence[str] = ("analysis/soma_bouton_pipeline/pipeline_config.json", "analysis/dendrites_pipeline/pipeline_config.json")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any], repo_root: Path) -> "PCAConfig":
@@ -74,8 +74,25 @@ class PCAConfig:
             metric=str(value.get("metric", "dF")),
             thread_limit=max(1, int(value.get("thread_limit", 1))),
             auto_discover_expids=bool(value.get("auto_discover_expids", True)),
-            source_configs=tuple(value.get("source_configs", ("analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json", "analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json"))),
+            source_configs=tuple(value.get("source_configs", ("analysis/soma_bouton_pipeline/pipeline_config.json", "analysis/dendrites_pipeline/pipeline_config.json"))),
         )
+
+
+def _load_source_config(path: Path):
+    with path.open() as handle:
+        source = json.load(handle)
+    lists_file = (source.get("inputs") or {}).get("expids_file")
+    if lists_file:
+        lists_path = Path(str(lists_file))
+        if not lists_path.is_absolute():
+            lists_path = path.parent / lists_path
+        if lists_path.exists():
+            with lists_path.open() as handle:
+                external = json.load(handle)
+            for key in ("movie_expids", "sleep_expids", "basal_expids", "apical_expids"):
+                if key in external:
+                    source[key] = external[key]
+    return source
 
 
 def _source_type_for_expid(expid: str, config: PCAConfig, repo_root: Path) -> str:
@@ -87,12 +104,11 @@ def _source_type_for_expid(expid: str, config: PCAConfig, repo_root: Path) -> st
         if not path.exists():
             continue
         try:
-            with path.open() as handle:
-                source = json.load(handle)
+            source = _load_source_config(path)
         except (OSError, json.JSONDecodeError):
             continue
         if expid in source.get("movie_expids", []) or expid in source.get("sleep_expids", []):
-            matches.append("soma/bouton" if "soma_bouton" in path.name else "dendrite/spine")
+            matches.append("soma/bouton" if "soma_bouton" in path.parts else "dendrite/spine")
     return " and ".join(dict.fromkeys(matches)) or "unknown"
 
 
@@ -108,8 +124,7 @@ def discover_expids(config: PCAConfig, repo_root: Path) -> Tuple[Tuple[str, ...]
             LOGGER.warning("Configured source config does not exist: %s", path)
             continue
         try:
-            with path.open() as handle:
-                source = json.load(handle)
+            source = _load_source_config(path)
         except (OSError, json.JSONDecodeError) as exc:
             LOGGER.warning("Could not read source config %s: %s", path, exc)
             continue
@@ -117,7 +132,7 @@ def discover_expids(config: PCAConfig, repo_root: Path) -> Tuple[Tuple[str, ...]
         source_sleeps = [str(item) for item in source.get("sleep_expids", []) if str(item).strip()]
         movies.extend(source_movies)
         sleeps.extend(source_sleeps)
-        source_label = "soma/bouton" if "soma_bouton" in path.name else "dendrite/spine"
+        source_label = "soma/bouton" if "soma_bouton" in path.parts else "dendrite/spine"
         LOGGER.info("Found %d movie and %d sleep expIDs from %s config", len(source_movies), len(source_sleeps), source_label)
     return tuple(dict.fromkeys(movies)), tuple(dict.fromkeys(sleeps))
 

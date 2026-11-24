@@ -8,6 +8,9 @@ import numpy as np
 
 from analysis.shared.analysis_families.registry import analysis_families_to_text as _shared_analysis_families_to_text
 from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
+from analysis.shared.classification_cache import load_classification_records
+from analysis.shared.classification_summary import apply_summary
+from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache
 from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch, validate_correlation_settings
 from analysis.shared.analysis_families.core import make_global_roi_id
 from analysis.shared.statistics import apply_bh_fdr_rows
@@ -149,6 +152,10 @@ def prepare_visual_response_cohorts(
     generate_visual_response_entity_figures: bool = True,
 ) -> Dict[str, Any]:
     dendrite_visual_response = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
+    classification_path = cache.get("config", {}).get("classification_cache_path") if isinstance(cache.get("config", {}), dict) else None
+    staged_classification = load_classification_records(classification_path)
+    if staged_classification:
+        dendrite_visual_response = apply_summary(dendrite_visual_response, staged_classification)
     step_message(f"visual response dendrites: {_visual_response_count_text(dendrite_visual_response)}")
     dendrite_visual_response_state_summaries = build_visual_response_dendrite_summary_results(
         cache,
@@ -156,6 +163,8 @@ def prepare_visual_response_cohorts(
         dendrite_visual_response,
     )
     spine_visual_response = classify_visual_responsive_spines(cache, source_cache=source_cache)
+    if staged_classification:
+        spine_visual_response = apply_summary(spine_visual_response, staged_classification)
     step_message(f"visual response spines: {_visual_response_count_text(spine_visual_response)}")
     spine_visual_response_state_summaries = build_visual_response_spine_state_summary_results(
         cache,
@@ -379,11 +388,13 @@ def run_direct_trial_type_family(
     shuffle_n: int,
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_table_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> None:
     roi_split = results.get("roi_split", {})
     split_membership_rows = roi_split.get("membership_rows", []) if isinstance(roi_split, dict) else []
     with step_scope("direct trial-type comparison"):
-        direct_trial_type_results = run_direct_trial_type_comparison(cache, state_comparison_states, shuffle_n, split_membership_rows)
+        direct_trial_type_results = run_direct_trial_type_comparison(cache, state_comparison_states, shuffle_n, split_membership_rows, scope_keys=scope_keys, reused_table_rows=reused_table_rows)
     results["direct_trial_type_comparison"] = direct_trial_type_results
     results["alerts"].extend(direct_trial_type_results.get("alerts", []))
     if output_dir is not None:
@@ -467,6 +478,8 @@ def run_spine_coactivity_family_block(
     spine_coactivity_abs_threshold: float,
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_table_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> None:
     with step_scope("spine coactivity analysis"):
         spine_coactivity_results = run_spine_coactivity_analysis(
@@ -478,6 +491,8 @@ def run_spine_coactivity_family_block(
             fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model,
             mixed_model_contrast_p_source=mixed_model_contrast_p_source,
             spine_coactivity_abs_threshold=spine_coactivity_abs_threshold,
+            scope_keys=scope_keys,
+            reused_table_rows=reused_table_rows,
         )
     results["spine_coactivity"] = {k: v for k, v in spine_coactivity_results.items() if k != "model"}
     results["spine_coactivity_model"] = {
@@ -507,9 +522,11 @@ def run_correlation_family(
     shared_shuffle_cache: Optional[Dict[str, Any]],
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
+    scope_keys: Optional[Sequence[str]] = None,
 ) -> None:
     experiments = cache.get("experiments", {})
     animals = cache.get("animals", {})
+    allowed_scopes = {str(value) for value in (scope_keys or [])}
     analysis_unit = str(cache.get("analysis_unit", "day"))
     correlation_config = cache.get("config", {}) if isinstance(cache.get("config", {}), dict) else {}
     correlation_method, correlation_inference = validate_correlation_settings(
@@ -525,6 +542,8 @@ def run_correlation_family(
         for dendrite_id, dendrite_record in animal_entry["dendrites"].items():
             for exp_id, d_obs in dendrite_record["observations"].items():
                 exp_id = str(d_obs.get("exp_id") or exp_id)
+                if allowed_scopes and f'{exp_id}|{exp_id}' not in allowed_scopes and f'{exp_id}|{experiments.get(exp_id, {}).get("date") or exp_id}' not in allowed_scopes:
+                    continue
                 exp_meta = experiments[exp_id]
                 wheel = exp_meta["wheel"]
                 pupil = exp_meta["pupil"]
@@ -594,7 +613,7 @@ def run_correlation_family(
             shuffle_seed=correlation_seed,
             min_shift_frames=correlation_min_shift,
             max_batch_size=correlation_batch_size,
-            null_model="full_trace",
+            null_model=str((shared_shuffle_cache or {}).get("null_model", "mask_aware")),
         )
         for index, (task, correlation) in enumerate(zip(tasks, correlations), start=1):
             step_progress(index, len(tasks), label=f"{task['analysis']}:{task['metadata']['global_dendrite_id']}")
@@ -612,8 +631,10 @@ def run_matrix_similarity_family(
     shuffle_n: int,
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
+    scope_keys: Optional[Sequence[str]] = None,
 ) -> None:
     experiments = cache.get("experiments", {})
+    allowed_scopes = {str(value) for value in (scope_keys or [])}
     animals = cache.get("animals", {})
     matrix_observations: List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]] = []
     for animal_id, animal_entry in animals.items():
@@ -624,6 +645,8 @@ def run_matrix_similarity_family(
         for idx, (animal_id, dendrite_id, dendrite_record, d_obs) in enumerate(matrix_observations, start=1):
             step_progress(idx, len(matrix_observations), label=str(dendrite_id))
             exp_id = str(d_obs.get("exp_id") or "")
+            if allowed_scopes and f'{exp_id}|{exp_id}' not in allowed_scopes and f'{exp_id}|{experiments.get(exp_id, {}).get("date") or exp_id}' not in allowed_scopes:
+                continue
             exp_meta = experiments[exp_id]
             if len(d_obs["spine_ids"]) < 2:
                 continue
@@ -649,6 +672,28 @@ def run_matrix_similarity_family(
     if output_dir is not None:
         with step_scope("figure generation: matrix_similarity"):
             render_analysis_family_figures(output_dir, results, cache, "matrix_similarity", figure_root=figure_root)
+
+
+
+def _reuse_family_cache(results: Dict[str, Any], family: str, cache_path: Optional[Path], analysis_results_meta: Optional[Dict[str, Any]]) -> bool:
+    if cache_path is None or analysis_results_meta is None:
+        return False
+    expected = dict(analysis_results_meta)
+    expected["family_result_stage"] = family
+    cached, status = load_family_results_cache(
+        family_results_cache_path(cache_path, family),
+        expected_meta=expected,
+        rebuild=False,
+    )
+    if status != "ok" or not isinstance(cached, dict):
+        return False
+    payload = cached.get("analysis_results")
+    if not isinstance(payload, dict):
+        return False
+    results.update(payload)
+    results.setdefault("cache_summary", {})[f"{family}_family_cache_reused"] = True
+    return True
+
 
 
 def run_cached_analysis(
@@ -682,7 +727,7 @@ def run_cached_analysis(
     if output_dir is not None:
         cleanup_stale_state_coverage_artifacts(output_dir)
 
-    if _needs_visual_response_cohorts(selected_families):
+    if _needs_visual_response_cohorts(selected_families) and not _reuse_family_cache(results, "visual_response", cache_path, analysis_results_meta):
         # Prepare visual-response cohorts before family dispatch so downstream analyses can reuse
         # all/responsive/nonresponsive splits.
         with step_scope("visual response cohorts"):
@@ -709,7 +754,7 @@ def run_cached_analysis(
                 continue
 
             step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
-    if "state" in selected_families:
+    if "state" in selected_families and not _reuse_family_cache(results, "state", cache_path, analysis_results_meta):
         run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
             with step_scope("save family cache: state"):
@@ -724,24 +769,42 @@ def run_cached_analysis(
             )
             results["alerts"].extend(results["state_transitions"].get("alerts", []))
 
-    if "mixed_model" in selected_families:
+    if "mixed_model" in selected_families and not _reuse_family_cache(results, "mixed_model", cache_path, analysis_results_meta):
         run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "mixed_model", results, base_meta=analysis_results_meta)
-    if "direct_trial_type_comparison" in selected_families:
-        run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+    if "direct_trial_type_comparison" in selected_families and not _reuse_family_cache(results, "direct_trial_type_comparison", cache_path, analysis_results_meta):
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        reusable = load_reusable_family_scope_rows(cache_path, "direct_trial_type_comparison", scope_signatures, table_name="direct_trial_type_comparison.table_rows") if cache_path is not None else {}
+        reused_rows = [row for rows in reusable.values() for row in rows]
+        changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "direct_trial_type_comparison", results, base_meta=analysis_results_meta)
-    if "spine_coactivity" in selected_families:
-        run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root)
+    if "spine_coactivity" in selected_families and not _reuse_family_cache(results, "spine_coactivity", cache_path, analysis_results_meta):
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        reusable = load_reusable_family_scope_rows(cache_path, "spine_coactivity", scope_signatures, table_name="spine_coactivity.table_rows") if cache_path is not None else {}
+        reused_rows = [row for rows in reusable.values() for row in rows]
+        changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "spine_coactivity", results, base_meta=analysis_results_meta)
-    if "correlation" in selected_families:
-        run_correlation_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, output_dir=output_dir, figure_root=figure_root)
+    if "correlation" in selected_families and not _reuse_family_cache(results, "correlation", cache_path, analysis_results_meta):
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        reusable = load_reusable_family_scope_rows(cache_path, "correlation", scope_signatures) if cache_path is not None else {}
+        if reusable:
+            results["correlations"] = [row for rows in reusable.values() for row in rows]
+        changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        run_correlation_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "correlation", results, base_meta=analysis_results_meta)
-    if "matrix_similarity" in selected_families:
-        run_matrix_similarity_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+    if "matrix_similarity" in selected_families and not _reuse_family_cache(results, "matrix_similarity", cache_path, analysis_results_meta):
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        reusable = load_reusable_family_scope_rows(cache_path, "matrix_similarity", scope_signatures) if cache_path is not None else {}
+        if reusable:
+            results["matrix_similarity"] = [row for rows in reusable.values() for row in rows]
+        changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        run_matrix_similarity_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "matrix_similarity", results, base_meta=analysis_results_meta)
     if source_cache is not None:

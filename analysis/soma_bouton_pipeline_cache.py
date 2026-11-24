@@ -681,7 +681,7 @@ def run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Cache-enabled soma/bouton analysis pipeline.")
-    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline") / "soma_bouton_pipeline_config.json")
+    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("soma_bouton_pipeline") / "pipeline_config.json")
     parser.add_argument("--rebuild", action="store_true", help="Force rebuilding experiment and summary caches.")
     parser.add_argument("--plots-only", action="store_true", help="Load cached summaries or CSVs and only regenerate figures.")
     parser.add_argument(

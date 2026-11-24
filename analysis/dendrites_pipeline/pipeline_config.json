@@ -1,0 +1,97 @@
+{
+  "_comment": "Staged pipeline configuration. Edit experiments.json for experiment membership; edit this file for processing, cache, analysis, or plotting behavior.",
+  "_field_help": {
+    "pipeline.name": "Pipeline identifier used by the staged runner.",
+    "pipeline.user_id": "Lab user folder used to resolve experiment data.",
+    "pipeline.repo_base": "Root directory containing the raw experiment repository.",
+    "inputs.expids_file": "JSON file containing the experiment ID lists for this pipeline.",
+    "paths.output_root": "Root directory for pipeline outputs.",
+    "paths.cache_root": "Root directory for all staged cache layers.",
+    "paths.figure_root": "Root directory for generated figures.",
+    "source.channel": "Suite2p channel used for dendrite and spine traces.",
+    "source.soma_channel": "Suite2p channel used for soma traces.",
+    "source.bouton_channel": "Suite2p channel used for bouton traces.",
+    "processing.event_detection_method": "Calcium-event detector used to calculate event activity and frequency.",
+    "processing.state_mode": "State-selection mode used for movie and sleep comparisons.",
+    "processing.movie_trial_types": "Movie trial types included in the state comparison input.",
+    "classification.visual_response_metric": "Metric used by the initial ROI visual-response classification.",
+    "classification.preferred_state.enabled": "Enable preferred-state classification, including ties when multiple states are equally active.",
+    "classification.activity_split.enabled": "Enable activity-based ROI split classification.",
+    "classification.frequency_split.enabled": "Enable event-frequency ROI split classification.",
+    "shuffle.enabled": "Enable shared shuffled/null-model calculations.",
+    "shuffle.null_model": "Null model used for shuffled data.",
+    "shuffle.shuffle_n": "Number of shuffle iterations.",
+    "shuffle.seed": "Deterministic random seed for shuffling.",
+    "analysis.families": "Analysis-family names to run after the initial analysis and ROI classification stages.",
+    "cache.mode": "Cache update policy; incremental mode reuses valid data and adds only new experiments.",
+    "cache.validate_source_signatures": "Validate raw-source signatures before reusing source-cache records.",
+    "cache.archive_removed_expids": "Keep removed experiment records in an archive instead of silently discarding them.",
+    "cache.workers": "Maximum number of cache-building workers.",
+    "plots.profile": "Plot profile controlling the generated figure families.",
+    "plots.plots_only": "Reuse cached outputs and regenerate plots without recomputing analysis tables.",
+    "initial_analysis.generate_general_figures": "Write the initial-analysis frequency, distribution, and overlap plots under the general figures directory.",
+    "initial_analysis.state_tie_absolute_tolerance": "Absolute tolerance used when deciding whether two states are tied for the preferred state.",
+    "initial_analysis.state_tie_relative_tolerance": "Relative tolerance used when deciding whether two states are tied for the preferred state."
+  },
+  "pipeline": {
+    "name": "dendrites",
+    "user_id": "rubencorreia",
+    "repo_base": "/home/rubencorreia/data/Repository"
+  },
+  "inputs": {
+    "expids_file": "experiments.json"
+  },
+  "paths": {
+    "output_root": "results/dendrites_pipeline",
+    "cache_root": "results/dendrites_pipeline/cache",
+    "figure_root": "results/dendrites_pipeline/figures"
+  },
+  "source": {
+    "channel": 0
+  },
+  "processing": {
+    "event_detection_method": "derivative",
+    "state_mode": "quiet",
+    "movie_trial_types": [
+      "blank",
+      "movies"
+    ]
+  },
+  "classification": {
+    "visual_response_metric": "mean",
+    "preferred_state": {
+      "enabled": true
+    },
+    "activity_split": {
+      "enabled": true
+    },
+    "frequency_split": {
+      "enabled": true
+    }
+  },
+  "shuffle": {
+    "enabled": true,
+    "null_model": "mask_aware",
+    "shuffle_n": 100,
+    "seed": 12345
+  },
+  "analysis": {
+    "families_file": "analysis_families.json"
+  },
+  "cache": {
+    "mode": "incremental",
+    "validate_source_signatures": true,
+    "archive_removed_expids": true,
+    "workers": 1
+  },
+  "plots": {
+    "profile": "full",
+    "plots_only": false,
+    "config_file": "plot_config.json"
+  },
+  "initial_analysis": {
+    "generate_general_figures": true,
+    "state_tie_absolute_tolerance": 0.0,
+    "state_tie_relative_tolerance": 0.01
+  }
+}

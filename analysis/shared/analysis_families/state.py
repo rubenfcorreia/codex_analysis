@@ -106,7 +106,7 @@ def _sleep_masks_for_context(ctx: ExperimentContext) -> Dict[str, np.ndarray]:
     if exp_time.size == 0:
         return {}
     sleep_state = ctx.state_bundle if isinstance(ctx.state_bundle, Mapping) else {}
-    masks, _ = build_state_masks_sleep(exp_time, dict(sleep_state), exp_root=ctx.exp_root)
+    masks, _ = build_state_masks_sleep(exp_time, dict(sleep_state), exp_root=getattr(ctx, "exp_root", None))
     return masks
 
 

@@ -39,12 +39,12 @@ Deprecated archive. See the current workflow in [../../dendrites_pipeline/README
 
 ## Config Files
 
-- `sleep_dendrite_spine_example_config.json`
+- `analysis/dendrites_pipeline/pipeline_config.json`
 - `sleep_dendrite_spine_custom_demo_spec.json`
 
 ## Example
 
 ```bash
 python3 /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_pipeline.py \
-  --config /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/sleep_dendrite_spine_example_config.json
+  --config /home/rubencorreia/code/codex_analysis/analysis/main_pipeline/analysis/dendrites_pipeline/pipeline_config.json
 ```

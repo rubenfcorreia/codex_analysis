@@ -56,6 +56,8 @@ from analysis.shared.pipeline_logging import (
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
 from analysis.shared.cache_utils import METHODOLOGY_VERSION
+from analysis.cache_builders.incremental_shuffle import reuse_compatible_entries
+from analysis.shared.cache_config import normalize_staged_config
 from analysis.shared.shuffle_dataset import build_mask_aware_shuffle_dataset_once, build_shuffle_dataset_once, mask_aware_entry_key, validate_shuffle_preset_overrides
 from analysis.shared.analysis_families.core import make_global_roi_id
 from analysis.shared.analysis_families.common_helpers import build_state_masks_movie as shared_build_state_masks_movie
@@ -10429,7 +10431,7 @@ def load_or_build_shared_shuffle_cache(
     existing = None
     if shuffle_path is not None and shuffle_path.exists() and not rebuild:
         existing = load_shared_shuffle_cache(shuffle_path)
-    target = build_shared_shuffle_cache(cache, shuffle_n, state_labels=state_labels)
+    target = reuse_compatible_entries(existing, build_shared_shuffle_cache(cache, shuffle_n, state_labels=state_labels))
     if existing and existing.get("signature") == target["signature"] and int(existing.get("shuffle_n", -1)) == int(shuffle_n):
         return existing, shuffle_path, False
     step_message("rebuilding shared circular-shift cache")
@@ -17820,9 +17822,9 @@ def resolve_analysis_state_selections(
     return state_comparison_states, basal_apical_states, selection_meta
 def load_config_file(path: Optional[Path]) -> Dict[str, Any]:
     if path is None:
-        return {}
+        return normalize_staged_config({}, pipeline="dendrites")
     with path.open() as handle:
-        return json.load(handle)
+        return normalize_staged_config(json.load(handle), pipeline="dendrites", base_dir=path.parent)
 def merge_cli_config(cli: Dict[str, Any], file_config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(file_config)
     for key, value in cli.items():
@@ -18531,12 +18533,18 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
     from analysis_families.core import run_cached_analysis
     source_signature = source_cache_signature(source_cache)
     visual_response_cohort_metadata = visual_response_cohort_settings(config)
+    family_scope_signatures = {
+        "{}|{}".format(exp_id, exp_meta.get("date") or exp_id): str(exp_meta.get("source_signature") or "")
+        for exp_id, exp_meta in dict(source_cache.get("experiments", {})).items()
+        if isinstance(exp_meta, dict)
+    }
     analysis_results_meta = {
         "methodology_version": METHODOLOGY_VERSION,
         "analysis_unit": str(analysis_cache.get("analysis_unit", "day")),
         "analysis_cache_schema_version": ANALYSIS_CACHE_SCHEMA_VERSION,
         "source_config_hash": str(source_cache.get("config_hash", "")),
         "source_signature": source_signature,
+        "scope_signatures": family_scope_signatures,
         "analysis_config_hash": str(analysis_cache.get("config_hash", "")),
         "state_comparison_states": list(state_comparison_states or []),
         "basal_apical_states": list(basal_apical_states or []),
@@ -18550,6 +18558,7 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
         "compare_states": list(selection_meta.get("compare_states") or []) if selection_meta.get("compare_states") is not None else None,
         "mixed_model_contrast_p_source": mixed_model_contrast_p_source,
         "analysis_families": list(config.get("analysis_families") or []),
+        "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
         "shuffle_n": int(shuffle_n),
         "correlation_method": str(config.get("correlation_method", "pearson")),
         "correlation_inference": str(config.get("correlation_inference", "circular_shift")),
@@ -19025,7 +19034,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         index = args_list.index("--config")
         if index + 1 < len(args_list):
             config_path = Path(args_list[index + 1])
-    config_path = config_path or Path(__file__).with_name("sleep_dendrite_spine_example_config.json")
+    config_path = config_path or Path(__file__).with_name("pipeline_config.json")
     file_config = load_config_file(config_path) if config_path.exists() else {}
     preset_names = parse_list_argument(file_config.get("comparison_preset_names"))
     timer = RunTimer(

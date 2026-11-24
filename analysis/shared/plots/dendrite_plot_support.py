@@ -51,6 +51,7 @@ from analysis.shared.roi_split import annotate_rows_with_split_group, build_roi_
 from analysis.shared.plots.boxplots import plot_grouped_boxplot_series
 from analysis.shared.analysis_families.coincidence import annotate_spine_event_info as shared_annotate_spine_event_info
 from analysis.shared.analysis_families.splits import require_split_groups, scope_split_rows
+from analysis.shared.shared_calcium_response import visual_response_is_responsive
 from analysis.shared.analysis_families.shared_metrics import (
     DEFAULT_EVENT_DETECTION_METHOD,
     DEFAULT_VISUAL_RESPONSE_METRIC,
@@ -1418,6 +1419,7 @@ def _collect_visual_response_trial_rows(
     return rows
 
 
+
 def _movie_style_blank_vs_movies_summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     response_metric = get_active_visual_response_metric(rows[0].get("response_metric") if rows else None)
     visual_trial_labels: List[str] = []
@@ -1469,6 +1471,8 @@ def _movie_style_blank_vs_movies_summary(rows: Sequence[Dict[str, Any]]) -> Dict
         "stimulus_vs_blank": blank,
         "significant": bool(blank.get("significant", False)),
         "star": str(blank.get("star", "")),
+        "responsive": visual_response_is_responsive({"available": bool(visual_arr.size and blank_arr.size), "significant": blank.get("significant", False), "delta": delta}),
+        "cohort": "responsive" if visual_response_is_responsive({"available": bool(visual_arr.size and blank_arr.size), "significant": blank.get("significant", False), "delta": delta}) else "nonresponsive",
     }
 
 
@@ -1549,8 +1553,8 @@ def _classify_visual_response_rows(
                         "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
                         "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
                         "significant": bool(summary.get("significant", False)),
-                        "responsive": False,
-                        "cohort": "nonresponsive",
+                        "responsive": bool(summary.get("responsive", False)),
+                        "cohort": str(summary.get("cohort") or ("responsive" if summary.get("responsive", False) else "nonresponsive")),
                     }
                     rows.append(row)
                 continue
@@ -1585,8 +1589,8 @@ def _classify_visual_response_rows(
                 "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
                 "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
                 "significant": bool(summary.get("significant", False)),
-                "responsive": False,
-                "cohort": "nonresponsive",
+                "responsive": bool(summary.get("responsive", False)),
+                "cohort": str(summary.get("cohort") or ("responsive" if summary.get("responsive", False) else "nonresponsive")),
             }
             rows.append(row)
     by_compartment: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -1823,8 +1827,8 @@ def classify_visual_responsive_spines(
                         "raw_pvalue": float(summary.get("raw_pvalue", float("nan"))),
                         "adjusted_pvalue": float(summary.get("adjusted_pvalue", float("nan"))),
                         "significant": bool(summary.get("significant", False)),
-                        "responsive": False,
-                        "cohort": "nonresponsive",
+                        "responsive": bool(summary.get("responsive", False)),
+                        "cohort": str(summary.get("cohort") or ("responsive" if summary.get("responsive", False) else "nonresponsive")),
                     }
                 )
     by_compartment: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -10666,6 +10670,8 @@ def build_shared_shuffle_cache(
         animal_entry = animals[animal_id]
         for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
             for day_id, d_obs in sorted(dendrite_record.get("observations", {}).items()):
+                if allowed_scopes and f"{day_id}|{day_id}" not in allowed_scopes and f"{day_id}|{experiments.get(day_id, {}).get(date) or day_id}" not in allowed_scopes:
+                    continue
                 exp_meta = experiments.get(day_id)
                 if exp_meta is None:
                     continue
@@ -12234,8 +12240,10 @@ def build_spine_coactivity_table(
     state_labels: Sequence[str],
     shuffle_n: int,
     shared_shuffle_cache: Optional[Dict[str, Any]] = None,
+    scope_keys: Optional[Sequence[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     experiments = cache.get("experiments", {})
+    allowed_scopes = {str(value) for value in (scope_keys or [])}
     animals = cache.get("animals", {})
     rows: List[Dict[str, Any]] = []
     state_labels = [str(state) for state in state_labels if str(state)]
@@ -12741,6 +12749,8 @@ def run_spine_coactivity_analysis(
     fit_spine_coactivity_mixed_model: bool = False,
     mixed_model_contrast_p_source: str = "classical",
     spine_coactivity_abs_threshold: float = DEFAULT_SPINE_COACTIVITY_ABS_THRESHOLD,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_table_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     cache_config = cache.get("config", {})
     if not isinstance(cache_config, dict):
@@ -12774,7 +12784,9 @@ def run_spine_coactivity_analysis(
             with step_scope("spine coactivity summary assembly"):
                 summary = summarize_spine_coactivity_table(table_rows, analysis_states)
     else:
-        table_rows, table_checks = build_spine_coactivity_table(cache, analysis_states, shuffle_n, shared_shuffle_cache=shared_shuffle_cache)
+        built_rows, table_checks = build_spine_coactivity_table(cache, analysis_states, shuffle_n, shared_shuffle_cache=shared_shuffle_cache, scope_keys=scope_keys)
+        table_rows = [dict(row) for row in (reused_table_rows or [])] + list(built_rows)
+        apply_bh_fdr_rows(table_rows, p_key="shuffle_p")
         with step_scope("spine coactivity summary assembly"):
             summary = summarize_spine_coactivity_table(table_rows, analysis_states)
         store_cached_analysis_table(
@@ -13120,8 +13132,9 @@ def _direct_trial_type_trial_response(cut_arr: np.ndarray, roi_index: int, trial
     if trial_values.size == 0:
         return float("nan"), 0
     return float(np.nanmean(trial_values)), int(trial_values.size)
-def build_direct_trial_type_comparison_table(cache: Dict[str, Any], state_labels: Sequence[str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def build_direct_trial_type_comparison_table(cache: Dict[str, Any], state_labels: Sequence[str], scope_keys: Optional[Sequence[str]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     experiments = cache.get("experiments", {})
+    allowed_scopes = {str(value) for value in (scope_keys or [])}
     animals = cache.get("animals", {})
     movie_expids = set(parse_list_argument(cache.get("config", {}).get("movie_expids")))
     if not movie_expids:
@@ -13140,6 +13153,8 @@ def build_direct_trial_type_comparison_table(cache: Dict[str, Any], state_labels
         animal_entry = animals[animal_id]
         for global_dendrite_id, dendrite_record in sorted(animal_entry.get("dendrites", {}).items()):
             for exp_id, d_obs in sorted(dendrite_record.get("observations", {}).items()):
+                if allowed_scopes and f"{exp_id}|{exp_id}" not in allowed_scopes and f"{exp_id}|{experiments.get(exp_id, {}).get('date') or exp_id}" not in allowed_scopes:
+                    continue
                 if exp_id not in movie_expids:
                     continue
                 exp_meta = experiments.get(exp_id)
@@ -13533,6 +13548,8 @@ def run_direct_trial_type_comparison(
     state_comparison_states: Optional[Sequence[str]],
     shuffle_n: int,
     split_membership_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_table_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
     selection = cache.get("config", {}) if isinstance(cache.get("config", {}), dict) else {}
     selected_states = [str(state) for state in (state_comparison_states or []) if str(state) in MOVIE_STATE_LABELS]
@@ -13562,7 +13579,8 @@ def run_direct_trial_type_comparison(
         table_rows = list(cached_table.get("table_rows", []))
         table_checks = dict(cached_table.get("table_checks", {}))
     else:
-        table_rows, table_checks = build_direct_trial_type_comparison_table(cache, selected_states)
+        built_rows, table_checks = build_direct_trial_type_comparison_table(cache, selected_states, scope_keys=scope_keys)
+        table_rows = [dict(row) for row in (reused_table_rows or [])] + list(built_rows)
         store_cached_analysis_table(cache, "direct_trial_type_table", table_rows, table_checks, meta=table_meta)
     split_group_order: List[str | None] = []
     if split_membership_rows:

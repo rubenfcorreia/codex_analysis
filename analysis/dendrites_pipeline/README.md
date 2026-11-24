@@ -75,7 +75,7 @@ Dendrite outputs are written under the poster-ready paired_state_summary/ direct
 
 ## Config Files
 
-- `sleep_dendrite_spine_example_config.json`
+- `pipeline_config.json`
 - `sleep_dendrite_spine_custom_demo_spec.json`
 
 Correlation settings are explicit in the example and poster-ready configs:
@@ -97,7 +97,7 @@ Correlation and coactivity outputs retain classical p-values only as diagnostics
 
 ```bash
 python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
-  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json
+  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/pipeline_config.json
 ```
 
 ## Synthetic demos

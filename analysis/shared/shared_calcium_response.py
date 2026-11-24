@@ -292,6 +292,16 @@ def visual_response_trial_rows(
     return rows
 
 
+def visual_response_is_responsive(summary: Mapping[str, Any]) -> bool:
+    """Return the canonical positive, significant visual-response decision."""
+    try:
+        delta = float(summary.get("delta"))
+    except (TypeError, ValueError):
+        return False
+    return bool(summary.get("available", False) and summary.get("significant", False) and np.isfinite(delta) and delta > 0)
+
+
+
 def summarize_visual_response_trials(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     response_metric = get_active_visual_response_metric(rows[0].get("response_metric") if rows else None)
     visual_trial_labels: List[str] = []
@@ -321,7 +331,7 @@ def summarize_visual_response_trials(rows: Sequence[Mapping[str, Any]]) -> Dict[
     if blank.get("available"):
         blank["correction_method"] = "none_single_comparison"
         blank["adjusted_pvalue"] = float(blank.get("raw_pvalue", float("nan")))
-    responsive = bool(blank.get("significant", False) and np.isfinite(delta) and float(delta) > 0)
+    responsive = visual_response_is_responsive({"available": bool(visual_arr.size and blank_arr.size), "significant": blank.get("significant", False), "delta": delta})
     return {
         "available": bool(visual_arr.size and blank_arr.size),
         "comparison": "visual_response_movie_vs_blank",

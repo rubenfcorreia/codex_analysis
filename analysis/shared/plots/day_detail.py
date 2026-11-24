@@ -76,7 +76,7 @@ if plt is not None:
     configure_poster_matplotlib()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = SCRIPT_DIR.parent / "sleep_dendrite_spine_example_config.json"
+DEFAULT_CONFIG_PATH = ROOT_DIR / "analysis" / "dendrites_pipeline" / "pipeline_config.json"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "results" / "dendrites_pipeline"
 DEFAULT_CACHE_PATH = DEFAULT_OUTPUT_DIR / "sleep_dendrite_spine_cache.npz"
 DEFAULT_FIGURE_PREFIX = "full_day_summary"

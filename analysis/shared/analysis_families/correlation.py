@@ -415,7 +415,7 @@ def correlation_analysis_for_batch(
             b_stack = np.stack([item["b"] for item in chunk], axis=0)
             null_values: List[List[float]] = [[] for _ in chunk]
             block_size = max(1, int(shift_block_size))
-            if configured_null_model == "mask_aware" and mask_dataset is not None and all(item.get("signal_a_key") and item.get("signal_b_key") for item in chunk):
+            if configured_null_model == "mask_aware" and mask_dataset is not None and all(item.get("signal_a_key") and item.get("signal_b_key") and item.get("signal_masks") and item["signal_masks"][1] is not None for item in chunk):
                 loaded_signal_arrays = {}
                 def _load_mask_signal(signal_key, signal_mask):
                     key = signal_key[0] if isinstance(signal_key, (tuple, list)) else signal_key

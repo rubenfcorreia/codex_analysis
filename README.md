@@ -32,8 +32,8 @@ Outputs are written under each poster-ready entity's paired_state_summary/ direc
 | File | Purpose |
 | --- | --- |
 | [analysis/dendrites_pipeline/README.md](analysis/dendrites_pipeline/README.md) | Main dendrite/spine pipeline entrypoint and workflow notes. |
-| `analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json` | Example config for the main pipeline. |
+| `analysis/dendrites_pipeline/pipeline_config.json` | Example config for the main pipeline. |
 | `analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json` | Demo recipe for the main pipeline. |
 | [analysis/soma_bouton_pipeline/README.md](analysis/soma_bouton_pipeline/README.md) | Soma/bouton analysis entrypoint, shared preset flow, coincidence outputs, and ROI split comparisons. |
-| `analysis/soma_bouton_pipeline/soma_bouton_pipeline_config.json` | Example config for the soma/bouton pipeline. |
+| `analysis/soma_bouton_pipeline/pipeline_config.json` | Example config for the soma/bouton pipeline. |
 | `analysis/sleep_state_across_days/sleep_state_across_days_config.json` | Example config for the sleep-state workflow. |

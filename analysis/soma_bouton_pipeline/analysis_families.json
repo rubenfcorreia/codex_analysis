@@ -1,0 +1,53 @@
+{
+  "_comment": "Enabled analysis families and family-specific execution settings.",
+  "families": {
+    "state": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    },
+    "mixed_model": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    },
+    "calcium_events": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    },
+    "visual_response": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    },
+    "coincidence": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    }
+  },
+  "_field_help": {
+    "families.<name>.enabled": "Whether this analysis family runs.",
+    "families.<name>.cache": "Whether family-specific derived data is cached.",
+    "families.<name>.results": "Whether family result tables are written.",
+    "families.<name>.plots": "Whether family plots are generated.",
+    "families.<name>.scope": "The smallest independent cache scope for feature generation.",
+    "families.<name>.aggregate": "How cached scope features are combined for final results."
+  }
+}

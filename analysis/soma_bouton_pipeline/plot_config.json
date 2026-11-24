@@ -1,0 +1,5 @@
+{
+  "_comment": "Plot-only controls. These settings do not invalidate data or analysis caches.",
+  "profile": "full",
+  "plots_only": true
+}

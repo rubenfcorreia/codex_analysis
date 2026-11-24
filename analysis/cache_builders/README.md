@@ -1,0 +1,30 @@
+# Staged cache workflow
+
+The staged runners use the following dependency order:
+
+```text
+source -> processed -> initial_analysis -> classification -> analysis -> results
+```
+
+Run a complete analysis pass with:
+
+```bash
+/home/rubencorreia/miniconda3/envs/sci/bin/python3 -m analysis.cache_builders.run_pipeline \
+  --pipeline dendrites \
+  --config analysis/dendrites_pipeline/pipeline_config.json
+```
+
+Use `soma_bouton` and `analysis/soma_bouton_pipeline/pipeline_config.json` for the soma/bouton pipeline. Experiment membership is edited only in the sibling `experiments.json` file.
+
+Valid caches are reused automatically. To force a stage rebuild, add its name to `cache.rebuild_stages`; to force selected source experiments, add their IDs to `cache.rebuild_expids`. Downstream stages are rebuilt when an upstream signature changes.
+
+Regenerate figures from an existing results cache with:
+
+```bash
+/home/rubencorreia/miniconda3/envs/sci/bin/python3 -m analysis.cache_builders.run_pipeline_stage \
+  --pipeline dendrites \
+  --stage results \
+  --config analysis/dendrites_pipeline/pipeline_config.json
+```
+
+The initial-analysis stage writes general plots, including preferred-state, visual-response, activity/frequency, and overlap summaries. Missing visual-response measurements remain explicitly classified as `unknown`.

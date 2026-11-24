@@ -242,6 +242,7 @@ def render_visual_response_entity_figures(
     kind: str = "soma",
     batch_size: int = 32,
     max_trace_points: Optional[int] = None,
+    max_figures: Optional[int] = None,
 ) -> List[str]:
     deduped_rows: List[Mapping[str, Any]] = []
     seen_entities: set[str] = set()
@@ -254,6 +255,11 @@ def render_visual_response_entity_figures(
         seen_entities.add(entity_id)
         deduped_rows.append(row)
     saved: List[str] = []
+    limit = None if max_figures is None else max(0, int(max_figures))
+    if limit == 0:
+        return saved
+    if limit is not None:
+        deduped_rows = deduped_rows[:limit]
     safe_batch_size = max(1, int(batch_size))
     for batch_start in range(0, len(deduped_rows), safe_batch_size):
         batch = deduped_rows[batch_start : batch_start + safe_batch_size]
@@ -280,6 +286,7 @@ def plot_visual_response_boxplot_figure(
     title: str,
     cohort_label: str = "all",
     kind: str = "dendrites",
+    max_trace_points: Optional[int] = None,
 ) -> Optional[str]:
     rows = response_summary.get("rows", []) if isinstance(response_summary, Mapping) else []
     values = []

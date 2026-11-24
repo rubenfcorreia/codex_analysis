@@ -222,7 +222,98 @@ def save_family_results_cache(
     }
     path = family_results_cache_path(cache_path, stage)
     save_npz_cache(path, payload)
+    index_path = path.parent / "family_index.json"
+    try:
+        index = json.loads(index_path.read_text()) if index_path.exists() else {}
+    except Exception:
+        index = {}
+    family_entry = {
+        "path": str(path),
+        "family": str(stage),
+        "signature": analysis_cache_meta_hash(family_meta),
+        "source_signature": str(family_meta.get("source_signature", "")),
+        "analysis_families": list(family_meta.get("analysis_families") or [stage]),
+        "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
+    }
+    unit_root = path.parent / str(stage) / "records"
+    unit_artifacts = {}
+    scope_signatures = dict(family_meta.get("scope_signatures") or {})
+    def iter_list_tables(value: Any, prefix: str = ""):
+        if isinstance(value, list):
+            yield prefix or "rows", value
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_prefix = f"{prefix}.{key}" if prefix else str(key)
+                yield from iter_list_tables(child, child_prefix)
+
+    for table_name, table_rows in iter_list_tables(results):
+        grouped = {}
+        for row in table_rows:
+            if not isinstance(row, dict):
+                continue
+            expid = row.get("expid") or row.get("exp_id")
+            day_id = row.get("day_id") or row.get("date") or expid
+            if expid is None:
+                continue
+            scope_key = f"{expid}|{day_id}|{table_name}"
+            grouped.setdefault(scope_key, []).append(dict(row))
+        for scope_key, rows in grouped.items():
+            base_scope_key = "|".join(scope_key.split("|")[:2])
+            unit_signature = analysis_cache_meta_hash({"family": stage, "scope_key": scope_key, "scope_signature": scope_signatures.get(base_scope_key, ""), "family_meta": {key: value for key, value in family_meta.items() if key not in {"source_signature", "scope_signatures"}}, "rows": rows})
+            unit_path = unit_root / f"{analysis_cache_meta_hash(scope_key)}.npz"
+            save_npz_cache(unit_path, {"schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION, "family": stage, "scope_key": scope_key, "scope_signature": scope_signatures.get(base_scope_key, ""), "table_name": table_name, "rows": rows, "signature": unit_signature})
+            unit_artifacts[scope_key] = {"path": str(unit_path), "signature": unit_signature, "scope_signature": scope_signatures.get(base_scope_key, ""), "scope_key": scope_key, "table_name": table_name, "row_count": len(rows)}
+    family_entry["unit_artifacts"] = unit_artifacts
+    index[str(stage)] = family_entry
+    ensure_dir(index_path.parent)
+    index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     return path
+
+
+def load_reusable_family_scope_rows(
+    path: Path,
+    stage: str,
+    scope_signatures: Mapping[str, str],
+    *,
+    table_name: Optional[str] = None,
+    rebuild: bool = False,
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Load list-valued family tables whose expID/day inputs are unchanged."""
+    if rebuild:
+        return {}
+    index_path = family_results_cache_path(path, stage).parent / "family_index.json"
+    try:
+        index = json.loads(index_path.read_text()) if index_path.exists() else {}
+    except Exception:
+        return {}
+    entry = index.get(str(stage))
+    if not isinstance(entry, dict):
+        return {}
+    reusable: Dict[str, list[Dict[str, Any]]] = {}
+    for artifact in dict(entry.get("unit_artifacts") or {}).values():
+        if not isinstance(artifact, dict):
+            continue
+        artifact_scope = str(artifact.get("scope_key") or "")
+        if table_name is not None and str(artifact.get("table_name") or "") != str(table_name):
+            continue
+        if not artifact_scope:
+            continue
+        base_scope = "|".join(artifact_scope.split("|")[:2])
+        if str(artifact.get("scope_signature", "")) != str(scope_signatures.get(base_scope, "")):
+            continue
+        artifact_path = Path(str(artifact.get("path", "")))
+        if not artifact_path.exists():
+            continue
+        try:
+            payload = load_npz_cache(artifact_path)
+        except Exception:
+            continue
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            continue
+        reusable.setdefault(base_scope, []).extend(dict(row) for row in rows if isinstance(row, dict))
+    return reusable
 
 
 def load_family_results_cache(
