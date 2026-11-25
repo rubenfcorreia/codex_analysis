@@ -12,6 +12,8 @@ Key points:
 - same-date experiments are grouped together as the same field of view/day
 - the state categories are shared with the spine/dendrite pipeline
 - the workflow keeps its caches under `results/soma_bouton_pipeline/`, and warm reruns reuse the pipeline-local analysis tables and grouped summaries instead of rebuilding them from scratch
+- Visual-response classification supports mean activity (the default) or calcium events; the selected metric is recorded in cache metadata.
+- The staged processed cache stores state-specific activity and event frequency for both soma and bouton ROIs, using the same state masks and event detector as the full analysis.
 - outputs are split into separate result divisions for activity, correlation,
   lag/offset analyses, coincidence, and ROI split comparisons
 - the lag scan evaluates bouton-vs-soma correlation within a `\u00b12 s`

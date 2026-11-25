@@ -71,6 +71,22 @@ def _heatmap(records: Sequence[Mapping[str, Any]], path: Path) -> None:
     fig.colorbar(image, ax=ax, label="Activity"); fig.tight_layout(); fig.savefig(path, dpi=160); plt.close(fig)
 
 
+def _frequency_heatmap(records: Sequence[Mapping[str, Any]], path: Path) -> None:
+    states = sorted({str(state) for row in records for state in (row.get("state_frequency") or {})})
+    if not states or not records:
+        return
+    values = np.full((len(records), len(states)), np.nan)
+    for i, row in enumerate(records):
+        for j, state in enumerate(states):
+            value = (row.get("state_frequency") or {}).get(state)
+            if value is not None:
+                values[i, j] = float(value)
+    fig, ax = plt.subplots(figsize=(7, max(4, min(12, len(records) * 0.18))))
+    image = ax.imshow(values, aspect="auto", interpolation="nearest", cmap="magma")
+    ax.set_xlabel("State"); ax.set_ylabel("ROI"); ax.set_xticks(range(len(states)), states, rotation=35, ha="right")
+    fig.colorbar(image, ax=ax, label="Event frequency / min"); fig.tight_layout(); fig.savefig(path, dpi=160); plt.close(fig)
+
+
 def write_initial_analysis_figures(records: Sequence[Mapping[str, Any]], output_dir: Path) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
@@ -83,4 +99,6 @@ def write_initial_analysis_figures(records: Sequence[Mapping[str, Any]], output_
     activity = output_dir / "activity_frequency_scatter.png"; _numeric_plot(records, activity); paths.append(str(activity))
     heatmap = output_dir / "state_activity_heatmap.png"; _heatmap(records, heatmap)
     if heatmap.exists(): paths.append(str(heatmap))
+    frequency_heatmap = output_dir / "state_frequency_heatmap.png"; _frequency_heatmap(records, frequency_heatmap)
+    if frequency_heatmap.exists(): paths.append(str(frequency_heatmap))
     return paths

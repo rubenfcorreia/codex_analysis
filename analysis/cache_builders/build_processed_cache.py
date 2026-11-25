@@ -67,11 +67,20 @@ def _soma_records(source: dict[str, Any], config: dict[str, Any], impl: Any, rep
         if not expid:
             continue
         ctx = impl.build_experiment_context(expid=expid, mode=mode, soma_channel=int(config.get("soma_channel", 1)), bouton_channel=int(config.get("bouton_channel", 0)), repo_root=repo_root)
+        state_rows = []
+        try:
+            state_rows = impl.activity_rows_for_context(ctx, [], state_masks=impl.state_masks_for_context(ctx, []))
+        except Exception:
+            state_rows = []
+        state_by_roi = {}
+        for state_row in state_rows:
+            key = (str(state_row.get("compartment") or ""), int(state_row.get("roi_index", -1)))
+            state_by_roi.setdefault(key, {})[str(state_row.get("state") or "all")] = state_row
         visual_by_index = {}
         if mode == "movie":
             for compartment, channel in (("soma", int(config.get("soma_channel", 1))), ("bouton", int(config.get("bouton_channel", 0)))):
                 try:
-                    visual_rows = impl._visual_response_entity_rows(ctx, compartment=compartment, channel=channel, response_metric=str(config.get("visual_response_metric", "calcium_events")), event_detection_method=str(config.get("event_detection_method", "derivative")), locomotion_threshold=config.get("locomotion_threshold"))
+                    visual_rows = impl._visual_response_entity_rows(ctx, compartment=compartment, channel=channel, response_metric=str(config.get("visual_response_metric", "mean")), event_detection_method=str(config.get("event_detection_method", "derivative")), locomotion_threshold=config.get("locomotion_threshold"))
                 except Exception:
                     visual_rows = []
                 for visual_row in visual_rows:
@@ -82,12 +91,19 @@ def _soma_records(source: dict[str, Any], config: dict[str, Any], impl: Any, rep
             roi_ids = list(entity.roi_ids()) if hasattr(entity, "roi_ids") else list(range(len(matrix)))
             for index, trace in enumerate(matrix):
                 values = [float(value) for value in trace if value == value]
+                fallback_activity = sum(values) / len(values) if values else None
+                fallback_frequency = sum(1 for value in values if value > 0) / len(values) if values else None
+                roi_states = state_by_roi.get((compartment, index), {})
+                state_activity = {state: row_state.get("mean") for state, row_state in roi_states.items()}
+                state_frequency = {state: row_state.get("event_frequency_per_min") for state, row_state in roi_states.items()}
+                state_activity.setdefault("all", fallback_activity)
+                state_frequency.setdefault("all", fallback_frequency)
                 records.append({
                     "roi_key": f"{expid}|{compartment}|{roi_ids[index] if index < len(roi_ids) else index}",
                     "expid": expid, "animal_id": getattr(ctx, "animal_id", None), "day_id": getattr(ctx, "day_id", None),
                     "scope": "observation",
-                    "compartment": compartment, "state_activity": {"all": sum(values) / len(values) if values else None},
-                    "state_frequency": {"all": sum(1 for value in values if value > 0) / len(values) if values else None},
+                    "compartment": compartment, "state_activity": state_activity,
+                    "state_frequency": state_frequency,
                     "source_signature": row.get("source_signature"),
                     "visual_responsive": visual_by_index.get((compartment, index), {}).get("responsive"),
                     "visual_class": ("visual" if visual_by_index.get((compartment, index), {}).get("responsive") is True else "non_visual" if visual_by_index.get((compartment, index), {}).get("responsive") is False else None),
@@ -137,7 +153,7 @@ def build_processed_cache(config_path: Path, pipeline: str, source_cache_path: P
         config = normalize_staged_config(json.load(handle), pipeline=pipeline, base_dir=config_path.parent)
     source = load_npz_cache(source_cache_path)
     source_signature = dependency_signature(source)
-    config_signature = dependency_signature(config.get("source", {}), config.get("processing", {}))
+    config_signature = dependency_signature(config.get("source", {}), config.get("processing", {}), config.get("visual_response_metric", "mean"))
     manifest_path = cache_manifest_path({**config, "cache_paths": {"processed": output_path.parent}}, "processed")
     if not bool(config.get("rebuild") or config.get("processed_cache_rebuild")):
         reusable = stage_is_reusable(manifest_path, output_path, pipeline=pipeline, stage="processed", config_signature=config_signature, upstream_signature=source_signature)
@@ -166,7 +182,7 @@ def build_processed_cache(config_path: Path, pipeline: str, source_cache_path: P
     else:
         raise ValueError(f"Unsupported pipeline: {pipeline}")
     records = [row for rows in reusable_records.values() for row in rows] + records
-    payload = {"schema_version": 1, "pipeline": pipeline, "roi_records": records, "source_signature": dependency_signature(source), "config_signature": dependency_signature(config.get("source", {}), config.get("processing", {}))}
+    payload = {"schema_version": 1, "pipeline": pipeline, "roi_records": records, "source_signature": dependency_signature(source), "config_signature": config_signature}
     save_npz_cache(output_path, payload)
     indexed = save_indexed_records(
         output_path.parent,

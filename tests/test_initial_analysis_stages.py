@@ -20,6 +20,7 @@ def test_initial_analysis_preserves_preferred_state_ties_and_general_figures(tmp
     assert record["preferred_states"] == ["nrem", "wake"]
     assert record["preferred_state_class"] == "tie"
     assert (tmp_path / "results" / "figures" / "general" / "initial_analysis" / "preferred_state_counts.png").exists()
+    assert (tmp_path / "results" / "figures" / "general" / "initial_analysis" / "state_frequency_heatmap.png").exists()
 
 
 def test_classification_thresholds_are_reused(tmp_path: Path):

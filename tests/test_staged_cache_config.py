@@ -46,6 +46,7 @@ def test_pipeline_configs_load_external_family_and_plot_registries():
     ):
         config = normalize_staged_config(json.loads(path.read_text()), pipeline=pipeline, base_dir=path.parent)
         assert expected in config["analysis_families"]
+        assert config["visual_response_metric"] == "mean"
         assert config["analysis_families_file"].endswith("analysis_families.json")
         assert config["plot_config_file"].endswith("plot_config.json")
 

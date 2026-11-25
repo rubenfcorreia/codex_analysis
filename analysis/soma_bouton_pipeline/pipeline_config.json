@@ -54,7 +54,7 @@
     "event_detection_method": "derivative"
   },
   "classification": {
-    "visual_response_metric": "calcium_events",
+    "visual_response_metric": "mean",
     "preferred_state": {
       "enabled": true
     },
