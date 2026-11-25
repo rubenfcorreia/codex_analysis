@@ -1,5 +1,7 @@
 # Analysis Scripts
 
+For the complete data flow, see the [end-to-end data-processing and analysis workflow](../docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 These folders group the runnable analysis launchers by workflow.
 The runnable code now lives inside these folders, which keeps the root directory much cleaner.
 

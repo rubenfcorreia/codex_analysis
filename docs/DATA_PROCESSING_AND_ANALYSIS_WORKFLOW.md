@@ -11,14 +11,155 @@ The central dependency graph is:
 raw experiment folders
         |
         v
-source -> processed -> initial_analysis -> classification -> analysis -> results
+source -> processed -> initial_analysis -> classification -> for_analysis -> results
                                                                |
                                                                v
                                                         CSV / JSON / SVG / PNG
 ```
 
-The `results` stage is principally a plot/readback stage. Scientific metrics
-are produced by the `analysis` stage and the pipeline-specific drivers.
+The `for_analysis` stage runs the scientific analysis and writes/reuses the
+analysis tables/results caches. The `results` stage is principally a
+plot/readback stage.
+
+## Workflow map
+
+The map below shows the complete path from experiment files to final results.
+Its labels use the same section numbers as the full document. Where one
+workflow box covers more than one section, all relevant section numbers are
+shown. The solid path is the staged dendrite/spine or soma/bouton workflow;
+the independent workflows branch from the same raw repository but do not
+consume the main staged caches.
+
+```text
+2. RAW INPUTS
+   ├─ recordings and Suite2p data
+   ├─ wheel and pupil recordings
+   ├─ sleep_score/sleep_state.pickle
+   └─ cut neural trial bundles
+              │
+              v
+3. EXPERIMENT MEMBERSHIP
+   ├─ dendrite/spine experiments
+   ├─ soma/bouton experiments
+   ├─ sleep-state experiments
+   └─ PCA experiments
+              │
+              v
+4. CONFIGURATION
+   ├─ pipeline_config.json
+   ├─ plot_config.json
+   ├─ channel, event, and state settings
+   ├─ cache/output paths
+   └─ shuffle and statistical settings
+              │
+              ├──────────────────────────────────────────────┐
+              │                                              │
+              v                                              v
+5. MAIN STAGED CACHE WORKFLOW                         8. INDEPENDENT WORKFLOWS
+   │                                                   │
+   ├─ 5.1 SOURCE CACHE                                 ├─ Sleep-state across days
+   │     Load traces, ROIs, metadata, states,          │    ├─ Read sleep_state.pickle
+   │     wheel, pupil, and trial data                   │    ├─ Calculate fractions and bouts
+   │                                                    │    └─ Write tables and figures
+   ├─ 5.2 PROCESSED CACHE                              │
+   │     Normalize ROI records, IDs,                  ├─ Exploratory PCA
+   │     compartments, and day units                  │    ├─ Load soma/bouton contexts
+   │                                                    │    ├─ Create windows and filter data
+   ├─ 5.3 INITIAL ANALYSIS                             │    ├─ Z-score ROIs and fit PCA
+   │     Calculate state activity, frequency,          │    └─ Write PCA outputs
+   │     preferred states, and ties                    │
+   │                                                    └─ Synthetic demo
+   ├─ 5.4 CLASSIFICATION                                    ├─ Generate synthetic data
+   │     Visual-response, preferred-state,                  ├─ Run real pipeline drivers
+   │     activity, and frequency labels                     └─ Validate outputs
+   │
+   └─ 5.5 FOR_ANALYSIS ARTIFACTS
+         Analysis tables, result caches,
+         shuffle caches, manifests, and diagnostics
+              │
+              ├──────────────────────────────────────────────┐
+              │                                              │
+              v                                              v
+6. DENDRITE/SPINE PIPELINE                           7. SOMA/BOUTON PIPELINE
+   │                                                   │
+   ├─ Shared analysis families                        ├─ Shared analysis families
+   │  1. State summaries and comparisons              │  1. State summaries and comparisons
+   │  2. Activity and event-frequency summaries       │  2. Activity and event-frequency summaries
+   │  3. Visual-response cohorts                      │  3. Visual-response cohorts
+   │  4. Correlation analysis                          │  4. Correlation analysis
+   │  5. ROI split analysis                            │  5. ROI split analysis
+   │  6. Mixed-model analysis                          │  6. Mixed-model analysis
+   │  7. State-transition analysis                     │  7. State-transition analysis
+   │                                                   │
+   ├─ Dendrite/spine-specific                         ├─ Soma/bouton-specific
+   │  8. Basal/apical comparisons                      │  8. Bouton-soma lag/offset analysis
+   │  9. Spine coactivity                              │  9. Exact-onset coincidence analysis
+   │  10. Spine matrix similarity                      │
+   │  11. Direct trial-type comparisons                │
+   │                                                   │
+   └─ Spine-specific residuals and                   └─ Soma/bouton contexts and
+      compartment-specific outputs                       pairwise outputs
+              │                                              │
+              └──────────────────────┬───────────────────────┘
+                                     │
+                                     v
+                              PIPELINE OUTPUTS
+                              ├─ CSV analysis tables
+                              ├─ JSON manifests and reports
+                              ├─ SVG/PNG figures
+                              ├─ Poster-ready figures
+                              ├─ Cache metadata
+                              └─ Timing and diagnostic reports
+                                     │
+                                     v
+9. SCRIPTS AND LAUNCHERS
+   ├─ Main pipeline launchers
+   ├─ Staged cache runners
+   ├─ Specialist figure/export scripts
+   ├─ PCA and sleep-state launchers
+   └─ Demo builders and validators
+                                     │
+                                     v
+10. SHARED INFRASTRUCTURE
+    Supports stages 5–9:
+    ├─ Cache and serialization utilities
+    ├─ State and transition utilities
+    ├─ Statistics and mixed-model helpers
+    ├─ ROI split and comparison utilities
+    ├─ Plotting modules
+    └─ Logging and diagnostics
+                                     │
+                                     v
+11. VALIDATION AND REPRODUCIBILITY
+    ├─ Inspect manifests and cache signatures
+    ├─ Review warnings and logs
+    ├─ Check row counts and expected artifacts
+    ├─ Reuse valid stages on warm reruns
+    └─ Rebuild only affected stages when inputs change
+```
+
+**Clickable map navigation**
+
+- [2. Raw inputs](#2-raw-inputs)
+- [3. Experiment membership](#3-experiment-membership)
+- [4. Configuration reference](#4-configuration-reference)
+- [5. Staged cache workflow](#5-staged-cache-workflow)
+  - [5.1 Source cache](#source)
+  - [5.2 Processed / normalization](#processed)
+  - [5.3 Initial ROI summaries](#initial-analysis)
+  - [5.4 Classification](#classification)
+  - [5.5 for_analysis artifacts](#5-staged-cache-workflow)
+- [6. Dendrite/spine pipeline](#6-dendritespine-pipeline)
+- [7. Soma/bouton pipeline](#7-somabouton-pipeline)
+- [8. Independent workflows](#8-independent-workflows)
+- [9. Scripts and launchers](#9-which-scripts-to-run)
+- [10. Shared infrastructure](#10-shared-infrastructure-catalogue)
+- [11. Validation and reproducibility](#11-reproducibility-checklist)
+
+
+Use the numbered stages as the troubleshooting order: first verify raw files
+and configuration, then inspect the first cache stage whose manifest or
+signature is missing/stale, and only then inspect family-specific outputs.
 
 ## 1. Repository map
 
@@ -37,6 +178,9 @@ are produced by the `analysis` stage and the pipeline-specific drivers.
 | `results/` | Generated outputs. |
 
 ## 2. Raw inputs
+
+Further reading: [analysis methods](methods/README.md), [visual-response details](visual_response/README.md), and [sleep-state details](sleep_state_across_days/README.md).
+
 
 The normal data root is `/home/<user_id>/data/Repository`. Each experiment is
 resolved as:
@@ -81,7 +225,55 @@ Membership is deliberately separate from processing settings.
 Edit the sibling `experiments.json` for staged dendrite/soma-bouton membership;
 edit the sleep/PCA config lists for those independent workflows.
 
-## 4. Staged cache workflow
+## 4. Configuration reference
+
+Further reading: [cache-builder usage](../analysis/cache_builders/README.md), [dendrite/spine pipeline notes](dendrites_pipeline/README.md), and [soma/bouton usage](../analysis/soma_bouton_pipeline/USAGE.md).
+
+
+The staged dendrite and soma/bouton configs use these sections:
+
+| Section | Meaning |
+| --- | --- |
+| `pipeline` | `name`, `user_id`, `repo_base`. |
+| `inputs` | `expids_file`, normally the sibling membership JSON. |
+| `paths` | `output_root`, `cache_root`, `figure_root`. |
+| `source` | Dendrite `channel`, or soma/bouton `soma_channel`/`bouton_channel`. |
+| `processing` | Event detector; dendrites also `state_mode` and `movie_trial_types`. |
+| `classification` | Visual metric and preferred/activity/frequency split enable flags. |
+| `shuffle` | `enabled`, `null_model`, `shuffle_n`, deterministic `seed`. |
+| `analysis` | `families_file`; points to the analysis-family selection used after initial analysis/classification. |
+| `cache` | `mode`, signature validation, removed-expID archiving, worker count. |
+| `plots` | `profile` (`full`, `analysis_only`, `poster_only`), `plots_only`, and `config_file` (normally `plot_config.json`). |
+| `initial_analysis` | General plots and absolute/relative preferred-state tie tolerances. |
+
+Advanced driver keys cover state overrides, locomotion thresholds, rebuild
+flags, analysis/figure directories, visual-response settings, progression,
+transitions, mixed models, correlation nulls, and poster/comparison presets.
+Use the driver `--help` and its defaults as the authoritative list.
+
+Cache controls:
+
+- `cache.mode=incremental` reuses valid experiment records;
+- `cache.rebuild_stages` forces selected staged layers;
+- `cache.rebuild_expids` forces selected source sessions;
+- changed upstream signatures invalidate dependent stages;
+- `--plots-only` regenerates figures from compatible analysis outputs;
+- `--figures-only` regenerates figures from new-layout caches.
+
+To regenerate figures from a staged result cache:
+
+```bash
+python3 -m analysis.cache_builders.run_pipeline_stage \
+  --pipeline dendrites --stage results \
+  --config analysis/dendrites_pipeline/pipeline_config.json
+```
+
+For soma/bouton, use `--pipeline soma_bouton` with its `pipeline_config.json`. Plot-only behavior is controlled by `plot_config.json` or the driver `--plots-only` flag; there is no separate required plots-only config file.
+
+## 5. Staged cache workflow
+
+Further reading: [staged cache workflow README](../analysis/cache_builders/README.md).
+
 
 ### Source
 
@@ -159,7 +351,7 @@ Output:
 <cache_root>/classification/manifest.json
 ```
 
-### Analysis/results
+### for_analysis/results
 
 `run_pipeline_stage.py` passes the upstream paths into the real dendrite or
 soma/bouton driver. Typical richer artifacts are:
@@ -176,7 +368,10 @@ soma/bouton driver. Typical richer artifacts are:
 These caches are nested mappings/arrays for reruns. Use generated CSVs and
 JSON manifests for human inspection.
 
-## 5. Dendrite/spine pipeline
+## 6. Dendrite/spine pipeline
+
+Further reading: [dendrite/spine pipeline documentation](dendrites_pipeline/README.md), [methods](methods/README.md), and [visual-response documentation](visual_response/README.md).
+
 
 Run the user-facing driver:
 
@@ -192,6 +387,11 @@ python3 -m analysis.cache_builders.run_pipeline \
   --pipeline dendrites \
   --config analysis/dendrites_pipeline/pipeline_config.json
 ```
+
+The staged runner also accepts `--log-level DEBUG|INFO|WARNING|ERROR|CRITICAL`
+and `--quiet`. It writes a detailed log under `logs/<pipeline>/` in the
+current working directory and prints only warnings/errors when `--quiet` is
+used.
 
 The driver loads/rebuilds caches, pools same-day sessions, creates state masks,
 prepares visual-response cohorts, dispatches analysis families, and writes
@@ -247,7 +447,10 @@ Default root: `results/dendrites_pipeline/`.
 Transition primary replicates are `expday`: repeated transitions are averaged
 within entity/day, then entities within day. Raw event rows are retained.
 
-## 6. Soma/bouton pipeline
+## 7. Soma/bouton pipeline
+
+Further reading: [soma/bouton README](../analysis/soma_bouton_pipeline/README.md) and [soma/bouton usage](../analysis/soma_bouton_pipeline/USAGE.md).
+
 
 Run:
 
@@ -289,7 +492,14 @@ Important output files under `results/soma_bouton_pipeline/` include:
 Pairwise correlations use seeded circular shifts. Batch and shift-block sizes
 bound memory; null distributions remain pair/state/experiment specific.
 
-## 7. Independent workflows
+The soma/bouton launcher supports the same `--log-level` and `--quiet` flags.
+Its structured run log is written under `logs/soma_bouton/` when launched from
+the repository working directory.
+
+## 8. Independent workflows
+
+Further reading: [sleep-state documentation](sleep_state_across_days/README.md), [PCA README](../analysis/pca_pipeline/README.md), and [demo-platform README](../analysis/demo_pipeline/README.md).
+
 
 ### Sleep-state across days
 
@@ -337,49 +547,10 @@ python3 analysis/dendrites_pipeline/dendrites_pipeline.py \
 `analysis/demo_pipeline/` build, preview, validate, and run synthetic data.
 Demo outputs are not biological results.
 
-## 8. Configuration reference
-
-The staged dendrite and soma/bouton configs use these sections:
-
-| Section | Meaning |
-| --- | --- |
-| `pipeline` | `name`, `user_id`, `repo_base`. |
-| `inputs` | `expids_file`, normally the sibling membership JSON. |
-| `paths` | `output_root`, `cache_root`, `figure_root`. |
-| `source` | Dendrite `channel`, or soma/bouton `soma_channel`/`bouton_channel`. |
-| `processing` | Event detector; dendrites also `state_mode` and `movie_trial_types`. |
-| `classification` | Visual metric and preferred/activity/frequency split enable flags. |
-| `shuffle` | `enabled`, `null_model`, `shuffle_n`, deterministic `seed`. |
-| `analysis` | Requested family names. |
-| `cache` | `mode`, signature validation, removed-expID archiving, worker count. |
-| `plots` | `profile` (`full`, `analysis_only`, `poster_only`) and `plots_only`. |
-| `initial_analysis` | General plots and absolute/relative preferred-state tie tolerances. |
-
-Advanced driver keys cover state overrides, locomotion thresholds, rebuild
-flags, analysis/figure directories, visual-response settings, progression,
-transitions, mixed models, correlation nulls, and poster/comparison presets.
-Use the driver `--help` and its defaults as the authoritative list.
-
-Cache controls:
-
-- `cache.mode=incremental` reuses valid experiment records;
-- `cache.rebuild_stages` forces selected staged layers;
-- `cache.rebuild_expids` forces selected source sessions;
-- changed upstream signatures invalidate dependent stages;
-- `--plots-only` regenerates figures from compatible analysis outputs;
-- `--figures-only` regenerates figures from new-layout caches.
-
-To regenerate figures from a staged result cache:
-
-```bash
-python3 -m analysis.cache_builders.run_pipeline_stage \
-  --pipeline dendrites --stage results \
-  --config analysis/dendrites_pipeline/pipeline_config.json
-```
-
-Use the corresponding soma/bouton plots-only config for that workflow.
-
 ## 9. Which scripts to run
+
+Further reading: [analysis launcher index](../analysis/README.md).
+
 
 ### Normal launchers
 
@@ -413,10 +584,13 @@ organized non-deprecated folders for new analyses.
 
 ## 10. Shared infrastructure catalogue
 
+Further reading: [methods and statistical conventions](methods/README.md).
+
+
 | Files/group | Purpose |
 | --- | --- |
 | `analysis/shared/cache_utils.py`, `analysis_cache.py`, `cache_config.py` | NPZ serialization, cache keys, normalized configs, analysis payloads. |
-| `result_manifest.py`, `serialization_diagnostics.py`, `runtime_diagnostics.py`, `pipeline_logging.py`, `run_timing.py` | Manifests, atomic-write records, timings, logging, resource diagnostics. |
+| `result_manifest.py`, `serialization_diagnostics.py`, `runtime_diagnostics.py`, `pipeline_logging.py`, `run_timing.py` | Manifests, atomic-write records, timings, structured logging, and resource diagnostics. `pipeline_logging.py` creates timestamped per-pipeline log files and captures stage failures with tracebacks. |
 | `state_utils.py`, `state_transitions.py`, `branch_tree.py` | Canonical states, transitions, and output-tree selection. |
 | `statistics.py`, `analysis_families/mixed_model.py` | Tests, effect sizes, confidence intervals, p-value metadata, model preflight. |
 | `roi_split.py`, `comparison_preset_flow.py` | Activity/frequency splits and preset batching. |

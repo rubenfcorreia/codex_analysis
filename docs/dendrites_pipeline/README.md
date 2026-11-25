@@ -1,5 +1,7 @@
 # Main Dendrite/Spine Pipeline
 
+Start with the [end-to-end data-processing and analysis workflow](../DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 Use `analysis/dendrites_pipeline/dendrites_pipeline.py` when you want the full dendrite/spine analysis from `dF/F` traces.
 The day-figure helper, demo builder, and poster scripts now live in dedicated subfolders, so the workflow is easier to navigate and split into smaller pieces. The workflow keeps its caches under the dendrites results tree, so reruns with unchanged inputs can reuse the same pipeline-local intermediates. The split-first analysis now carries the ROI split membership into the mixed-model leaves, instead of using it only for separate summary tables.
 
@@ -93,7 +95,7 @@ The preprocessing stage keeps event detection tied to the cached `dF/F` traces r
 
 ## Where To Set Inputs
 
-1. Edit `analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json` for the easiest real-data workflow.
+1. Edit `analysis/dendrites_pipeline/pipeline_config.json` for the easiest real-data workflow.
 2. Pass `--config <file>` when you run the script.
 3. Override any field on the CLI if you need a one-off change.
 4. If you want a single script-level place to edit defaults, use `USER_EDITABLE_DEFAULTS` near the top of `analysis/dendrites_pipeline/dendrites_pipeline.py`.
@@ -140,14 +142,14 @@ Use the example config as a starting point:
 
 ```bash
 python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
-  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json
+  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/pipeline_config.json
 ```
 
 You can still override the expID lists on the command line; they are treated as source-session provenance and then pooled by day:
 
 ```bash
 python3 /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/dendrites_pipeline.py \
-  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/sleep_dendrite_spine_example_config.json \
+  --config /home/rubencorreia/code/codex_analysis/analysis/dendrites_pipeline/pipeline_config.json \
   --movie-expids 2025-11-05_01_ESRC020 2026-01-26_01_ESRC023
 ```
 

@@ -1,5 +1,7 @@
 # Dendrites Pipeline Layout
 
+For the complete data flow, see the [end-to-end data-processing and analysis workflow](../../docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 The dendrites workflow is now split into purpose-specific folders under `analysis/dendrites_pipeline/`.
 The top-level driver stays at the root so it remains the single orchestrator, and comparison-preset batches now defer the shared poster/readback step until all required presets have finished. Shared helpers that are used by multiple workflows live in `analysis/shared/`, including the branch-aware ROI split helper that powers the split-first activity and frequency comparisons shared with soma/bouton.
 

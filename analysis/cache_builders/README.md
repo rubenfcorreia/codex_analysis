@@ -1,5 +1,7 @@
 # Staged cache workflow
 
+For the complete data flow, see the [end-to-end data-processing and analysis workflow](../../docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 The staged runners use the following dependency order:
 
 ```text

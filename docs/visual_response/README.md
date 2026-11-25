@@ -1,5 +1,7 @@
 # Visual Response Methods
 
+Start with the [end-to-end data-processing and analysis workflow](../DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 This page documents the archived visual-response launcher in `analysis/deprecated/visual_response/`.
 
 See also: [../../README.md](../../README.md), [../../analysis/README.md](../../analysis/README.md), [../../analysis/deprecated/visual_response/README.md](../../analysis/deprecated/visual_response/README.md).

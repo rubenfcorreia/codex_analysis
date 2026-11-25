@@ -1,5 +1,7 @@
 # Sleep State Across Days
 
+Start with the [end-to-end data-processing and analysis workflow](../DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 Use `sleep_state_across_days.py` when you want to compare sleep metrics across days for each animal and across animals.
 It reads directly from the repository, only uses `sleep_score/sleep_state.pickle`, and still works when neuronal activity is missing.
 

@@ -1,89 +1,69 @@
-# codex_analysis index
+# Repository navigation index
 
-A compact navigation map for the repo, organized the same way as the README files, with a deeper tree for `analysis/`.
+## Start here
 
-## Root
-- `README.md` - repo overview and workflow map.
-- `INDEX.md` - this navigation file.
-- `analysis/` - runnable analysis entrypoints, grouped by workflow.
-- `docs/` - prose documentation and methods notes.
-- `tests/` - smoke tests and validation helpers.
+- [End-to-end data-processing and analysis workflow](docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md)
+- [Root README](README.md)
+- [Runnable analysis scripts](analysis/README.md)
 
-## Analysis Tree
+## Choose by task
 
-### `analysis/dendrites_pipeline/`
-Main dendrite/spine workflow. The README describes this as a top-level driver plus smaller analysis-family modules.
+| Goal | Start with |
+| --- | --- |
+| Understand the complete data flow | [Workflow guide](docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md) |
+| Run or modify dendrite/spine analysis | [Dendrite/spine guide](docs/dendrites_pipeline/README.md) |
+| Run or modify soma/bouton analysis | [Soma/bouton README](analysis/soma_bouton_pipeline/README.md) |
+| Run the staged cache graph | [Cache-builder guide](analysis/cache_builders/README.md) |
+| Inspect methods/statistics | [Methods guide](docs/methods/README.md) |
+| Analyze sleep-state composition | [Sleep-state guide](docs/sleep_state_across_days/README.md) |
+| Run exploratory PCA | [PCA README](analysis/pca_pipeline/README.md) |
+| Build synthetic test data | [Demo guide](analysis/demo_pipeline/README.md) |
+| Inspect visual-response behavior | [Visual-response guide](docs/visual_response/README.md) |
 
-- `README.md`
-- `dendrites_pipeline.py`
-- `sleep_dendrite_spine_example_config.json`
-- `sleep_dendrite_spine_custom_demo_spec.json`
-- `analysis_families/`
-  - `__init__.py`
-  - `core.py`
-  - `state.py`
-  - `basal_apical.py`
-  - `direct_trial_type_comparison.py`
-  - `correlation.py`
-  - `matrix_similarity.py`
-  - `mixed_model.py`
-  - `spine_coactivity.py`
-- `demo/`
-  - `__init__.py`
-  - `sleep_demo_builder.py`
-- `figures/`
-  - `__init__.py`
-  - `sleep_dendrite_spine_day_figures.py`
-- `posters/`
-  - `__init__.py`
-  - `sleep_dendrite_spine_poster_common.py`
-  - `sleep_dendrite_spine_poster_figure.py`
-  - `sleep_dendrite_spine_spine_coactivity_poster_figure.py`
+## Workflow source tree
 
-### `analysis/sleep_state_across_days/`
-Sleep-state-only across-days workflow.
+### Dendrite/spine
 
-- `README.md`
-- `sleep_state_across_days.py`
-- `export_thresholded_cinematic_clips.py`
-- `sleep_state_across_days_config.json`
+- Launcher: analysis/dendrites_pipeline/dendrites_pipeline.py
+- Families: analysis/dendrites_pipeline/analysis_families/
+- Figures: analysis/dendrites_pipeline/figures/
+- Posters: analysis/dendrites_pipeline/posters/
+- Demo builder: analysis/dendrites_pipeline/demo/sleep_demo_builder.py
 
-## Docs
-- `docs/dendrites_pipeline/` - main pipeline notes.
-- `docs/deprecated/main_pipeline/` - deprecated archive of the old main pipeline docs.
-- `docs/methods/` - methods documentation.
-- `docs/sleep_state_across_days/` - across-days documentation.
+### Soma/bouton
 
-## Deprecated Archive
-- `analysis/deprecated/main_pipeline/` - retired main dendrite/spine code, configs, figures, posters, demo helpers, and family modules.
+- Wrapper: analysis/soma_bouton_pipeline/run_soma_bouton_pipeline.py
+- Driver: analysis/soma_bouton_pipeline/soma_bouton_pipeline.py
+- Families: analysis/soma_bouton_pipeline/analysis_families/
+- Usage: analysis/soma_bouton_pipeline/USAGE.md
 
-### `analysis/deprecated/visual_response/`
-Archived movie visual-response workflow and poster-ready visual-response plots.
+### Shared infrastructure
 
-- `README.md`
-- `movie_visual_response.py`
-- `movie_visual_response_config.json`
-- `poster_ready_visual_response.py`
+- Staged builders: analysis/cache_builders/
+- Shared helpers: analysis/shared/
+- Shared plotting: analysis/shared/plots/
+- Demo platform: analysis/demo_pipeline/
 
-### `analysis/deprecated/zebra_movies/`
-Archived generated zebra-movie bytecode only. No tracked source scripts were present in this folder before it was moved.
+### Independent workflows
+
+- Sleep-state: analysis/sleep_state_across_days/
+- PCA: analysis/pca_pipeline/
+- Deprecated visual response: analysis/deprecated/visual_response/
+
+## Current configurations
+
+- Dendrite/spine: analysis/dendrites_pipeline/pipeline_config.json, plot_config.json, experiments.json
+- Soma/bouton: analysis/soma_bouton_pipeline/pipeline_config.json, plot_config.json, experiments.json
+- Sleep-state: analysis/sleep_state_across_days/sleep_state_across_days_config.json
+- PCA: analysis/pca_pipeline/pca_pipeline_config.json
+
+## Deprecated archive
+
+analysis/deprecated/ and docs/deprecated/ preserve historical workflows,
+configs, and documentation. Use them for provenance or comparison, not for new
+runs.
 
 ## Tests
-- `tests/` - validation and smoke checks.
 
-## Where To Start
-- To change the main pipeline, start in `analysis/dendrites_pipeline/dendrites_pipeline.py`.
-- To change one analysis family, start in `analysis/dendrites_pipeline/analysis_families/`.
-- To change sleep-state across-days behavior, start in `analysis/sleep_state_across_days/`.
-- To change documentation, start in `docs/`.
-
-
-## Token-Efficient Reading Order
-1. Read the relevant workflow README first.
-2. Open only the entrypoint for the task.
-3. Open the matching subfolder or family module next.
-4. Check the config file and one or two nearby helpers if needed.
-
-## Notes
-- This index is intentionally narrow: it mirrors the README structure rather than trying to summarize every file.
-- The repo is workflow-oriented, so the README files are the best first map before diving into code.
+tests/ contains smoke tests and regression tests for cache stages, state
+transitions, visual response, statistical methods, demos, and output layout.

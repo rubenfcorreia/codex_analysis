@@ -1,5 +1,7 @@
 # Soma/Bouton Pipeline
 
+For the complete data flow, see the [end-to-end data-processing and analysis workflow](../../docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 This workflow compares soma activity from `ch2` data against axonal bouton
 activity from `ch1` data. The shared preset flow lives in `analysis/shared/`, and the branch-aware ROI split helper is shared through `analysis/shared/roi_split.py`.
 

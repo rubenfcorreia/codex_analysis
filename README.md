@@ -1,39 +1,44 @@
 # Sleep Dendrite/Spine Pipeline
 
-This directory is organized by workflow.
+This repository contains several related neural and behavioural analysis
+workflows. The end-to-end workflow guide is the canonical map of inputs,
+configuration, processing stages, analysis families, caches, and outputs.
 
-## Launchers
+## Start here
 
-| Folder | Purpose |
-| --- | --- |
-| [analysis/README.md](analysis/README.md) | Runnable scripts grouped by workflow, with shared cache/state/family helpers in `shared/`, the dendrite/spine pipeline under `dendrites_pipeline/`, the soma/bouton pipeline under `soma_bouton_pipeline/`, the deprecated historical archive under `deprecated/main_pipeline/`, and separate launchers for `visual_response/` and `sleep_state_across_days/`. |
+- [Data-processing and analysis workflow](docs/DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md) — complete workflow map and troubleshooting order.
+- [Analysis scripts](analysis/README.md) — runnable launchers organized by workflow.
+- [Repository index](INDEX.md) — compact source and documentation navigation.
 
-## Docs
+## Workflows
 
-| Folder | Purpose |
-| --- | --- |
-| [docs/dendrites_pipeline/README.md](docs/dendrites_pipeline/README.md) | Main dendrite/spine analysis, folder layout, shared helper notes, and demo builder notes. |
-| [docs/deprecated/main_pipeline/README.md](docs/deprecated/main_pipeline/README.md) | Deprecated historical archive for the old main dendrite/spine pipeline docs. |
-| [docs/visual_response/README.md](docs/visual_response/README.md) | Visual-response launcher and movie-style metric notes. |
-| [docs/methods/README.md](docs/methods/README.md) | Repo-wide methods page for metrics, calculations, and statistical tests. |
-| [docs/sleep_state_across_days/README.md](docs/sleep_state_across_days/README.md) | Sleep-state-only across-days notes. |
+| Workflow | Launcher | Detailed documentation |
+| --- | --- | --- |
+| Dendrite/spine | analysis/dendrites_pipeline/dendrites_pipeline.py | [Dendrite/spine guide](docs/dendrites_pipeline/README.md) |
+| Soma/bouton | analysis/soma_bouton_pipeline/run_soma_bouton_pipeline.py | [Soma/bouton README](analysis/soma_bouton_pipeline/README.md) · [Usage](analysis/soma_bouton_pipeline/USAGE.md) |
+| Staged cache graph | python -m analysis.cache_builders.run_pipeline | [Cache-builder guide](analysis/cache_builders/README.md) |
+| Sleep-state across days | analysis/sleep_state_across_days/sleep_state_across_days.py | [Sleep-state guide](docs/sleep_state_across_days/README.md) |
+| Exploratory PCA | python -m analysis.pca_pipeline | [PCA README](analysis/pca_pipeline/README.md) |
+| Synthetic demo | analysis/demo_pipeline/ | [Demo guide](analysis/demo_pipeline/README.md) |
 
-## Paired State Summary Figures
+## Methods and specialized topics
 
-Comparison-preset runs also generate paired-only state-summary figures. These use only entities observed in every requested state and include:
+- [Analysis methods](docs/methods/README.md) — preprocessing, metrics, statistics, correlations, coactivity, mixed models, and transitions.
+- [Visual response](docs/visual_response/README.md) — visual/blank trial metrics and movie-style response analysis.
+- [Deprecated main pipeline archive](docs/deprecated/main_pipeline/README.md) — historical reference only.
 
-- Quiet Awake vs NREM
-- Quiet Awake vs NREM vs REM
-
-Outputs are written under each poster-ready entity's paired_state_summary/ directory. Dendrite figures contain separate Basal and Apical panels; spine, soma, and bouton figures remain single-panel.
-
-## Configs
+## Current configuration files
 
 | File | Purpose |
 | --- | --- |
-| [analysis/dendrites_pipeline/README.md](analysis/dendrites_pipeline/README.md) | Main dendrite/spine pipeline entrypoint and workflow notes. |
-| `analysis/dendrites_pipeline/pipeline_config.json` | Example config for the main pipeline. |
-| `analysis/dendrites_pipeline/sleep_dendrite_spine_custom_demo_spec.json` | Demo recipe for the main pipeline. |
-| [analysis/soma_bouton_pipeline/README.md](analysis/soma_bouton_pipeline/README.md) | Soma/bouton analysis entrypoint, shared preset flow, coincidence outputs, and ROI split comparisons. |
-| `analysis/soma_bouton_pipeline/pipeline_config.json` | Example config for the soma/bouton pipeline. |
-| `analysis/sleep_state_across_days/sleep_state_across_days_config.json` | Example config for the sleep-state workflow. |
+| analysis/dendrites_pipeline/pipeline_config.json | Dendrite/spine processing, cache, analysis, and plotting configuration. |
+| analysis/dendrites_pipeline/plot_config.json | Dendrite/spine plot-only controls. |
+| analysis/dendrites_pipeline/experiments.json | Dendrite/spine experiment membership and basal/apical assignments. |
+| analysis/soma_bouton_pipeline/pipeline_config.json | Soma/bouton processing, cache, analysis, and plotting configuration. |
+| analysis/soma_bouton_pipeline/plot_config.json | Soma/bouton plot-only controls. |
+| analysis/soma_bouton_pipeline/experiments.json | Soma/bouton experiment membership. |
+| analysis/sleep_state_across_days/sleep_state_across_days_config.json | Sleep-state experiment lists and output paths. |
+| analysis/pca_pipeline/pca_pipeline_config.json | PCA experiment discovery, windowing, filtering, and output settings. |
+
+Generated results are written below results/; source code is under analysis/;
+explanatory documentation is under docs/; validation code is under tests/.

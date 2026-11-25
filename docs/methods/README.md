@@ -1,5 +1,7 @@
 # Analysis Methods
 
+Start with the [end-to-end data-processing and analysis workflow](../DATA_PROCESSING_AND_ANALYSIS_WORKFLOW.md).
+
 This page explains how the main analysis metrics are computed in `codex_analysis` and how the statistical tests are applied.
 It focuses on the dendrite/spine pipeline, then summarizes the sleep-state and zebra-movie side workflows that share the same repository. It also describes the branch-first ROI split analysis and the split-aware mixed-model leaves.
 
