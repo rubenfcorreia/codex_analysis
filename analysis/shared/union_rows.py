@@ -43,34 +43,47 @@ def filter_rows_by_states(
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        state = row.get("state")
-        if state is None or str(state) == "":
-            filtered.append(dict(row))
-            continue
-        mode = str(row.get("mode") or "")
-        allowed = selected.get(mode)
-        if allowed is None:
-            filtered.append(dict(row))
-        elif str(state) in allowed:
-            copied = dict(row)
-            copied.setdefault("source_state", str(state))
+        copied = _filter_state_row(row, selected)
+        if copied is not None:
             filtered.append(copied)
-        elif mode in {"movie", "sleep"}:
-            state_key = canonical_state_label(state)
-            aliases = {state_key}
-            for suffix in ("_movies", "_blank"):
-                if state_key.endswith(suffix):
-                    aliases.add(state_key[: -len(suffix)])
-                elif f"{state_key}{suffix}" in allowed:
-                    aliases.add(f"{state_key}{suffix}")
-            matching = [alias for alias in aliases if alias in allowed]
-            if matching:
-                copied = dict(row)
-                copied.setdefault("source_state", str(state))
-                if state_key not in allowed:
-                    copied["state"] = sorted(matching, key=lambda value: (value == state_key, value))[0]
-                filtered.append(copied)
     return filtered
+
+
+def _filter_state_row(
+    row: Mapping[str, Any],
+    selected_states_by_mode: Mapping[str, set[str]],
+) -> Optional[dict[str, Any]]:
+    """Filter one row using the canonical mode/alias rules."""
+    state = row.get("state")
+    if state is None or str(state) == "":
+        return dict(row)
+
+    mode = str(row.get("mode") or "")
+    allowed = selected_states_by_mode.get(mode)
+    if allowed is None:
+        return dict(row)
+    if str(state) in allowed:
+        copied = dict(row)
+        copied.setdefault("source_state", str(state))
+        return copied
+    if mode not in {"movie", "sleep"}:
+        return None
+
+    state_key = canonical_state_label(state)
+    aliases = {state_key}
+    for suffix in ("_movies", "_blank"):
+        if state_key.endswith(suffix):
+            aliases.add(state_key[: -len(suffix)])
+        elif f"{state_key}{suffix}" in allowed:
+            aliases.add(f"{state_key}{suffix}")
+    matching = [alias for alias in aliases if alias in allowed]
+    if not matching:
+        return None
+    copied = dict(row)
+    copied.setdefault("source_state", str(state))
+    if state_key not in allowed:
+        copied["state"] = sorted(matching, key=lambda value: (value == state_key, value))[0]
+    return copied
 
 
 def deduplicate_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -93,7 +106,8 @@ def filter_table_rows_by_states(
     selected_states_by_mode: Mapping[str, Sequence[str]],
 ) -> Dict[str, Any]:
     """Return a lossless filtered copy of dendrites analysis-table entries."""
-    selected = {str(s) for values in selected_states_by_mode.values() for s in values}
+    selected = {str(mode): {str(state) for state in states} for mode, states in selected_states_by_mode.items()}
+    all_selected = {state for states in selected.values() for state in states}
     filtered_tables: Dict[str, Any] = {}
     for table_name, entry in tables.items():
         if not isinstance(entry, Mapping):
@@ -106,14 +120,14 @@ def filter_table_rows_by_states(
             for row in rows:
                 if not isinstance(row, Mapping):
                     continue
-                state = row.get("state")
-                if state is None or str(state) == "":
-                    kept.append(dict(row))
+                if not row.get("mode"):
+                    state = row.get("state")
+                    if state is None or str(state) == "" or str(state) in all_selected:
+                        kept.append(dict(row))
                     continue
-                mode = str(row.get("mode") or "")
-                allowed = set(str(s) for s in selected_states_by_mode.get(mode, ())) if mode else selected
-                if str(state) in allowed:
-                    kept.append(dict(row))
+                copied = _filter_state_row(row, selected)
+                if copied is not None:
+                    kept.append(copied)
             copied["table_rows"] = deduplicate_rows(kept)
         filtered_tables[str(table_name)] = copied
     return filtered_tables

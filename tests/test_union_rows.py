@@ -45,6 +45,22 @@ def test_table_filter_deduplicates_without_changing_rows():
     assert tables["activity"]["table_rows"] == [{"id": 1, "state": "quiet"}, {"id": 2, "value": 3}]
 
 
+def test_table_filter_uses_mode_specific_alias_rules():
+    rows = [
+        {"id": "movie", "state": "quiet_awake", "mode": "movie"},
+        {"id": "sleep", "state": "quiet_awake", "mode": "sleep"},
+        {"id": "other", "state": "quiet_awake", "mode": "other"},
+    ]
+    tables = filter_table_rows_by_states(
+        {"activity": {"table_rows": rows}},
+        {"movie": ["quiet_awake_blank"], "sleep": ["nrem"]},
+    )
+    kept = tables["activity"]["table_rows"]
+    assert [row["id"] for row in kept] == ["movie", "other"]
+    assert kept[0]["state"] == "quiet_awake_blank"
+    assert kept[0]["source_state"] == "quiet_awake"
+
+
 def test_union_cache_roundtrip_and_metadata_invalidation(tmp_path: Path):
     path = tmp_path / "union.npz"
     meta = union_rows_meta(
@@ -133,8 +149,8 @@ def test_dendrites_preset_orchestration_shares_union_cache(monkeypatch, tmp_path
     assert analysis_runs[1]["union_rows_cache_builder"] is False
     assert analysis_runs[0]["shared_union_rows_cache_path"] == analysis_runs[1]["shared_union_rows_cache_path"]
     assert analysis_runs[0]["union_state_labels_by_mode"]["state_comparison"] == ["active_awake", "quiet_awake"]
-    assert analysis_runs[0]["figure_output_dir"].endswith("/first/pooled/all")
-    assert analysis_runs[1]["figure_output_dir"].endswith("/second/pooled/all")
+    assert analysis_runs[0]["figure_output_dir"].endswith("/first/pooled")
+    assert analysis_runs[1]["figure_output_dir"].endswith("/second/pooled")
     assert analysis_runs[0]["generate_shared_general_outputs"] is True
     assert analysis_runs[1]["generate_shared_general_outputs"] is False
 
@@ -154,7 +170,7 @@ def test_cache_entrypoint_preset_orchestration_uses_branch_first_figures(monkeyp
     assert [Path(entry["result_root"]).name for entry in captured] == ["first", "second"]
 
 
-def test_comparison_leaf_root_is_pooled_all(tmp_path):
+def test_comparison_leaf_root_is_flat_pooled(tmp_path):
     from analysis.shared.branch_tree import comparison_leaf_root
 
-    assert comparison_leaf_root(tmp_path / "preset") == tmp_path / "preset" / "pooled" / "all"
+    assert comparison_leaf_root(tmp_path / "preset") == tmp_path / "preset" / "pooled"

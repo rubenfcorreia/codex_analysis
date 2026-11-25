@@ -143,6 +143,8 @@ def _blank_rows_for_cut_traces(*, pipeline: str, expid: str, animal_id: Any, dat
     rows: list[dict[str, Any]] = []
     for (compartment, signal_type), matrix in sorted(traces.items()):
         values_matrix = np.asarray(matrix, dtype=float)
+        if values_matrix.ndim == 2:
+            values_matrix = values_matrix[:, None, :]
         if values_matrix.ndim != 3:
             continue
         for bin_index in range(n_bins):
@@ -150,9 +152,9 @@ def _blank_rows_for_cut_traces(*, pipeline: str, expid: str, animal_id: Any, dat
             bin_end = min((bin_index + 1) * bin_s, max_duration)
             values: list[float] = []
             total_frames = 0
-            for meta in blank_trials:
+            for trial_position, meta in enumerate(blank_trials):
                 try:
-                    trial_index = int(meta.get("trial_index"))
+                    trial_index = int(meta.get("trial_index", trial_position))
                 except (TypeError, ValueError):
                     continue
                 if trial_index < 0 or trial_index >= values_matrix.shape[1]:
@@ -556,20 +558,28 @@ def run_soma_bouton_progression(contexts: Iterable[Any], output_root: Path, conf
     for ctx in contexts:
         if ctx.mode == "movie":
             trial_rows = list(ctx.state_bundle.get("rows", [])) if isinstance(ctx.state_bundle, Mapping) else []
-            for compartment, channel in (("soma", ctx.soma_channel), ("bouton", ctx.bouton_channel)):
-                cut_data = load_visual_response_cut_data(ctx.exp_root, int(channel), trial_rows)
+            for compartment, channel in (("soma", getattr(ctx, "soma_channel", 1)), ("bouton", getattr(ctx, "bouton_channel", 0))):
+                exp_root = getattr(ctx, "exp_root", None)
+                cut_data = load_visual_response_cut_data(exp_root, int(channel), trial_rows) if exp_root is not None else None
                 if cut_data:
-                    blank_rows.extend(_blank_rows_for_cut_traces(
-                        pipeline="soma_bouton_pipeline",
-                        expid=ctx.expid,
-                        animal_id=ctx.animal_id,
-                        date=ctx.date,
-                        cut_time=cut_data["cut_time"],
-                        trial_meta=cut_data.get("trial_meta", []),
-                        traces={(compartment, "raw"): cut_data["cut_neural"]},
-                        bin_s=float(cfg["blank_bin_s"]),
-                        max_duration_s=cfg["max_blank_duration_s"],
-                    ))
+                    cut_time = cut_data["cut_time"]
+                    trial_meta_for_rows = cut_data.get("trial_meta", [])
+                    trace_matrix = cut_data["cut_neural"]
+                else:
+                    cut_time = getattr(getattr(ctx, compartment, None), "t", [])
+                    trace_matrix = getattr(getattr(ctx, compartment, None), "matrix", lambda: np.empty((0, 0)))()
+                    trial_meta_for_rows = trial_rows
+                blank_rows.extend(_blank_rows_for_cut_traces(
+                    pipeline="soma_bouton_pipeline",
+                    expid=ctx.expid,
+                    animal_id=ctx.animal_id,
+                    date=ctx.date,
+                    cut_time=cut_time,
+                    trial_meta=trial_meta_for_rows,
+                    traces={(compartment, "raw"): trace_matrix},
+                    bin_s=float(cfg["blank_bin_s"]),
+                    max_duration_s=cfg["max_blank_duration_s"],
+                ))
         elif ctx.mode == "sleep":
             traces = {
                 ("soma", "raw"): (np.asarray(ctx.soma.matrix(), dtype=float), np.asarray(ctx.soma.t, dtype=float)),
@@ -587,8 +597,7 @@ def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root:
     if not cfg.get("enabled"):
         return {"pipeline": "dendrites_pipeline", "disabled": True}
 
-    # Reuse the pipeline's established observation/experiment/legacy resolver.
-    from analysis.dendrites_pipeline.dendrites_pipeline import observation_compartment
+    from analysis.shared.observation import observation_compartment
 
     raw = source_cache.get("animals", {}) if isinstance(source_cache, Mapping) else {}
     experiments = source_cache.get("experiments", {}) if isinstance(source_cache, Mapping) else {}
@@ -662,9 +671,10 @@ def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root:
     blank_rows_by_level: dict[str, list[dict[str, Any]]] = {"overall": [], "basal": [], "apical": []}
     for expid in sorted(movie_expids):
         cut_data = cut_data_by_expid.get(expid)
-        if not cut_data:
-            continue
-        for (group_expid, compartment, anatomical), signals in cut_grouped.items():
+        exp_meta = experiments.get(expid, {}) if isinstance(experiments, Mapping) else {}
+        trial_meta_for_rows = (cut_data or {}).get("trial_meta", []) if cut_data else exp_meta.get("trial_meta", exp_meta.get("trial_rows", [])) if isinstance(exp_meta, Mapping) else []
+        source_groups = cut_grouped if cut_data else grouped
+        for (group_expid, compartment, anatomical), signals in source_groups.items():
             if group_expid != expid:
                 continue
             for signal, matrices in signals.items():
@@ -676,8 +686,8 @@ def run_dendrite_spine_progression(source_cache: Mapping[str, Any], output_root:
                     expid=expid,
                     animal_id=animals_by_expid.get(expid, ""),
                     date=dates_by_expid.get(expid, ""),
-                    cut_time=cut_data["cut_time"],
-                    trial_meta=cut_data.get("trial_meta", []),
+                    cut_time=cut_data["cut_time"] if cut_data else times.get(expid, []),
+                    trial_meta=trial_meta_for_rows,
                     traces={(compartment, signal): np.stack(valid, axis=0)},
                     bin_s=float(cfg["blank_bin_s"]),
                     max_duration_s=cfg["max_blank_duration_s"],

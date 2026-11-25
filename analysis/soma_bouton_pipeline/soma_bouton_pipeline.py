@@ -1264,7 +1264,7 @@ def _load_or_build_shared_permutation_cache(
 def _comparison_figure_root(config: Mapping[str, Any], repo_root: Path, result_root: Path) -> Path:
     """Return the canonical figure root for comparison-preset runs.
 
-    Comparison presets already have a branch-first `pooled/all` leaf, so the
+    Comparison presets use a flat branch-first `pooled` leaf, so the
     shared summary figures can live there instead of creating a separate
     top-level `figures/` tree that mirrors the same content.
     """
@@ -1515,7 +1515,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     runtime_diagnostics_start = snapshot_runtime_diagnostics(result_root)
     preset_name = str(config.get("comparison_preset_name") or "default")
     if config.get("branch_first_figures"):
-        # Comparison presets always use their canonical pooled/all leaf; a
+        # Comparison presets always use their canonical flat pooled leaf; a
         # legacy top-level figure_output_dir must not override that contract.
         figure_root = _comparison_figure_root(config, repo_root, result_root)
     else:

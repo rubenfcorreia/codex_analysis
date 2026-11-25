@@ -103,13 +103,13 @@ def _fake_plotter(label: str):
             "mixed_model",
             {
                 "mixed_model": {
-                    "designs": {"response": {}},
-                    "summary_rows": {"response": [1]},
+                    "designs": {"response": {"fixed_effect_names": ["state[nrem]"]}},
+                    "summary_rows": {"response": [{"term": "state[nrem]", "estimate": 1.0, "p_value": 0.1}]},
                     "contrast_rows": [{"response": "response"}],
                 },
                 "mixed_model_selected_state": {
-                    "designs": {"response": {}},
-                    "summary_rows": {"response": [1]},
+                    "designs": {"response": {"fixed_effect_names": ["state[nrem]"]}},
+                    "summary_rows": {"response": [{"term": "state[nrem]", "estimate": 1.0, "p_value": 0.1}]},
                     "contrast_rows": [{"response": "response"}],
                 },
             },
@@ -226,14 +226,14 @@ def test_write_analysis_outputs_plots_only_skips_nonfigure_artifacts(monkeypatch
     assert not (output_dir / "analysis_report.txt").exists()
 
 
-def test_comparison_figure_root_uses_pooled_all_leaf(tmp_path: Path) -> None:
+def test_comparison_figure_root_uses_flat_pooled_leaf(tmp_path: Path) -> None:
     branch_root = tmp_path / "comparison"
     root = pipeline.comparison_figure_root(
         {"branch_first_output_root": str(branch_root), "branch_first_figures": True},
         tmp_path,
         tmp_path / "result",
     )
-    assert root == branch_root / "pooled" / "all"
+    assert root == branch_root / "pooled"
 
 
 def test_comparison_figure_root_preserves_direct_run_fallback(tmp_path: Path) -> None:

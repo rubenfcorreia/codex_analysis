@@ -72,7 +72,7 @@ Dendrite outputs are written under the poster-ready paired_state_summary/ direct
 
 ## ROI Split Figures
 
-- The main pipeline writes ROI split figures under `results/dendrites_pipeline/<branch>/<basis>/figures/roi_split/<roi_type>/<compartment>/roi_split_<roi_type>_<compartment>_<split_name>_<basis_name>.svg|png`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split`, `basis` is one of `all`, `nrem`, or `rem`, and the same split membership is also carried into the mixed-model leaf fits.
+- The main pipeline writes preset-specific ROI split figures under `results/dendrites_pipeline/figures/<preset>/<branch>/<basis>/roi_split/<roi_type>/<compartment>/`, where `branch` is one of `activity_split`, `frequency_split`, or `activity_frequency_split`, `basis` is one of `all`, `nrem`, or `rem`, and the same split membership is also carried into the mixed-model leaf fits.
 - The shared renderer is implemented in `analysis/shared/plots/roi_split.py` and is reused by the soma/bouton pipeline.
 
 ## Config Files

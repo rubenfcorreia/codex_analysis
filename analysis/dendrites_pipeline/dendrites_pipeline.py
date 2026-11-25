@@ -58,6 +58,7 @@ from analysis.shared.pipeline_logging import (
 )
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
+from analysis.shared.observation import observation_compartment
 from analysis.shared.cache_utils import METHODOLOGY_VERSION
 from analysis.cache_builders.incremental_shuffle import reuse_compatible_entries
 from analysis.shared.cache_config import normalize_staged_config
@@ -803,36 +804,6 @@ def safe_filename_component(value: Any) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("._-")
     return text or "unknown"
-
-def observation_compartment(
-    cache: Dict[str, Any],
-    exp_id: Any,
-    observation: Optional[Dict[str, Any]],
-) -> Optional[str]:
-    """Return basal/apical compartment for a dendrite or spine observation."""
-    if not isinstance(observation, dict):
-        return None
-
-    # Best case: the observation already stores the compartment.
-    compartment = observation.get("compartment")
-    if compartment is not None and str(compartment).strip():
-        return str(compartment)
-
-    # Fallback: look up experiment-level compartment annotations.
-    exp_meta = cache.get("experiments", {}).get(str(exp_id), {}) if isinstance(cache, dict) else {}
-    if isinstance(exp_meta, dict):
-        for key in ("compartment", "compartment_label", "dendrite_compartment"):
-            compartment = exp_meta.get(key)
-            if compartment is not None and str(compartment).strip():
-                return str(compartment)
-
-    # Fallback for older cache layouts: infer from conversion/source metadata.
-    for key in ("conversion_compartment", "source_compartment"):
-        compartment = observation.get(key)
-        if compartment is not None and str(compartment).strip():
-            return str(compartment)
-
-    return None
 
 def state_summary_figure_dir(root: Path, state_group: Any = None) -> Path:
     """Return the output directory for state-summary figures.
@@ -16204,7 +16175,7 @@ def write_analysis_outputs(
                 leaf_output_dir = branch_leaf_root(branch_root, branch_name, basis_name)
                 # ``branch_root`` is the analysis tree. In comparison runs
                 # the corresponding figure tree is rooted beside it, and
-                # ``figure_root`` points at the current pooled/all leaf.
+                # ``figure_root`` points at the current pooled leaf.
                 # Deriving the figure parent from that leaf keeps recursive
                 # branch rendering out of ``analysis/...``.
                 # Comparison analysis and figure trees are siblings.  Derive
@@ -18613,15 +18584,6 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
             ignore_meta_keys=results_meta_ignore_keys,
             rebuild=False if plots_only else analysis_results_rebuild,
         )
-    if plots_only and analysis_results_cache_status == "meta_mismatch":
-        try:
-            fallback_cache = load_npz_cache(analysis_results_cache_file)
-        except Exception:
-            fallback_cache = None
-        if isinstance(fallback_cache, dict) and fallback_cache.get("schema_version") == ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION and isinstance(fallback_cache.get("analysis_results"), dict):
-            step_message("plots_only cache metadata differed, but the saved analysis-results cache is structurally valid; reusing it for figure regeneration")
-            analysis_results_cache = fallback_cache
-            analysis_results_cache_status = "ok"
     if plots_only and analysis_results_cache_status != "ok":
         family_expected_meta = dict(analysis_results_meta)
         family_expected_meta["family_result_stage"] = family_result_stage
@@ -18631,15 +18593,6 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
             ignore_meta_keys=results_meta_ignore_keys,
             rebuild=False,
         )
-        if family_results_cache_status == "meta_mismatch":
-            try:
-                fallback_cache = load_npz_cache(family_results_cache_file)
-            except Exception:
-                fallback_cache = None
-            if isinstance(fallback_cache, dict) and fallback_cache.get("schema_version") == ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION and isinstance(fallback_cache.get("analysis_results"), dict):
-                step_message(f"plots_only family cache metadata differed, but the saved family-results cache is structurally valid; reusing it for figure regeneration: {family_results_cache_file}")
-                family_results_cache = fallback_cache
-                family_results_cache_status = "ok"
         if family_results_cache_status == "ok":
             step_message(f"plots_only family-results cache reused for figure regeneration: {family_results_cache_file}")
             analysis_results_cache = family_results_cache

@@ -437,7 +437,10 @@ Default root: `results/dendrites_pipeline/`.
 | --- | --- |
 | `csv/` | Portable rows identified by day/animal/expID, ROI/entity, compartment, state, cohort, metric, and inference fields. |
 | `figures/general/` | Shared `visual_response/`, `roi_split/`, `state_transitions/`, `day_detail/`, heatmaps, checkpoint, and metric figures. |
-| `figures/<preset>/pooled/<scope>/` | Preset-specific state/cohort figures. |
+| `figures/<preset>/pooled/` | Preset-specific pooled state/cohort figures. |
+| `figures/<preset>/activity_split/<basis>/` | Activity-split figures for `all`, `nrem`, or `rem`. |
+| `figures/<preset>/frequency_split/<basis>/` | Frequency-split figures for `all`, `nrem`, or `rem`. |
+| `figures/<preset>/activity_frequency_split/<basis>/` | Activity-frequency split figures for `all`, `nrem`, or `rem`. |
 | `figures/.../paired_state_summary/` | Paired Quiet Awake vs NREM and Quiet Awake vs NREM vs REM summaries. |
 | `general/progression/` | Progression CSVs and figures when enabled. |
 | `general/state_transitions/` | Raw transition rows, expday-balanced comparisons, pooled diagnostics, aligned traces. |
