@@ -130,6 +130,9 @@ from analysis.shared.pipeline_logging import (
     step_message,
     step_progress,
     step_scope,
+    configure_run_logging,
+    log_exception,
+    log_path,
 )
 
 
@@ -3728,6 +3731,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "roi_split_comparison_rows": roi_split_results.get("comparison_rows", []),
             "roi_split_summary_rows": roi_split_results.get("summary_rows", []),
             "correlation_summary": correlation_summary,
+            "population_average_summary": population_average_summary,
             "lag_summary": lag_summary,
             "visual_response_day_rows": visual_response_day_rows,
             "visual_response_counts": visual_response_counts,
@@ -3863,12 +3867,15 @@ def _main_impl(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Compute only the stats needed for poster-ready figures and skip the regular plot pass.",
     )
+    parser.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"), default="INFO")
+    parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--comparison-presets",
         nargs="*",
         help="Optional subset of preset names to run from a comparison_presets config block.",
     )
     args = parser.parse_args(argv)
+    configure_run_logging("soma_bouton", log_level=args.log_level, quiet=args.quiet, log_root=REPO_ROOT / "logs")
     config = load_config(args.config)
     config["_config_path"] = str(args.config)
     if args.rebuild:
@@ -3922,6 +3929,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         attach_timing_to_outputs(output_root, payload)
         return result
     except BaseException as exc:
+        if not isinstance(exc, SystemExit):
+            log_exception("run=failed", exc, pipeline="soma_bouton", log=log_path())
         payload = timer.finish(exit_status="failed", error=exc)
         payload["scope"] = "process"
         attach_timing_to_outputs(output_root, payload)

@@ -52,6 +52,9 @@ from analysis.shared.pipeline_logging import (
     step_message as shared_step_message,
     step_progress as shared_step_progress,
     step_scope as shared_step_scope,
+    configure_run_logging,
+    log_exception,
+    log_path,
 )
 from analysis.shared.result_layout import resolve_result_layout
 from analysis.shared.state_utils import resolve_repo_path
@@ -18177,11 +18180,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--demo-spec", type=Path, help="Optional JSON file describing custom demo characteristics")
+    parser.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"), default="INFO")
+    parser.add_argument("--quiet", action="store_true")
     return parser
 def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
     # Parse the config, merge overrides, then run the cache build and analysis stages.
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    configure_run_logging("dendrites", log_level=args.log_level, quiet=args.quiet, log_root=REPO_ROOT / "logs")
     file_config = load_config_file(args.config)
     cli_config = {
         "user_id": args.user_id,
@@ -19053,6 +19059,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         attach_timing_to_outputs(output_root, payload)
         return result
     except BaseException as exc:
+        if not isinstance(exc, SystemExit):
+            log_exception("run=failed", exc, pipeline="dendrites", log=log_path())
         payload = timer.finish(exit_status="failed", error=exc)
         payload["scope"] = "process"
         output_root = resolve_repo_path(file_config.get("comparison_output_root") or file_config.get("output_dir") or DEFAULT_RESULTS_DIR, REPO_ROOT)

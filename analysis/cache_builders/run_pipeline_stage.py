@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from analysis.shared.cache_config import normalize_staged_config
+from analysis.shared.pipeline_logging import configure_run_logging, log_event, log_exception, log_path
 
 
 def run_stage(pipeline: str, stage: str, config_path: Path, overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -65,8 +66,19 @@ def main() -> int:
     parser.add_argument("--pipeline", choices=("dendrites", "soma_bouton"), required=True)
     parser.add_argument("--stage", choices=("for_analysis", "results"), required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"), default="INFO")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run_stage(args.pipeline, args.stage, args.config), indent=2, sort_keys=True, default=str))
+    configure_run_logging(args.pipeline, log_level=args.log_level, quiet=args.quiet, log_root=Path.cwd() / "logs")
+    log_event("INFO", "stage=start", pipeline=args.pipeline, stage=args.stage, config=args.config)
+    try:
+        result = run_stage(args.pipeline, args.stage, args.config)
+    except BaseException as exc:
+        if not isinstance(exc, SystemExit):
+            log_exception("stage=failed", exc, pipeline=args.pipeline, stage=args.stage, log=log_path())
+        raise
+    log_event("INFO", "stage=complete", pipeline=args.pipeline, stage=args.stage)
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
     return 0
 
 
