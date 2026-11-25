@@ -88,7 +88,10 @@ def log_event(level: str, event: str, **fields: Any) -> None:
 def log_exception(event: str, exc: BaseException, **fields: Any) -> None:
     log_event("ERROR", event, **fields, error=str(exc))
     if _LOGGER is not None:
-        _LOGGER.error("traceback:\n%s", "".join(traceback.format_exception(exc)))
+        _LOGGER.error(
+            "traceback:\n%s",
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        )
 
 
 def reset_stage_timings(*, pipeline: str = "pipeline", preset: str = "default") -> None:

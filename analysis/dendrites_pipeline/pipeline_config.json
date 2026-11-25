@@ -43,7 +43,7 @@
   },
   "paths": {
     "output_root": "results/dendrites_pipeline",
-    "cache_root": "results/dendrites_pipeline/cache",
+    "cache_root": "results/dendrites_pipeline/analysis/cache",
     "figure_root": "results/dendrites_pipeline/figures"
   },
   "source": {
