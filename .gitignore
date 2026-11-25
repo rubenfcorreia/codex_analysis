@@ -1,4 +1,5 @@
 results/
+logs/
 review_figures/
 .figure_viewer/
 __pycache__/
