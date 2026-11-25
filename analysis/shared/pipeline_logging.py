@@ -109,17 +109,16 @@ def get_stage_timings() -> List[Dict[str, Any]]:
 
 
 def current_step_prefix() -> str:
-    timestamp = _datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     identity = f"{_PIPELINE}/{_PRESET}"
     if not _STEP_STACK:
-        return f"[{timestamp} {identity}]"
+        return f"[{identity}]"
     frame = _STEP_STACK[-1]
     progress = ""
     if frame.index is not None and frame.total is not None:
         progress = f" {frame.index}/{frame.total}"
     elif frame.index is not None:
         progress = f" {frame.index}"
-    return f"[{timestamp} {identity}{progress}]"
+    return f"[{identity}{progress}]"
 
 
 def _display_name(name: str, task: Optional[str]) -> str:
@@ -132,7 +131,8 @@ def eprint(*args: Any) -> None:
     if not message.startswith(prefix):
         message = f"{prefix} {message}"
     if _LOGGER is None:
-        print(message, file=sys.stderr, flush=True)
+        timestamp = _datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{timestamp} {message}", file=sys.stderr, flush=True)
     else:
         _LOGGER.info(message)
 
