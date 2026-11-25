@@ -40,6 +40,23 @@
       "plots": true,
       "scope": "expid_day",
       "aggregate": "pooled"
+    },
+    "correlation": {
+      "enabled": true,
+      "types": ["population_average", "soma_bouton", "soma_pairwise", "bouton_pairwise"],
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    },
+    "lag": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
     }
   },
   "_field_help": {

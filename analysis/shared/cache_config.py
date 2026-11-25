@@ -144,6 +144,9 @@ def normalize_staged_config(raw: Mapping[str, Any], *, pipeline: str, base_dir: 
     _put_if_present(config, analysis, "analysis_families", "families")
     if family_settings:
         config["analysis_family_settings"] = deepcopy(family_settings)
+        correlation_settings = family_settings.get("correlation")
+        if isinstance(correlation_settings, Mapping) and "types" in correlation_settings:
+            config["correlation_types"] = deepcopy(correlation_settings.get("types") or [])
 
     plot_config_file = plots.get("config_file")
     if plot_config_file and base_dir is not None:

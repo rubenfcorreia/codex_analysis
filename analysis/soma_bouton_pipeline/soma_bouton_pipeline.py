@@ -76,7 +76,7 @@ from analysis.shared.shared_calcium_response import (
     summarize_visual_response_entity_rows,
     visual_response_trial_rows,
 )
-from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, soma_pairwise_correlation_rows
+from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_correlation_rows, bouton_soma_correlation_rows, correlation_summary_rows, population_average_correlation_rows, soma_pairwise_correlation_rows
 from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows
 from analysis.shared.analysis_families.soma_transitions import run_transition_analysis
 from analysis.shared.state_transitions import aggregate_transition_rows_expday, paired_transition_summaries, plot_transition_summaries
@@ -275,6 +275,14 @@ DEFAULT_CONFIG = {
         "rem",
     ],
 }
+
+
+def _analysis_family_enabled(config: Mapping[str, Any], name: str, default: bool = True) -> bool:
+    settings = config.get("analysis_family_settings") or {}
+    family = settings.get(name) if isinstance(settings, Mapping) else None
+    if isinstance(family, Mapping) and "enabled" in family:
+        return bool(family.get("enabled"))
+    return default
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -1162,7 +1170,10 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "soma_channel": int(config.get("soma_channel", 1)),
         "bouton_channel": int(config.get("bouton_channel", 0)),
         "pairwise_correlation_schema_version": 3,
-        "correlation_types": sorted(set(config.get("correlation_types") or ("soma_bouton", "soma_pairwise", "bouton_pairwise"))),
+        "correlation_types": sorted(set(config.get("correlation_types") or ("population_average", "soma_bouton", "soma_pairwise", "bouton_pairwise"))),
+        "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
+        "correlation_family_enabled": _analysis_family_enabled(config, "correlation"),
+        "lag_family_enabled": _analysis_family_enabled(config, "lag"),
         "coincidence_family_schema_version": 1,
         "coincidence_example_top_n": int(coincidence_example_top_n),
         "null_model": str(config.get("null_model", config.get("pairwise_correlation_null_model", "mask_aware"))),
@@ -1551,7 +1562,11 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     pairwise_correlation_batch_size = max(1, int(config.get("pairwise_correlation_batch_size", 64)))
     pairwise_correlation_shift_block_size = max(1, int(config.get("pairwise_correlation_shift_block_size", 8)))
     configured_correlation_types = config.get("correlation_types")
-    correlation_types = set(configured_correlation_types or ("soma_bouton", "soma_pairwise", "bouton_pairwise"))
+    correlation_types = set(configured_correlation_types or ("population_average", "soma_bouton", "soma_pairwise", "bouton_pairwise"))
+    correlation_family_enabled = _analysis_family_enabled(config, "correlation")
+    lag_family_enabled = _analysis_family_enabled(config, "lag")
+    if not correlation_family_enabled:
+        correlation_types.clear()
     correlation_shuffle_seed = int(config.get("correlation_shuffle_seed", 12345))
     correlation_min_shift_frames = int(config.get("correlation_min_shift_frames", 1))
     analysis_run_cache_file = _analysis_run_cache_path(config, repo_root, result_root)
@@ -1566,7 +1581,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     shared_shuffle_cache_file = _shared_shuffle_cache_path(source_cache_file, str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))))
     pairwise_null_model = str(config.get("pairwise_correlation_null_model", config.get("null_model", "mask_aware"))).strip().lower()
     skip_shuffle_dataset = bool(config.get("skip_shuffle_dataset", False))
-    requires_shuffle_dataset = not skip_shuffle_dataset and pairwise_null_model == "full_trace"
+    requires_shuffle_dataset = correlation_family_enabled and not skip_shuffle_dataset and pairwise_null_model == "full_trace"
     configured_shuffle_dataset = config.get("shuffle_dataset_path") if requires_shuffle_dataset else None
     shuffle_dataset_file = (resolve_repo_path(configured_shuffle_dataset, repo_root) if configured_shuffle_dataset else _shuffle_dataset_path(source_cache_file)) if requires_shuffle_dataset else None
     expected_shuffle_sha256 = str(config.get("shuffle_dataset_sha256") or "") if requires_shuffle_dataset else ""
@@ -1595,12 +1610,13 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
     cache_timings: Dict[str, float] = {}
     cache_started = time.perf_counter()
-    if skip_shuffle_dataset:
+    if skip_shuffle_dataset or not correlation_family_enabled:
         shared_shuffle_cache = {}
         shared_shuffle_cache_rebuilt = False
         shared_shuffle_cache_status = "disabled"
         cache_timings["shared_shuffle"] = 0.0
-        print("SHUFFLE DATASET: consumer disabled | reason=explicit_config", file=sys.stderr)
+        reason = "explicit_config" if skip_shuffle_dataset else "correlation_family_disabled"
+        print(f"SHUFFLE DATASET: consumer disabled | reason={reason}", file=sys.stderr)
     else:
         shared_shuffle_cache, shared_shuffle_cache_rebuilt, shared_shuffle_cache_status = load_or_build_soma_shuffle_incremental(_load_or_build_shared_permutation_cache,
             shared_shuffle_cache_file,
@@ -1651,6 +1667,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     experiment_rows: List[Dict[str, Any]] = []
     activity_rows: List[Dict[str, Any]] = []
     correlation_rows: List[Dict[str, Any]] = []
+    population_average_rows: List[Dict[str, Any]] = []
     soma_pairwise_rows: List[Dict[str, Any]] = []
     bouton_pairwise_rows: List[Dict[str, Any]] = []
     lag_rows: List[Dict[str, Any]] = []
@@ -1696,6 +1713,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "family_result_stage": "pairwise_correlation",
         "source_signature": family_source_signature,
         "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
+        "correlation_types": sorted(correlation_types),
+        "correlation_family_enabled": correlation_family_enabled,
+        "lag_family_enabled": lag_family_enabled,
     }
     coincidence_family_cache_file = family_results_cache_path(analysis_results_cache_file, "coincidence")
     coincidence_family_meta = {
@@ -1728,6 +1748,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         if pairwise_family_status == "ok" and isinstance(pairwise_family_cache, dict):
             pairwise_family_rows = dict(pairwise_family_cache.get("analysis_results", {}))
             correlation_rows = list(pairwise_family_rows.get("correlation_rows", []))
+            population_average_rows = list(pairwise_family_rows.get("population_average_rows", []))
             soma_pairwise_rows = list(pairwise_family_rows.get("soma_pairwise_rows", []))
             bouton_pairwise_rows = list(pairwise_family_rows.get("bouton_pairwise_rows", []))
     if not bool(config.get("rebuild")):
@@ -1770,6 +1791,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                     experiment_rows = list(table_rows.get("experiment_rows", []))
                     activity_rows = list(table_rows.get("activity_rows", []))
                     correlation_rows = list(table_rows.get("correlation_rows", []))
+                    population_average_rows = list(table_rows.get("population_average_rows", []))
                     soma_pairwise_rows = list(table_rows.get("soma_pairwise_rows", []))
                     bouton_pairwise_rows = list(table_rows.get("bouton_pairwise_rows", []))
                     lag_rows = list(table_rows.get("lag_rows", []))
@@ -1799,6 +1821,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 csv_root = root / "csv"
                 sources = {
                     "correlation_rows": csv_root / "bouton_soma_correlation_by_roi.csv",
+                    "population_average_rows": csv_root / "population_average_correlation_by_experiment.csv",
                     "soma_pairwise_rows": csv_root / "soma_pairwise_correlation_by_roi.csv",
                     "bouton_pairwise_rows": csv_root / "bouton_pairwise_correlation_by_roi.csv",
                 }
@@ -1816,6 +1839,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 pairwise_family_rows = _load_pairwise_family_rows_from_csv(result_root)
                 if pairwise_family_rows is not None:
                     correlation_rows = list(pairwise_family_rows.get("correlation_rows", []))
+                    population_average_rows = list(pairwise_family_rows.get("population_average_rows", []))
                     soma_pairwise_rows = list(pairwise_family_rows.get("soma_pairwise_rows", []))
                     bouton_pairwise_rows = list(pairwise_family_rows.get("bouton_pairwise_rows", []))
                     save_family_results_cache(
@@ -1909,58 +1933,6 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                         event_detection_method=event_detection_method,
                     )
                 )
-            if pairwise_family_rows is None:
-                step_message(f"PROCESS correlations: {mode} | {expid}")
-                if "soma_bouton" in correlation_types:
-                    with step_scope("soma-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_bouton"}):
-                        correlation_rows.extend(bouton_soma_correlation_rows(
-                            ctx, row_states, state_masks=state_masks,
-                            correlation_shuffle_n=pairwise_correlation_shuffle_n,
-                            correlation_method=correlation_method,
-                            correlation_inference=pairwise_correlation_inference,
-                            correlation_batch_size=pairwise_correlation_batch_size,
-                            correlation_shift_block_size=pairwise_correlation_shift_block_size,
-                            correlation_shuffle_seed=correlation_shuffle_seed,
-                            correlation_min_shift_frames=correlation_min_shift_frames,
-                            shared_shuffle_cache=shared_shuffle_cache,
-                        ))
-                if "soma_pairwise" in correlation_types:
-                    with step_scope("soma-soma correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_pairwise"}):
-                        soma_pairwise_rows.extend(soma_pairwise_correlation_rows(
-                            ctx, row_states, state_masks=state_masks,
-                            correlation_shuffle_n=pairwise_correlation_shuffle_n,
-                            correlation_method=correlation_method,
-                            correlation_inference=pairwise_correlation_inference,
-                            correlation_batch_size=pairwise_correlation_batch_size,
-                            correlation_shift_block_size=pairwise_correlation_shift_block_size,
-                            correlation_shuffle_seed=correlation_shuffle_seed,
-                            correlation_min_shift_frames=correlation_min_shift_frames,
-                            shared_shuffle_cache=shared_shuffle_cache,
-                        ))
-                if "bouton_pairwise" in correlation_types:
-                    with step_scope("bouton-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "bouton_pairwise"}):
-                        bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(
-                            ctx, row_states, state_masks=state_masks,
-                            correlation_shuffle_n=pairwise_correlation_shuffle_n,
-                            correlation_method=correlation_method,
-                            correlation_inference=pairwise_correlation_inference,
-                            correlation_batch_size=pairwise_correlation_batch_size,
-                            correlation_shift_block_size=pairwise_correlation_shift_block_size,
-                            correlation_shuffle_seed=correlation_shuffle_seed,
-                            correlation_min_shift_frames=correlation_min_shift_frames,
-                            shared_shuffle_cache=shared_shuffle_cache,
-                        ))
-            step_message(f"PROCESS lag scan: {mode} | {expid}")
-            with step_scope("lag scans", task="lag", metadata={"mode": mode, "expid": expid}):
-                lag_rows.extend(
-                    lag_scan_rows(
-                        ctx,
-                        row_states,
-                        lag_window_s=float(config.get("lag_window_s", 2.0)),
-                        lag_step_s=float(config.get("lag_step_s", 0.1)),
-                        state_masks=state_masks,
-                    )
-                )
             if mode == "movie":
                 step_message(f"PROCESS visual response: {mode} | {expid}")
                 with step_scope("visual-response analysis", task="visual_response", metadata={"mode": mode, "expid": expid}):
@@ -2045,6 +2017,36 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             f"{mode}: experiments={len(expids_by_mode.get(mode, []))}, activity_rows={len(activity_rows)}, correlation_rows={len(correlation_rows)}, soma_pairwise_rows={len(soma_pairwise_rows)}, bouton_pairwise_rows={len(bouton_pairwise_rows)}, coincidence_rows={len(coincidence_rows)}, lag_rows={len(lag_rows)}, visual_response_rows={len(visual_response_rows)}",
         )
 
+    if pairwise_family_rows is None and correlation_family_enabled:
+        step_message(f"ANALYSIS FAMILY correlation: {','.join(sorted(correlation_types)) or 'none'}")
+        for ctx in transition_contexts:
+            row_states = list(union_states_by_mode.get(ctx.mode, selected_states_by_mode.get(ctx.mode, []))) if union_cache_enabled else list(selected_states_by_mode.get(ctx.mode, []))
+            state_masks = state_masks_for_context(ctx, row_states)
+            mode, expid = ctx.mode, ctx.expid
+            if "population_average" in correlation_types:
+                with step_scope("population-average correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "population_average"}):
+                    population_average_rows.extend(population_average_correlation_rows(ctx, row_states, state_masks=state_masks, correlation_shuffle_n=pairwise_correlation_shuffle_n, correlation_method=correlation_method, correlation_inference=pairwise_correlation_inference, correlation_batch_size=pairwise_correlation_batch_size, correlation_shift_block_size=pairwise_correlation_shift_block_size, correlation_shuffle_seed=correlation_shuffle_seed, correlation_min_shift_frames=correlation_min_shift_frames, shared_shuffle_cache=shared_shuffle_cache))
+            if "soma_bouton" in correlation_types:
+                with step_scope("soma-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_bouton"}):
+                    correlation_rows.extend(bouton_soma_correlation_rows(ctx, row_states, state_masks=state_masks, correlation_shuffle_n=pairwise_correlation_shuffle_n, correlation_method=correlation_method, correlation_inference=pairwise_correlation_inference, correlation_batch_size=pairwise_correlation_batch_size, correlation_shift_block_size=pairwise_correlation_shift_block_size, correlation_shuffle_seed=correlation_shuffle_seed, correlation_min_shift_frames=correlation_min_shift_frames, shared_shuffle_cache=shared_shuffle_cache))
+            if "soma_pairwise" in correlation_types:
+                with step_scope("soma-soma correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "soma_pairwise"}):
+                    soma_pairwise_rows.extend(soma_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks, correlation_shuffle_n=pairwise_correlation_shuffle_n, correlation_method=correlation_method, correlation_inference=pairwise_correlation_inference, correlation_batch_size=pairwise_correlation_batch_size, correlation_shift_block_size=pairwise_correlation_shift_block_size, correlation_shuffle_seed=correlation_shuffle_seed, correlation_min_shift_frames=correlation_min_shift_frames, shared_shuffle_cache=shared_shuffle_cache))
+            if "bouton_pairwise" in correlation_types:
+                with step_scope("bouton-bouton correlations", task="correlation", metadata={"mode": mode, "expid": expid, "family": "bouton_pairwise"}):
+                    bouton_pairwise_rows.extend(bouton_pairwise_correlation_rows(ctx, row_states, state_masks=state_masks, correlation_shuffle_n=pairwise_correlation_shuffle_n, correlation_method=correlation_method, correlation_inference=pairwise_correlation_inference, correlation_batch_size=pairwise_correlation_batch_size, correlation_shift_block_size=pairwise_correlation_shift_block_size, correlation_shuffle_seed=correlation_shuffle_seed, correlation_min_shift_frames=correlation_min_shift_frames, shared_shuffle_cache=shared_shuffle_cache))
+    else:
+        step_message("ANALYSIS FAMILY correlation: skipped or cached")
+
+    if not lag_family_enabled:
+        step_message("ANALYSIS FAMILY lag: skipped")
+    else:
+        step_message("ANALYSIS FAMILY lag: enabled")
+        for ctx in transition_contexts:
+            row_states = list(union_states_by_mode.get(ctx.mode, selected_states_by_mode.get(ctx.mode, []))) if union_cache_enabled else list(selected_states_by_mode.get(ctx.mode, []))
+            with step_scope("lag scans", task="lag", metadata={"mode": ctx.mode, "expid": ctx.expid, "family": "lag"}):
+                lag_rows.extend(lag_scan_rows(ctx, row_states, lag_window_s=float(config.get("lag_window_s", 2.0)), lag_step_s=float(config.get("lag_step_s", 0.1)), state_masks=state_masks_for_context(ctx, row_states)))
+
     movie_activity_count = sum(1 for row in activity_rows if str(row.get("mode") or "") == "movie")
     if expids_by_mode.get("movie") and movie_activity_count == 0:
         logger.error(
@@ -2058,6 +2060,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         union_rows_for_shared_output = {
             "activity_rows": list(activity_rows),
             "correlation_rows": list(correlation_rows),
+            "population_average_rows": list(population_average_rows),
             "soma_pairwise_rows": list(soma_pairwise_rows),
             "bouton_pairwise_rows": list(bouton_pairwise_rows),
             "lag_rows": list(lag_rows),
@@ -2077,11 +2080,28 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         }
         activity_rows = selected_state_rows["activity_rows"]
         correlation_rows = selected_state_rows["correlation_rows"]
+        population_average_rows = selected_state_rows["population_average_rows"]
         soma_pairwise_rows = selected_state_rows["soma_pairwise_rows"]
         bouton_pairwise_rows = selected_state_rows["bouton_pairwise_rows"]
         lag_rows = selected_state_rows["lag_rows"]
         coincidence_rows = selected_state_rows["coincidence_rows"]
         visual_response_rows = selected_state_rows["visual_response_rows"]
+        if not correlation_family_enabled:
+            correlation_rows = []
+            population_average_rows = []
+            soma_pairwise_rows = []
+            bouton_pairwise_rows = []
+        else:
+            if "population_average" not in correlation_types:
+                population_average_rows = []
+            if "soma_bouton" not in correlation_types:
+                correlation_rows = []
+            if "soma_pairwise" not in correlation_types:
+                soma_pairwise_rows = []
+            if "bouton_pairwise" not in correlation_types:
+                bouton_pairwise_rows = []
+        if not lag_family_enabled:
+            lag_rows = []
         if write_general_tables and union_rows_for_shared_output:
             ensure_dir(general_csv_root)
             for filename, family in (
@@ -2226,6 +2246,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         shuffle_cache=shared_shuffle_cache,
     )
     correlation_summary = correlation_summary_rows(correlation_rows)
+    population_average_summary = correlation_summary_rows(population_average_rows)
     soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows)
     bouton_pairwise_summary = pairwise_correlation_summary_rows(bouton_pairwise_rows)
     lag_summary = lag_summary_rows(lag_rows)
@@ -2250,6 +2271,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "pairwise_correlation",
             {
                 "correlation_rows": correlation_rows,
+                "population_average_rows": population_average_rows,
                 "soma_pairwise_rows": soma_pairwise_rows,
                 "bouton_pairwise_rows": bouton_pairwise_rows,
                 "correlation_summary_rows": correlation_summary,
@@ -2365,6 +2387,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         bouton_pairwise_rows_with_cohort = annotate_rows_with_split_group(bouton_pairwise_rows_with_cohort, split_membership_rows)
         coincidence_rows_with_cohort = annotate_rows_with_split_group(coincidence_rows_with_cohort, split_membership_rows)
     correlation_summary = correlation_summary_rows(correlation_rows_with_cohort)
+    population_average_summary = correlation_summary_rows(population_average_rows)
     soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows_with_cohort)
     bouton_pairwise_summary = pairwise_correlation_summary_rows(bouton_pairwise_rows_with_cohort)
     lag_summary = lag_summary_rows(lag_rows_with_cohort)
@@ -2404,6 +2427,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "pairwise_correlation",
             {
                 "correlation_rows": correlation_rows_with_cohort,
+                "population_average_rows": population_average_rows,
                 "soma_pairwise_rows": soma_pairwise_rows_with_cohort,
                 "bouton_pairwise_rows": bouton_pairwise_rows_with_cohort,
                 "correlation_summary_rows": correlation_summary,
@@ -2469,7 +2493,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     ) if isinstance(mixed_model_results, dict) else 0
     _stage(
         "summary counts",
-        f"activity={len(activity_summary_rows)}, transition_events={len(transition_results.get('event_rows', []))}, transition_comparisons={len(transition_results.get('summary_rows', []))}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, roi_split={len(roi_split_results.get('comparison_rows', []))}, correlation={len(correlation_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
+        f"activity={len(activity_summary_rows)}, transition_events={len(transition_results.get('event_rows', []))}, transition_comparisons={len(transition_results.get('summary_rows', []))}, movie_comparisons={len(state_comparison_summary_rows)}, sleep_comparisons={len(sleep_state_comparison_summary_rows)}, movie_event_comparisons={len(state_event_comparison_summary_rows)}, sleep_event_comparisons={len(sleep_state_event_comparison_summary_rows)}, roi_split={len(roi_split_results.get('comparison_rows', []))}, correlation={len(correlation_summary)}, population_average={len(population_average_summary)}, soma_pairwise={len(soma_pairwise_summary)}, bouton_pairwise={len(bouton_pairwise_summary)}, coincidence={len(coincidence_summary_rows)}, lag={len(lag_summary)}, visual_response={len(visual_response_rows)}, mixed_model={mixed_model_contrast_count}",
     )
 
     poster_ready_only = bool(config.get("poster_ready_only"))
@@ -2487,6 +2511,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if correlation_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "bouton_soma_correlation_by_roi")
         write_csv_rows(general_csv_root / "bouton_soma_correlation_by_roi.csv", correlation_rows, list(correlation_rows[0].keys()))
+    if population_average_rows and write_general_tables and write_detailed_csv:
+        _stage("writing csv", "population_average_correlation_by_experiment")
+        write_csv_rows(general_csv_root / "population_average_correlation_by_experiment.csv", population_average_rows, list(population_average_rows[0].keys()))
     if soma_pairwise_rows and write_general_tables and write_detailed_csv:
         _stage("writing csv", "soma_pairwise_correlation_by_roi")
         write_csv_rows(general_csv_root / "soma_pairwise_correlation_by_roi.csv", soma_pairwise_rows, list(soma_pairwise_rows[0].keys()))
@@ -2543,6 +2570,9 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             cohort_csv_dir = ensure_dir(result_root / "csv" / "cohort" / cohort_name)
             write_csv_rows(cohort_csv_dir / "bouton_soma_correlation_by_day.csv", cohort_rows, list(cohort_rows[0].keys()))
+    if population_average_summary:
+        _stage("writing csv", "population_average_correlation_by_day")
+        write_csv_rows(result_root / "csv" / "population_average_correlation_by_day.csv", population_average_summary, list(population_average_summary[0].keys()))
     if soma_pairwise_summary:
         _stage("writing csv", "soma_pairwise_correlation_by_day")
         write_csv_rows(result_root / "csv" / "soma_pairwise_correlation_by_day.csv", soma_pairwise_summary, list(soma_pairwise_summary[0].keys()))
@@ -3679,6 +3709,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "experiment_rows": experiment_rows,
             "activity_rows": activity_rows,
             "correlation_rows": correlation_rows,
+            "population_average_rows": population_average_rows,
             "soma_pairwise_rows": soma_pairwise_rows,
             "bouton_pairwise_rows": bouton_pairwise_rows,
             "lag_rows": lag_rows,

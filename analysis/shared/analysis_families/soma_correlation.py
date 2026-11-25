@@ -80,6 +80,58 @@ def bouton_soma_correlation_rows(
     )
 
 
+def population_average_correlation_rows(
+    ctx: ExperimentContext,
+    selected_states: Sequence[str],
+    state_masks: Mapping[str, np.ndarray] | None = None,
+    correlation_shuffle_n: int = 0,
+    correlation_method: str = "pearson",
+    correlation_inference: str = "none",
+    correlation_shuffle_seed: int = 12345,
+    correlation_min_shift_frames: int = 1,
+    correlation_batch_size: int = 64,
+    correlation_shift_block_size: int = 8,
+    shared_shuffle_cache: Dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
+    """Correlate the population-average soma and bouton traces per state."""
+    masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
+    soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
+    bouton_matrix = np.asarray(ctx.bouton.matrix(), dtype=float)
+    if soma_matrix.size == 0 or bouton_matrix.size == 0:
+        return []
+    soma_mean = np.nanmean(soma_matrix, axis=0)
+    bouton_mean = np.nanmean(bouton_matrix, axis=0)
+    soma_member = pairwise_mean_member(
+        ctx=ctx,
+        compartment="soma",
+        channel=ctx.soma_channel,
+        trace=soma_mean,
+        label="population_mean",
+    )
+    bouton_member = pairwise_mean_member(
+        ctx=ctx,
+        compartment="bouton",
+        channel=ctx.bouton_channel,
+        trace=bouton_mean,
+        label="population_mean",
+    )
+    return build_pairwise_correlation_rows(
+        ctx,
+        masks,
+        comparison_name="population_average",
+        left_members=[soma_member],
+        right_members=[bouton_member],
+        correlation_shuffle_n=correlation_shuffle_n,
+        correlation_method=correlation_method,
+        correlation_inference=correlation_inference,
+        correlation_shuffle_seed=correlation_shuffle_seed,
+        correlation_min_shift_frames=correlation_min_shift_frames,
+        correlation_batch_size=correlation_batch_size,
+        correlation_shift_block_size=correlation_shift_block_size,
+        shared_shuffle_cache=shared_shuffle_cache,
+    )
+
+
 def soma_pairwise_correlation_rows(
     ctx: ExperimentContext,
     selected_states: Sequence[str],
@@ -167,6 +219,7 @@ def correlation_summary_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str
 __all__ = [
     "bouton_pairwise_correlation_rows",
     "bouton_soma_correlation_rows",
+    "population_average_correlation_rows",
     "correlation_summary_rows",
     "soma_pairwise_correlation_rows",
 ]
