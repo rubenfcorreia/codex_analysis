@@ -136,6 +136,7 @@ def _state_summary_cache_key(
     subject_key: str = "day_id",
     dendrite_ids_filter: Optional[Sequence[str]] = None,
     spine_ids_filter: Optional[Sequence[str]] = None,
+    scope_ids: Optional[Sequence[str]] = None,
 ) -> str:
     return stable_hash(
         {
@@ -147,6 +148,7 @@ def _state_summary_cache_key(
             "subject_key": subject_key,
             "dendrite_ids_filter": _state_summary_filter_key(dendrite_ids_filter),
             "spine_ids_filter": _state_summary_filter_key(spine_ids_filter),
+            "scope_ids": _state_summary_filter_key(scope_ids),
         }
     )
 
@@ -11584,6 +11586,7 @@ def _collect_state_summary_values(
     spine_ids_filter: Optional[Sequence[str]] = None,
     *,
     by_dendrite: bool = False,
+    scope_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     ordered_state_labels = list(dict.fromkeys([str(state) for state in state_labels if state is not None and str(state).strip()]))
     by_state: Dict[str, Dict[str, List[float]]] = {state: defaultdict(list) for state in ordered_state_labels}
@@ -11591,6 +11594,7 @@ def _collect_state_summary_values(
         return by_state
 
     dendrite_id_filter_set, spine_id_filter_set = _state_summary_filter_sets(dendrite_ids_filter, spine_ids_filter)
+    scope_id_set = {str(scope_id) for scope_id in (scope_ids or []) if str(scope_id)} if scope_ids is not None else None
     animals = cache.get("animals", {})
     experiments = cache.get("experiments", {})
     spine_metric_kinds = {
@@ -11633,6 +11637,8 @@ def _collect_state_summary_values(
                     if not selected_spine_ids:
                         continue
                 subject_id = str(exp_id) if by_dendrite else str(d_obs.get(subject_key) or exp_id or animal_id)
+                if scope_id_set is not None and subject_id not in scope_id_set and str(exp_id) not in scope_id_set:
+                    continue
                 d_trace = d_obs.get("trace")
                 d_time = d_obs.get("time")
                 d_event_info = d_obs.get("event_info") or {}
@@ -11876,6 +11882,7 @@ def summarize_state_values(
     subject_key: str = "day_id",
     dendrite_ids_filter: Optional[Sequence[str]] = None,
     spine_ids_filter: Optional[Sequence[str]] = None,
+    scope_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     cache_key = _state_summary_cache_key(
         "values",
@@ -11886,6 +11893,7 @@ def summarize_state_values(
         subject_key=subject_key,
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
+        scope_ids=scope_ids,
     )
     cached = _STATE_SUMMARY_VALUES_CACHE.get(cache_key)
     if cached is None:
@@ -11903,6 +11911,7 @@ def summarize_state_values(
         subject_key=subject_key,
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
+        scope_ids=scope_ids,
     )
     _STATE_SUMMARY_VALUES_CACHE[cache_key] = by_state
     _state_summary_cache_store(cache)[cache_key] = by_state

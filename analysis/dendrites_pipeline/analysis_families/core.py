@@ -87,6 +87,35 @@ STATE_METRIC_NAMES: Tuple[str, ...] = (
 )
 
 
+def _state_metric_rows_from_values(values_by_metric: Mapping[str, Mapping[str, Mapping[str, Sequence[float]]]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for metric_name, by_state in values_by_metric.items():
+        for state_label, by_subject in by_state.items():
+            for subject_id, values in by_subject.items():
+                rows.append({
+                    "expid": str(subject_id),
+                    "day_id": str(subject_id),
+                    "metric": str(metric_name),
+                    "state": str(state_label),
+                    "values": [float(value) for value in values if np.isfinite(value)],
+                })
+    return rows
+
+
+def _state_metric_values_from_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Dict[str, List[float]]]]:
+    values: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
+    for row in rows:
+        metric = str(row.get("metric") or "")
+        state = str(row.get("state") or "")
+        subject = str(row.get("day_id") or row.get("expid") or "")
+        if not metric or not state or not subject:
+            continue
+        values.setdefault(metric, {}).setdefault(state, {})[subject] = [
+            float(value) for value in (row.get("values") or []) if np.isfinite(value)
+        ]
+    return values
+
+
 ANALYSIS_FAMILIES: List[str] = [
     "state",
     "basal_apical",
@@ -257,12 +286,28 @@ def run_state_family(
     figure_root: Optional[Any] = None,
     scope_keys: Optional[Sequence[str]] = None,
     reused_coverage_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    reused_metric_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    metric_scope_ids: Optional[Sequence[str]] = None,
 ) -> None:
     experiments = cache.get("experiments", {})
     state_metric_names = list(STATE_METRIC_NAMES)
     with step_scope("state summary metrics"):
-        state_metric_values = {metric_name: summarize_state_values(cache, metric_name, state_comparison_states) for metric_name in state_metric_names}
+        cached_metric_values = _state_metric_values_from_rows(reused_metric_rows or [])
+        state_metric_values: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
+        for metric_name in state_metric_names:
+            if metric_scope_ids is None:
+                state_metric_values[metric_name] = summarize_state_values(cache, metric_name, state_comparison_states)
+                continue
+            merged = {
+                state: {subject: list(values) for subject, values in subjects.items()}
+                for state, subjects in cached_metric_values.get(metric_name, {}).items()
+            }
+            scoped_values = summarize_state_values(cache, metric_name, state_comparison_states, scope_ids=metric_scope_ids)
+            for state, subjects in scoped_values.items():
+                merged.setdefault(state, {}).update({subject: list(values) for subject, values in subjects.items()})
+            state_metric_values[metric_name] = merged
         state_metric_dendrite_values = {metric_name: summarize_state_values_by_dendrite(cache, metric_name, state_comparison_states) for metric_name in state_metric_names}
+        results["state_metric_rows"] = _state_metric_rows_from_values(state_metric_values)
         for metric_name in state_metric_names:
             results["state_summaries"][metric_name] = state_metric_values[metric_name]
             results["state_dendrite_summaries"][metric_name] = state_metric_dendrite_values[metric_name]
@@ -782,12 +827,21 @@ def run_cached_analysis(
         ) if cache_path is not None else {}
         reused_rows = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        reusable_metric = load_reusable_family_scope_rows(
+            cache_path, "state", scope_signatures, table_name="state_metric_rows",
+            expected_family_meta=analysis_results_meta,
+        ) if cache_path is not None else {}
+        reused_metric_rows = [row for rows in reusable_metric.values() for row in rows]
+        metric_scope_ids = [str(scope).split("|", 1)[0] for scope in changed_scopes] if reusable_metric else None
         results.setdefault("cache_summary", {})["state_scope_reuse"] = family_scope_reuse_report("state", scope_signatures, reusable)
+        results.setdefault("cache_summary", {})["state_metric_scope_reuse"] = family_scope_reuse_report("state_metric_rows", scope_signatures, reusable_metric)
         run_state_family(
             cache, results, state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states, shuffle_n=shuffle_n,
             output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes,
             reused_coverage_rows=reused_rows,
+            reused_metric_rows=reused_metric_rows,
+            metric_scope_ids=metric_scope_ids,
         )
         results.setdefault("cache_summary", {})["state_global_aggregation"] = {
             "status": "recomputed",

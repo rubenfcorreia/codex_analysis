@@ -194,6 +194,15 @@ def test_family_scope_reuse_report_marks_new_experiment_for_recompute(tmp_path: 
     assert report["recomputed_scopes"] == ["e2|d2"]
 
 
+def test_state_metric_rows_round_trip_by_scope():
+    from analysis.dendrites_pipeline.analysis_families.core import _state_metric_rows_from_values, _state_metric_values_from_rows
+
+    values = {"dendrite_mean": {"wake": {"e1": [1.0, 2.0], "e2": [3.0]}}}
+    rows = _state_metric_rows_from_values(values)
+    assert {row["expid"] for row in rows} == {"e1", "e2"}
+    assert _state_metric_values_from_rows(rows) == values
+
+
 def test_family_scope_cache_reuses_only_matching_scope_signatures(tmp_path: Path):
     from analysis.shared.cache_utils import load_reusable_family_scope_rows, save_family_results_cache
 
