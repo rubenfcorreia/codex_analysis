@@ -14551,6 +14551,7 @@ def run_mixed_model_analysis(
     if cached_table is not None:
         table_rows = list(cached_table["table_rows"])
         table_checks = dict(cached_table["table_checks"])
+        table_cache_status = "reused"
     else:
         table_rows, table_checks = build_mixed_model_table(cache, source_cache=source_cache)
         store_cached_analysis_table(
@@ -14567,6 +14568,7 @@ def run_mixed_model_analysis(
                 "visual_response_blank_trial_type": VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
             },
         )
+        table_cache_status = "rebuilt"
     alerts: List[str] = []
     state_comparison_states = list(state_comparison_states) if state_comparison_states is not None else list(PRIMARY_QUIET_STATES)
     basal_apical_states = list(basal_apical_states) if basal_apical_states is not None else list(DEFAULT_BASAL_APICAL_STATES)
@@ -14739,6 +14741,15 @@ def run_mixed_model_analysis(
     return {
         "available": bool(MixedLM is not None),
         "alerts": list(dict.fromkeys(alerts)),
+        "table_cache": {
+            "status": table_cache_status,
+            "reused": table_cache_status == "reused",
+            "row_count": len(table_rows),
+        },
+        "model_statistics_cache": {
+            "status": "recomputed",
+            "reason": "group-dependent mixed-model fit and contrasts",
+        },
         "table_checks": table_checks,
         "table_rows": table_rows,
         "selection": {

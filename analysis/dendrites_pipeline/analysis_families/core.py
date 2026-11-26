@@ -505,6 +505,16 @@ def run_mixed_model_family_block(
     ):
         results[key] = mixed_model_results.get(key, {})
 
+    results.setdefault("cache_summary", {})["mixed_model_table"] = dict(
+        mixed_model_results.get("table_cache") or {}
+    )
+    results.setdefault("cache_summary", {})["mixed_model_statistics"] = dict(
+        mixed_model_results.get("model_statistics_cache") or {
+            "status": "recomputed",
+            "reason": "group-dependent mixed-model fit and contrasts",
+        }
+    )
+
     for key in (
         "mixed_model_visual_response_responsive",
         "mixed_model_visual_response_nonresponsive",

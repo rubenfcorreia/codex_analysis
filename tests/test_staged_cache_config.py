@@ -139,6 +139,35 @@ def test_family_cache_reuse_skips_family_execution(tmp_path: Path):
     assert results["cache_summary"]["state_scope_reuse"]["reused_scope_count"] == 1
 
 
+def test_mixed_model_reuses_only_input_table_and_recomputes_group_statistics():
+    from analysis.shared.plots import dendrite_plot_support as support
+
+    store_cached_analysis_table = support.store_cached_analysis_table
+
+    table_meta = {
+        "methodology_version": support.METHODOLOGY_VERSION,
+        "analysis_unit": "day",
+        "visual_response_classifier_type": "dendrite",
+        "visual_response_classifier_method": support.VISUAL_RESPONSE_CLASSIFIER_METHOD,
+        "visual_response_classifier_version": support.VISUAL_RESPONSE_CLASSIFIER_VERSION,
+        "visual_response_trial_types": list(support.VISUAL_RESPONSE_VISUAL_TRIAL_TYPES),
+        "visual_response_blank_trial_type": support.VISUAL_RESPONSE_BLANK_TRIAL_TYPE,
+    }
+    cache = {"analysis_unit": "day", "analysis_tables": {}}
+    store_cached_analysis_table(cache, "mixed_model_table", [], {}, meta=table_meta)
+
+    results = support.run_mixed_model_analysis(
+        cache,
+        shuffle_n=0,
+        state_comparison_states=["NREM", "REM"],
+        basal_apical_states=["NREM"],
+    )
+
+    assert results["table_cache"] == {"status": "reused", "reused": True, "row_count": 0}
+    assert results["model_statistics_cache"]["status"] == "recomputed"
+    assert "group-dependent" in results["model_statistics_cache"]["reason"]
+
+
 def test_processed_cache_warm_run_processes_only_new_expid(tmp_path: Path, monkeypatch):
     import json
     from analysis.cache_builders import build_processed_cache as module
