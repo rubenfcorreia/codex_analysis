@@ -17,7 +17,7 @@ from analysis.shared.analysis_families.common_helpers import (
 from analysis.compartment_common import read_pickle
 from analysis.shared.roi_split import summarize_mask_duration
 from analysis.shared.state_utils import canonical_state_label, combined_movie_state_label, state_display_color, state_display_label
-from analysis.shared.shared_calcium_response import build_masked_event_summary
+from analysis.shared.shared_calcium_response import build_masked_event_summary, roi_activity_status
 
 from .core import ExperimentContext, make_global_bouton_id, make_global_soma_id, make_unit_id, shared_time_axis, summarize_activity
 
@@ -221,6 +221,8 @@ def activity_rows_for_context(
     ctx: ExperimentContext,
     selected_states: Sequence[str],
     state_masks: Mapping[str, np.ndarray] | None = None,
+    active_roi_filter: Mapping[str, Any] | None = None,
+    event_detection_method: str | None = None,
 ) -> List[Dict[str, Any]]:
     masks = state_masks if state_masks is not None else state_masks_for_context(ctx, selected_states)
     soma_matrix = np.asarray(ctx.soma.matrix(), dtype=float)
@@ -239,6 +241,9 @@ def activity_rows_for_context(
                 trace = np.asarray(matrix[roi_index], dtype=float)
                 summary = _summarize_roi_trace(trace, mask)
                 events = _event_summary_for_trace(trace, time, mask)
+                activity_status = roi_activity_status(trace, time, compartment, active_roi_filter, method=event_detection_method)
+                if activity_status["active_filter_enabled"] and not activity_status["is_active"]:
+                    continue
                 roi_id = roi_ids[roi_index] if roi_index < len(roi_ids) else roi_index
                 channel = ctx.soma_channel if compartment == "soma" else ctx.bouton_channel
                 unit_id = make_unit_id(
@@ -272,6 +277,7 @@ def activity_rows_for_context(
                     **summary,
                     "event_count": events["event_count"],
                     "event_frequency_per_min": events["event_frequency_per_min"],
+                    **activity_status,
                 }
                 if compartment == "soma":
                     row["soma_id"] = roi_id

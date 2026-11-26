@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from analysis.cache_builders.common import cache_manifest_path, dependency_signature, load_index_manifest, load_indexed_records, record_scope_key, save_indexed_records, save_json_manifest, stage_is_reusable, stage_manifest
 from analysis.shared.cache_config import normalize_staged_config
+from analysis.shared.analysis_families.shared_metrics import set_active_combined_event_window_frames
 from analysis.shared.cache_utils import load_npz_cache, save_npz_cache
 from analysis.shared.plots.dendrite_plot_support import classify_visual_responsive_dendrites, classify_visual_responsive_spines
 from analysis.cache_builders.schema import CACHE_SCHEMA_VERSION
@@ -81,7 +82,11 @@ def _soma_records(source: dict[str, Any], config: dict[str, Any], impl: Any, rep
         ctx = impl.build_experiment_context(expid=expid, mode=mode, soma_channel=int(config.get("soma_channel", 1)), bouton_channel=int(config.get("bouton_channel", 0)), repo_root=repo_root)
         state_rows = []
         try:
-            state_rows = impl.activity_rows_for_context(ctx, [], state_masks=impl.state_masks_for_context(ctx, []))
+            state_rows = impl.activity_rows_for_context(
+                ctx, [], state_masks=impl.state_masks_for_context(ctx, []),
+                active_roi_filter=config.get("active_roi_filter"),
+                event_detection_method=config.get("event_detection_method", "derivative"),
+            )
         except Exception:
             state_rows = []
         state_by_roi = {}
@@ -164,9 +169,10 @@ def _group_records(records: list[Mapping[str, Any]]) -> dict[str, list[dict[str,
 def build_processed_cache(config_path: Path, pipeline: str, source_cache_path: Path, output_path: Path) -> dict[str, Any]:
     with config_path.open() as handle:
         config = normalize_staged_config(json.load(handle), pipeline=pipeline, base_dir=config_path.parent)
+    set_active_combined_event_window_frames(config.get("combined_event_window_frames", 2))
     source = load_npz_cache(source_cache_path)
     source_signature = dependency_signature(source)
-    config_signature = dependency_signature(config.get("source", {}), config.get("processing", {}), config.get("visual_response_metric", "mean"))
+    config_signature = dependency_signature(config.get("source", {}), config.get("processing", {}), config.get("visual_response_metric", "mean"), config.get("active_roi_filter", {}))
     manifest_path = cache_manifest_path({**config, "cache_paths": {"processed": output_path.parent}}, "processed")
     if not bool(config.get("rebuild") or config.get("processed_cache_rebuild")):
         reusable = stage_is_reusable(manifest_path, output_path, pipeline=pipeline, stage="processed", config_signature=config_signature, upstream_signature=source_signature)

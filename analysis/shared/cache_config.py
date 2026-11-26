@@ -117,9 +117,10 @@ def normalize_staged_config(raw: Mapping[str, Any], *, pipeline: str, base_dir: 
     _put_if_present(config, source, "soma_channel")
     _put_if_present(config, source, "bouton_channel")
 
-    for key in ("event_detection_method", "high_pass_hz", "locomotion_threshold", "state_mode", "movie_trial_types"):
+    for key in ("event_detection_method", "combined_event_window_frames", "high_pass_hz", "locomotion_threshold", "state_mode", "movie_trial_types"):
         _put_if_present(config, processing, key)
     _put_if_present(config, classification, "classification_cache_path")
+    _put_if_present(config, classification, "active_roi_filter")
     for key in (
         "visual_response_metric",
         "visual_response_trial_types",

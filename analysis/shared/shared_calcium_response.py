@@ -19,6 +19,7 @@ from analysis.shared.analysis_families.shared_metrics import (
     normalize_event_detection_method,
     normalize_visual_response_metric,
     set_active_event_detection_method,
+    set_active_combined_event_window_frames,
     set_active_visual_response_metric,
     visual_response_metric_field,
     visual_response_metric_label,
@@ -82,6 +83,37 @@ def estimate_trace_duration_seconds(time: np.ndarray) -> float:
     if not np.isfinite(step) or step <= 0:
         return float(finite.size)
     return float(max(finite[-1] - finite[0] + step, step))
+
+
+def active_roi_filter_settings(filter_config: Optional[Mapping[str, Any]], roi_type: str) -> Dict[str, Any]:
+    config = filter_config if isinstance(filter_config, Mapping) else {}
+    raw = config.get(str(roi_type).strip().lower(), {})
+    if not isinstance(raw, Mapping):
+        raw = {}
+    try:
+        minimum = max(1, int(raw.get("min_event_count", 1)))
+    except (TypeError, ValueError):
+        minimum = 1
+    return {"enabled": bool(raw.get("enabled", False)), "min_event_count": minimum}
+
+
+def roi_activity_status(
+    trace: np.ndarray,
+    time: Optional[np.ndarray],
+    roi_type: str,
+    filter_config: Optional[Mapping[str, Any]],
+    *,
+    method: Optional[str] = None,
+) -> Dict[str, Any]:
+    summary = build_event_summary(trace, time, method=method, include_all_methods=False)
+    settings = active_roi_filter_settings(filter_config, roi_type)
+    event_count = int(summary.get("event_count", 0) or 0)
+    return {
+        "is_active": bool(event_count >= settings["min_event_count"]),
+        "active_event_count": event_count,
+        "active_filter_enabled": settings["enabled"],
+        "active_filter_min_event_count": settings["min_event_count"],
+    }
 
 
 def build_event_summary(

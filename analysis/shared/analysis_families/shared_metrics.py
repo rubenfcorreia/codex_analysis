@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any, Optional
 
 DEFAULT_EVENT_DETECTION_METHOD = "derivative"
-EVENT_DETECTION_METHODS = ("amplitude", "derivative")
+EVENT_DETECTION_METHODS = ("amplitude", "derivative", "combined")
+DEFAULT_COMBINED_EVENT_WINDOW_FRAMES = 2
 
 DEFAULT_VISUAL_RESPONSE_METRIC = "mean"
 VISUAL_RESPONSE_METRICS = ("mean", "calcium_events")
 
 _ACTIVE_EVENT_DETECTION_METHOD: str = DEFAULT_EVENT_DETECTION_METHOD
+_ACTIVE_COMBINED_EVENT_WINDOW_FRAMES: int = DEFAULT_COMBINED_EVENT_WINDOW_FRAMES
 _ACTIVE_VISUAL_RESPONSE_METRIC: str = DEFAULT_VISUAL_RESPONSE_METRIC
 
 
@@ -40,6 +42,24 @@ def set_active_event_detection_method(value: Any) -> str:
     global _ACTIVE_EVENT_DETECTION_METHOD
     _ACTIVE_EVENT_DETECTION_METHOD = normalize_event_detection_method(value)
     return _ACTIVE_EVENT_DETECTION_METHOD
+
+
+def set_active_combined_event_window_frames(value: Any) -> int:
+    global _ACTIVE_COMBINED_EVENT_WINDOW_FRAMES
+    try:
+        window = int(value)
+    except (TypeError, ValueError):
+        window = DEFAULT_COMBINED_EVENT_WINDOW_FRAMES
+    if window < 0:
+        raise ValueError("combined event window must be non-negative")
+    _ACTIVE_COMBINED_EVENT_WINDOW_FRAMES = window
+    return window
+
+
+def get_active_combined_event_window_frames(value: Optional[Any] = None) -> int:
+    if value is None:
+        return _ACTIVE_COMBINED_EVENT_WINDOW_FRAMES
+    return set_active_combined_event_window_frames(value)
 
 
 def set_active_visual_response_metric(value: Any) -> str:

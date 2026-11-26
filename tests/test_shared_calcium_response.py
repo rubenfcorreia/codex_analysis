@@ -39,3 +39,23 @@ def test_visual_response_uses_cut_trial_index_and_video_id(monkeypatch, tmp_path
     event_rows = response.visual_response_trial_rows(cut_neural[0], cut_time, metadata, response_metric="calcium_events")
     assert len(event_rows) == 4
     assert {item["group"] for item in event_rows} == {"blank", "visual"}
+
+
+def test_combined_event_detector_requires_amplitude_near_derivative_onset():
+    trace = np.r_[np.zeros(100), np.ones(3) * 100.0, np.zeros(100)]
+    info = response.build_event_summary(trace, np.arange(trace.size, dtype=float), method="combined", include_all_methods=False)
+    assert info["event_count"] == 2
+    assert info["combined_window_frames"] == 2
+    assert info["amplitude_threshold"] > 0
+    assert info["derivative_threshold"] > 0
+
+
+def test_active_roi_filter_is_independent_by_roi_type():
+    trace = np.r_[np.zeros(100), np.ones(3) * 100.0, np.zeros(100)]
+    config = {"bouton": {"enabled": True, "min_event_count": 1}}
+    bouton = response.roi_activity_status(trace, np.arange(trace.size, dtype=float), "bouton", config, method="combined")
+    soma = response.roi_activity_status(trace, np.arange(trace.size, dtype=float), "soma", config, method="combined")
+    assert bouton["active_filter_enabled"] is True
+    assert bouton["is_active"] is True
+    assert soma["active_filter_enabled"] is False
+    assert soma["is_active"] is True

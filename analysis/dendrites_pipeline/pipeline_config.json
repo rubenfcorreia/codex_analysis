@@ -11,10 +11,12 @@
     "source.channel": "Suite2p channel used for dendrite and spine traces.",
     "source.soma_channel": "Suite2p channel used for soma traces.",
     "source.bouton_channel": "Suite2p channel used for bouton traces.",
-    "processing.event_detection_method": "Calcium-event detector used to calculate event activity and frequency.",
+    "processing.event_detection_method": "Calcium-event detector used to calculate event activity and frequency; supports amplitude, derivative, and combined.",
+    "processing.combined_event_window_frames": "Frame window used by the combined detector to match amplitude and derivative evidence.",
     "processing.state_mode": "State-selection mode used for movie and sleep comparisons.",
     "processing.movie_trial_types": "Movie trial types included in the state comparison input.",
     "classification.visual_response_metric": "Metric used by the initial ROI visual-response classification.",
+    "classification.active_roi_filter": "Per-ROI-type opt-in filter requiring a minimum number of detected events.",
     "classification.preferred_state.enabled": "Enable preferred-state classification, including ties when multiple states are equally active.",
     "classification.activity_split.enabled": "Enable activity-based ROI split classification.",
     "classification.frequency_split.enabled": "Enable event-frequency ROI split classification.",
@@ -51,6 +53,7 @@
   },
   "processing": {
     "event_detection_method": "derivative",
+    "combined_event_window_frames": 2,
     "state_mode": "quiet",
     "movie_trial_types": [
       "blank",
@@ -58,6 +61,12 @@
     ]
   },
   "classification": {
+    "active_roi_filter": {
+      "soma": {"enabled": false, "min_event_count": 1},
+      "bouton": {"enabled": false, "min_event_count": 1},
+      "dendrite": {"enabled": false, "min_event_count": 1},
+      "spine": {"enabled": false, "min_event_count": 1}
+    },
     "visual_response_metric": "mean",
     "preferred_state": {
       "enabled": true

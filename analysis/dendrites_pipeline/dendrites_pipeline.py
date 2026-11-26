@@ -85,6 +85,7 @@ from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     EVENT_DETECTION_METHODS,
     VISUAL_RESPONSE_METRICS,
     get_active_event_detection_method,
+    set_active_combined_event_window_frames,
     get_active_visual_response_metric,
     normalize_event_detection_method,
     normalize_visual_response_metric,
@@ -279,7 +280,7 @@ DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
 DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "selected_states"
 DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME = "visual_response"
 STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min"}
-STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
+STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_specific_event_free_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
 DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME = "matrix_similarity"
 DEFAULT_MIXED_MODEL_FIGURES_DIRNAME = "mixed_model"
 DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
@@ -1988,7 +1989,7 @@ def state_summary_y_limits(
     else:
         return cached
     y_limits: Dict[str, Tuple[float, float]] = {}
-    for metric_kind in ["dendrite_mean", "spine_specific_mean", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
+    for metric_kind in ["dendrite_mean", "spine_specific_mean", "spine_specific_event_free_mean", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
         combined_values: List[float] = []
         for compartment in [None, "basal", "apical"]:
             metric_summary = summarize_state_values(cache, metric_kind, state_labels, compartment)
@@ -2011,7 +2012,7 @@ def state_summary_y_limits_from_results(
     if not isinstance(state_summaries, dict):
         return {}
     y_limits: Dict[str, Tuple[float, float]] = {}
-    for metric_kind in ["dendrite_mean", "spine_specific_mean", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
+    for metric_kind in ["dendrite_mean", "spine_specific_mean", "spine_specific_event_free_mean", "dendrite_event_frequency_per_min", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"]:
         metric_summary = state_summaries.get(metric_kind, {})
         if not isinstance(metric_summary, dict):
             continue
@@ -2190,6 +2191,7 @@ def build_state_summary_gallery_results(
         "state_summaries": {
             "dendrite_mean": summarize_state_values(cache, "dendrite_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "spine_specific_mean": summarize_state_values(cache, "spine_specific_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "spine_specific_event_free_mean": summarize_state_values(cache, "spine_specific_event_free_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "dendrite_event_frequency_per_min": summarize_state_values(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "spine_event_frequency_per_min": summarize_state_values(cache, "spine_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "coincident_event_frequency_per_min": summarize_state_values(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
@@ -2198,6 +2200,7 @@ def build_state_summary_gallery_results(
         "state_dendrite_summaries": {
             "dendrite_mean": summarize_state_values_by_dendrite(cache, "dendrite_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "spine_specific_mean": summarize_state_values_by_dendrite(cache, "spine_specific_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
+            "spine_specific_event_free_mean": summarize_state_values_by_dendrite(cache, "spine_specific_event_free_mean", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "dendrite_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "dendrite_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "spine_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "spine_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
             "coincident_event_frequency_per_min": summarize_state_values_by_dendrite(cache, "coincident_event_frequency_per_min", state_labels, compartment_filter, dendrite_ids_filter=dendrite_ids_filter, spine_ids_filter=spine_ids_filter),
@@ -6639,6 +6642,7 @@ def _state_summary_grouped_rows(
         metric_candidates = {
             "dendrite_mean": ("dendrite_mean", "mean_dendrite_activity"),
             "spine_specific_mean": ("spine_specific_mean", "mean_spine_activity_per_dendrite"),
+            "spine_specific_event_free_mean": ("spine_specific_event_free_mean", "mean_spine_activity_event_free_per_dendrite"),
         }.get(metric_name, (metric_name,))
         value = next((as_float(row.get(candidate)) for candidate in metric_candidates if row.get(candidate) is not None), None)
         if value is None:
@@ -6738,6 +6742,7 @@ def plot_basal_apical_summary(results: Dict[str, Any], fig_dir: Path) -> Optiona
         for metric in [
             "dendrite_mean",
             "spine_specific_mean",
+            "spine_specific_event_free_mean",
             "dendrite_event_frequency_per_min",
             "spine_event_frequency_per_min",
             "coincident_event_frequency_per_min",
@@ -7212,6 +7217,7 @@ def generate_analysis_figures(
     summary_metrics = [
         "dendrite_mean",
         "spine_specific_mean",
+        "spine_specific_event_free_mean",
         "dendrite_event_frequency_per_min",
         "spine_event_frequency_per_min",
         "coincident_event_frequency_per_min",
@@ -8943,6 +8949,29 @@ def detect_events(
 ) -> Dict[str, Any]:
     method = get_active_event_detection_method(method)
     trace = np.asarray(trace, dtype=float)
+    if method == "combined":
+        finite = np.isfinite(trace)
+        baseline = float(np.nanmedian(trace[finite])) if finite.any() else 0.0
+        amplitude_threshold = baseline + 3.0 * (float(np.nanstd(trace[finite])) if finite.any() and float(np.nanstd(trace[finite])) > 0 else 1.0)
+        derivative = np.abs(np.gradient(np.nan_to_num(trace, nan=baseline))) if trace.size else np.asarray([], dtype=float)
+        derivative_threshold = float(np.nanmedian(derivative) + 3.0 * (np.nanstd(derivative) or 1.0)) if derivative.size else float("nan")
+        window = get_active_combined_event_window_frames()
+        amplitude_active = finite & (trace > amplitude_threshold)
+        derivative_active = np.isfinite(derivative) & (derivative > derivative_threshold)
+        amplitude_near = np.zeros(trace.size, dtype=bool)
+        for index in np.flatnonzero(amplitude_active):
+            amplitude_near[max(0, int(index) - window):min(trace.size, int(index) + window + 1)] = True
+        active = derivative_active & amplitude_near
+        starts = np.flatnonzero(active & ~np.r_[False, active[:-1]])
+        runs = [(int(start), int(start)) for start in starts]
+        return {
+            "method": method, "source_series": "combined", "trace_median": baseline,
+            "baseline_median": baseline, "noise_std": float(np.nanstd(derivative)),
+            "threshold": derivative_threshold, "amplitude_threshold": amplitude_threshold,
+            "derivative_threshold": derivative_threshold, "combined_window_frames": window,
+            "event_count": int(len(runs)), "event_runs": runs,
+            "event_frequency_per_min": float("nan"), "active": bool(len(runs) > 0),
+        }
     source_series, source_series_name = _event_detection_source_series(trace, method)
     trace_median = float(np.nanmedian(trace)) if trace.size else float("nan")
     if source_series.size == 0:
@@ -8986,6 +9015,45 @@ def detect_events(
 def interval_mask(t: np.ndarray, start: float, end: float) -> np.ndarray:
     t = np.asarray(t, dtype=float)
     return (t >= start) & (t < end)
+
+
+def event_run_mask(
+    event_info: Optional[Mapping[str, Any]],
+    size: int,
+    *,
+    padding_frames: int = 0,
+) -> np.ndarray:
+    '''Return a frame-aligned mask for event_info event runs.'''
+    mask = np.zeros(max(0, int(size)), dtype=bool)
+    if mask.size == 0 or not isinstance(event_info, Mapping):
+        return mask
+    padding = max(0, int(padding_frames))
+    for run in event_info.get("event_runs") or []:
+        if not isinstance(run, (list, tuple, np.ndarray)) or len(run) < 2:
+            continue
+        try:
+            start = int(run[0]) - padding
+            end = int(run[1]) + padding
+        except (TypeError, ValueError, OverflowError):
+            continue
+        start = max(0, min(mask.size, start))
+        end = max(0, min(mask.size, end))
+        if end > start:
+            mask[start:end] = True
+    return mask
+
+
+def parent_dendrite_event_free_trace(trace: np.ndarray, event_free_mask: np.ndarray) -> np.ndarray:
+    '''Keep a spine trace aligned while blanking parent-dendrite events.'''
+    values = np.asarray(trace, dtype=np.float32).copy()
+    mask = np.asarray(event_free_mask, dtype=bool).reshape(-1)
+    if values.size != mask.size:
+        raise ValueError(
+            "Trace and parent-dendrite event-free mask must have the same length "
+            f"(trace={values.size}, mask={mask.size})"
+        )
+    values[~mask] = np.nan
+    return values
 
 
 def estimate_trace_duration_seconds(time: np.ndarray) -> float:
@@ -10744,6 +10812,9 @@ def process_experiment(
             "dendrite_id": entry.get("dendrite_id"),
         }
         obs["event_info"] = build_event_info(dend_trace, exp_time)
+        parent_event_mask = event_run_mask(obs["event_info"], dend_trace.size)
+        obs["dendrite_event_mask"] = parent_event_mask
+        obs["dendrite_event_free_mask"] = ~parent_event_mask
         dend_record["local_ids"][exp_id] = obs["local_ids"]
         spine_entries = [e for e in conversion_library.values() if e["is_spine"] and e["dendrite_id"] == entry["dendrite_id"]]
         for spine_entry in spine_entries:
@@ -10787,6 +10858,11 @@ def process_experiment(
                     "spine_specific": np.asarray(spine_specific, dtype=np.float32),
                     "event_info": event_info,
                     "dendrite_event_info": dict(obs.get("event_info") or {}),
+                    "parent_dendrite_event_mask": np.asarray(parent_event_mask, dtype=bool),
+                    "parent_dendrite_event_free_mask": np.asarray(~parent_event_mask, dtype=bool),
+                    "spine_specific_parent_dendrite_event_free": parent_dendrite_event_free_trace(
+                        spine_specific, ~parent_event_mask
+                    ),
                     "fit": alpha_fit,
                     "local_ids": {},
                 },
@@ -11286,6 +11362,7 @@ def _collect_state_summary_values(
     experiments = cache.get("experiments", {})
     spine_metric_kinds = {
         "spine_specific_mean",
+        "spine_specific_event_free_mean",
         "spine_event_frequency_per_min",
         "coincident_event_frequency_per_min",
         "noncoincident_event_frequency_per_min",
@@ -11357,18 +11434,19 @@ def _collect_state_summary_values(
                         values = values_from_observation(d_obs.get("trace"), mask)
                         if values.size:
                             by_state[state_label][subject_id].append(float(np.nanmean(values)))
-                    elif metric_kind == "spine_specific_mean":
+                    elif metric_kind in {"spine_specific_mean", "spine_specific_event_free_mean"}:
                         if not spine_items:
                             continue
                         spine_values: List[float] = []
                         for _, s_obs in spine_items:
-                            cut_means = s_obs.get("cut_state_means")
+                            cut_means = s_obs.get("cut_state_means") if metric_kind == "spine_specific_mean" else None
                             if isinstance(cut_means, dict) and state_label in cut_means and np.isfinite(cut_means[state_label]):
                                 spine_values.append(float(cut_means[state_label]))
                                 continue
                             if not has_mask:
                                 continue
-                            values = values_from_observation(s_obs.get("spine_specific"), mask)
+                            trace_key = "spine_specific" if metric_kind == "spine_specific_mean" else "spine_specific_parent_dendrite_event_free"
+                            values = values_from_observation(s_obs.get(trace_key), mask)
                             if values.size:
                                 spine_values.append(float(np.nanmean(values)))
                         if spine_values:
@@ -11745,6 +11823,7 @@ def _split_aware_state_comparison_rows(
     metrics = [
         "dendrite_mean",
         "spine_specific_mean",
+        "spine_specific_event_free_mean",
         "dendrite_event_frequency_per_min",
         "spine_event_frequency_per_min",
         "coincident_event_frequency_per_min",
@@ -14465,6 +14544,7 @@ def process_cached_analysis(
         state_metric_names = [
             "dendrite_mean",
             "spine_specific_mean",
+            "spine_specific_event_free_mean",
             "dendrite_event_frequency_per_min",
             "spine_event_frequency_per_min",
             "coincident_event_frequency_per_min",
@@ -14514,6 +14594,7 @@ def process_cached_analysis(
         for idx, metric in enumerate([
             "dendrite_mean",
             "spine_specific_mean",
+            "spine_specific_event_free_mean",
             "dendrite_event_frequency_per_min",
             "spine_event_frequency_per_min",
             "coincident_event_frequency_per_min",
@@ -14528,6 +14609,7 @@ def process_cached_analysis(
             for metric in [
                 "dendrite_mean",
                 "spine_specific_mean",
+                "spine_specific_event_free_mean",
                 "dendrite_event_frequency_per_min",
                 "spine_event_frequency_per_min",
                 "coincident_event_frequency_per_min",
@@ -16941,6 +17023,54 @@ def write_poster_ready_figures(
                         written.append(report_relative_path(Path(state_path), output_dir))
     return written
 
+def _active_roi_filter_cache_view(cache: Dict[str, Any], filter_config: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Return an in-memory analysis view with inactive dendrites/spines removed."""
+    if not isinstance(filter_config, Mapping) or not any(
+        isinstance(settings, Mapping) and bool(settings.get("enabled", False))
+        for settings in filter_config.values()
+    ):
+        return cache
+    filtered = copy.deepcopy(cache)
+    for animal_entry in (filtered.get("animals", {}) or {}).values():
+        dendrites = animal_entry.get("dendrites", {}) if isinstance(animal_entry, Mapping) else {}
+        if not isinstance(dendrites, dict):
+            continue
+        dendrite_settings = filter_config.get("dendrite", {})
+        spine_settings = filter_config.get("spine", {})
+        dendrite_min = max(1, int(dendrite_settings.get("min_event_count", 1))) if isinstance(dendrite_settings, Mapping) else 1
+        spine_min = max(1, int(spine_settings.get("min_event_count", 1))) if isinstance(spine_settings, Mapping) else 1
+        for dendrite in dendrites.values():
+            if not isinstance(dendrite, dict):
+                continue
+            observations = dendrite.get("observations", {})
+            if isinstance(dendrite_settings, Mapping) and dendrite_settings.get("enabled", False):
+                dendrite["observations"] = {
+                    key: obs for key, obs in observations.items()
+                    if int((obs.get("event_info") or {}).get("event_count", 0) or 0) >= dendrite_min
+                }
+            spines = dendrite.get("spines", {})
+            if not isinstance(spines, dict):
+                continue
+            for spine in spines.values():
+                if not isinstance(spine, dict):
+                    continue
+                spine_observations = spine.get("observations", {})
+                if isinstance(spine_settings, Mapping) and spine_settings.get("enabled", False):
+                    spine["observations"] = {
+                        key: obs for key, obs in spine_observations.items()
+                        if int((obs.get("event_info") or {}).get("event_count", 0) or 0) >= spine_min
+                    }
+            for obs in (dendrite.get("observations", {}) or {}).values():
+                if isinstance(obs, dict) and isinstance(obs.get("spine_ids"), list):
+                    obs["spine_ids"] = [
+                        spine_id for spine_id in obs["spine_ids"]
+                        if spine_id in spines and spine_id in (dendrite.get("spines", {}) or {})
+                        and (not isinstance(spine_settings, Mapping) or not spine_settings.get("enabled", False)
+                             or bool((dendrite["spines"].get(spine_id, {}).get("observations", {}))))
+                    ]
+    return filtered
+
+
 def load_or_build_cache(
     repo_base: Path,
     movie_expids: Sequence[str],
@@ -17945,6 +18075,7 @@ def _run_comparison_preset_subprocesses(config: Dict[str, Any]) -> bool:
         channel=int(config.get("channel") or DEFAULT_CHANNEL), explicit_locomotion_threshold=config.get("locomotion_threshold"), cache_path=shared_cache_path,
         rebuild=bool(config.get("rebuild") or config.get("source_cache_rebuild")), validate_existing_cache=bool(config.get("source_cache_validate", True)),
     )
+    dendrite_source_cache = _active_roi_filter_cache_view(dendrite_source_cache, config.get("active_roi_filter"))
     # Correlation consumes the normalized day-level cache, not the raw
     # experiment cache. Build the shared signal dataset from that same
     # representation so producer and consumer use identical IDs and traces.
@@ -18309,6 +18440,7 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
         shuffle_n = int(config.get("shuffle_n") or DEFAULT_SHUFFLES)
         mixed_model_contrast_p_source = normalize_mixed_model_contrast_p_source(config.get("mixed_model_contrast_p_source"))
         event_detection_method = set_active_event_detection_method(config.get("event_detection_method"))
+        set_active_combined_event_window_frames(config.get("combined_event_window_frames", 2))
         visual_response_metric = set_active_visual_response_metric(config.get("visual_response_metric"))
         spine_coactivity_abs_threshold = normalize_non_negative_float(
             config.get("spine_coactivity_abs_threshold"),
@@ -18389,13 +18521,14 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
     if config.get("demo_truth") and not plots_only:
         source_cache["demo_truth"] = config["demo_truth"]
         save_npz_cache(cache_path, source_cache)
+    source_cache = _active_roi_filter_cache_view(source_cache, config.get("active_roi_filter"))
     with step_scope("analysis-table cache load"):
         analysis_tables_cache = load_analysis_tables_cache(analysis_tables_cache_file, rebuild=analysis_tables_rebuild)
     analysis_tables = analysis_tables_cache.get("analysis_tables", {}) if isinstance(analysis_tables_cache, dict) else None
     analysis_cache_file = analysis_day_cache_path(cache_path)
     analysis_cache_expected_meta = analysis_day_cache_meta(source_cache, analysis_tables, analysis_unit="day")
     analysis_meta_ignore_keys = ("analysis_tables_signature",)
-    analysis_cache_rebuild = bool(rebuild or source_cache_rebuild or analysis_tables_rebuild)
+    analysis_cache_rebuild = bool(rebuild or source_cache_rebuild or analysis_tables_rebuild or config.get("active_roi_filter"))
     with step_scope("day-level cache construction"):
         analysis_cache_payload, analysis_cache_status = load_analysis_day_cache(
             analysis_cache_file,

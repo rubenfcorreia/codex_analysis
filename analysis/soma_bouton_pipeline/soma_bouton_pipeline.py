@@ -70,6 +70,7 @@ from analysis.shared.shared_calcium_response import (
     VISUAL_RESPONSE_COHORTS,
     VISUAL_RESPONSE_VISUAL_TRIAL_TYPES,
     build_masked_event_summary,
+    set_active_combined_event_window_frames,
     load_visual_response_cut_data,
     set_active_event_detection_method,
     set_active_visual_response_metric,
@@ -1550,6 +1551,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     _stage("input selection", f"modes={','.join(state_modes) if state_modes else 'none'}")
 
     event_detection_method = set_active_event_detection_method(config.get("event_detection_method"))
+    set_active_combined_event_window_frames(config.get("combined_event_window_frames", 2))
     visual_response_metric = set_active_visual_response_metric(config.get("visual_response_metric"))
     visual_response_cohort = str(config.get("visual_response_cohort") or DEFAULT_VISUAL_RESPONSE_COHORT)
     _stage(
@@ -1959,7 +1961,13 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             step_message(f"PROCESS activity/events: {mode} | {expid}")
             state_masks = state_masks_for_context(ctx, row_states)
             with step_scope("activity/event extraction", task="activity", metadata={"mode": mode, "expid": expid}):
-                activity_rows.extend(activity_rows_for_context(ctx, row_states, state_masks=state_masks))
+                activity_rows.extend(
+                    activity_rows_for_context(
+                        ctx, row_states, state_masks=state_masks,
+                        active_roi_filter=config.get("active_roi_filter"),
+                        event_detection_method=event_detection_method,
+                    )
+                )
                 coincidence_rows.extend(
                     _build_coincidence_rows_for_context(
                         ctx,
@@ -2252,6 +2260,38 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     bouton_pairwise_rows = _normalize_scoped_unit_ids(bouton_pairwise_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     lag_rows = _normalize_scoped_unit_ids(lag_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
     visual_response_rows = _normalize_scoped_unit_ids(visual_response_rows, soma_channel=int(config["soma_channel"]), bouton_channel=int(config["bouton_channel"]))
+    active_filter = config.get("active_roi_filter") if isinstance(config.get("active_roi_filter"), Mapping) else {}
+    if active_filter:
+        active_ids = {
+            compartment: {str(row.get("unit_id") or row.get(f"global_{compartment}_id") or "") for row in activity_rows if str(row.get("compartment") or "").lower() == compartment and bool(row.get("is_active", False))}
+            for compartment in ("soma", "bouton")
+        }
+
+        def _roi_row_allowed(row: Mapping[str, Any]) -> bool:
+            for prefix in ("left", "right"):
+                compartment = str(row.get(f"{prefix}_compartment") or "").lower()
+                if compartment in active_ids and bool((active_filter.get(compartment, {}) or {}).get("enabled", False)):
+                    unit_id = str(row.get(f"{prefix}_unit_id") or "")
+                    if unit_id and unit_id not in active_ids[compartment]:
+                        return False
+            compartment = str(row.get("compartment") or "").lower()
+            if compartment in active_ids and bool((active_filter.get(compartment, {}) or {}).get("enabled", False)):
+                unit_id = str(row.get("unit_id") or row.get("global_unit_id") or "")
+                if unit_id and unit_id not in active_ids[compartment]:
+                    return False
+            return True
+
+        correlation_rows = [row for row in correlation_rows if _roi_row_allowed(row)]
+        soma_pairwise_rows = [row for row in soma_pairwise_rows if _roi_row_allowed(row)]
+        bouton_pairwise_rows = [row for row in bouton_pairwise_rows if _roi_row_allowed(row)]
+        lag_rows = [row for row in lag_rows if _roi_row_allowed(row)]
+        coincidence_rows = [row for row in coincidence_rows if _roi_row_allowed(row)]
+        visual_response_rows = [
+            row for row in visual_response_rows
+            if _roi_row_allowed(row)
+            and (not bool((active_filter.get(str(row.get("compartment") or "").lower(), {}) or {}).get("enabled", False))
+                 or (str(row.get("expid") or ""), str(row.get("compartment") or ""), int(row.get("roi_index", -1))) in {(str(item.get("expid") or ""), str(item.get("compartment") or ""), int(item.get("roi_index", -1))) for item in activity_rows if bool(item.get("is_active", False))})
+        ]
     visual_response_rows = apply_visual_response_fdr(visual_response_rows)
     staged_classification = load_classification_records(config.get("classification_cache_path"))
     if staged_classification:

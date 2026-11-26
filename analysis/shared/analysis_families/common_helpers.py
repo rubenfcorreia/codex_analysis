@@ -10,6 +10,7 @@ from scipy import stats
 
 from analysis.compartment_common import find_first_key, read_pickle
 from analysis.shared.state_utils import canonical_state_label, combined_movie_state_label
+from analysis.shared.analysis_families.shared_metrics import EVENT_DETECTION_METHODS, get_active_combined_event_window_frames
 
 
 BLANK_MOVIE_PATH = r"D:\bonsai_resources\all_movie_clips_bv_sets\007\00000"
@@ -444,16 +445,27 @@ def build_event_info(trace: np.ndarray, time: Optional[np.ndarray] = None, *, me
     finite = np.isfinite(values)
     baseline = float(np.nanmedian(values[finite])) if finite.any() else 0.0
     scale = float(np.nanstd(values[finite])) if finite.any() else 0.0
-    threshold = baseline + 3.0 * (scale if scale > 0 else 1.0)
+    amplitude_threshold = baseline + 3.0 * (scale if scale > 0 else 1.0)
+    derivative_signal = (np.abs(np.gradient(np.nan_to_num(values, nan=baseline))) if values.size >= 2 else np.zeros_like(values, dtype=float))
+    derivative_threshold = float(np.nanmedian(derivative_signal) + 3.0 * (np.nanstd(derivative_signal) or 1.0)) if derivative_signal.size else float("nan")
     if method == "derivative":
-        if values.size < 2:
-            signal = np.zeros_like(values, dtype=float)
-        else:
-            signal = np.abs(np.gradient(np.nan_to_num(values, nan=baseline)))
-        threshold = float(np.nanmedian(signal) + 3.0 * (np.nanstd(signal) or 1.0)) if signal.size else float("nan")
+        signal = derivative_signal
+        threshold = derivative_threshold
+        active = np.isfinite(signal) & (signal > threshold)
+    elif method == "combined":
+        amplitude_active = np.isfinite(values) & (values > amplitude_threshold)
+        derivative_active = np.isfinite(derivative_signal) & (derivative_signal > derivative_threshold)
+        window = get_active_combined_event_window_frames()
+        amplitude_near = np.zeros(values.size, dtype=bool)
+        for index in np.flatnonzero(amplitude_active):
+            amplitude_near[max(0, int(index) - window):min(values.size, int(index) + window + 1)] = True
+        active = derivative_active & amplitude_near
+        signal = derivative_signal
+        threshold = derivative_threshold
     else:
         signal = values
-    active = np.isfinite(signal) & (signal > threshold)
+        threshold = amplitude_threshold
+        active = np.isfinite(signal) & (signal > threshold)
     starts = np.flatnonzero(active & ~np.r_[False, active[:-1]])
     runs = [(int(start), int(start)) for start in starts]
     duration = float(np.nanmax(axis) - np.nanmin(axis)) if axis.size > 1 and np.isfinite(axis).any() else float(values.size)
@@ -461,12 +473,13 @@ def build_event_info(trace: np.ndarray, time: Optional[np.ndarray] = None, *, me
     result = {
         "event_count": int(len(runs)), "event_runs": runs, "event_frequency_per_min": frequency,
         "duration_seconds": duration, "threshold": threshold, "method": method,
-        "primary_method": method, "event_detection_methods": ["amplitude", "derivative"],
+        "amplitude_threshold": float(amplitude_threshold), "derivative_threshold": float(derivative_threshold),
+        "combined_window_frames": get_active_combined_event_window_frames() if method == "combined" else None,
+        "primary_method": method, "event_detection_methods": list(EVENT_DETECTION_METHODS),
     }
     if include_all_methods:
-        result["methods"] = {name: build_event_info(values, axis, method=name, include_all_methods=False) for name in ("amplitude", "derivative")}
+        result["methods"] = {name: build_event_info(values, axis, method=name, include_all_methods=False) for name in EVENT_DETECTION_METHODS}
     return result
-
 
 def trial_activity_means(trace: np.ndarray, time: np.ndarray, duration_s: Optional[float]) -> Tuple[float, float]:
     values = np.asarray(trace, dtype=float)
