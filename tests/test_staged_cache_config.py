@@ -33,7 +33,7 @@ def test_manifest_round_trip_is_atomic_and_versioned(tmp_path: Path):
     save_json_manifest(path, payload)
     loaded = load_json_manifest(path)
     assert loaded is not None
-    assert loaded["schema_version"] == 1
+    assert loaded["schema_version"] == 2
     assert loaded["active_expids"] == ["a", "b"]
 
 
@@ -116,7 +116,7 @@ def test_processed_cache_warm_run_processes_only_new_expid(tmp_path: Path, monke
     output_path = tmp_path / "processed" / "processed.npz"
     calls = []
 
-    def fake_records(source):
+    def fake_records(source, config=None):
         ids = sorted(source.get("experiments", {}))
         calls.append(ids)
         return [{"roi_key": f"roi-{expid}", "expid": expid, "day_id": expid, "state_activity": {"wake": 1.0}, "state_frequency": {"wake": 2.0}, "source_signature": source["experiments"][expid]["source_signature"]} for expid in ids]
