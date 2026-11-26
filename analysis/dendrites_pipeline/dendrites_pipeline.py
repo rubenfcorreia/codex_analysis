@@ -18671,6 +18671,7 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_results_meta=analysis_results_meta,
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
+                generate_family_figures=bool(config.get("generate_family_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
                 transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions") if not config.get("general_output_root") else None),
             )
@@ -18691,6 +18692,7 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_results_meta=analysis_results_meta,
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
+                generate_family_figures=bool(config.get("generate_family_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
                 transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions") if not config.get("general_output_root") else None),
             )
@@ -18711,6 +18713,7 @@ def _main_impl(argv: Optional[Sequence[str]] = None) -> int:
                 analysis_results_meta=analysis_results_meta,
                 cache_path=analysis_run_cache_path,
                 generate_visual_response_entity_figures=bool(config.get("generate_visual_response_entity_figures", True)),
+                generate_family_figures=bool(config.get("generate_family_figures", True)),
                 transition_analysis=config.get("transition_analysis"),
                 transition_output_root=(Path(config.get("general_figure_root")) / "state_transitions") if config.get("general_output_root") and config.get("generate_shared_general_outputs") else ((Path(figure_output_dir) / "state_transitions") if not config.get("general_output_root") else None),
             )

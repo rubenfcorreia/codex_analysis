@@ -82,6 +82,7 @@ def test_plot_profiles_preserve_full_and_disable_analysis_only():
     analysis_only = apply_plot_profile({"plot_profile": "analysis_only"})
     assert analysis_only["poster_ready_only"] is True
     assert analysis_only["generate_poster_ready_figures"] is False
+    assert analysis_only["generate_family_figures"] is False
     poster_only = apply_plot_profile({"plot_profile": "poster_only"})
     assert poster_only["poster_ready_only"] is True
     assert poster_only["generate_poster_ready_figures"] is True

@@ -20,6 +20,7 @@ def apply_plot_profile(config: MutableMapping[str, Any]) -> MutableMapping[str, 
             generate_visual_response_entity_figures=False,
             generate_dff_heatmaps=False,
             branch_first_figures=False,
+            generate_family_figures=False,
         )
     elif profile == "poster_only":
         config.update(

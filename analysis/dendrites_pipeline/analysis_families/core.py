@@ -150,6 +150,7 @@ def prepare_visual_response_cohorts(
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
     generate_visual_response_entity_figures: bool = True,
+    generate_family_figures: bool = True,
 ) -> Dict[str, Any]:
     dendrite_visual_response = classify_visual_responsive_dendrites(cache, source_cache=source_cache)
     classification_path = cache.get("config", {}).get("classification_cache_path") if isinstance(cache.get("config", {}), dict) else None
@@ -171,7 +172,7 @@ def prepare_visual_response_cohorts(
         state_comparison_states,
         spine_visual_response,
     )
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         fig_root = Path(figure_root) if figure_root is not None else (Path(output_dir) / "figures")
         fig_root.mkdir(parents=True, exist_ok=True)
         cut_cache: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -298,7 +299,7 @@ def run_state_family(
             step_progress(idx, len(basal_apical_states), label=str(state))
             for metric in state_metric_names:
                 results["basal_apical_comparisons"].append(basal_apical_comparison(cache, metric, state, shuffle_n))
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         with step_scope("figure generation: state"):
             render_analysis_family_figures(
                 output_dir,
@@ -405,7 +406,7 @@ def run_direct_trial_type_family(
         direct_trial_type_results = run_direct_trial_type_comparison(cache, state_comparison_states, shuffle_n, split_membership_rows, scope_keys=scope_keys, reused_table_rows=reused_table_rows)
     results["direct_trial_type_comparison"] = direct_trial_type_results
     results["alerts"].extend(direct_trial_type_results.get("alerts", []))
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         with step_scope("figure generation: direct_trial_type_comparison"):
             render_analysis_family_figures(output_dir, results, cache, "direct_trial_type_comparison", figure_root=figure_root)
 
@@ -468,7 +469,7 @@ def run_mixed_model_family_block(
 
     results["alerts"].extend(mixed_model_results.get("alerts", []))
     results["demo_validation"].extend(mixed_model_results.get("validation_rows", []))
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         with step_scope("figure generation: mixed_model"):
             render_analysis_family_figures(output_dir, results, cache, "mixed_model", figure_root=figure_root)
 
@@ -516,7 +517,7 @@ def run_spine_coactivity_family_block(
         "selection": spine_coactivity_results.get("selection", {}),
     }
     results["alerts"].extend(spine_coactivity_results.get("alerts", []))
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         with step_scope("figure generation: spine_coactivity"):
             render_analysis_family_figures(output_dir, results, cache, "spine_coactivity", figure_root=figure_root)
 
@@ -626,7 +627,7 @@ def run_correlation_family(
         for index, (task, correlation) in enumerate(zip(tasks, correlations), start=1):
             step_progress(index, len(tasks), label=f"{task['analysis']}:{task['metadata']['global_dendrite_id']}")
             results["correlations"].append({"analysis": task["analysis"], **task["metadata"], **correlation})
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         with step_scope("figure generation: correlation"):
             render_analysis_family_figures(output_dir, results, cache, "correlation", figure_root=figure_root)
 
@@ -677,7 +678,7 @@ def run_matrix_similarity_family(
                 observed, shuffle_p, null_mean, shuffle_success, n_matrix_pairs, lower_ci, upper_ci = shuffle_matrix_similarity(state_vectors[state_a], state_vectors[state_b], shuffle_n, shuffle_seed=int((cache.get("config", {}) or {}).get("correlation_shuffle_seed", 12345)))
                 results["matrix_similarity"].append({"animal_id": animal_id, "exp_id": exp_id, "day_id": exp_id, "global_dendrite_id": dendrite_id, "compartment": observation_compartment(cache, exp_id, d_obs), "state_a": state_a, "state_b": state_b, "matrix_similarity_r": observed, "effect_size": observed, "lower_ci": lower_ci, "upper_ci": upper_ci, "classical_p": float("nan"), "shuffle_p": shuffle_p, "p_value": shuffle_p, "p_value_source": "vector_label_permutation", "null_model": "vector_label_permutation", "shuffle_seed": int((cache.get("config", {}) or {}).get("correlation_shuffle_seed", 12345)), "shuffle_n_requested": int(shuffle_n), "shuffle_n_success": int(shuffle_success), "inferential_unit": "dendrite_day", "correction_family": "matrix_similarity_by_state_compartment", "shuffle_null_mean": null_mean, "n_matrix_pairs": int(n_matrix_pairs), "n_spines": int(len(state_vectors[state_a]))})
     apply_bh_fdr_rows(results["matrix_similarity"], p_key="p_value")
-    if output_dir is not None:
+    if output_dir is not None and generate_family_figures:
         with step_scope("figure generation: matrix_similarity"):
             render_analysis_family_figures(output_dir, results, cache, "matrix_similarity", figure_root=figure_root)
 
@@ -721,6 +722,7 @@ def run_cached_analysis(
     analysis_results_meta: Optional[Dict[str, Any]] = None,
     cache_path: Optional[Path] = None,
     generate_visual_response_entity_figures: bool = True,
+    generate_family_figures: bool = True,
     transition_analysis: Optional[Mapping[str, Any]] = None,
     transition_output_root: Optional[Any] = None,
 ) -> Dict[str, Any]:
@@ -747,6 +749,7 @@ def run_cached_analysis(
                     output_dir=output_dir,
                     figure_root=figure_root,
                     generate_visual_response_entity_figures=generate_visual_response_entity_figures,
+                    generate_family_figures=generate_family_figures,
                 )
             )
         if cache_path is not None and analysis_results_meta is not None:
