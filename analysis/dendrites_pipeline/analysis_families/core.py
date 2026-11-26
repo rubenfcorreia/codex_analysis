@@ -287,6 +287,7 @@ def run_state_family(
     scope_keys: Optional[Sequence[str]] = None,
     reused_coverage_rows: Optional[Sequence[Mapping[str, Any]]] = None,
     reused_metric_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    reused_dendrite_metric_rows: Optional[Sequence[Mapping[str, Any]]] = None,
     metric_scope_ids: Optional[Sequence[str]] = None,
 ) -> None:
     experiments = cache.get("experiments", {})
@@ -306,8 +307,22 @@ def run_state_family(
             for state, subjects in scoped_values.items():
                 merged.setdefault(state, {}).update({subject: list(values) for subject, values in subjects.items()})
             state_metric_values[metric_name] = merged
-        state_metric_dendrite_values = {metric_name: summarize_state_values_by_dendrite(cache, metric_name, state_comparison_states) for metric_name in state_metric_names}
+        if metric_scope_ids is None:
+            state_metric_dendrite_values = {metric_name: summarize_state_values_by_dendrite(cache, metric_name, state_comparison_states) for metric_name in state_metric_names}
+        else:
+            cached_dendrite_values = _state_metric_values_from_rows(reused_dendrite_metric_rows or [])
+            state_metric_dendrite_values = {}
+            for metric_name in state_metric_names:
+                merged_dendrite = {
+                    state: {subject: list(values) for subject, values in subjects.items()}
+                    for state, subjects in cached_dendrite_values.get(metric_name, {}).items()
+                }
+                scoped_dendrite = summarize_state_values_by_dendrite(cache, metric_name, state_comparison_states, scope_ids=metric_scope_ids)
+                for state, subjects in scoped_dendrite.items():
+                    merged_dendrite.setdefault(state, {}).update({subject: list(values) for subject, values in subjects.items()})
+                state_metric_dendrite_values[metric_name] = merged_dendrite
         results["state_metric_rows"] = _state_metric_rows_from_values(state_metric_values)
+        results["state_metric_dendrite_rows"] = _state_metric_rows_from_values(state_metric_dendrite_values)
         for metric_name in state_metric_names:
             results["state_summaries"][metric_name] = state_metric_values[metric_name]
             results["state_dendrite_summaries"][metric_name] = state_metric_dendrite_values[metric_name]
@@ -832,15 +847,22 @@ def run_cached_analysis(
             expected_family_meta=analysis_results_meta,
         ) if cache_path is not None else {}
         reused_metric_rows = [row for rows in reusable_metric.values() for row in rows]
-        metric_scope_ids = [str(scope).split("|", 1)[0] for scope in changed_scopes] if reusable_metric else None
+        reusable_dendrite_metric = load_reusable_family_scope_rows(
+            cache_path, "state", scope_signatures, table_name="state_metric_dendrite_rows",
+            expected_family_meta=analysis_results_meta,
+        ) if cache_path is not None else {}
+        reused_dendrite_metric_rows = [row for rows in reusable_dendrite_metric.values() for row in rows]
+        metric_scope_ids = [str(scope).split("|", 1)[0] for scope in changed_scopes] if reusable_metric and reusable_dendrite_metric else None
         results.setdefault("cache_summary", {})["state_scope_reuse"] = family_scope_reuse_report("state", scope_signatures, reusable)
         results.setdefault("cache_summary", {})["state_metric_scope_reuse"] = family_scope_reuse_report("state_metric_rows", scope_signatures, reusable_metric)
+        results.setdefault("cache_summary", {})["state_metric_dendrite_scope_reuse"] = family_scope_reuse_report("state_metric_dendrite_rows", scope_signatures, reusable_dendrite_metric)
         run_state_family(
             cache, results, state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states, shuffle_n=shuffle_n,
             output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes,
             reused_coverage_rows=reused_rows,
             reused_metric_rows=reused_metric_rows,
+            reused_dendrite_metric_rows=reused_dendrite_metric_rows,
             metric_scope_ids=metric_scope_ids,
         )
         results.setdefault("cache_summary", {})["state_global_aggregation"] = {

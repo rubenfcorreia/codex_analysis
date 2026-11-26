@@ -2046,6 +2046,7 @@ def summarize_state_values_by_dendrite(
     subject_key: str = "day_id",
     dendrite_ids_filter: Optional[Sequence[str]] = None,
     spine_ids_filter: Optional[Sequence[str]] = None,
+    scope_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     cache_key = _state_summary_cache_key(
         "dendrite_values",
@@ -2056,6 +2057,7 @@ def summarize_state_values_by_dendrite(
         subject_key=subject_key,
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
+        scope_ids=scope_ids,
     )
     cached = _STATE_SUMMARY_DENDRITE_VALUES_CACHE.get(cache_key)
     if cached is None:
@@ -2074,6 +2076,7 @@ def summarize_state_values_by_dendrite(
         dendrite_ids_filter=dendrite_ids_filter,
         spine_ids_filter=spine_ids_filter,
         by_dendrite=True,
+        scope_ids=scope_ids,
     )
     _STATE_SUMMARY_DENDRITE_VALUES_CACHE[cache_key] = by_state
     _state_summary_cache_store(cache)[cache_key] = by_state
