@@ -76,6 +76,7 @@ from analysis.shared.plots.dendrite_plot_support import (
     visual_response_dendrite_ids,
 )
 from analysis.shared.analysis_families.dendrite_transitions import run_transition_analysis
+from .preferred_state_concordance import run_preferred_state_concordance_analysis
 
 STATE_METRIC_NAMES: Tuple[str, ...] = (
     "dendrite_mean",
@@ -125,6 +126,7 @@ ANALYSIS_FAMILIES: List[str] = [
     "matrix_similarity",
     "mixed_model",
     "spine_coactivity",
+    "preferred_state_concordance",
 ]
 
 
@@ -156,6 +158,7 @@ def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:
         "direct_trial_type_comparison": {},
         "spine_coactivity": {},
         "spine_coactivity_model": {},
+        "preferred_state_concordance": {},
         "state_transitions": {"event_rows": [], "summary_rows": [], "figure_paths": [], "alerts": []},
 
     }
@@ -596,6 +599,16 @@ def run_spine_coactivity_family_block(
             render_analysis_family_figures(output_dir, results, cache, "spine_coactivity", figure_root=figure_root)
 
 
+def run_preferred_state_concordance_family_block(cache: Dict[str, Any], results: Dict[str, Any], *, state_comparison_states: Sequence[str], output_dir: Optional[Any] = None, figure_root: Optional[Any] = None, scope_keys: Optional[Sequence[str]] = None) -> None:
+    with step_scope("preferred-state concordance analysis"):
+        concordance = run_preferred_state_concordance_analysis(cache, state_comparison_states=state_comparison_states, scope_keys=scope_keys)
+    results["preferred_state_concordance"] = concordance
+    results["alerts"].extend(concordance.get("alerts", []))
+    if output_dir is not None:
+        with step_scope("figure generation: preferred_state_concordance"):
+            render_analysis_family_figures(output_dir, results, cache, "preferred_state_concordance", figure_root=figure_root)
+
+
 def run_correlation_family(
     cache: Dict[str, Any],
     results: Dict[str, Any],
@@ -951,6 +964,12 @@ def run_cached_analysis(
         run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "spine_coactivity", results, base_meta=analysis_results_meta)
+    if "preferred_state_concordance" in selected_families and not _reuse_family_cache(results, "preferred_state_concordance", cache_path, analysis_results_meta):
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        changed_scopes = list(scope_signatures) if scope_signatures else None
+        run_preferred_state_concordance_family_block(cache, results, state_comparison_states=state_comparison_states, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes)
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "preferred_state_concordance", results, base_meta=analysis_results_meta)
     if "correlation" in selected_families and not _reuse_family_cache(results, "correlation", cache_path, analysis_results_meta):
         scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
         reusable = load_reusable_family_scope_rows(cache_path, "correlation", scope_signatures, expected_family_meta=analysis_results_meta) if cache_path is not None else {}

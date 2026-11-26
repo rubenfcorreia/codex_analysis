@@ -56,6 +56,14 @@
       "plots": true,
       "scope": "expid_day",
       "aggregate": "pooled"
+    },
+    "preferred_state_concordance": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
     }
   },
   "_field_help": {

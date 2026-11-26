@@ -13,6 +13,7 @@ ANALYSIS_FAMILIES: List[str] = [
     "matrix_similarity",
     "mixed_model",
     "spine_coactivity",
+    "preferred_state_concordance",
 ]
 
 
