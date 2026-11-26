@@ -22,6 +22,7 @@ METHODOLOGY_VERSION = "2026-10-06-statistics-v3"
 FAMILY_RESULT_CACHE_STAGES = (
     "visual_response",
     "state",
+    "state_transitions",
     "direct_trial_type_comparison",
     "mixed_model",
     "spine_coactivity",

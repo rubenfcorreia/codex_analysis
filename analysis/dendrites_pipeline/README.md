@@ -64,6 +64,8 @@ The transition CSV outputs are grouped by state scope and window mode:
 
 Figures are written under `state_transitions/<scope>/<window_mode>/`; aligned trace filenames end in `_expday_trace.svg`. Primary paired statistics use experiment-days as the independent replicates.
 
+Transition event rows and aligned trace segments are cached per experiment-day. Warm reruns reuse unchanged experiment-days and recompute only new or invalidated scopes; pooled and experiment-day-balanced summaries are then rebuilt from the merged rows. Changing transition settings, selected states, methodology, or source data invalidates the affected transition cache. This keeps transition statistics and figures consistent while allowing new transition analyses to be added without rebuilding upstream state metrics.
+
 ## Paired State Summary Figures
 
 Blank and movie comparison presets generate paired-only state summaries for Quiet Awake vs NREM and Quiet Awake vs NREM vs REM. The paired intersection is calculated independently for each ROI and state set, and duplicate entity/state observations are averaged before plotting.

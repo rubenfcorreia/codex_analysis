@@ -149,6 +149,43 @@ def test_transition_config_normalizes_overflow_policy():
     assert normalized["schema_version"] == TRANSITION_SCHEMA_VERSION
 
 
+def test_transition_scope_reuse_avoids_recomputing_unchanged_experiment(monkeypatch):
+    from analysis.shared.analysis_families import dendrite_transitions as module
+    from analysis.shared.analysis_families.dendrite_transitions import run_transition_analysis
+
+    time = np.arange(240.0)
+    exp_id = "exp-1"
+    cache = {
+        "experiments": {exp_id: {"time": time, "date": "day-1", "state_masks": {"quiet_awake": time < 120.0, "nrem": time >= 120.0}}},
+        "animals": {"animal": {"dendrites": {"d1": {
+            "compartment": "basal",
+            "observations": {exp_id: {"time": time, "trace": np.ones_like(time), "day_id": "day-1"}},
+            "spines": {},
+        }}}},
+    }
+    config = {"enabled": True, "scopes": ["all_states"], "window_modes": ["strict"], "metrics": ["activity"]}
+    first = run_transition_analysis(cache, ["quiet_awake", "nrem"], config)
+    assert first["event_rows"]
+    monkeypatch.setattr(module, "transition_events", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("recomputed unchanged scope")))
+    reused = run_transition_analysis(
+        cache,
+        ["quiet_awake", "nrem"],
+        config,
+        scope_keys=[],
+        reused_event_rows=first["event_rows"],
+        reused_trace_segments=first["trace_segments"],
+    )
+    assert reused["event_rows"] == first["event_rows"]
+    assert len(reused["summary_rows"]) == len(first["summary_rows"])
+    for reused_row, first_row in zip(reused["summary_rows"], first["summary_rows"]):
+        assert reused_row.keys() == first_row.keys()
+        for key in reused_row:
+            left, right = reused_row[key], first_row[key]
+            if isinstance(left, float) and isinstance(right, float) and np.isnan(left) and np.isnan(right):
+                continue
+            assert left == right
+
+
 def test_transition_partial_bound_returns_structured_result():
     from analysis.shared.analysis_families.dendrite_transitions import run_transition_analysis
 

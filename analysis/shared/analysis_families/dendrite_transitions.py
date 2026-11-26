@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -92,6 +92,9 @@ def _run_transition_analysis_impl(
     config: Mapping[str, Any] | None,
     *,
     output_root: Path | None = None,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_event_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    reused_trace_segments: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
     transition_config = normalize_transition_config(config)
     result: dict[str, Any] = {
@@ -99,6 +102,7 @@ def _run_transition_analysis_impl(
         "config": transition_config,
         "event_rows": [],
         "summary_rows": [],
+        "trace_segments": [],
         "figure_paths": [],
         "alerts": [],
         "complete": True,
@@ -109,8 +113,9 @@ def _run_transition_analysis_impl(
     }
     if not transition_config["enabled"]:
         return result
-    event_rows: list[dict[str, Any]] = []
-    trace_segments: list[dict[str, Any]] = []
+    event_rows: list[dict[str, Any]] = [dict(row) for row in (reused_event_rows or [])]
+    trace_segments: list[dict[str, Any]] = [dict(row) for row in (reused_trace_segments or [])]
+    allowed_scope_keys = {str(value) for value in scope_keys} if scope_keys is not None else None
     max_event_rows = transition_config.get("max_event_rows")
 
     def append_event_row(row: dict[str, Any]) -> None:
@@ -142,6 +147,9 @@ def _run_transition_analysis_impl(
                 if time.size < 2 or not isinstance(state_masks, Mapping):
                     continue
                 compartment = observation_compartment(cache, exp_id, d_obs) or str(exp_meta.get("compartment") or "")
+                day_id = str(d_obs.get("day_id") or exp_meta.get("date") or exp_id)
+                if allowed_scope_keys is not None and f"{exp_id}|{day_id}" not in allowed_scope_keys:
+                    continue
                 for scope in transition_config["scopes"]:
                     scoped_states = [str(state) for state in selected_states if scope == "all_states" or is_sleep_state_label(state)]
                     if len(scoped_states) < 2:
@@ -177,7 +185,7 @@ def _run_transition_analysis_impl(
                                     post = _window_values(d_trace, d_time, event, "post")
                                     append_event_row(_row(event, exp_id=str(exp_id), animal_id=str(animal_id), day_id=str(d_obs.get("day_id") or exp_id), compartment=str(compartment), entity_id=dendrite_id_text, metric="dendrite_mean", pre_value=float(np.nanmean(pre)) if pre.size else float("nan"), post_value=float(np.nanmean(post)) if post.size else float("nan")))
                                     relative, values = aligned_trace_segment(d_trace, d_time, event)
-                                    trace_segments.append({"scope": scope, "window_mode": window_mode, "state_before": event["state_before"], "state_after": event["state_after"], "metric": "dendrite_mean", "compartment": str(compartment), "window_s": event["window_s"], "relative_time_s": relative, "values": values, "expday": f"{exp_id}|{d_obs.get('day_id') or exp_id}", "entity_id": dendrite_id_text, "animal_id": str(animal_id)})
+                                    trace_segments.append({"scope": scope, "window_mode": window_mode, "state_before": event["state_before"], "state_after": event["state_after"], "metric": "dendrite_mean", "compartment": str(compartment), "window_s": event["window_s"], "relative_time_s": relative, "values": values, "expid": str(exp_id), "day_id": day_id, "expday": f"{exp_id}|{day_id}", "entity_id": dendrite_id_text, "animal_id": str(animal_id)})
                                 if "event_frequency" in transition_config["metrics"]:
                                     dendrite_pre_frequency = as_float(dendrite_pre_event_info.get("event_frequency_per_min"))
                                     dendrite_post_frequency = as_float(dendrite_post_event_info.get("event_frequency_per_min"))
@@ -196,7 +204,7 @@ def _run_transition_analysis_impl(
                                     post = _window_values(s_trace, s_time, event, "post")
                                     append_event_row(_row(event, exp_id=str(exp_id), animal_id=str(animal_id), day_id=str(s_obs.get("day_id") or exp_id), compartment=str(observation_compartment(cache, exp_id, s_obs) or compartment), entity_id=entity_id, metric="spine_specific_mean", pre_value=float(np.nanmean(pre)) if pre.size else float("nan"), post_value=float(np.nanmean(post)) if post.size else float("nan")))
                                     relative, values = aligned_trace_segment(s_trace, s_time, event)
-                                    trace_segments.append({"scope": scope, "window_mode": window_mode, "state_before": event["state_before"], "state_after": event["state_after"], "metric": "spine_specific_mean", "compartment": str(observation_compartment(cache, exp_id, s_obs) or compartment), "window_s": event["window_s"], "relative_time_s": relative, "values": values, "expday": f"{exp_id}|{s_obs.get('day_id') or exp_id}", "entity_id": entity_id, "animal_id": str(animal_id)})
+                                    trace_segments.append({"scope": scope, "window_mode": window_mode, "state_before": event["state_before"], "state_after": event["state_after"], "metric": "spine_specific_mean", "compartment": str(observation_compartment(cache, exp_id, s_obs) or compartment), "window_s": event["window_s"], "relative_time_s": relative, "values": values, "expid": str(exp_id), "day_id": day_id, "expday": f"{exp_id}|{day_id}", "entity_id": entity_id, "animal_id": str(animal_id)})
                                 if "event_frequency" in transition_config["metrics"]:
                                     s_event_info = s_obs.get("event_info") or {}
                                     s_event_trace = s_obs.get("trace")
@@ -214,6 +222,7 @@ def _run_transition_analysis_impl(
                                         post_value = as_float(annotate_spine_event_info(post_s, post_d).get(metric))
                                         append_event_row(_row(event, exp_id=str(exp_id), animal_id=str(animal_id), day_id=str(s_obs.get("day_id") or exp_id), compartment=str(observation_compartment(cache, exp_id, s_obs) or compartment), entity_id=entity_id, metric=metric, pre_value=pre_value if pre_value is not None else float("nan"), post_value=post_value if post_value is not None else float("nan")))
     result["event_rows"] = event_rows
+    result["trace_segments"] = trace_segments
     result["rows_emitted"] = int(len(event_rows))
     result["pooled_summary_rows"] = paired_transition_summaries(event_rows)
     balanced_rows = aggregate_transition_rows_expday(event_rows)
@@ -232,10 +241,21 @@ def run_transition_analysis(
     config: Mapping[str, Any] | None,
     *,
     output_root: Path | None = None,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_event_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    reused_trace_segments: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
     normalized = normalize_transition_config(config)
     try:
-        return _run_transition_analysis_impl(cache, selected_states, normalized, output_root=output_root)
+        return _run_transition_analysis_impl(
+            cache,
+            selected_states,
+            normalized,
+            output_root=output_root,
+            scope_keys=scope_keys,
+            reused_event_rows=reused_event_rows,
+            reused_trace_segments=reused_trace_segments,
+        )
     except TransitionOverflowError as exc:
         if normalized.get("transition_overflow_policy") != "partial":
             raise
@@ -245,6 +265,7 @@ def run_transition_analysis(
             "event_rows": list(exc.rows),
             "pooled_summary_rows": paired_transition_summaries(exc.rows),
             "summary_rows": paired_transition_summaries(aggregate_transition_rows_expday(exc.rows)),
+            "trace_segments": list(exc.trace_segments),
             "figure_paths": [],
             "alerts": [],
             "complete": False,

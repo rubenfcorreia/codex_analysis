@@ -882,15 +882,47 @@ def run_cached_analysis(
         if cache_path is not None and analysis_results_meta is not None:
             with step_scope("save family cache: state"):
                 save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
-    if transition_analysis and bool(transition_analysis.get("enabled", False)):
+    if transition_analysis and bool(transition_analysis.get("enabled", False)) and not _reuse_family_cache(results, "state_transitions", cache_path, analysis_results_meta):
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        reusable_events = load_reusable_family_scope_rows(
+            cache_path,
+            "state_transitions",
+            scope_signatures,
+            table_name="state_transitions.event_rows",
+            expected_family_meta=analysis_results_meta,
+        ) if cache_path is not None else {}
+        reusable_traces = load_reusable_family_scope_rows(
+            cache_path,
+            "state_transitions",
+            scope_signatures,
+            table_name="state_transitions.trace_segments",
+            expected_family_meta=analysis_results_meta,
+        ) if cache_path is not None else {}
+        reused_event_rows = [row for rows in reusable_events.values() for row in rows]
+        reused_trace_segments = [row for rows in reusable_traces.values() for row in rows]
+        changed_scopes = [scope for scope in scope_signatures if scope not in reusable_events] if reusable_events else None
+        results.setdefault("cache_summary", {})["state_transitions_scope_reuse"] = family_scope_reuse_report(
+            "state_transitions",
+            scope_signatures,
+            reusable_events,
+        )
         with step_scope("state transitions"):
             results["state_transitions"] = run_transition_analysis(
                 cache,
                 state_comparison_states,
                 transition_analysis,
                 output_root=(Path(transition_output_root) if transition_output_root is not None else (Path(figure_root) if figure_root is not None else (Path(output_dir) if output_dir is not None else None))),
+                scope_keys=changed_scopes,
+                reused_event_rows=reused_event_rows,
+                reused_trace_segments=reused_trace_segments,
             )
             results["alerts"].extend(results["state_transitions"].get("alerts", []))
+        results.setdefault("cache_summary", {})["state_transitions_statistics"] = {
+            "status": "recomputed",
+            "reason": "merged experiment-day rows and transition summaries",
+        }
+        if cache_path is not None and analysis_results_meta is not None:
+            save_family_results_cache(cache_path, "state_transitions", results, base_meta=analysis_results_meta)
 
     if "mixed_model" in selected_families and not _reuse_family_cache(results, "mixed_model", cache_path, analysis_results_meta):
         run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
