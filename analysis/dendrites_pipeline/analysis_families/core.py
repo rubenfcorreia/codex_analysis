@@ -244,6 +244,8 @@ def run_state_family(
     shuffle_n: int,
     output_dir: Optional[Any] = None,
     figure_root: Optional[Any] = None,
+    scope_keys: Optional[Sequence[str]] = None,
+    reused_coverage_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> None:
     experiments = cache.get("experiments", {})
     state_metric_names = [
@@ -260,8 +262,14 @@ def run_state_family(
         for metric_name in state_metric_names:
             results["state_summaries"][metric_name] = state_metric_values[metric_name]
             results["state_dendrite_summaries"][metric_name] = state_metric_dendrite_values[metric_name]
+    allowed_scopes = {str(value) for value in (scope_keys or [])}
+    if reused_coverage_rows:
+        results["state_coverage"].extend(dict(row) for row in reused_coverage_rows if isinstance(row, Mapping))
     with step_scope("state coverage"):
         for idx, (exp_id, exp_meta) in enumerate(experiments.items(), start=1):
+            scope = f"{exp_id}|{exp_meta.get('date') or exp_id}"
+            if allowed_scopes and scope not in allowed_scopes and f"{exp_id}|{exp_id}" not in allowed_scopes:
+                continue
             step_progress(idx, len(experiments), label=str(exp_id))
             time = np.asarray(exp_meta.get("time"), dtype=float)
             sampling_rate = estimate_sampling_rate(time)
@@ -755,7 +763,19 @@ def run_cached_analysis(
 
             step_message(f"{key}: top-level keys={list(value.keys())[:10]}")
     if "state" in selected_families and not _reuse_family_cache(results, "state", cache_path, analysis_results_meta):
-        run_state_family(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root)
+        scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
+        reusable = load_reusable_family_scope_rows(
+            cache_path, "state", scope_signatures, table_name="state_coverage",
+            expected_family_meta=analysis_results_meta,
+        ) if cache_path is not None else {}
+        reused_rows = [row for rows in reusable.values() for row in rows]
+        changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        run_state_family(
+            cache, results, state_comparison_states=state_comparison_states,
+            basal_apical_states=basal_apical_states, shuffle_n=shuffle_n,
+            output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes,
+            reused_coverage_rows=reused_rows,
+        )
         if cache_path is not None and analysis_results_meta is not None:
             with step_scope("save family cache: state"):
                 save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
