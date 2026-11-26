@@ -80,6 +80,7 @@ from analysis.shared.analysis_families.dendrite_transitions import run_transitio
 STATE_METRIC_NAMES: Tuple[str, ...] = (
     "dendrite_mean",
     "spine_specific_mean",
+    "spine_specific_event_free_mean",
     "dendrite_event_frequency_per_min",
     "spine_event_frequency_per_min",
     "coincident_event_frequency_per_min",
