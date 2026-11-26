@@ -1,5 +1,7 @@
 results/
 logs/
+example_figures/
+example_neural_traces/
 review_figures/
 .figure_viewer/
 __pycache__/

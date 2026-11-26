@@ -12,10 +12,14 @@ from analysis.cache_builders.common import cache_manifest_path, dependency_signa
 from analysis.shared.cache_config import normalize_staged_config
 from analysis.shared.cache_utils import load_npz_cache, save_npz_cache
 from analysis.shared.plots.dendrite_plot_support import classify_visual_responsive_dendrites, classify_visual_responsive_spines
+from analysis.cache_builders.schema import CACHE_SCHEMA_VERSION
 
 
-def _dendrite_records(source: dict[str, Any]) -> list[dict[str, Any]]:
+def _dendrite_records(source: dict[str, Any], config: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     records = []
+    config = config or {}
+    movie_ids = {str(value) for value in config.get("movie_expids", [])}
+    sleep_ids = {str(value) for value in config.get("sleep_expids", [])}
     visual_rows = []
     for classifier in (classify_visual_responsive_dendrites, classify_visual_responsive_spines):
         try:
@@ -30,12 +34,16 @@ def _dendrite_records(source: dict[str, Any]) -> list[dict[str, Any]]:
     for animal_id, animal in source.get("animals", {}).items():
         for dendrite_id, dendrite in animal.get("dendrites", {}).items():
             for expid, observation in dendrite.get("observations", {}).items():
+                experiment_mode = "movie" if str(expid) in movie_ids else "sleep" if str(expid) in sleep_ids else "unknown"
+                state_activity = dict(observation.get("state_activity_means", {}) or {})
+                state_activity.update(observation.get("cut_state_means", {}) or {})
                 records.append({
-                    "roi_key": str(dendrite_id), "expid": str(expid), "animal_id": animal_id,
+                    "roi_key": str(dendrite_id), "roi_type": "dendrite", "expid": str(expid), "animal_id": animal_id,
                     "day_id": source.get("experiments", {}).get(expid, {}).get("day_id") or source.get("experiments", {}).get(expid, {}).get("date"),
                     "scope": "observation",
                     "compartment": dendrite.get("compartment"),
-                    "state_activity": observation.get("cut_state_means", {}),
+                    "experiment_mode": experiment_mode,
+                    "state_activity": state_activity,
                     "state_frequency": observation.get("state_event_frequencies", observation.get("event_frequency", {})),
                     "source_signature": source.get("experiments", {}).get(expid, {}).get("source_signature"),
                     "visual_responsive": visual_by_id.get(str(dendrite_id), {}).get("responsive"),
@@ -43,12 +51,16 @@ def _dendrite_records(source: dict[str, Any]) -> list[dict[str, Any]]:
                 })
             for spine_id, spine in dendrite.get("spines", {}).items():
                 for expid, observation in spine.get("observations", {}).items():
+                    experiment_mode = "movie" if str(expid) in movie_ids else "sleep" if str(expid) in sleep_ids else "unknown"
+                    state_activity = dict(observation.get("state_activity_means", {}) or {})
+                    state_activity.update(observation.get("cut_state_means", {}) or {})
                     records.append({
-                        "roi_key": str(spine_id), "expid": str(expid), "animal_id": animal_id,
+                        "roi_key": str(spine_id), "roi_type": "spine", "expid": str(expid), "animal_id": animal_id,
                         "day_id": source.get("experiments", {}).get(expid, {}).get("day_id") or source.get("experiments", {}).get(expid, {}).get("date"),
                         "scope": "observation",
                         "compartment": dendrite.get("compartment"),
-                        "state_activity": observation.get("cut_state_means", {}),
+                        "experiment_mode": experiment_mode,
+                    "state_activity": state_activity,
                         "state_frequency": observation.get("state_event_frequencies", observation.get("event_frequency", {})),
                         "source_signature": source.get("experiments", {}).get(expid, {}).get("source_signature"),
                         "visual_responsive": visual_by_id.get(str(spine_id), {}).get("responsive"),
@@ -100,8 +112,9 @@ def _soma_records(source: dict[str, Any], config: dict[str, Any], impl: Any, rep
                 state_frequency.setdefault("all", fallback_frequency)
                 records.append({
                     "roi_key": f"{expid}|{compartment}|{roi_ids[index] if index < len(roi_ids) else index}",
-                    "expid": expid, "animal_id": getattr(ctx, "animal_id", None), "day_id": getattr(ctx, "day_id", None),
+                    "roi_type": compartment, "expid": expid, "animal_id": getattr(ctx, "animal_id", None), "day_id": getattr(ctx, "day_id", None),
                     "scope": "observation",
+                    "experiment_mode": mode,
                     "compartment": compartment, "state_activity": state_activity,
                     "state_frequency": state_frequency,
                     "source_signature": row.get("source_signature"),
@@ -174,7 +187,7 @@ def build_processed_cache(config_path: Path, pipeline: str, source_cache_path: P
                 continue
         changed_expids.add(scope_key.split("|", 1)[0])
     if pipeline == "dendrites":
-        records = _dendrite_records(_filter_source(source, changed_expids)) if changed_expids else []
+        records = _dendrite_records(_filter_source(source, changed_expids), config) if changed_expids else []
     elif pipeline == "soma_bouton":
         from analysis.soma_bouton_pipeline import soma_bouton_pipeline as impl
         repo_root = impl.resolve_repo_path(config.get("repo_base") or Path(__file__).resolve().parents[2], Path(__file__).resolve().parents[2])
@@ -182,7 +195,7 @@ def build_processed_cache(config_path: Path, pipeline: str, source_cache_path: P
     else:
         raise ValueError(f"Unsupported pipeline: {pipeline}")
     records = [row for rows in reusable_records.values() for row in rows] + records
-    payload = {"schema_version": 1, "pipeline": pipeline, "roi_records": records, "source_signature": dependency_signature(source), "config_signature": config_signature}
+    payload = {"schema_version": CACHE_SCHEMA_VERSION, "record_schema": "roi_observation_v2", "pipeline": pipeline, "roi_records": records, "source_signature": dependency_signature(source), "config_signature": config_signature}
     save_npz_cache(output_path, payload)
     indexed = save_indexed_records(
         output_path.parent,

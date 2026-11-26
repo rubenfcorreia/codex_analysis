@@ -10439,6 +10439,25 @@ def global_spine_id(animal_id: str, date: str, *args: Any) -> str:
     else:
         raise TypeError("global_spine_id expects (animal_id, date, anchor_id, dendrite_id, spine_id) or the legacy compartment-inclusive form")
     return f"{animal_id}|{date}|{anchor_id}|d{int(dendrite_id)}|s{int(spine_id)}"
+def state_activity_means_from_trace(trace: Any, state_masks: Mapping[str, Any]) -> Dict[str, float]:
+    """Compute raw-trace state means for every state with samples.
+
+    This is intentionally separate from trial-cut means: sleep experiments have
+    state masks but no movie trial rows/cut matrix.
+    """
+    values = np.asarray(trace, dtype=float).reshape(-1)
+    output: Dict[str, float] = {}
+    for state_label, raw_mask in (state_masks or {}).items():
+        mask = np.asarray(raw_mask, dtype=bool).reshape(-1)
+        if mask.size != values.size or not np.any(mask):
+            continue
+        selected = values[mask]
+        selected = selected[np.isfinite(selected)]
+        if selected.size:
+            output[str(state_label)] = float(np.nanmean(selected))
+    return output
+
+
 def process_experiment(
     repo_base: Path,
     exp_id: str,
@@ -10588,6 +10607,7 @@ def process_experiment(
     exp_meta = {
         "animal_id": animal_id,
         "exp_id": exp_id,
+        "experiment_mode": "movie" if exp_id in movie_expids else "sleep" if exp_id in sleep_expids else "unknown",
         "date": derive_date(exp_id),
         "compartment": compartment,
         "repo_root": str(exp_root),
@@ -10711,6 +10731,9 @@ def process_experiment(
                         dend_cut_state_means[state_label] = float(np.nanmean(trial_values))
             if dend_cut_state_means:
                 obs["cut_state_means"] = dend_cut_state_means
+        raw_state_means = state_activity_means_from_trace(dend_trace, state_masks)
+        if raw_state_means:
+            obs["state_activity_means"] = raw_state_means
         obs["local_ids"] = {
             "general_roi_id": entry["general_roi_id"],
             "conversion_index": entry["conversion_index"],
@@ -10783,6 +10806,9 @@ def process_experiment(
                             spine_cut_state_means[state_label] = float(np.nanmean(trial_values))
                     if spine_cut_state_means:
                         spine_obs["cut_state_means"] = spine_cut_state_means
+            raw_state_means = state_activity_means_from_trace(spine_specific, state_masks)
+            if raw_state_means:
+                spine_obs["state_activity_means"] = raw_state_means
             spine_obs["local_ids"] = {
                 "general_roi_id": spine_entry["general_roi_id"],
                 "conversion_index": spine_entry["conversion_index"],

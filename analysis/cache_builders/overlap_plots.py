@@ -10,13 +10,13 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
 
-def venn_plot(state_sets: Mapping[str, set[str]], path: Path) -> None:
+def venn_plot(state_sets: Mapping[str, set[str]], path: Path, colors: list[str] | None = None) -> None:
     states = sorted(state_sets)
     if len(states) > 3:
         raise ValueError("venn_plot supports at most three states")
     fig, ax = plt.subplots(figsize=(6, 5))
     positions = {2: [(0.38, 0.5), (0.62, 0.5)], 3: [(0.38, 0.62), (0.62, 0.62), (0.5, 0.36)], 1: [(0.5, 0.5)]}[len(states)]
-    colors = ("#4c78a8", "#f58518", "#54a24b")
+    colors = tuple(colors or ("#4c78a8", "#f58518", "#54a24b"))
     for index, state in enumerate(states):
         circle = Circle(positions[index], 0.28, alpha=0.35, color=colors[index])
         ax.add_patch(circle)

@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from analysis.shared.cache_utils import stable_hash
 
 CACHE_STAGES = ("source", "processed", "initial_analysis", "classification", "for_analysis", "shuffle", "results")
-CACHE_MANIFEST_SCHEMA_VERSION = 1
+CACHE_MANIFEST_SCHEMA_VERSION = 2
 
 
 def cache_root(config: Mapping[str, Any], stage: str) -> Path:
@@ -163,7 +163,7 @@ def save_indexed_records(root: Path, *, pipeline: str, stage: str, records_by_sc
         if can_reuse:
             reused += 1
         else:
-            save_npz_cache(path, {"schema_version": 1, "pipeline": pipeline, "stage": stage, "scope_key": scope_key, "records": [dict(row) for row in rows], "signature": signature})
+            save_npz_cache(path, {"schema_version": CACHE_MANIFEST_SCHEMA_VERSION, "pipeline": pipeline, "stage": stage, "scope_key": scope_key, "records": [dict(row) for row in rows], "signature": signature, "record_schema_version": CACHE_MANIFEST_SCHEMA_VERSION})
             built += 1
         artifacts[scope_key] = {"path": str(path), "signature": signature, "config_signature": config_signature, "upstream_signature": upstream_signatures.get(scope_key, ""), "expid": expid, "day_id": scope_key.split("|", 1)[-1], "row_count": len(rows), "status": "reused" if can_reuse else "built"}
     manifest = stage_manifest(pipeline=pipeline, stage=stage, config_signature=config_signature, active_expids=sorted({key.split("|", 1)[0] for key in records_by_scope}), records={"artifacts": artifacts, "reused_count": reused, "built_count": built})

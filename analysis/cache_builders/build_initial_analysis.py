@@ -17,6 +17,8 @@ from analysis.cache_builders.common import cache_manifest_path, dependency_signa
 from analysis.shared.cache_config import normalize_staged_config
 from analysis.shared.cache_utils import load_npz_cache, save_npz_cache
 from analysis.cache_builders.initial_analysis_plots import write_initial_analysis_figures
+from analysis.cache_builders.schema import CACHE_SCHEMA_VERSION
+from analysis.cache_builders.aggregation import build_preferred_state_views
 
 
 def _numeric(value: Any) -> float | None:
@@ -45,6 +47,8 @@ def _summarize_record(record: Mapping[str, Any], abs_tolerance: float = 0.0, rel
     frequency_values = list(frequency.values())
     return {
         "roi_key": str(record.get("roi_key") or record.get("unit_id") or record.get("global_roi_id")),
+        "roi_type": record.get("roi_type"),
+        "experiment_mode": record.get("experiment_mode") or "unknown",
         "expid": record.get("expid") or record.get("exp_id"),
         "animal_id": record.get("animal_id"),
         "day_id": record.get("day_id"),
@@ -60,6 +64,9 @@ def _summarize_record(record: Mapping[str, Any], abs_tolerance: float = 0.0, rel
         "visual_responsive": record.get("visual_responsive"),
         "visual_class": record.get("visual_class"),
         "source_signature": record.get("source_signature"),
+        "source_expids": list(record.get("source_expids") or ([record.get("expid")] if record.get("expid") else [])),
+        "observation_count": int(record.get("observation_count") or 1),
+        "modes_present": list(record.get("modes_present") or [record.get("experiment_mode") or "unknown"]),
     }
 
 
@@ -103,10 +110,14 @@ def build_initial_analysis(config_path: Path, pipeline: str, processed_cache_pat
                 continue
         changed_rows.extend(scope_rows)
     records = reusable_records + [_summarize_record(row, abs_tolerance, rel_tolerance) for row in changed_rows if isinstance(row, Mapping)]
+    preferred_state_views = build_preferred_state_views(rows, lambda row: _summarize_record(row, abs_tolerance, rel_tolerance))
     payload = {
-        "schema_version": 1,
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "record_schema": "roi_observation_summary_v2",
+        "views_schema": "roi_day_mode_v2",
         "pipeline": pipeline,
         "records": records,
+        "preferred_state_views": preferred_state_views,
         "processed_signature": dependency_signature(processed),
         "config_signature": config_signature,
     }
@@ -122,14 +133,15 @@ def build_initial_analysis(config_path: Path, pipeline: str, processed_cache_pat
     )
     if bool(initial_settings.get("generate_general_figures", True)):
         figure_root = Path(str(initial_settings["figure_output_dir"])) if initial_settings.get("figure_output_dir") else Path(str(config.get("result_root") or output_path.parent.parent)) / "figures" / "general" / "initial_analysis"
-        payload["figure_paths"] = write_initial_analysis_figures(records, figure_root)
+        payload["figure_paths"] = write_initial_analysis_figures(records, figure_root, preferred_state_views=preferred_state_views)
+        save_npz_cache(output_path, payload)
     manifest = stage_manifest(
         pipeline=pipeline,
         stage="initial_analysis",
         config_signature=dependency_signature(payload["config_signature"]),
         upstream_signature=payload["processed_signature"],
         active_expids=sorted({str(row.get("expid")) for row in records if row.get("expid")}),
-        records={"initial_analysis_cache_path": str(output_path), "roi_count": len(records), "indexed_artifacts": indexed.get("records", {})},
+        records={"initial_analysis_cache_path": str(output_path), "roi_count": len(records), "preferred_state_view_counts": {key: len(value) for key, value in preferred_state_views.items()}, "indexed_artifacts": indexed.get("records", {})},
     )
     save_json_manifest(cache_manifest_path({**config, "cache_paths": {"initial_analysis": output_path.parent}}, "initial_analysis"), manifest)
     return manifest
