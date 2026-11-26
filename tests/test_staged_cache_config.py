@@ -165,6 +165,17 @@ def test_processed_cache_warm_run_processes_only_new_expid(tmp_path: Path, monke
     assert calls == [["e1", "e2"], ["e3"]]
 
 
+def test_family_scope_reuse_report_lists_reused_and_recomputed_scopes():
+    from analysis.shared.cache_utils import family_scope_reuse_report
+
+    report = family_scope_reuse_report("correlation", {"e1|d1": "a", "e2|d2": "b"}, {"e1|d1": []})
+    assert report["family"] == "correlation"
+    assert report["requested_scope_count"] == 2
+    assert report["reused_scope_count"] == 1
+    assert report["recomputed_scope_count"] == 1
+    assert report["recomputed_scopes"] == ["e2|d2"]
+
+
 def test_family_scope_cache_reuses_only_matching_scope_signatures(tmp_path: Path):
     from analysis.shared.cache_utils import load_reusable_family_scope_rows, save_family_results_cache
 

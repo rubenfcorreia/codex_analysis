@@ -115,7 +115,7 @@ from analysis.shared.analysis_cache import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, load_family_results_cache, load_reusable_family_scope_rows, load_npz_cache, save_family_results_cache, save_npz_cache, source_cache_signature
+from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, family_scope_reuse_report, load_family_results_cache, load_reusable_family_scope_rows, load_npz_cache, save_family_results_cache, save_npz_cache, source_cache_signature
 from analysis.shared.cache_config import normalize_staged_config
 from analysis.cache_builders.incremental_soma_shuffle import load_or_build as load_or_build_soma_shuffle_incremental
 from analysis.shared.classification_cache import apply_cached_visual_classification, load_classification_records
@@ -1681,6 +1681,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     transition_results: Dict[str, Any] = {"event_rows": [], "summary_rows": [], "figure_paths": [], "alerts": []}
     coincidence_example_figures: List[str] = []
     dff_heatmap_files: List[str] = []
+    scope_reuse_summary: Dict[str, Any] = {}
     selected_states_by_mode: Dict[str, List[str]] = {mode: list(resolve_analysis_state_selections(config, mode)) for mode in state_modes}
     selected_states_by_mode_payload = {mode: list(states) for mode, states in selected_states_by_mode.items()}
     day_groups = build_day_groups(expids_by_mode)
@@ -2078,6 +2079,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         soma_pairwise_rows.extend(reusable_pairwise["soma_pairwise_rows"])
         bouton_pairwise_rows.extend(reusable_pairwise["bouton_pairwise_rows"])
         changed_pairwise_scopes = set(pairwise_scope_signatures).difference(reusable_scopes)
+        scope_reuse_summary["pairwise_correlation"] = family_scope_reuse_report("pairwise_correlation", pairwise_scope_signatures, reusable_scopes)
         for ctx in transition_contexts:
             scope = f"{ctx.expid}|{getattr(ctx, 'day_id', None) or getattr(ctx, 'date', None) or ctx.expid}"
             if pairwise_scope_signatures and scope not in changed_pairwise_scopes:
@@ -2124,6 +2126,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
             lag_rows = [row for rows in reusable_lag.values() for row in rows]
             changed_scopes = set(lag_scope_signatures).difference(reusable_lag)
+            scope_reuse_summary["lag"] = family_scope_reuse_report("lag", lag_scope_signatures, reusable_lag)
             for ctx in transition_contexts:
                 scope = f"{ctx.expid}|{getattr(ctx, 'day_id', None) or getattr(ctx, 'date', None) or ctx.expid}"
                 if lag_scope_signatures and scope not in changed_scopes:
@@ -2264,6 +2267,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
         expected_family_meta=visual_family_meta,
     )
+    scope_reuse_summary["visual_response"] = family_scope_reuse_report("visual_response", visual_scope_signatures, visual_reusable_rows)
     if not bool(config.get("rebuild")):
         visual_family_cache, visual_family_status = load_family_results_cache(
             visual_family_cache_file,
@@ -2290,6 +2294,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
         expected_family_meta=coincidence_family_meta,
     )
+    scope_reuse_summary["coincidence"] = family_scope_reuse_report("coincidence", coincidence_scope_signatures, coincidence_reusable_rows)
     if not bool(config.get("rebuild")):
         coincidence_family_cache, coincidence_family_status = load_family_results_cache(
             coincidence_family_cache_file,
@@ -3724,6 +3729,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
             "analysis_results_cache_reused": False,
             "analysis_results_cache_status": str(analysis_results_cache_status),
             "analysis_results_cache_key": analysis_cache_meta_hash(analysis_results_meta),
+            "scope_reuse": scope_reuse_summary,
             "analysis_tables_cache_path": str(analysis_tables_cache_file),
             "analysis_tables_cache_reused": False,
             "analysis_tables_cache_status": str(analysis_tables_cache_status),

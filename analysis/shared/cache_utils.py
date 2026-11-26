@@ -344,6 +344,27 @@ def load_reusable_family_scope_rows(
     return reusable
 
 
+def family_scope_reuse_report(
+    family: str,
+    requested_scopes: Mapping[str, Any],
+    reused_scopes: Any,
+) -> Dict[str, Any]:
+    requested = {str(scope) for scope in requested_scopes}
+    if isinstance(reused_scopes, Mapping):
+        reused = {str(scope) for scope in reused_scopes}
+    else:
+        reused = {str(scope) for scope in (reused_scopes or [])}
+    recomputed = requested.difference(reused)
+    return {
+        "family": str(family),
+        "requested_scope_count": len(requested),
+        "reused_scope_count": len(requested.intersection(reused)),
+        "recomputed_scope_count": len(recomputed),
+        "reused_scopes": sorted(requested.intersection(reused)),
+        "recomputed_scopes": sorted(recomputed),
+    }
+
+
 def load_family_results_cache(
     path: Path,
     *,

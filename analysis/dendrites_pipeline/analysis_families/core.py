@@ -10,7 +10,7 @@ from analysis.shared.analysis_families.registry import analysis_families_to_text
 from analysis.shared.analysis_families.registry import normalize_analysis_families as _shared_normalize_analysis_families
 from analysis.shared.classification_cache import load_classification_records
 from analysis.shared.classification_summary import apply_summary
-from analysis.shared.cache_utils import family_results_cache_path, load_family_results_cache
+from analysis.shared.cache_utils import family_results_cache_path, family_scope_reuse_report, load_family_results_cache, load_reusable_family_scope_rows
 from analysis.shared.analysis_families.correlation import correlation_analysis_for_batch, validate_correlation_settings
 from analysis.shared.analysis_families.core import make_global_roi_id
 from analysis.shared.statistics import apply_bh_fdr_rows
@@ -773,6 +773,7 @@ def run_cached_analysis(
         ) if cache_path is not None else {}
         reused_rows = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        results.setdefault("cache_summary", {})["state_scope_reuse"] = family_scope_reuse_report("state", scope_signatures, reusable)
         run_state_family(
             cache, results, state_comparison_states=state_comparison_states,
             basal_apical_states=basal_apical_states, shuffle_n=shuffle_n,
@@ -801,6 +802,7 @@ def run_cached_analysis(
         reusable = load_reusable_family_scope_rows(cache_path, "direct_trial_type_comparison", scope_signatures, table_name="direct_trial_type_comparison.table_rows", expected_family_meta=analysis_results_meta) if cache_path is not None else {}
         reused_rows = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        results.setdefault("cache_summary", {})["direct_trial_type_comparison_scope_reuse"] = family_scope_reuse_report("direct_trial_type_comparison", scope_signatures, reusable)
         run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "direct_trial_type_comparison", results, base_meta=analysis_results_meta)
@@ -809,6 +811,7 @@ def run_cached_analysis(
         reusable = load_reusable_family_scope_rows(cache_path, "spine_coactivity", scope_signatures, table_name="spine_coactivity.table_rows", expected_family_meta=analysis_results_meta) if cache_path is not None else {}
         reused_rows = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        results.setdefault("cache_summary", {})["spine_coactivity_scope_reuse"] = family_scope_reuse_report("spine_coactivity", scope_signatures, reusable)
         run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "spine_coactivity", results, base_meta=analysis_results_meta)
@@ -818,6 +821,7 @@ def run_cached_analysis(
         if reusable:
             results["correlations"] = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        results.setdefault("cache_summary", {})["correlation_scope_reuse"] = family_scope_reuse_report("correlation", scope_signatures, reusable)
         run_correlation_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "correlation", results, base_meta=analysis_results_meta)
@@ -827,6 +831,7 @@ def run_cached_analysis(
         if reusable:
             results["matrix_similarity"] = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
+        results.setdefault("cache_summary", {})["matrix_similarity_scope_reuse"] = family_scope_reuse_report("matrix_similarity", scope_signatures, reusable)
         run_matrix_similarity_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes)
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "matrix_similarity", results, base_meta=analysis_results_meta)
