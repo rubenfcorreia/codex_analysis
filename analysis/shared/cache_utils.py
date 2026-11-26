@@ -206,6 +206,14 @@ def family_results_cache_stage_for_selection(selected_families: Optional[Sequenc
     return FAMILY_RESULT_CACHE_STAGES[-1]
 
 
+def _family_config_signature(meta: Mapping[str, Any]) -> str:
+    return analysis_cache_meta_hash({
+        key: value
+        for key, value in dict(meta).items()
+        if key not in {"source_signature", "scope_signatures"}
+    })
+
+
 def save_family_results_cache(
     cache_path: Path,
     stage: str,
@@ -235,6 +243,7 @@ def save_family_results_cache(
         "source_signature": str(family_meta.get("source_signature", "")),
         "analysis_families": list(family_meta.get("analysis_families") or [stage]),
         "schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION,
+        "config_signature": _family_config_signature(family_meta),
     }
     unit_root = path.parent / str(stage) / "records"
     unit_artifacts = {}
@@ -264,7 +273,7 @@ def save_family_results_cache(
             unit_signature = analysis_cache_meta_hash({"family": stage, "scope_key": scope_key, "scope_signature": scope_signatures.get(base_scope_key, ""), "family_meta": {key: value for key, value in family_meta.items() if key not in {"source_signature", "scope_signatures"}}, "rows": rows})
             unit_path = unit_root / f"{analysis_cache_meta_hash(scope_key)}.npz"
             save_npz_cache(unit_path, {"schema_version": ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION, "family": stage, "scope_key": scope_key, "scope_signature": scope_signatures.get(base_scope_key, ""), "table_name": table_name, "rows": rows, "signature": unit_signature})
-            unit_artifacts[scope_key] = {"path": str(unit_path), "signature": unit_signature, "scope_signature": scope_signatures.get(base_scope_key, ""), "scope_key": scope_key, "table_name": table_name, "row_count": len(rows)}
+            unit_artifacts[scope_key] = {"path": str(unit_path), "signature": unit_signature, "scope_signature": scope_signatures.get(base_scope_key, ""), "config_signature": _family_config_signature(family_meta), "scope_key": scope_key, "table_name": table_name, "row_count": len(rows)}
     family_entry["unit_artifacts"] = unit_artifacts
     index[str(stage)] = family_entry
     ensure_dir(index_path.parent)
@@ -279,6 +288,7 @@ def load_reusable_family_scope_rows(
     *,
     table_name: Optional[str] = None,
     rebuild: bool = False,
+    expected_family_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, list[Dict[str, Any]]]:
     """Load list-valued family tables whose expID/day inputs are unchanged."""
     if rebuild:
@@ -291,6 +301,9 @@ def load_reusable_family_scope_rows(
     entry = index.get(str(stage))
     if not isinstance(entry, dict):
         return {}
+    expected_config_signature = _family_config_signature(expected_family_meta) if expected_family_meta is not None else None
+    if expected_config_signature is not None and str(entry.get("config_signature", "")) != expected_config_signature:
+        return {}
     reusable: Dict[str, list[Dict[str, Any]]] = {}
     for artifact in dict(entry.get("unit_artifacts") or {}).values():
         if not isinstance(artifact, dict):
@@ -302,6 +315,8 @@ def load_reusable_family_scope_rows(
             continue
         base_scope = "|".join(artifact_scope.split("|")[:2])
         if str(artifact.get("scope_signature", "")) != str(scope_signatures.get(base_scope, "")):
+            continue
+        if expected_config_signature is not None and str(artifact.get("config_signature", "")) != expected_config_signature:
             continue
         artifact_path = Path(str(artifact.get("path", "")))
         if not artifact_path.exists():

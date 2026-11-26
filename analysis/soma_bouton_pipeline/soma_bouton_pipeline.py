@@ -2053,7 +2053,35 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     if pairwise_family_rows is None and correlation_family_enabled:
         step_message(f"ANALYSIS FAMILY correlation: {','.join(sorted(correlation_types)) or 'none'}")
+        pairwise_scope_signatures = _family_scope_signatures(activity_rows)
+        pairwise_family_meta["scope_signatures"] = pairwise_scope_signatures
+        reusable_pairwise: Dict[str, List[Dict[str, Any]]] = {}
+        for table_name in ("correlation_rows", "population_average_rows", "soma_pairwise_rows", "bouton_pairwise_rows"):
+            scoped = load_reusable_family_scope_rows(
+                analysis_results_cache_file,
+                "pairwise_correlation",
+                pairwise_scope_signatures,
+                table_name=table_name,
+                rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+                expected_family_meta=pairwise_family_meta,
+            )
+            reusable_pairwise[table_name] = [row for rows in scoped.values() for row in rows]
+        reusable_scopes = set()
+        for table_name in reusable_pairwise:
+            reusable_scopes.update(
+                f"{row.get('expid') or row.get('exp_id')}|{row.get('day_id') or row.get('date') or row.get('expid') or row.get('exp_id')}"
+                for row in reusable_pairwise[table_name]
+                if row.get("expid") is not None or row.get("exp_id") is not None
+            )
+        correlation_rows.extend(reusable_pairwise["correlation_rows"])
+        population_average_rows.extend(reusable_pairwise["population_average_rows"])
+        soma_pairwise_rows.extend(reusable_pairwise["soma_pairwise_rows"])
+        bouton_pairwise_rows.extend(reusable_pairwise["bouton_pairwise_rows"])
+        changed_pairwise_scopes = set(pairwise_scope_signatures).difference(reusable_scopes)
         for ctx in transition_contexts:
+            scope = f"{ctx.expid}|{getattr(ctx, 'day_id', None) or getattr(ctx, 'date', None) or ctx.expid}"
+            if pairwise_scope_signatures and scope not in changed_pairwise_scopes:
+                continue
             row_states = list(union_states_by_mode.get(ctx.mode, selected_states_by_mode.get(ctx.mode, []))) if union_cache_enabled else list(selected_states_by_mode.get(ctx.mode, []))
             state_masks = state_masks_for_context(ctx, row_states)
             mode, expid = ctx.mode, ctx.expid
@@ -2092,6 +2120,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
                 lag_scope_signatures,
                 table_name="lag_rows",
                 rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+                expected_family_meta=lag_family_meta,
             )
             lag_rows = [row for rows in reusable_lag.values() for row in rows]
             changed_scopes = set(lag_scope_signatures).difference(reusable_lag)
@@ -2233,6 +2262,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     visual_reusable_rows = load_reusable_family_scope_rows(
         analysis_results_cache_file, "visual_response", visual_scope_signatures,
         rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+        expected_family_meta=visual_family_meta,
     )
     if not bool(config.get("rebuild")):
         visual_family_cache, visual_family_status = load_family_results_cache(
@@ -2258,6 +2288,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     coincidence_reusable_rows = load_reusable_family_scope_rows(
         analysis_results_cache_file, "coincidence", coincidence_scope_signatures,
         rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+        expected_family_meta=coincidence_family_meta,
     )
     if not bool(config.get("rebuild")):
         coincidence_family_cache, coincidence_family_status = load_family_results_cache(

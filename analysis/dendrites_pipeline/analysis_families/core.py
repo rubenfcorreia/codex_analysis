@@ -775,7 +775,7 @@ def run_cached_analysis(
             save_family_results_cache(cache_path, "mixed_model", results, base_meta=analysis_results_meta)
     if "direct_trial_type_comparison" in selected_families and not _reuse_family_cache(results, "direct_trial_type_comparison", cache_path, analysis_results_meta):
         scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
-        reusable = load_reusable_family_scope_rows(cache_path, "direct_trial_type_comparison", scope_signatures, table_name="direct_trial_type_comparison.table_rows") if cache_path is not None else {}
+        reusable = load_reusable_family_scope_rows(cache_path, "direct_trial_type_comparison", scope_signatures, table_name="direct_trial_type_comparison.table_rows", expected_family_meta=analysis_results_meta) if cache_path is not None else {}
         reused_rows = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
         run_direct_trial_type_family(cache, results, state_comparison_states=state_comparison_states, shuffle_n=shuffle_n, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
@@ -783,7 +783,7 @@ def run_cached_analysis(
             save_family_results_cache(cache_path, "direct_trial_type_comparison", results, base_meta=analysis_results_meta)
     if "spine_coactivity" in selected_families and not _reuse_family_cache(results, "spine_coactivity", cache_path, analysis_results_meta):
         scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
-        reusable = load_reusable_family_scope_rows(cache_path, "spine_coactivity", scope_signatures, table_name="spine_coactivity.table_rows") if cache_path is not None else {}
+        reusable = load_reusable_family_scope_rows(cache_path, "spine_coactivity", scope_signatures, table_name="spine_coactivity.table_rows", expected_family_meta=analysis_results_meta) if cache_path is not None else {}
         reused_rows = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
         run_spine_coactivity_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, shared_shuffle_cache=shared_shuffle_cache, fit_spine_coactivity_mixed_model=fit_spine_coactivity_mixed_model, mixed_model_contrast_p_source=mixed_model_contrast_p_source, spine_coactivity_abs_threshold=spine_coactivity_abs_threshold, output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes, reused_table_rows=reused_rows)
@@ -791,7 +791,7 @@ def run_cached_analysis(
             save_family_results_cache(cache_path, "spine_coactivity", results, base_meta=analysis_results_meta)
     if "correlation" in selected_families and not _reuse_family_cache(results, "correlation", cache_path, analysis_results_meta):
         scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
-        reusable = load_reusable_family_scope_rows(cache_path, "correlation", scope_signatures) if cache_path is not None else {}
+        reusable = load_reusable_family_scope_rows(cache_path, "correlation", scope_signatures, expected_family_meta=analysis_results_meta) if cache_path is not None else {}
         if reusable:
             results["correlations"] = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None
@@ -800,7 +800,7 @@ def run_cached_analysis(
             save_family_results_cache(cache_path, "correlation", results, base_meta=analysis_results_meta)
     if "matrix_similarity" in selected_families and not _reuse_family_cache(results, "matrix_similarity", cache_path, analysis_results_meta):
         scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
-        reusable = load_reusable_family_scope_rows(cache_path, "matrix_similarity", scope_signatures) if cache_path is not None else {}
+        reusable = load_reusable_family_scope_rows(cache_path, "matrix_similarity", scope_signatures, expected_family_meta=analysis_results_meta) if cache_path is not None else {}
         if reusable:
             results["matrix_similarity"] = [row for rows in reusable.values() for row in rows]
         changed_scopes = [scope for scope in scope_signatures if scope not in reusable] if reusable else None

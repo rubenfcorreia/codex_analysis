@@ -185,6 +185,32 @@ def test_family_scope_cache_reuses_only_matching_scope_signatures(tmp_path: Path
     assert reusable["e1|d1"][0]["value"] == 1
 
 
+def test_family_scope_cache_rejects_changed_family_configuration(tmp_path: Path):
+    from analysis.shared.cache_utils import load_reusable_family_scope_rows, save_family_results_cache
+
+    cache_path = tmp_path / "analysis_run.npz"
+    meta = {
+        "source_signature": "source-1",
+        "analysis_families": ["visual_response"],
+        "analysis_family_settings": {"visual_response": {"metric": "peak"}},
+        "scope_signatures": {"e1|d1": "sig-1"},
+    }
+    save_family_results_cache(
+        cache_path,
+        "visual_response",
+        {"rows": [{"expid": "e1", "day_id": "d1", "value": 1}]},
+        base_meta=meta,
+    )
+    changed_meta = {**meta, "analysis_family_settings": {"visual_response": {"metric": "auc"}}}
+    reusable = load_reusable_family_scope_rows(
+        cache_path,
+        "visual_response",
+        {"e1|d1": "sig-1"},
+        expected_family_meta=changed_meta,
+    )
+    assert reusable == {}
+
+
 def test_family_registry_validates_scope_and_aggregation(tmp_path: Path):
     import json
     family_path = tmp_path / "families.json"
