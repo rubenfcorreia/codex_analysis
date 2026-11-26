@@ -130,12 +130,13 @@ def test_family_cache_reuse_skips_family_execution(tmp_path: Path):
     from analysis.shared.cache_utils import save_family_results_cache
 
     cache_path = tmp_path / "analysis_run.npz"
-    meta = {"source_signature": "source-1", "analysis_families": ["state"], "analysis_family_settings": {"state": {"enabled": True}}}
+    meta = {"source_signature": "source-1", "analysis_families": ["state"], "analysis_family_settings": {"state": {"enabled": True}}, "scope_signatures": {"e1|d1": "sig-1"}}
     save_family_results_cache(cache_path, "state", {"state_rows": [{"expid": "e1", "day_id": "d1"}]}, base_meta=meta)
     results = {}
     assert _reuse_family_cache(results, "state", cache_path, meta)
     assert results["state_rows"] == [{"expid": "e1", "day_id": "d1"}]
     assert results["cache_summary"]["state_family_cache_reused"] is True
+    assert results["cache_summary"]["state_scope_reuse"]["reused_scope_count"] == 1
 
 
 def test_processed_cache_warm_run_processes_only_new_expid(tmp_path: Path, monkeypatch):

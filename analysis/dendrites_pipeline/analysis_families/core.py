@@ -700,7 +700,13 @@ def _reuse_family_cache(results: Dict[str, Any], family: str, cache_path: Option
     if not isinstance(payload, dict):
         return False
     results.update(payload)
-    results.setdefault("cache_summary", {})[f"{family}_family_cache_reused"] = True
+    cache_summary = results.setdefault("cache_summary", {})
+    cache_summary[f"{family}_family_cache_reused"] = True
+    cache_summary[f"{family}_scope_reuse"] = family_scope_reuse_report(
+        family,
+        dict(expected.get("scope_signatures") or {}),
+        dict(expected.get("scope_signatures") or {}),
+    )
     return True
 
 
@@ -780,6 +786,10 @@ def run_cached_analysis(
             output_dir=output_dir, figure_root=figure_root, scope_keys=changed_scopes,
             reused_coverage_rows=reused_rows,
         )
+        results.setdefault("cache_summary", {})["state_global_aggregation"] = {
+            "status": "recomputed",
+            "reason": "cohort_wide_state_statistics",
+        }
         if cache_path is not None and analysis_results_meta is not None:
             with step_scope("save family cache: state"):
                 save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
@@ -795,6 +805,10 @@ def run_cached_analysis(
 
     if "mixed_model" in selected_families and not _reuse_family_cache(results, "mixed_model", cache_path, analysis_results_meta):
         run_mixed_model_family_block(cache, results, state_comparison_states=state_comparison_states, basal_apical_states=basal_apical_states, shuffle_n=shuffle_n, mixed_model_contrast_p_source=mixed_model_contrast_p_source, source_cache=source_cache, output_dir=output_dir, figure_root=figure_root)
+        results.setdefault("cache_summary", {})["mixed_model_global_aggregation"] = {
+            "status": "recomputed",
+            "reason": "cohort_wide_model_fit",
+        }
         if cache_path is not None and analysis_results_meta is not None:
             save_family_results_cache(cache_path, "mixed_model", results, base_meta=analysis_results_meta)
     if "direct_trial_type_comparison" in selected_families and not _reuse_family_cache(results, "direct_trial_type_comparison", cache_path, analysis_results_meta):
