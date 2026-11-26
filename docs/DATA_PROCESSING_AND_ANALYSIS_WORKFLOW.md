@@ -368,6 +368,22 @@ soma/bouton driver. Typical richer artifacts are:
 These caches are nested mappings/arrays for reruns. Use generated CSVs and
 JSON manifests for human inspection.
 
+Family caches are scope-aware. For the dendrite/spine pipeline, the normal
+scope is an `expID|day` pair. The state family stores reusable
+`state_coverage`, `state_metric_rows`, and `state_metric_dendrite_rows`; the
+state-transition family stores reusable `state_transitions.event_rows` and
+`state_transitions.trace_segments`. On a warm run, unchanged scopes are
+loaded from the family cache, while new or invalidated scopes are recomputed.
+The merged rows are then used to rebuild cohort-wide state summaries,
+experiment-day-balanced transition comparisons, pooled transition diagnostics,
+and figures. The run manifest/cache summary reports requested, reused, and
+recomputed scopes, so a partial rebuild can be audited without treating a
+reused row as a newly calculated result.
+
+Mixed-model table construction is reported separately from model fitting. A
+compatible cached table may be reused, but the cohort-wide model fit and
+contrasts are still refit when the cohort or relevant configuration changes.
+
 ## 6. Dendrite/spine pipeline
 
 Further reading: [dendrite/spine pipeline documentation](dendrites_pipeline/README.md), [methods](methods/README.md), and [visual-response documentation](visual_response/README.md).
@@ -410,7 +426,10 @@ manifests/tables/figures.
 7. Compute state activity/frequency and spine-specific traces.
 8. Compare visual trials with blanks from cut data.
 9. Assign `all`, `responsive`, and `nonresponsive` cohorts.
-10. Run selected families and write output artifacts.
+10. Reuse valid family scopes, recompute changed scopes, merge the rows, and
+    refit the cohort-wide statistical stages that depend on the complete
+    cohort.
+11. Run selected families and write output artifacts.
 
 ### Dendrite source modules
 
@@ -419,6 +438,7 @@ manifests/tables/figures.
 | `dendrites_pipeline.py` | Main CLI, loaders, normalization, cache manager, family dispatcher, output writer. |
 | `analysis_families/core.py` | Family orchestration/context. |
 | `state.py` | State activity/frequency summaries. |
+| `../shared/analysis_families/dendrite_transitions.py` | Dendrite/spine state-transition metrics, scope reuse, and transition summaries. |
 | `basal_apical.py` | Basal/apical comparisons. |
 | `direct_trial_type_comparison.py` | Direct movie trial comparisons. |
 | `correlation.py` | Wheel, pupil, spine/dendrite correlation families. |
