@@ -111,6 +111,19 @@ Use the separate reproducible demo platform documented in [analysis/demo_pipelin
 The CLI supports --plot-profile full (default), analysis_only, and poster_only.
 
 
+## Incremental reruns
+
+The pipelines use layered caches. Source and processed artifacts are reusable by experiment/day, and family caches reuse unchanged scopes when their source signatures and analysis settings match. A warm rerun therefore recalculates only new or invalidated experiment scopes for the scoped families. Cache summaries report requested, reused, and recomputed scopes.
+
+Use these profiles for common workflows:
+
+- --plot-profile analysis_only computes numerical results and skips family-level figure rendering.
+- --plots-only or --figures-only regenerates figures from compatible saved analysis caches without rerunning numerical families.
+- Change analysis settings normally when you want invalidation; do not use --rebuild unless all cached stages should be discarded.
+
+State aggregation and mixed-model fitting remain cohort-wide statistical stages. They are intentionally refit when the experiment cohort or relevant configuration changes, even when per-experiment inputs are reused.
+
+
 ### Mixed-model preflight
 
 Dendrite mixed-model fits use the shared preflight checks before fitting. The diagnostics record finite observations, animal/group replication, state and interaction levels, design rank, condition number, and contrast estimability. Invalid designs are skipped with structured statuses (insufficient_data, insufficient_groups, single_level_factor, rank_deficient, or all_missing); near_singular_warning eligible designs are fit as before and carry a diagnostic. These checks are diagnostic and do not change valid model formulas or exported result schemas.
