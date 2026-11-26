@@ -21,6 +21,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 - `analysis_families/matrix_similarity.py`
 - `analysis_families/mixed_model.py`
 - `analysis_families/spine_coactivity.py`
+- `analysis_families/preferred_state_concordance.py`
 
 ## Shared Helpers
 
@@ -80,6 +81,7 @@ Dendrite outputs are written under the poster-ready paired_state_summary/ direct
 ## Config Files
 
 - `pipeline_config.json`
+- `analysis_families.json`
 - `sleep_dendrite_spine_custom_demo_spec.json`
 
 Correlation settings are explicit in the example and poster-ready configs:

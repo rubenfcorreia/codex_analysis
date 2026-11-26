@@ -92,6 +92,12 @@ The preprocessing stage keeps event detection tied to the cached `dF/F` traces r
 - Dendrite responsiveness is measured from dendrite cut activity only, while spine responsiveness is measured from spine-specific cut activity only.
 - The response classifier then assigns each unit to the `all`, `responsive`, or `nonresponsive` cohort for reuse by downstream summaries and figures.
 - State-summary and mixed-model summaries reuse the cached event-info records, so they inherit whichever detector method is stored as the primary one for that observation.
+- The optional `combined` detector accepts an event only when amplitude and derivative evidence agree within `combined_event_window_frames` (default `2`); the selected method and window participate in cache invalidation.
+- The state summaries include `spine_specific_event_free_mean`, which masks the spine-specific residual during parent-dendrite event frames before averaging.
+
+## Preferred-State Concordance
+
+When `preferred_state_concordance` is enabled in `analysis/dendrites_pipeline/analysis_families.json`, the family compares dendrite and attached-spine preferred states derived from `cut_state_means`. It writes the family payload to the analysis-results cache and `analysis_results.json`, including `table_rows`, `dendrite_rows`, `confusion_rows`, and match-fraction summaries, and renders `preferred_state_concordance.svg` under the family figure directory. The family uses the configured state-comparison list and is scoped by experiment/day for incremental reuse.
 
 ## Where To Set Inputs
 

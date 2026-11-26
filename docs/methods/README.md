@@ -16,12 +16,15 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - The pipeline starts from the recorded `dF/F` traces and keeps them in raw form for the main preprocessing path.
 - Event detection is run directly on the cached trace being analyzed. The primary detector uses the positive first derivative of `dF/F`, centers that derivative per trace, and counts threshold crossings that stay above `+3 SD` for at least the minimum consecutive-frame window.
 - The legacy amplitude detector is still cached in parallel under `event_info["methods"]["amplitude"]`; that branch uses the trace median as its baseline and a noise estimate from the raw trace itself.
+- The `combined` detector requires amplitude and derivative evidence to agree within `combined_event_window_frames` (default `2`) before an event is accepted. Set `processing.event_detection_method` and `processing.combined_event_window_frames` in the pipeline config; the selected method and window are recorded in event metadata and cache signatures.
 - Event frequency is computed from the event count and the analyzed duration, so state-masked event rates simply reuse the same detector on the masked trace segment.
+- When active-ROI filtering is enabled, the minimum event-count test uses the configured primary detector, including the combined detector when selected.
 - Dendrite traces are used as raw dF/F for dendrite activity metrics.
 - Spine-specific activity is computed with robust regression by subtracting the fitted dendrite contribution from the spine trace.
 - In code terms, the backbone is `spine_specific = spine_trace - alpha * dendrite_trace`.
 - No high-pass filter is applied to the spine-specific signal before event detection or summary calculations.
 - The spine event and coactivity metrics use that residual when they need a spine-specific signal, while the raw trace is still retained for trace plots and other comparisons.
+- The event-free spine-specific metric masks the residual during parent-dendrite event frames and summarizes only the remaining frames. It is exported as `spine_specific_event_free_mean` alongside the ordinary `spine_specific_mean`.
 - When the same-day SpinesGUI conversion is missing for an experiment, the pipeline falls back to a same-day experiment from the same animal.
 - Movie experiments keep their trial-type masks, and the state-comparison list is derived from `state_mode` plus the explicit `movie_trial_types` selection.
 - When a `sleep_state.pickle` bundle is present the sleep-scoring labels are added too, so quiet periods can be split into `quiet_awake`, `nrem`, and `rem`.
@@ -54,6 +57,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
   - spine-specific activity vs dendrite activity
 - Spine-spine matrix similarity compares how the correlation structure of spine-specific activity changes across states.
 - Spine coactivity computes Pearson `r` for every unordered spine-pair within each dendrite and within each state.
+- Preferred-state concordance compares the state with the largest valid cut-period mean for each dendrite with the preferred state of each attached spine. Its family result contains spine-level rows, dendrite-level match fractions, and a dendrite-by-spine preferred-state confusion table; the plotter renders a concordance heatmap.
 - The model-facing response is named `coactivity_r`, while the pair table also keeps `Fisher z` values as `coactivity_z` for optional transformed analyses.
 - The coactivity summaries use `coactive = r > 0` as a descriptive persistence label.
 - The mixed-model inference layer for coactivity is optional and only runs when `fit_spine_coactivity_mixed_model` is enabled. Its contrast p-values use model-based Wald inference. Shuffle-refit inference is not used for mixed-model contrasts because it is unnecessarily expensive and is not the canonical inferential method.

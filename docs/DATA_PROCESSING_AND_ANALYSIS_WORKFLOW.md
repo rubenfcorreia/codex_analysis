@@ -96,6 +96,7 @@ consume the main staged caches.
    │  9. Spine coactivity                              │  9. Exact-onset coincidence analysis
    │  10. Spine matrix similarity                      │
    │  11. Direct trial-type comparisons                │
+   │  12. Preferred-state concordance                  │
    │                                                   │
    └─ Spine-specific residuals and                   └─ Soma/bouton contexts and
       compartment-specific outputs                       pairwise outputs
@@ -238,10 +239,10 @@ The staged dendrite and soma/bouton configs use these sections:
 | `inputs` | `expids_file`, normally the sibling membership JSON. |
 | `paths` | `output_root`, `cache_root`, `figure_root`. |
 | `source` | Dendrite `channel`, or soma/bouton `soma_channel`/`bouton_channel`. |
-| `processing` | Event detector; dendrites also `state_mode` and `movie_trial_types`. |
-| `classification` | Visual metric and preferred/activity/frequency split enable flags. |
+| `processing` | Event detector (`event_detection_method`), `combined_event_window_frames`, and dendrite `state_mode`/`movie_trial_types`. |
+| `classification` | Visual metric, per-ROI active-event filters, and preferred/activity/frequency split enable flags. |
 | `shuffle` | `enabled`, `null_model`, `shuffle_n`, deterministic `seed`. |
-| `analysis` | `families_file`; points to the analysis-family selection used after initial analysis/classification. |
+| `analysis` | `families_file`; selects families such as state, coactivity, mixed model, and preferred-state concordance after initial analysis/classification. |
 | `cache` | `mode`, signature validation, removed-expID archiving, worker count. |
 | `plots` | `profile` (`full`, `analysis_only`, `poster_only`), `plots_only`, and `config_file` (normally `plot_config.json`). |
 | `initial_analysis` | General plots and absolute/relative preferred-state tie tolerances. |
@@ -437,7 +438,8 @@ manifests/tables/figures.
 | --- | --- |
 | `dendrites_pipeline.py` | Main CLI, loaders, normalization, cache manager, family dispatcher, output writer. |
 | `analysis_families/core.py` | Family orchestration/context. |
-| `state.py` | State activity/frequency summaries. |
+| `state.py` | State activity/frequency summaries, including event-free spine metrics. |
+| `analysis_families/preferred_state_concordance.py` | Dendrite-versus-spine preferred-state matching and confusion summaries. |
 | `../shared/analysis_families/dendrite_transitions.py` | Dendrite/spine state-transition metrics, scope reuse, and transition summaries. |
 | `basal_apical.py` | Basal/apical comparisons. |
 | `direct_trial_type_comparison.py` | Direct movie trial comparisons. |
@@ -469,6 +471,12 @@ Default root: `results/dendrites_pipeline/`.
 
 Transition primary replicates are `expday`: repeated transitions are averaged
 within entity/day, then entities within day. Raw event rows are retained.
+
+The dendrite/spine results also include `spine_specific_event_free_mean`, a
+state-summary metric calculated from the spine-specific residual after masking
+frames in which the parent dendrite has a detected event. This is distinct
+from the ordinary `spine_specific_mean`; both can be present in state tables
+and family caches.
 
 ## 7. Soma/bouton pipeline
 
