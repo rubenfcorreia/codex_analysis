@@ -176,6 +176,23 @@ def test_family_scope_reuse_report_lists_reused_and_recomputed_scopes():
     assert report["recomputed_scopes"] == ["e2|d2"]
 
 
+def test_family_scope_reuse_report_marks_new_experiment_for_recompute(tmp_path: Path):
+    from analysis.shared.cache_utils import family_scope_reuse_report, load_reusable_family_scope_rows, save_family_results_cache
+
+    cache_path = tmp_path / "analysis_run.npz"
+    save_family_results_cache(
+        cache_path,
+        "correlation",
+        {"rows": [{"expid": "e1", "day_id": "d1", "value": 1}]},
+        base_meta={"scope_signatures": {"e1|d1": "sig-1"}},
+    )
+    requested = {"e1|d1": "sig-1", "e2|d2": "sig-2"}
+    reusable = load_reusable_family_scope_rows(cache_path, "correlation", requested)
+    report = family_scope_reuse_report("correlation", requested, reusable)
+    assert report["reused_scopes"] == ["e1|d1"]
+    assert report["recomputed_scopes"] == ["e2|d2"]
+
+
 def test_family_scope_cache_reuses_only_matching_scope_signatures(tmp_path: Path):
     from analysis.shared.cache_utils import load_reusable_family_scope_rows, save_family_results_cache
 
