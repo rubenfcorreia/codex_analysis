@@ -289,6 +289,14 @@ def test_pairwise_family_cache_round_trip(tmp_path: Path) -> None:
     assert loaded['analysis_results']['correlation_rows'] == rows
 
 
+def test_source_cache_signature_supports_list_and_mapping_layouts():
+    from analysis.shared.cache_utils import source_cache_signature
+
+    mapping = {"experiments": {"e1": {"source_signature": "s1"}}}
+    listed = {"experiments": [{"exp_id": "e1", "source_signature": "s1"}]}
+    assert source_cache_signature(mapping) == source_cache_signature(listed)
+
+
 def test_soma_pipeline_reuses_pairwise_family_cache(tmp_path: Path, monkeypatch) -> None:
     ctx = _synthetic_context('mouse1_2024-01-01')
     sleep_mask = {'sleep': np.array([True, True, True, True])}

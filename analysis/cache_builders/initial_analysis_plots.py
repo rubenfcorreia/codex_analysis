@@ -269,6 +269,7 @@ def write_initial_analysis_figures(records: Sequence[Mapping[str, Any]], output_
     category_order = [
         ("dendrite", "apical"), ("dendrite", "basal"),
         ("spine", "apical"), ("spine", "basal"),
+        ("soma", "soma"), ("bouton", "bouton"),
     ]
     for roi_type, compartment in category_order:
         category_path = output_dir / f"preferred_state_proportions_{roi_type}_{compartment}.png"

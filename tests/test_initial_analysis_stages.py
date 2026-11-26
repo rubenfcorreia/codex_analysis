@@ -23,7 +23,7 @@ def test_initial_analysis_preserves_preferred_state_ties_and_general_figures(tmp
     assert (tmp_path / "results" / "figures" / "general" / "initial_analysis" / "state_activity_coverage.png").exists()
 
 
-def test_classification_thresholds_are_reused(tmp_path: Path):
+def test_classification_thresholds_update_when_population_changes(tmp_path: Path):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"pipeline": {"name": "dendrites"}}))
     initial = tmp_path / "initial.npz"
@@ -33,7 +33,9 @@ def test_classification_thresholds_are_reused(tmp_path: Path):
     first = load_npz_cache(output)
     save_npz_cache(initial, {"records": [{"roi_key": "a", "expid": "e1", "activity_mean": 100.0, "frequency_mean": 100.0}, {"roi_key": "b", "expid": "e2", "activity_mean": 3.0, "frequency_mean": 3.0}]})
     build_classification_cache(config, "dendrites", initial, output)
-    assert load_npz_cache(output)["thresholds"] == first["thresholds"]
+    second = load_npz_cache(output)
+    assert second["thresholds"] != first["thresholds"]
+    assert second["threshold_signature"] != first["threshold_signature"]
 
 
 def test_family_summary_uses_staged_classification():

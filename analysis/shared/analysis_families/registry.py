@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Optional, Sequence, Mapping
 
 
@@ -37,13 +38,69 @@ def analysis_families_to_text(
     return ",".join(normalize_analysis_families(values, allowed_families=allowed_families))
 
 
+@dataclass(frozen=True)
+class AnalysisFamilySpec:
+    """Declarative cache contract for an analysis family."""
+
+    name: str
+    scope: str = "experiment_day"
+    input_tables: tuple[str, ...] = ()
+    config_keys: tuple[str, ...] = ()
+    cache_stage: str = "results"
+
+    def __post_init__(self):
+        if self.scope not in {"experiment_day", "day", "global"}:
+            raise ValueError(f"Unsupported cache scope: {self.scope!r}")
+        if not str(self.name).strip():
+            raise ValueError("analysis family name cannot be empty")
+
+
+_FAMILY_SPECS: dict[str, AnalysisFamilySpec] = {}
+
+
+def register_family_spec(
+    name: str,
+    *,
+    scope: str = "experiment_day",
+    input_tables: Sequence[str] = (),
+    config_keys: Sequence[str] = (),
+    cache_stage: str = "results",
+) -> AnalysisFamilySpec:
+    key = str(name).strip().lower()
+    spec = AnalysisFamilySpec(
+        name=key,
+        scope=scope,
+        input_tables=tuple(str(value) for value in input_tables),
+        config_keys=tuple(str(value) for value in config_keys),
+        cache_stage=str(cache_stage),
+    )
+    _FAMILY_SPECS[key] = spec
+    return spec
+
+
+def family_spec(name: str) -> AnalysisFamilySpec:
+    key = str(name).strip().lower()
+    return _FAMILY_SPECS.get(key, AnalysisFamilySpec(name=key))
+
+
+def family_specs() -> dict[str, AnalysisFamilySpec]:
+    return dict(_FAMILY_SPECS)
+
+
 _FAMILY_RUNNERS = {}
 
 
-def register_family(name: str, runner):
+def register_family(name: str, runner=None, **spec_kwargs):
     key = str(name).strip().lower()
     if not key:
         raise ValueError("analysis family name cannot be empty")
+    if spec_kwargs:
+        register_family_spec(key, **spec_kwargs)
+    if runner is None:
+        def decorator(function):
+            _FAMILY_RUNNERS[key] = function
+            return function
+        return decorator
     _FAMILY_RUNNERS[key] = runner
     return runner
 

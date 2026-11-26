@@ -33,13 +33,13 @@ def load_or_build_incremental(
         "pipeline": "soma_bouton_pipeline",
         "soma_channel": int(config.get("soma_channel", 1)),
         "bouton_channel": int(config.get("bouton_channel", 0)),
-        "expids_by_mode": {mode: list(values) for mode, values in expids_by_mode.items()},
+        "expids_by_mode": {mode: sorted(set(str(value) for value in values)) for mode, values in expids_by_mode.items()},
         "complete": True,
     }
     old = None if rebuild or not source_cache_path.exists() else load_npz_cache(source_cache_path)
     old_metadata = old.get("metadata", {}) if isinstance(old, dict) else {}
     stable = isinstance(old, dict) and old_metadata.get("pipeline") == metadata["pipeline"] and all(
-        old_metadata.get(key) == metadata.get(key) for key in ("soma_channel", "bouton_channel")
+        old_metadata.get(key) == metadata.get(key) for key in ("soma_channel", "bouton_channel", "expids_by_mode")
     )
     old_records = old.get("experiments", []) if stable and isinstance(old.get("experiments", []), list) else []
     records_by_key = {

@@ -27,6 +27,7 @@ FAMILY_RESULT_CACHE_STAGES = (
     "spine_coactivity",
     "correlation",
     "pairwise_correlation",
+    "lag",
     "coincidence",
     "matrix_similarity",
 )
@@ -309,7 +310,19 @@ def load_reusable_family_scope_rows(
             payload = load_npz_cache(artifact_path)
         except Exception:
             continue
-        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("schema_version") != ANALYSIS_RESULTS_CACHE_SCHEMA_VERSION:
+            continue
+        if str(payload.get("family", "")) != str(stage):
+            continue
+        if str(payload.get("scope_key", "")) != artifact_scope:
+            continue
+        if str(payload.get("table_name", "")) != str(artifact.get("table_name", "")):
+            continue
+        if str(payload.get("signature", "")) != str(artifact.get("signature", "")):
+            continue
+        rows = payload.get("rows")
         if not isinstance(rows, list):
             continue
         reusable.setdefault(base_scope, []).extend(dict(row) for row in rows if isinstance(row, dict))
@@ -349,12 +362,25 @@ def load_family_results_cache(
 
 
 def source_cache_signature(source_cache: Dict[str, Any]) -> str:
-    return stable_hash(
-        {
+    """Return a stable signature for mapping- or list-shaped source caches."""
+    experiments = source_cache.get("experiments", {}) if isinstance(source_cache, dict) else {}
+    if isinstance(experiments, Mapping):
+        values = {
             str(exp_id): str(exp_meta.get("source_signature", ""))
-            for exp_id, exp_meta in sorted(dict(source_cache.get("experiments", {})).items())
+            for exp_id, exp_meta in sorted(experiments.items())
+            if isinstance(exp_meta, Mapping)
         }
-    )
+    elif isinstance(experiments, list):
+        values = {
+            str(row.get("exp_id") or row.get("expid")): str(
+                row.get("source_signature") or stable_hash(row)
+            )
+            for row in experiments
+            if isinstance(row, Mapping) and (row.get("exp_id") or row.get("expid"))
+        }
+    else:
+        values = {}
+    return stable_hash(values)
 
 
 def analysis_day_cache_meta(

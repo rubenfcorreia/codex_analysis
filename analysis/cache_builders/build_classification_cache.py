@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from analysis.cache_builders.common import cache_manifest_path, dependency_signature, load_index_manifest, load_indexed_records, record_scope_key, save_indexed_records, save_json_manifest, stage_is_reusable, stage_manifest
 from analysis.shared.cache_config import normalize_staged_config
 from analysis.shared.cache_utils import load_npz_cache, save_npz_cache
+from analysis.cache_builders.schema import CACHE_SCHEMA_VERSION
 
 
 def _median(values: list[float]) -> float | None:
@@ -67,8 +68,12 @@ def build_classification_cache(config_path: Path, pipeline: str, initial_analysi
     if not isinstance(records, list):
         raise ValueError("Initial-analysis cache must contain 'records'")
     clean_records = [row for row in records if isinstance(row, Mapping)]
-    existing = load_npz_cache(output_path) if output_path.exists() else {}
-    thresholds = existing.get("thresholds") if isinstance(existing, dict) and isinstance(existing.get("thresholds"), dict) else classification_thresholds(clean_records)
+    # Thresholds are population-level parameters.  Recompute them whenever
+    # this stage is reached after an upstream/configuration change; retaining
+    # old thresholds would silently misclassify newly added experiments.
+    thresholds = classification_thresholds(clean_records)
+    threshold_signature = dependency_signature(thresholds)
+    indexed_config_signature = dependency_signature(config_signature, threshold_signature)
     grouped = _group_records(clean_records)
     previous_index = load_index_manifest(output_path.parent, "classification")
     previous_artifacts = dict((previous_index.get("records") or {}).get("artifacts") or {})
@@ -78,21 +83,21 @@ def build_classification_cache(config_path: Path, pipeline: str, initial_analysi
     for scope_key, scope_rows in grouped.items():
         upstream = dependency_signature(scope_rows)
         artifact = previous_artifacts.get(scope_key) or {}
-        if str(artifact.get("config_signature")) == str(config_signature) and str(artifact.get("upstream_signature")) == str(upstream) and scope_key.split("|", 1)[0] not in rebuild_ids:
+        if str(artifact.get("config_signature")) == str(indexed_config_signature) and str(artifact.get("upstream_signature")) == str(upstream) and scope_key.split("|", 1)[0] not in rebuild_ids:
             cached = load_indexed_records(output_path.parent, scope_key)
             if cached is not None:
                 reusable_records.extend(cached)
                 continue
         changed_records.extend(scope_rows)
     classified = reusable_records + classify_records(changed_records, thresholds)
-    payload = {"schema_version": 1, "pipeline": pipeline, "records": classified, "thresholds": thresholds, "initial_analysis_signature": dependency_signature(initial), "config_signature": dependency_signature(config.get("classification", {}))}
+    payload = {"schema_version": CACHE_SCHEMA_VERSION, "record_schema": "classified_roi_observation_v2", "pipeline": pipeline, "records": classified, "thresholds": thresholds, "threshold_signature": threshold_signature, "initial_analysis_signature": dependency_signature(initial), "config_signature": config_signature}
     save_npz_cache(output_path, payload)
     indexed = save_indexed_records(
         output_path.parent,
         pipeline=pipeline,
         stage="classification",
         records_by_scope=_group_records(payload.get("roi_records", payload.get("records", []))),
-        config_signature=payload["config_signature"],
+        config_signature=indexed_config_signature,
         upstream_signatures={key: dependency_signature(rows) for key, rows in grouped.items()},
         rebuild_expids=config.get("rebuild_expids", []),
     )

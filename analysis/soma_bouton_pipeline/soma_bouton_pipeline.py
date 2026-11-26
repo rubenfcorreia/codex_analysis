@@ -115,7 +115,7 @@ from analysis.shared.analysis_cache import (
     save_analysis_results_cache,
     save_analysis_tables_cache,
 )
-from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, load_family_results_cache, load_reusable_family_scope_rows, load_npz_cache, save_family_results_cache, save_npz_cache
+from analysis.shared.cache_utils import METHODOLOGY_VERSION, array_signature, family_results_cache_path, load_family_results_cache, load_reusable_family_scope_rows, load_npz_cache, save_family_results_cache, save_npz_cache, source_cache_signature
 from analysis.shared.cache_config import normalize_staged_config
 from analysis.cache_builders.incremental_soma_shuffle import load_or_build as load_or_build_soma_shuffle_incremental
 from analysis.shared.classification_cache import apply_cached_visual_classification, load_classification_records
@@ -1143,9 +1143,10 @@ def _merge_reusable_family_rows(rows: Sequence[Mapping[str, Any]], reusable: Map
     return merged
 
 
-def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str, coincidence_example_top_n: int) -> Dict[str, Any]:
+def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mode: Mapping[str, Sequence[str]], state_modes: Sequence[str], visual_response_cohort: str, event_detection_method: str, visual_response_metric: str, coincidence_example_top_n: int, source_signature: str = "") -> Dict[str, Any]:
     return {
         "methodology_version": METHODOLOGY_VERSION,
+        "source_cache_signature": str(source_signature),
         "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
         "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
         "state_modes": list(state_modes),
@@ -1685,6 +1686,20 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     day_groups = build_day_groups(expids_by_mode)
     coincidence_example_top_n = int(config.get("coincidence_example_top_n", DEFAULT_CONFIG["coincidence_example_top_n"]))
     coincidence_example_max_total = int(config.get("coincidence_example_max_total", DEFAULT_CONFIG["coincidence_example_max_total"]))
+    source_cache_payload: Dict[str, Any] = {}
+    if source_cache_file.exists():
+        try:
+            loaded_source_cache = load_npz_cache(source_cache_file)
+            if isinstance(loaded_source_cache, dict):
+                source_cache_payload = loaded_source_cache
+        except Exception:
+            source_cache_payload = {}
+    run_source_signature = source_cache_signature(source_cache_payload) if source_cache_payload else analysis_cache_meta_hash({
+        "movie_expids": list(expids_by_mode.get("movie", [])),
+        "sleep_expids": list(expids_by_mode.get("sleep", [])),
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+    })
     analysis_results_meta = _soma_analysis_results_meta(
         config,
         selected_states_by_mode,
@@ -1693,8 +1708,10 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         event_detection_method,
         visual_response_metric,
         coincidence_example_top_n,
+        source_signature=run_source_signature,
     )
     family_source_signature = analysis_cache_meta_hash({
+        "source_cache_signature": run_source_signature,
         "movie_expids": list(expids_by_mode.get("movie", [])),
         "sleep_expids": list(expids_by_mode.get("sleep", [])),
         "soma_channel": int(config.get("soma_channel", 1)),
@@ -1719,6 +1736,20 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         "correlation_types": sorted(correlation_types),
         "correlation_family_enabled": correlation_family_enabled,
         "lag_family_enabled": lag_family_enabled,
+    }
+    lag_family_cache_file = family_results_cache_path(analysis_results_cache_file, "lag")
+    lag_family_meta = {
+        "analysis_name": str(config.get("analysis_name") or "soma_bouton_pipeline"),
+        "comparison_preset_name": str(config.get("comparison_preset_name") or "default"),
+        "state_modes": list(state_modes),
+        "selected_states_by_mode": {mode: list(states) for mode, states in selected_states_by_mode.items()},
+        "soma_channel": int(config.get("soma_channel", 1)),
+        "bouton_channel": int(config.get("bouton_channel", 0)),
+        "lag_window_s": float(config.get("lag_window_s", 2.0)),
+        "lag_step_s": float(config.get("lag_step_s", 0.1)),
+        "family_result_stage": "lag",
+        "source_signature": family_source_signature,
+        "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
     }
     coincidence_family_cache_file = family_results_cache_path(analysis_results_cache_file, "coincidence")
     coincidence_family_meta = {
@@ -2045,10 +2076,38 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
         step_message("ANALYSIS FAMILY lag: skipped")
     else:
         step_message("ANALYSIS FAMILY lag: enabled")
-        for ctx in transition_contexts:
-            row_states = list(union_states_by_mode.get(ctx.mode, selected_states_by_mode.get(ctx.mode, []))) if union_cache_enabled else list(selected_states_by_mode.get(ctx.mode, []))
-            with step_scope("lag scans", task="lag", metadata={"mode": ctx.mode, "expid": ctx.expid, "family": "lag"}):
-                lag_rows.extend(lag_scan_rows(ctx, row_states, lag_window_s=float(config.get("lag_window_s", 2.0)), lag_step_s=float(config.get("lag_step_s", 0.1)), state_masks=state_masks_for_context(ctx, row_states)))
+        lag_scope_signatures = _family_scope_signatures(activity_rows)
+        lag_family_meta["scope_signatures"] = lag_scope_signatures
+        lag_cached, lag_cache_status = load_family_results_cache(
+            lag_family_cache_file,
+            expected_meta=lag_family_meta,
+            rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+        )
+        if isinstance(lag_cached, dict) and isinstance(lag_cached.get("analysis_results"), dict):
+            lag_rows = list(lag_cached["analysis_results"].get("lag_rows", []))
+        else:
+            reusable_lag = load_reusable_family_scope_rows(
+                analysis_results_cache_file,
+                "lag",
+                lag_scope_signatures,
+                table_name="lag_rows",
+                rebuild=bool(config.get("rebuild") or config.get("analysis_results_rebuild")),
+            )
+            lag_rows = [row for rows in reusable_lag.values() for row in rows]
+            changed_scopes = set(lag_scope_signatures).difference(reusable_lag)
+            for ctx in transition_contexts:
+                scope = f"{ctx.expid}|{getattr(ctx, 'day_id', None) or getattr(ctx, 'date', None) or ctx.expid}"
+                if lag_scope_signatures and scope not in changed_scopes:
+                    continue
+                row_states = list(union_states_by_mode.get(ctx.mode, selected_states_by_mode.get(ctx.mode, []))) if union_cache_enabled else list(selected_states_by_mode.get(ctx.mode, []))
+                with step_scope("lag scans", task="lag", metadata={"mode": ctx.mode, "expid": ctx.expid, "family": "lag"}):
+                    lag_rows.extend(lag_scan_rows(ctx, row_states, lag_window_s=float(config.get("lag_window_s", 2.0)), lag_step_s=float(config.get("lag_step_s", 0.1)), state_masks=state_masks_for_context(ctx, row_states)))
+            save_family_results_cache(
+                analysis_results_cache_file,
+                "lag",
+                {"lag_rows": lag_rows},
+                base_meta=lag_family_meta,
+            )
 
     movie_activity_count = sum(1 for row in activity_rows if str(row.get("mode") or "") == "movie")
     if expids_by_mode.get("movie") and movie_activity_count == 0:

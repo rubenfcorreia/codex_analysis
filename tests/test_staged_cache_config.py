@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from analysis.cache_builders.common import load_json_manifest, save_json_manifest, stage_manifest
+from analysis.cache_builders.common import load_json_manifest, save_json_manifest, stage_manifest, load_indexed_records, save_indexed_records
 from analysis.shared.cache_config import normalize_staged_config
 
 
@@ -33,9 +33,24 @@ def test_manifest_round_trip_is_atomic_and_versioned(tmp_path: Path):
     save_json_manifest(path, payload)
     loaded = load_json_manifest(path)
     assert loaded is not None
-    assert loaded["schema_version"] == 2
+    assert loaded["schema_version"] == 3
     assert loaded["active_expids"] == ["a", "b"]
 
+
+
+def test_analysis_family_spec_declares_scope_and_dependencies():
+    from analysis.shared.analysis_families import family_spec, register_family_spec
+
+    spec = register_family_spec(
+        "test_family",
+        scope="experiment_day",
+        input_tables=("activity_rows",),
+        config_keys=("event_detection_method",),
+        cache_stage="results",
+    )
+    assert spec == family_spec("test_family")
+    assert spec.input_tables == ("activity_rows",)
+    assert spec.config_keys == ("event_detection_method",)
 
 
 def test_pipeline_configs_load_external_family_and_plot_registries():
@@ -89,6 +104,25 @@ def test_indexed_records_reuse_by_exp_id_and_day(tmp_path: Path):
     assert third["records"]["reused_count"] == 1
     assert third["records"]["built_count"] == 1
 
+
+
+def test_indexed_records_reject_payload_signature_mismatch(tmp_path: Path):
+    from analysis.shared.cache_utils import load_npz_cache, save_npz_cache
+
+    root = tmp_path / "processed"
+    save_indexed_records(
+        root,
+        pipeline="dendrites",
+        stage="processed",
+        records_by_scope={"e1|d1": [{"expid": "e1", "day_id": "d1", "value": 1}]},
+        config_signature="config",
+        upstream_signatures={"e1|d1": "source"},
+    )
+    path = next((root / "records").glob("*.npz"))
+    payload = load_npz_cache(path)
+    payload["signature"] = "tampered"
+    save_npz_cache(path, payload)
+    assert load_indexed_records(root, "e1|d1") is None
 
 
 def test_family_cache_reuse_skips_family_execution(tmp_path: Path):

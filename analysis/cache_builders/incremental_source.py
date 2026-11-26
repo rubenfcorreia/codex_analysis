@@ -51,7 +51,7 @@ def load_or_build_incremental(
     old_config = old.get("config", {}) if isinstance(old, dict) else {}
     stable = isinstance(old, dict) and old.get("schema_version") == impl.CACHE_SCHEMA_VERSION and all(
         old_config.get(key) == requested_config.get(key)
-        for key in ("repo_base", "channel", "explicit_locomotion_threshold")
+        for key in requested_config
     )
     cache = old if stable else {"schema_version": impl.CACHE_SCHEMA_VERSION, "animals": {}, "experiments": {}, "alerts": [], "demo_truth": None}
     cache["config"] = requested_config

@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from analysis.shared.cache_utils import stable_hash
 
 CACHE_STAGES = ("source", "processed", "initial_analysis", "classification", "for_analysis", "shuffle", "results")
-CACHE_MANIFEST_SCHEMA_VERSION = 2
+CACHE_MANIFEST_SCHEMA_VERSION = 3
 
 
 def cache_root(config: Mapping[str, Any], stage: str) -> Path:
@@ -142,7 +142,19 @@ def load_indexed_records(root: Path, scope_key: str) -> list[dict[str, Any]] | N
         payload = load_npz_cache(path)
     except Exception:
         return None
-    records = payload.get("records") if isinstance(payload, Mapping) else None
+    if not isinstance(payload, Mapping):
+        return None
+    if int(payload.get("schema_version", -1)) != CACHE_MANIFEST_SCHEMA_VERSION:
+        return None
+    if str(payload.get("pipeline", "")) != str(manifest.get("pipeline", "")):
+        return None
+    if str(payload.get("stage", "")) != str(manifest.get("stage", "")):
+        return None
+    if str(payload.get("scope_key", "")) != str(scope_key):
+        return None
+    if str(payload.get("signature", "")) != str(artifact.get("signature", "")):
+        return None
+    records = payload.get("records")
     return [dict(row) for row in records] if isinstance(records, list) and all(isinstance(row, Mapping) for row in records) else None
 
 def save_indexed_records(root: Path, *, pipeline: str, stage: str, records_by_scope: Mapping[str, list[Mapping[str, Any]]], config_signature: str, upstream_signatures: Mapping[str, str], rebuild_expids: list[str] | None = None) -> dict[str, Any]:
