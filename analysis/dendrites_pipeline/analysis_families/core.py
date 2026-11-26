@@ -77,6 +77,16 @@ from analysis.shared.plots.dendrite_plot_support import (
 )
 from analysis.shared.analysis_families.dendrite_transitions import run_transition_analysis
 
+STATE_METRIC_NAMES: Tuple[str, ...] = (
+    "dendrite_mean",
+    "spine_specific_mean",
+    "dendrite_event_frequency_per_min",
+    "spine_event_frequency_per_min",
+    "coincident_event_frequency_per_min",
+    "noncoincident_event_frequency_per_min",
+)
+
+
 ANALYSIS_FAMILIES: List[str] = [
     "state",
     "basal_apical",
@@ -249,14 +259,7 @@ def run_state_family(
     reused_coverage_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> None:
     experiments = cache.get("experiments", {})
-    state_metric_names = [
-        "dendrite_mean",
-        "spine_specific_mean",
-        "dendrite_event_frequency_per_min",
-        "spine_event_frequency_per_min",
-        "coincident_event_frequency_per_min",
-        "noncoincident_event_frequency_per_min",
-    ]
+    state_metric_names = list(STATE_METRIC_NAMES)
     with step_scope("state summary metrics"):
         state_metric_values = {metric_name: summarize_state_values(cache, metric_name, state_comparison_states) for metric_name in state_metric_names}
         state_metric_dendrite_values = {metric_name: summarize_state_values_by_dendrite(cache, metric_name, state_comparison_states) for metric_name in state_metric_names}
