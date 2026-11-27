@@ -32,6 +32,7 @@ def build_source_cache(config_path: Path, pipeline: str) -> Dict[str, Any]:
         merged = dict(impl.USER_EDITABLE_DEFAULTS)
         merged.update(config)
         config = normalize_staged_config(merged, pipeline=pipeline)
+        impl.apply_cpu_thread_limit(config.get("cpu_thread_limit", 1))
         repo_base = impl.resolve_repo_path(config.get("repo_base") or (Path.home() / "data" / "Repository"), impl.REPO_ROOT)
         output_dir = impl.resolve_repo_path(config.get("output_dir") or impl.DEFAULT_RESULTS_DIR, impl.REPO_ROOT)
         cache_path = impl.resolve_repo_path(config.get("cache_path") or (cache_root(config, "source") / "source_cache.npz"), impl.REPO_ROOT)
@@ -54,6 +55,7 @@ def build_source_cache(config_path: Path, pipeline: str) -> Dict[str, Any]:
         from analysis.soma_bouton_pipeline import soma_bouton_pipeline as impl
 
         config = impl.load_config(config_path)
+        impl._apply_cpu_thread_limit(config.get("cpu_thread_limit", 1))
         repo_base = impl.resolve_repo_path(config.get("repo_base") or (Path.home() / "data" / "Repository"), Path(__file__).resolve().parents[2])
         result_root = impl.resolve_repo_path(config.get("result_root") or "results/soma_bouton_pipeline", repo_base)
         cache_path = impl.resolve_repo_path(config.get("cache_path") or (cache_root(config, "source") / "source_cache.npz"), repo_base)

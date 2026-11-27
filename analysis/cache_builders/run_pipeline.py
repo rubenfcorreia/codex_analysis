@@ -14,6 +14,7 @@ from analysis.cache_builders.build_processed_cache import build_processed_cache
 from analysis.cache_builders.build_source_cache import build_source_cache
 from analysis.cache_builders.common import cache_root
 from analysis.cache_builders.run_pipeline_stage import run_stage
+from analysis.shared.cache_config import normalize_staged_config
 from analysis.shared.pipeline_logging import configure_run_logging, log_event, log_exception, log_path
 
 
@@ -28,6 +29,7 @@ def run_pipeline(config_path: Path, pipeline: str) -> dict[str, Any]:
     ]
     with config_path.open() as handle:
         config = json.load(handle)
+    normalized_config = normalize_staged_config(config, pipeline=pipeline, base_dir=config_path.parent)
     source_path = None
     processed_path = _payload_path(config, "processed")
     initial_path = _payload_path(config, "initial_analysis")
@@ -59,6 +61,20 @@ def run_pipeline(config_path: Path, pipeline: str) -> dict[str, Any]:
     processed_manifest = run_cache_stage("processed", lambda: build_processed_cache(config_path, pipeline, source_path, processed_path))
     initial_manifest = run_cache_stage("initial_analysis", lambda: build_initial_analysis(config_path, pipeline, processed_path, initial_path))
     classification_manifest = run_cache_stage("classification", lambda: build_classification_cache(config_path, pipeline, initial_path, classification_path))
+    analysis_families = normalized_config.get("analysis_families")
+    if analysis_families == []:
+        log_event("INFO", "run=stopped", pipeline=pipeline, stopped_before="for_analysis", analysis_families=[])
+        return {
+            "pipeline": pipeline,
+            "analysis_families": [],
+            "stopped_before": "for_analysis",
+            "stages": {
+                "source": source_manifest,
+                "processed": processed_manifest,
+                "initial_analysis": initial_manifest,
+                "classification": classification_manifest,
+            },
+        }
     analysis_result = run_cache_stage("for_analysis", lambda: run_stage(
         pipeline,
         "for_analysis",

@@ -66,6 +66,7 @@ def normalize_staged_config(raw: Mapping[str, Any], *, pipeline: str, base_dir: 
 
     # Keep the long, pipeline-specific family registry outside the main config.
     family_settings = {}
+    explicit_families = "families" in analysis or "analysis_families" in analysis
     families_file = analysis.get("families_file")
     if families_file and base_dir is not None:
         families_path = Path(str(families_file))
@@ -103,7 +104,8 @@ def normalize_staged_config(raw: Mapping[str, Any], *, pipeline: str, base_dir: 
             str(name) for name, settings in family_settings.items()
             if not isinstance(settings, Mapping) or bool(settings.get("enabled", True))
         ]
-        analysis = _deep_merge(dict(analysis), {"families": enabled_families})
+        if not explicit_families:
+            analysis = _deep_merge(dict(analysis), {"families": enabled_families})
         config["analysis_families_file"] = str(families_path)
 
     for key in ("movie_expids", "sleep_expids", "basal_expids", "apical_expids"):

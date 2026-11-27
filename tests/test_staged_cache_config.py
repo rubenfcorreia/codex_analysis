@@ -60,7 +60,7 @@ def test_pipeline_configs_load_external_family_and_plot_registries():
         (Path("analysis/soma_bouton_pipeline/pipeline_config.json"), "soma_bouton", "visual_response"),
     ):
         config = normalize_staged_config(json.loads(path.read_text()), pipeline=pipeline, base_dir=path.parent)
-        assert expected in config["analysis_families"]
+        assert config["analysis_families"] == []
         assert config["visual_response_metric"] == "mean"
         assert config["analysis_families_file"].endswith("analysis_families.json")
         assert config["plot_config_file"].endswith("plot_config.json")
@@ -313,3 +313,53 @@ def test_relative_external_registries_fallback_to_canonical_pipeline_files(tmp_p
     config = normalize_staged_config(json.loads(copied_config.read_text()), pipeline="dendrites", base_dir=tmp_path)
     assert config["analysis_families_file"].endswith("analysis/dendrites_pipeline/analysis_families.json")
     assert config["plot_config_file"].endswith("analysis/dendrites_pipeline/plot_config.json")
+
+
+def test_explicit_empty_families_override_external_registry(tmp_path: Path):
+    import json
+
+    family_file = tmp_path / "families.json"
+    family_file.write_text(json.dumps({"families": {"state": {"enabled": True}}}))
+    config = normalize_staged_config(
+        {"analysis": {"families": [], "families_file": str(family_file)}},
+        pipeline="dendrites",
+        base_dir=tmp_path,
+    )
+    assert config["analysis_families"] == []
+
+
+def test_family_registry_is_used_when_no_explicit_family_list(tmp_path: Path):
+    import json
+
+    family_file = tmp_path / "families.json"
+    family_file.write_text(json.dumps({"families": {"state": {"enabled": True}}}))
+    config = normalize_staged_config(
+        {"analysis": {"families_file": str(family_file)}},
+        pipeline="dendrites",
+        base_dir=tmp_path,
+    )
+    assert config["analysis_families"] == ["state"]
+
+
+def test_staged_runner_stops_before_family_dependent_caches(tmp_path: Path, monkeypatch):
+    import json
+    import analysis.cache_builders.run_pipeline as module
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"analysis": {"families": []}, "result_root": str(tmp_path / "results")}))
+    calls = []
+
+    def fake_stage(name):
+        calls.append(name)
+        return {"records": {}}
+
+    monkeypatch.setattr(module, "build_source_cache", lambda *args: {"records": {"source_cache_path": str(tmp_path / "source.npz")}})
+    monkeypatch.setattr(module, "build_processed_cache", lambda *args: fake_stage("processed"))
+    monkeypatch.setattr(module, "build_initial_analysis", lambda *args: fake_stage("initial_analysis"))
+    monkeypatch.setattr(module, "build_classification_cache", lambda *args: fake_stage("classification"))
+    monkeypatch.setattr(module, "run_stage", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("family-dependent stage was run")))
+
+    result = module.run_pipeline(config_path, "dendrites")
+    assert calls == ["processed", "initial_analysis", "classification"]
+    assert result["analysis_families"] == []
+    assert result["stopped_before"] == "for_analysis"

@@ -24,7 +24,7 @@
     "shuffle.null_model": "Null model used for shuffled data.",
     "shuffle.shuffle_n": "Number of shuffle iterations.",
     "shuffle.seed": "Deterministic random seed for shuffling.",
-    "analysis.families": "Analysis-family names to run after the initial analysis and ROI classification stages.",
+    "analysis.families": "Optional explicit family selection. Omit this key to use analysis.families_file; set it to [] to stop before family-dependent caches; provide names to run only those families.",
     "cache.mode": "Cache update policy; incremental mode reuses valid data and adds only new experiments.",
     "cache.validate_source_signatures": "Validate raw-source signatures before reusing source-cache records.",
     "cache.archive_removed_expids": "Keep removed experiment records in an archive instead of silently discarding them.",
@@ -35,6 +35,7 @@
     "initial_analysis.state_tie_absolute_tolerance": "Absolute tolerance used when deciding whether two states are tied for the preferred state.",
     "initial_analysis.state_tie_relative_tolerance": "Relative tolerance used when deciding whether two states are tied for the preferred state."
   },
+  "cpu_thread_limit": 1,
   "pipeline": {
     "name": "soma_bouton",
     "user_id": "rubencorreia",
@@ -81,6 +82,7 @@
     "seed": 12345
   },
   "analysis": {
+    "families": [],
     "families_file": "analysis_families.json"
   },
   "cache": {

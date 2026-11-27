@@ -85,6 +85,7 @@ from analysis.dendrites_pipeline.analysis_families.shared_metrics import (
     EVENT_DETECTION_METHODS,
     VISUAL_RESPONSE_METRICS,
     get_active_event_detection_method,
+    get_active_combined_event_window_frames,
     set_active_combined_event_window_frames,
     get_active_visual_response_metric,
     normalize_event_detection_method,
