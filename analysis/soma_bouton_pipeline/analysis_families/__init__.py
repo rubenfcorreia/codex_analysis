@@ -7,6 +7,7 @@ from analysis.shared.analysis_families.registry import normalize_analysis_famili
 
 ANALYSIS_FAMILIES: List[str] = [
     "state",
+    "activity_probability",
     "mixed_model",
     "calcium_events",
     "visual_response",

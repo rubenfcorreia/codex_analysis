@@ -121,7 +121,7 @@ def run_family(name: str, *args, **kwargs):
 
 def run_analysis_family(name, inputs, scope, config=None):
     from .contracts import AnalysisFamilyResult, AnalysisScope
-    from . import calcium_events, coincidence, mixed_model, state, visual_response
+    from . import activity_probability, calcium_events, coincidence, mixed_model, state, visual_response
     config = dict(config or {})
     rows = inputs.get("rows", []) if isinstance(inputs, dict) else inputs
     rows = [dict(row) for row in (rows or []) if isinstance(row, Mapping)]
@@ -130,6 +130,8 @@ def run_analysis_family(name, inputs, scope, config=None):
     key = str(name).strip().lower()
     if key == "state":
         raw = state.build_state_family_results(rows, list(scope.selected_states), int(config.get("shuffle_n", 0) or 0))
+    elif key == "activity_probability":
+        raw = activity_probability.run_family(rows, selected_states=list(scope.selected_states), shuffle_n=int(config.get("shuffle_n", 0) or 0))
     elif key == "mixed_model":
         raw = mixed_model.run_family(rows, state_comparison_states=list(scope.selected_states), shuffle_n=int(config.get("shuffle_n", 0) or 0), mixed_model_contrast_p_source=str(config.get("mixed_model_contrast_p_source", "classical")))
     elif key == "calcium_events":

@@ -81,7 +81,7 @@ from analysis.shared.analysis_families.soma_correlation import bouton_pairwise_c
 from analysis.shared.analysis_families.soma_lag import lag_scan_rows, lag_summary_rows
 from analysis.shared.analysis_families.soma_transitions import run_transition_analysis
 from analysis.shared.state_transitions import aggregate_transition_rows_expday, paired_transition_summaries, plot_transition_summaries
-from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_correlation, plot_state_event_frequency
+from analysis.shared.plots.state import plot_lag_heatmap, plot_state_activity, plot_state_activity_probability, plot_state_correlation, plot_state_event_frequency
 from analysis.shared.plots.mixed_model import (
     plot_mixed_model_contrasts_checkpoint,
     plot_mixed_model_forest_figure,
@@ -103,6 +103,7 @@ from analysis.shared.plots.poster_ready import (
     write_visual_response_poster_figure,
 )
 from analysis.shared.analysis_families.coincidence import build_bidirectional_coincidence_metrics, prepare_event_info, run_family as run_coincidence_family
+from analysis.shared.analysis_families.activity_probability import run_family as run_activity_probability_family
 from analysis.shared.plots.coincidence import build_coincidence_example_figure_path, plot_coincidence_event_example_figure
 from analysis.shared.plots.visual_response import plot_visual_response_boxplot_figure, render_visual_response_entity_figures
 from analysis.shared.plots.dff_heatmaps import records_from_soma_contexts, render_dff_heatmaps
@@ -1178,6 +1179,7 @@ def _soma_analysis_results_meta(config: Mapping[str, Any], selected_states_by_mo
         "correlation_types": sorted(set(config.get("correlation_types") or ("population_average", "soma_bouton", "soma_pairwise", "bouton_pairwise"))),
         "analysis_family_settings": dict(config.get("analysis_family_settings") or {}),
         "correlation_family_enabled": _analysis_family_enabled(config, "correlation"),
+        "activity_probability_family_enabled": _analysis_family_enabled(config, "activity_probability"),
         "lag_family_enabled": _analysis_family_enabled(config, "lag"),
         "coincidence_family_schema_version": 1,
         "coincidence_example_top_n": int(coincidence_example_top_n),
@@ -1571,6 +1573,7 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     correlation_types = set(configured_correlation_types or ("population_average", "soma_bouton", "soma_pairwise", "bouton_pairwise"))
     correlation_family_enabled = _analysis_family_enabled(config, "correlation")
     lag_family_enabled = _analysis_family_enabled(config, "lag")
+    activity_probability_family_enabled = _analysis_family_enabled(config, "activity_probability")
     if not correlation_family_enabled:
         correlation_types.clear()
     correlation_shuffle_seed = int(config.get("correlation_shuffle_seed", 12345))
@@ -2388,6 +2391,16 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     soma_pairwise_summary = pairwise_correlation_summary_rows(soma_pairwise_rows)
     bouton_pairwise_summary = pairwise_correlation_summary_rows(bouton_pairwise_rows)
     lag_summary = lag_summary_rows(lag_rows)
+    activity_probability_rows = []
+    activity_probability_summary_rows = []
+    activity_probability_comparison_rows = []
+    if activity_probability_family_enabled:
+        for mode, mode_states in selected_states_by_mode.items():
+            mode_rows = [row for row in activity_rows if str(row.get("mode") or "") == str(mode)]
+            family_result = run_activity_probability_family(mode_rows, selected_states=mode_states, shuffle_n=shuffle_n)
+            activity_probability_rows.extend(family_result.get("activity_probability_rows", []))
+            activity_probability_summary_rows.extend(family_result.get("summary_rows", []))
+            activity_probability_comparison_rows.extend(family_result.get("comparison_rows", []))
     coincidence_counts = dict(coincidence_family_results.get("counts", {}))
     if coincidence_family_cache is None:
         save_family_results_cache(
@@ -2687,6 +2700,15 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if sleep_state_event_comparison_summary_rows:
         _stage("writing csv", "state_event_comparisons_sleep")
         write_csv_rows(result_root / "csv" / "state_event_comparisons_sleep.csv", sleep_state_event_comparison_summary_rows, list(sleep_state_event_comparison_summary_rows[0].keys()))
+    if activity_probability_rows:
+        _stage("writing csv", "activity_probability_by_experiment")
+        write_csv_rows(result_root / "csv" / "activity_probability_by_experiment.csv", activity_probability_rows, list(activity_probability_rows[0].keys()))
+    if activity_probability_summary_rows:
+        _stage("writing csv", "activity_probability_by_day")
+        write_csv_rows(result_root / "csv" / "activity_probability_by_day.csv", activity_probability_summary_rows, list(activity_probability_summary_rows[0].keys()))
+    if activity_probability_comparison_rows:
+        _stage("writing csv", "activity_probability_comparisons")
+        write_csv_rows(result_root / "csv" / "activity_probability_comparisons.csv", activity_probability_comparison_rows, list(activity_probability_comparison_rows[0].keys()))
     if roi_split_results.get("subject_state_rows"):
         _stage("writing csv", "roi_split_subject_state")
         write_csv_rows(result_root / "csv" / "roi_split_subject_state.csv", roi_split_results["subject_state_rows"], list(roi_split_results["subject_state_rows"][0].keys()))
@@ -2732,6 +2754,15 @@ def _run_pipeline(config: Mapping[str, Any]) -> Dict[str, Any]:
     if lag_summary:
         _stage("writing csv", "bouton_soma_lag_summary_by_day")
         write_csv_rows(result_root / "csv" / "bouton_soma_lag_summary_by_day.csv", lag_summary, list(lag_summary[0].keys()))
+    if activity_probability_rows:
+        _stage("plotting", "activity probability")
+        plot_state_activity_probability(
+            activity_probability_rows,
+            figure_root,
+            comparison_rows=activity_probability_comparison_rows,
+            cohort_label="all",
+            state_order=analysis_state_order,
+        )
         for cohort_name in ("all", "responsive", "nonresponsive"):
             cohort_rows = cohort_lag_rows.get(cohort_name, [])
             if not cohort_rows:

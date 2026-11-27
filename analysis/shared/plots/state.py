@@ -233,6 +233,7 @@ def _plot_boxplot(
     comparison_rows: list[Mapping[str, Any]] | None = None,
     sample_size_column: str | None = None,
     horizontal: bool = False,
+    y_limits: tuple[float, float] | None = None,
 ) -> list[Path]:
     if frame.empty:
         return []
@@ -311,6 +312,7 @@ def _plot_boxplot(
         edge_color=accent_color,
         comparison_rows=annotation_rows,
         horizontal=horizontal,
+        y_limits=y_limits,
     )
 
 
@@ -471,6 +473,7 @@ def _plot_state_metric(
     comparison_rows: list[Mapping[str, Any]] | None = None,
     cohort_label: str = "all",
     state_order: list[str] | tuple[str, ...] | None = None,
+    y_limits: tuple[float, float] | None = None,
 ) -> list[Path]:
     if output_root is None:
         raise ValueError("state metric plot needs an output root")
@@ -516,6 +519,7 @@ def _plot_state_metric(
                         group_color_col=f"{group_col}_color" if f"{group_col}_color" in subset.columns else None,
                         group_rank_col=f"{group_col}_rank" if f"{group_col}_rank" in subset.columns else None,
                         comparison_rows=rows_for_plot,
+                        y_limits=y_limits,
                     )
                 )
                 generated.extend(
@@ -601,6 +605,7 @@ def _plot_state_metric(
         ylabel=ylabel,
         accent_color="#334155",
         comparison_rows=_state_comparison_rows_for_plot(comparison_rows),
+        y_limits=y_limits,
     )
 
 
@@ -620,6 +625,23 @@ def plot_state_activity(*args: Any, **kwargs: Any) -> list[Path]:
         comparison_rows=comparison_rows,
         cohort_label=cohort_label,
         state_order=state_order,
+    )
+
+
+def plot_state_activity_probability(*args: Any, **kwargs: Any) -> list[Path]:
+    rows = args[0] if args else kwargs.get("rows")
+    output_root = args[1] if len(args) > 1 else kwargs.get("output_root") or kwargs.get("result_root")
+    return _plot_state_metric(
+        rows,
+        output_root,
+        value_col="event_probability",
+        title_prefix="Calcium-event activity probability",
+        ylabel="Event probability",
+        stem_prefix="state_activity_probability",
+        comparison_rows=kwargs.get("comparison_rows"),
+        cohort_label=kwargs.get("cohort_label", "all"),
+        state_order=kwargs.get("state_order"),
+        y_limits=(0.0, 1.0),
     )
 
 

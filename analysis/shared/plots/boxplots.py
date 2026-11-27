@@ -504,6 +504,7 @@ def plot_boxplot_series(
     comparison_rows: Sequence[Mapping[str, Any]] | None = None,
     top_labels: Sequence[str] | None = None,
     horizontal: bool = False,
+    y_limits: tuple[float, float] | None = None,
 ) -> list[Path]:
     fig, ax = plt.subplots(figsize=(FIGURE_WIDTH_MM / 25.4, FIGURE_HEIGHT_MM / 25.4), constrained_layout=True)
     plotted = draw_boxplot_series(
@@ -523,6 +524,8 @@ def plot_boxplot_series(
         top_labels=top_labels,
         horizontal=horizontal,
     )
+    if y_limits is not None and not horizontal:
+        ax.set_ylim(*y_limits)
     if not plotted:
         plt.close(fig)
         return []

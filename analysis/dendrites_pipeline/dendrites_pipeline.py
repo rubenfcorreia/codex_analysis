@@ -279,8 +279,8 @@ DEFAULT_REVIEW_FIGURES_DIRNAME = "review_figures"
 DEFAULT_STATE_SUMMARY_FIGURES_DIRNAME = "state_summary"
 DEFAULT_STATE_SUMMARY_FIGURES_SUBDIRNAME = "selected_states"
 DEFAULT_VISUAL_RESPONSE_FIGURES_DIRNAME = "visual_response"
-STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min"}
-STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_specific_event_free_mean", "spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
+STATE_SUMMARY_DENDRITE_METRICS = {"dendrite_mean", "dendrite_event_frequency_per_min", "dendrite_event_probability"}
+STATE_SUMMARY_SPINE_METRICS = {"spine_specific_mean", "spine_specific_event_free_mean", "spine_event_frequency_per_min", "spine_event_probability", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}
 DEFAULT_MATRIX_SIMILARITY_FIGURES_DIRNAME = "matrix_similarity"
 DEFAULT_MIXED_MODEL_FIGURES_DIRNAME = "mixed_model"
 DEFAULT_SPINE_COACTIVITY_FIGURES_DIRNAME = "spine_coactivity"
@@ -4899,6 +4899,7 @@ def plot_mixed_model_forest_figure(
         "mean_spine_activity_per_dendrite",
         "dendrite_event_frequency_per_min",
         "spine_event_frequency_per_min",
+        "spine_event_probability",
         "coincident_event_frequency_per_min",
         "noncoincident_event_frequency_per_min",
         "coactivity_r",
@@ -9113,6 +9114,7 @@ def _build_event_detection_info(
         threshold=threshold,
         method=method,
     )
+    event_info["event_active_frame_count"] = int(sum(max(0, int(run[1]) - int(run[0]) + 1) for run in (event_info.get("event_runs") or []) if len(run) >= 2))
     fallback_time = np.arange(trace.size, dtype=float)
     duration_seconds = estimate_trace_duration_seconds(time if time is not None else fallback_time)
     if not np.isfinite(duration_seconds):
@@ -11451,14 +11453,20 @@ def _collect_state_summary_values(
                                 spine_values.append(float(np.nanmean(values)))
                         if spine_values:
                             by_state[state_label][subject_id].append(float(np.nanmean(spine_values)))
-                    elif metric_kind == "dendrite_event_frequency_per_min":
+                    elif metric_kind in {"dendrite_event_frequency_per_min", "dendrite_event_probability"}:
                         if not has_mask:
                             continue
                         event_info = build_state_masked_event_info(d_trace, d_time, mask, d_event_info)
-                        freq = as_float(event_info.get("event_frequency_per_min"))
-                        if freq is not None and np.isfinite(freq):
-                            by_state[state_label][subject_id].append(float(freq))
-                    elif metric_kind in {"spine_event_frequency_per_min", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}:
+                        if metric_kind == "dendrite_event_frequency_per_min":
+                            value = as_float(event_info.get("event_frequency_per_min"))
+                        else:
+                            trace_values = np.asarray(d_trace, dtype=float)
+                            valid_frames = int(np.isfinite(trace_values[np.asarray(mask, dtype=bool)]).sum())
+                            active_frames = int(event_info.get("event_active_frame_count", 0) or 0)
+                            value = float(active_frames / valid_frames) if valid_frames > 0 else float("nan")
+                        if value is not None and np.isfinite(value):
+                            by_state[state_label][subject_id].append(float(value))
+                    elif metric_kind in {"spine_event_frequency_per_min", "spine_event_probability", "coincident_event_frequency_per_min", "noncoincident_event_frequency_per_min"}:
                         if not has_mask or not spine_items:
                             continue
                         spine_values: List[float] = []
@@ -11472,6 +11480,11 @@ def _collect_state_summary_values(
                             )
                             if metric_kind == "spine_event_frequency_per_min":
                                 freq = as_float(spine_event_info.get("spine_event_frequency_per_min", spine_event_info.get("event_frequency_per_min")))
+                            elif metric_kind == "spine_event_probability":
+                                spine_trace = np.asarray(s_obs.get("trace"), dtype=float)
+                                valid_frames = int(np.isfinite(spine_trace[np.asarray(mask, dtype=bool)]).sum())
+                                active_frames = int(spine_event_info.get("event_active_frame_count", 0) or 0)
+                                freq = float(active_frames / valid_frames) if valid_frames > 0 else float("nan")
                             else:
                                 dendrite_event_info = build_state_masked_event_info(
                                     d_obs.get("trace"),

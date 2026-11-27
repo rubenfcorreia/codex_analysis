@@ -7,6 +7,7 @@ from analysis.shared.analysis_families.registry import normalize_analysis_famili
 
 ANALYSIS_FAMILIES: List[str] = [
     "state",
+    "activity_probability",
     "basal_apical",
     "direct_trial_type_comparison",
     "correlation",

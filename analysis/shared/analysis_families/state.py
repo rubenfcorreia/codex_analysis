@@ -152,6 +152,7 @@ def _event_summary_for_trace(trace: np.ndarray, time: np.ndarray, mask: np.ndarr
     summary = build_masked_event_summary(trace[:usable], time[:usable], mask[:usable])
     return {
         "event_count": int(summary.get("event_count", 0) or 0),
+        "event_active_frame_count": int(summary.get("event_active_frame_count", 0) or 0),
         "event_frequency_per_min": float(summary.get("event_frequency_per_min", float("nan"))),
     }
 
@@ -276,6 +277,7 @@ def activity_rows_for_context(
                     "roi_key": unit_id,
                     **summary,
                     "event_count": events["event_count"],
+                    "event_active_frame_count": events["event_active_frame_count"],
                     "event_frequency_per_min": events["event_frequency_per_min"],
                     **activity_status,
                 }

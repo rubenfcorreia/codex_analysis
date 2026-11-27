@@ -472,6 +472,7 @@ def build_event_info(trace: np.ndarray, time: Optional[np.ndarray] = None, *, me
     frequency = float(len(runs) * 60.0 / duration) if duration > 0 else float("nan")
     result = {
         "event_count": int(len(runs)), "event_runs": runs, "event_frequency_per_min": frequency,
+        "event_active_frame_count": int(np.count_nonzero(active)),
         "duration_seconds": duration, "threshold": threshold, "method": method,
         "amplitude_threshold": float(amplitude_threshold), "derivative_threshold": float(derivative_threshold),
         "combined_window_frames": get_active_combined_event_window_frames() if method == "combined" else None,

@@ -1,6 +1,14 @@
 {
   "_comment": "Enabled analysis families and family-specific execution settings.",
   "families": {
+    "activity_probability": {
+      "enabled": true,
+      "cache": true,
+      "results": true,
+      "plots": true,
+      "scope": "expid_day",
+      "aggregate": "pooled"
+    },
     "state": {
       "enabled": true,
       "cache": true,

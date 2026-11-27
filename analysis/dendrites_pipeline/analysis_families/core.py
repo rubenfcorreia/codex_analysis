@@ -160,6 +160,7 @@ def _base_results(cache: Dict[str, Any]) -> Dict[str, Any]:
         "spine_coactivity_model": {},
         "preferred_state_concordance": {},
         "state_transitions": {"event_rows": [], "summary_rows": [], "figure_paths": [], "alerts": []},
+        "activity_probability": {},
 
     }
 
@@ -798,6 +799,22 @@ def _reuse_family_cache(results: Dict[str, Any], family: str, cache_path: Option
 
 
 
+def run_activity_probability_family(
+    cache: Dict[str, Any],
+    results: Dict[str, Any],
+    *,
+    state_comparison_states: Sequence[str],
+    shuffle_n: int,
+) -> None:
+    metric_names = ("dendrite_event_probability", "spine_event_probability")
+    payload = {"state_summaries": {}, "state_dendrite_summaries": {}, "state_comparisons": []}
+    for metric_name in metric_names:
+        payload["state_summaries"][metric_name] = summarize_state_values(cache, metric_name, state_comparison_states)
+        payload["state_dendrite_summaries"][metric_name] = summarize_state_values_by_dendrite(cache, metric_name, state_comparison_states)
+        payload["state_comparisons"].extend(pairwise_state_comparisons(cache, metric_name, state_comparison_states, shuffle_n))
+    results["activity_probability"] = payload
+
+
 def run_cached_analysis(
     cache: Dict[str, Any],
     shuffle_n: int,
@@ -896,6 +913,18 @@ def run_cached_analysis(
         if cache_path is not None and analysis_results_meta is not None:
             with step_scope("save family cache: state"):
                 save_family_results_cache(cache_path, "state", results, base_meta=analysis_results_meta)
+    if "activity_probability" in selected_families and not _reuse_family_cache(results, "activity_probability", cache_path, analysis_results_meta):
+        with step_scope("activity probability family"):
+            run_activity_probability_family(
+                cache,
+                results,
+                state_comparison_states=state_comparison_states,
+                shuffle_n=shuffle_n,
+            )
+
+            if cache_path is not None and analysis_results_meta is not None:
+                save_family_results_cache(cache_path, "activity_probability", results, base_meta=analysis_results_meta)
+
     if transition_analysis and bool(transition_analysis.get("enabled", False)) and not _reuse_family_cache(results, "state_transitions", cache_path, analysis_results_meta):
         scope_signatures = dict((analysis_results_meta or {}).get("scope_signatures") or {})
         reusable_events = load_reusable_family_scope_rows(
