@@ -94,6 +94,7 @@ The preprocessing stage keeps event detection tied to the cached `dF/F` traces r
 - State-summary and mixed-model summaries reuse the cached event-info records, so they inherit whichever detector method is stored as the primary one for that observation.
 - The optional `combined` detector accepts an event only when amplitude and derivative evidence agree within `combined_event_window_frames` (default `2`); the selected method and window participate in cache invalidation.
 - The state summaries include `spine_specific_event_free_mean`, which masks the spine-specific residual during parent-dendrite event frames before averaging.
+- The `activity_probability` family adds `dendrite_event_probability` and `spine_event_probability` state summaries and pairwise state comparisons; it is enabled in `analysis_families.json` and uses the same cached event-frame counts as the state summaries.
 
 ## Preferred-State Concordance
 

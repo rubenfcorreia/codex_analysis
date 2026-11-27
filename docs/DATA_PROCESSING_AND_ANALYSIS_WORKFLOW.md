@@ -85,18 +85,19 @@ consume the main staged caches.
    ├─ Shared analysis families                        ├─ Shared analysis families
    │  1. State summaries and comparisons              │  1. State summaries and comparisons
    │  2. Activity and event-frequency summaries       │  2. Activity and event-frequency summaries
-   │  3. Visual-response cohorts                      │  3. Visual-response cohorts
-   │  4. Correlation analysis                          │  4. Correlation analysis
-   │  5. ROI split analysis                            │  5. ROI split analysis
-   │  6. Mixed-model analysis                          │  6. Mixed-model analysis
-   │  7. State-transition analysis                     │  7. State-transition analysis
+   │  3. Activity-probability analysis                │  3. Activity-probability analysis
+   │  4. Visual-response cohorts                      │  4. Visual-response cohorts
+   │  5. Correlation analysis                          │  5. Correlation analysis
+   │  6. ROI split analysis                            │  6. ROI split analysis
+   │  7. Mixed-model analysis                          │  7. Mixed-model analysis
+   │  8. State-transition analysis                     │  8. State-transition analysis
    │                                                   │
    ├─ Dendrite/spine-specific                         ├─ Soma/bouton-specific
-   │  8. Basal/apical comparisons                      │  8. Bouton-soma lag/offset analysis
-   │  9. Spine coactivity                              │  9. Exact-onset coincidence analysis
-   │  10. Spine matrix similarity                      │
-   │  11. Direct trial-type comparisons                │
-   │  12. Preferred-state concordance                  │
+   │  9. Basal/apical comparisons                      │  9. Bouton-soma lag/offset analysis
+   │  10. Spine coactivity                             │  10. Exact-onset coincidence analysis
+   │  11. Spine matrix similarity                      │
+   │  12. Direct trial-type comparisons                │
+   │  13. Preferred-state concordance                  │
    │                                                   │
    └─ Spine-specific residuals and                   └─ Soma/bouton contexts and
       compartment-specific outputs                       pairwise outputs
@@ -439,6 +440,7 @@ manifests/tables/figures.
 | `dendrites_pipeline.py` | Main CLI, loaders, normalization, cache manager, family dispatcher, output writer. |
 | `analysis_families/core.py` | Family orchestration/context. |
 | `state.py` | State activity/frequency summaries, including event-free spine metrics. |
+| `../shared/analysis_families/activity_probability.py` | Active-frame probability rows, state summaries, and state-pair comparisons. |
 | `analysis_families/preferred_state_concordance.py` | Dendrite-versus-spine preferred-state matching and confusion summaries. |
 | `../shared/analysis_families/dendrite_transitions.py` | Dendrite/spine state-transition metrics, scope reuse, and transition summaries. |
 | `basal_apical.py` | Basal/apical comparisons. |
@@ -471,6 +473,14 @@ Default root: `results/dendrites_pipeline/`.
 
 Transition primary replicates are `expday`: repeated transitions are averaged
 within entity/day, then entities within day. Raw event rows are retained.
+
+The dendrite/spine results also include event-probability summaries. Event
+probability is the fraction of valid analyzed frames with detected calcium
+activity (`event_active_frame_count / valid_frame_count`), bounded to [0, 1].
+The family writes `dendrite_event_probability` and
+`spine_event_probability` state-level summaries and pairwise state comparisons
+for the selected states, while the regular state family retains the underlying
+per-ROI metrics.
 
 The dendrite/spine results also include `spine_specific_event_free_mean`, a
 state-summary metric calculated from the spine-specific residual after masking

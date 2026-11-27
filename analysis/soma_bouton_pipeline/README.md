@@ -14,13 +14,14 @@ Key points:
 - the workflow keeps its caches under `results/soma_bouton_pipeline/`, and warm reruns reuse the pipeline-local analysis tables and grouped summaries instead of rebuilding them from scratch
 - Visual-response classification supports mean activity (the default) or calcium events; the selected metric is recorded in cache metadata.
 - The staged processed cache stores state-specific activity and event frequency for both soma and bouton ROIs, using the same state masks and event detector as the full analysis.
-- outputs are split into separate result divisions for activity, correlation,
-  lag/offset analyses, coincidence, and ROI split comparisons
+- outputs are split into separate result divisions for activity, activity probability,
+  correlation, lag/offset analyses, coincidence, and ROI split comparisons
 - the lag scan evaluates bouton-vs-soma correlation within a `\u00b12 s`
   offset window
 - the shared coincidence layer measures exact-onset soma-vs-bouton event matches per state and writes both directional views for each pair
 - coincidence example figures default to the top 5 pairs per day/state and live under `figures/<preset>/pooled/coincidence_event_examples/` for comparison preset runs, while direct runs keep them under `figures/coincidence_event_examples/`
 - coincidence CSVs are written alongside the other outputs, including daily summaries and cohort-specific copies under `csv/cohort/`
+- The `activity_probability` family writes `csv/activity_probability_by_experiment.csv`, `csv/activity_probability_by_day.csv`, and `csv/activity_probability_comparisons.csv`; its figures use the `state_activity_probability` stem and a 0–1 y-axis.
 
 The default example config uses:
 

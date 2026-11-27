@@ -18,6 +18,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - The legacy amplitude detector is still cached in parallel under `event_info["methods"]["amplitude"]`; that branch uses the trace median as its baseline and a noise estimate from the raw trace itself.
 - The `combined` detector requires amplitude and derivative evidence to agree within `combined_event_window_frames` (default `2`) before an event is accepted. Set `processing.event_detection_method` and `processing.combined_event_window_frames` in the pipeline config; the selected method and window are recorded in event metadata and cache signatures.
 - Event frequency is computed from the event count and the analyzed duration, so state-masked event rates simply reuse the same detector on the masked trace segment.
+- Activity probability is the fraction of valid analyzed frames containing detected activity: `event_active_frame_count / valid_frame_count`, clipped to the interval [0, 1]. The family reports per-ROI rows, day/state/compartment mean and median summaries, and state-pair comparisons.
 - When active-ROI filtering is enabled, the minimum event-count test uses the configured primary detector, including the combined detector when selected.
 - Dendrite traces are used as raw dF/F for dendrite activity metrics.
 - Spine-specific activity is computed with robust regression by subtracting the fitted dendrite contribution from the spine trace.

@@ -22,6 +22,7 @@ See also: [../../README.md](../../README.md), [../../docs/dendrites_pipeline/REA
 - `analysis_families/mixed_model.py`
 - `analysis_families/spine_coactivity.py`
 - `analysis_families/preferred_state_concordance.py`
+- `../shared/analysis_families/activity_probability.py`
 
 ## Shared Helpers
 

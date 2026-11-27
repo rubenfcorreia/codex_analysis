@@ -32,9 +32,11 @@ configuration, processing stages, analysis families, caches, and outputs.
 | File | Purpose |
 | --- | --- |
 | analysis/dendrites_pipeline/pipeline_config.json | Dendrite/spine processing, cache, analysis, and plotting configuration. |
+| analysis/dendrites_pipeline/analysis_families.json | Dendrite/spine analysis-family enablement, caching, result, plot, and scope settings. |
 | analysis/dendrites_pipeline/plot_config.json | Dendrite/spine plot-only controls. |
 | analysis/dendrites_pipeline/experiments.json | Dendrite/spine experiment membership and basal/apical assignments. |
 | analysis/soma_bouton_pipeline/pipeline_config.json | Soma/bouton processing, cache, analysis, and plotting configuration. |
+| analysis/soma_bouton_pipeline/analysis_families.json | Soma/bouton analysis-family enablement, caching, result, plot, and scope settings. |
 | analysis/soma_bouton_pipeline/plot_config.json | Soma/bouton plot-only controls. |
 | analysis/soma_bouton_pipeline/experiments.json | Soma/bouton experiment membership. |
 | analysis/sleep_state_across_days/sleep_state_across_days_config.json | Sleep-state experiment lists and output paths. |

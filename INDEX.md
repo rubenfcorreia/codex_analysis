@@ -53,7 +53,9 @@
 ## Current configurations
 
 - Dendrite/spine: analysis/dendrites_pipeline/pipeline_config.json, plot_config.json, experiments.json
+  - Analysis families: analysis/dendrites_pipeline/analysis_families.json
 - Soma/bouton: analysis/soma_bouton_pipeline/pipeline_config.json, plot_config.json, experiments.json
+  - Analysis families: analysis/soma_bouton_pipeline/analysis_families.json
 - Sleep-state: analysis/sleep_state_across_days/sleep_state_across_days_config.json
 - PCA: analysis/pca_pipeline/pca_pipeline_config.json
 
