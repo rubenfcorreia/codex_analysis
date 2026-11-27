@@ -29,6 +29,23 @@ def _numeric(value: Any) -> float | None:
     return number if number == number else None
 
 
+def _preferred_state_label(state: Any) -> str:
+    """Use one overall NREM label for pupil-defined NREM substates."""
+    label = str(state)
+    return "nrem" if label.startswith("nrem_pupil_") else label
+
+
+def _collapse_state_values(values: Mapping[str, float]) -> dict[str, float]:
+    grouped: dict[str, list[float]] = {}
+    explicit: dict[str, list[float]] = {}
+    for state, value in values.items():
+        label = _preferred_state_label(state)
+        grouped.setdefault(label, []).append(float(value))
+        if str(state) == label:
+            explicit.setdefault(label, []).append(float(value))
+    return {label: sum(explicit.get(label, candidates)) / len(explicit.get(label, candidates)) for label, candidates in grouped.items()}
+
+
 def _summarize_record(record: Mapping[str, Any], abs_tolerance: float = 0.0, rel_tolerance: float = 0.01) -> dict[str, Any]:
     state_activity = record.get("state_activity") or record.get("activity_by_state") or {}
     state_frequency = record.get("state_frequency") or record.get("frequency_by_state") or {}
@@ -36,8 +53,8 @@ def _summarize_record(record: Mapping[str, Any], abs_tolerance: float = 0.0, rel
         state_activity = {}
     if not isinstance(state_frequency, Mapping):
         state_frequency = {}
-    activity = {str(k): value for k, v in state_activity.items() if (value := _numeric(v)) is not None}
-    frequency = {str(k): value for k, v in state_frequency.items() if (value := _numeric(v)) is not None}
+    activity = _collapse_state_values({str(k): value for k, v in state_activity.items() if (value := _numeric(v)) is not None})
+    frequency = _collapse_state_values({str(k): value for k, v in state_frequency.items() if (value := _numeric(v)) is not None})
     maximum = max(activity.values()) if activity else None
     tolerance = max(float(abs_tolerance), float(rel_tolerance) * abs(float(maximum))) if maximum is not None else 0.0
     preferred_states = sorted(state for state, value in activity.items() if maximum is not None and float(maximum) - float(value) <= tolerance)
@@ -133,7 +150,7 @@ def build_initial_analysis(config_path: Path, pipeline: str, processed_cache_pat
     )
     if bool(initial_settings.get("generate_general_figures", True)):
         figure_root = Path(str(initial_settings["figure_output_dir"])) if initial_settings.get("figure_output_dir") else Path(str(config.get("result_root") or output_path.parent.parent)) / "figures" / "general" / "initial_analysis"
-        payload["figure_paths"] = write_initial_analysis_figures(records, figure_root, preferred_state_views=preferred_state_views)
+        payload["figure_paths"] = write_initial_analysis_figures(records, figure_root, preferred_state_views=preferred_state_views, pipeline=pipeline)
         save_npz_cache(output_path, payload)
     manifest = stage_manifest(
         pipeline=pipeline,

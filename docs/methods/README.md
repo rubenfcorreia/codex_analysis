@@ -46,6 +46,7 @@ Visual-response note: the main pipeline now treats dendrite and spine visual-res
 - It uses the cut stimulus-period activity only, with `cut_intertrials/` preferred and `cut_with_intertrials/` used as a fallback.
 - Dendrite responsiveness is computed from the dendrite cut trace, while spine responsiveness is computed from the spine-specific residual trace.
 - The resulting `all`, `responsive`, and `nonresponsive` cohorts are reused by the visual-response figures and the summary tables.
+- Initial-analysis preferred-state summaries also provide separate movie-only and sleep-only views. Pupil-defined NREM substates are collapsed to `nrem` for these preferred-state summaries, while the underlying state-specific activity/frequency mappings remain available in the cache.
 
 ### Summary Metrics
 

@@ -243,7 +243,7 @@ The staged dendrite and soma/bouton configs use these sections:
 | `processing` | Event detector (`event_detection_method`), `combined_event_window_frames`, and dendrite `state_mode`/`movie_trial_types`. |
 | `classification` | Visual metric, per-ROI active-event filters, and preferred/activity/frequency split enable flags. |
 | `shuffle` | `enabled`, `null_model`, `shuffle_n`, deterministic `seed`. |
-| `analysis` | `families_file`; selects families such as state, coactivity, mixed model, and preferred-state concordance after initial analysis/classification. |
+| `analysis` | `families_file` selects the family registry; optional `families` overrides it, with `[]` stopping the staged run before `for_analysis`. |
 | `cache` | `mode`, signature validation, removed-expID archiving, worker count. |
 | `plots` | `profile` (`full`, `analysis_only`, `poster_only`), `plots_only`, and `config_file` (normally `plot_config.json`). |
 | `initial_analysis` | General plots and absolute/relative preferred-state tie tolerances. |
@@ -329,7 +329,12 @@ visual_responsive, visual_class
 `analysis/cache_builders/build_initial_analysis.py` summarizes each processed
 ROI's numeric activity/frequency by state, computes the maximum and preferred
 state(s), and records tie status. The example tie rule is absolute tolerance
-`0.0` plus relative tolerance `0.01`.
+`0.0` plus relative tolerance `0.01`. Its `preferred_state_views` payload
+contains combined, movie-only, sleep-only, and sleep-state-only views; pupil
+substates named `nrem_pupil_*` are collapsed to the canonical `nrem` label for
+preferred-state summaries. When general figures are enabled, it also writes
+`preferred_state_proportions_sleep_states_<roi_type>_<compartment>.png`, with
+separate movie-experiment and sleep-experiment panels.
 
 Output:
 
@@ -353,7 +358,15 @@ Output:
 <cache_root>/classification/manifest.json
 ```
 
-### for_analysis/results
+### Family selection and for_analysis/results
+
+The normalized staged config determines whether the family-dependent stage is
+run. If `analysis.families` is omitted, the enabled families from
+`analysis.families_file` are used. If it contains explicit family names, only
+those families run. If it is an empty list, source, processed,
+initial-analysis, and classification caches are built and the pipeline stops
+before `for_analysis`; the returned run summary records `stopped_before` and
+the empty family list.
 
 `run_pipeline_stage.py` passes the upstream paths into the real dendrite or
 soma/bouton driver. Typical richer artifacts are:

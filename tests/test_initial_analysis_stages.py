@@ -7,6 +7,7 @@ from analysis.cache_builders.build_initial_analysis import build_initial_analysi
 from analysis.cache_builders.initial_analysis_plots import write_initial_analysis_figures
 from analysis.shared.cache_utils import load_npz_cache, save_npz_cache
 from analysis.shared.classification_summary import apply_summary
+from analysis.cache_builders.aggregation import build_preferred_state_views
 
 
 def test_initial_analysis_preserves_preferred_state_ties_and_general_figures(tmp_path: Path):
@@ -21,6 +22,7 @@ def test_initial_analysis_preserves_preferred_state_ties_and_general_figures(tmp
     assert record["preferred_state_class"] == "tie"
     assert (tmp_path / "results" / "figures" / "general" / "initial_analysis" / "preferred_state_counts.png").exists()
     assert (tmp_path / "results" / "figures" / "general" / "initial_analysis" / "state_activity_coverage.png").exists()
+    assert (tmp_path / "results" / "figures" / "general" / "initial_analysis" / "preferred_state_proportions_sleep_states_unknown_unspecified.png").exists()
 
 
 def test_classification_thresholds_update_when_population_changes(tmp_path: Path):
@@ -42,3 +44,10 @@ def test_family_summary_uses_staged_classification():
     summary = {"rows": [{"global_dendrite_id": "d1", "compartment": "basal", "responsive": False}]}
     updated = apply_summary(summary, [{"roi_key": "d1", "visual_class": "visual"}])
     assert updated["rows"][0]["cohort"] == "responsive"
+
+
+def test_preferred_states_collapse_nrem_pupil_substates_and_add_sleep_only_views():
+    records = [{"roi_key": "movie", "day_id": "d1", "expid": "m", "experiment_mode": "movie", "roi_type": "dendrite", "compartment": "apical", "state_activity": {"nrem_pupil_small": 4.0, "nrem_pupil_big": 3.0, "quiet_awake_movies": 1.0}}]
+    views = build_preferred_state_views(records, lambda row: row)
+    assert set(views) >= {"movie_sleep_states", "sleep_sleep_states"}
+    assert views["movie_sleep_states"][0]["state_activity"] == {"nrem": 3.5}

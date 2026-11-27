@@ -208,6 +208,39 @@ def _preferred_state_proportion_plot(records: Sequence[Mapping[str, Any]], roi_t
 
 
 
+def _sleep_tie_label(row: Mapping[str, Any]) -> str:
+    return "tie: " + " + ".join(str(state) for state in (row.get("preferred_states") or []))
+
+
+def _preferred_state_sleep_only_plot(records: Sequence[Mapping[str, Any]], roi_type: str, compartment: str, path: Path, preferred_state_views: Mapping[str, Sequence[Mapping[str, Any]]] | None = None) -> None:
+    views = preferred_state_views or {"movie_sleep_states": records, "sleep_sleep_states": records}
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5), sharex=True)
+    for ax, (view_name, title) in zip(axes, (("movie_sleep_states", "Movie experiments"), ("sleep_sleep_states", "Sleep experiments"))):
+        source = views.get(view_name, [])
+        category = [row for row in source if str(row.get("roi_type") or "unknown") == roi_type and str(row.get("compartment") or "unspecified") == compartment]
+        eligible = [row for row in category if str(row.get("preferred_state_class") or "unknown") != "unknown"]
+        unknown = len(category) - len(eligible)
+        if not eligible:
+            ax.text(0.5, 0.5, "No preferred-state data", ha="center", va="center")
+            ax.set_axis_off()
+            continue
+        counts = Counter(_sleep_tie_label(row) if row.get("preferred_state_class") == "tie" else str(row.get("preferred_state_class")) for row in eligible)
+        labels = _ordered_states([label for label in counts if not label.startswith("tie: ")])
+        labels.extend(sorted(label for label in counts if label.startswith("tie: ")))
+        proportions = np.array([100.0 * counts[label] / len(eligible) for label in labels])
+        colors = [state_display_color(label) if not label.startswith("tie: ") else "#7f7f7f" for label in labels]
+        ax.barh(labels[::-1], proportions[::-1], color=colors[::-1])
+        for label, proportion in zip(labels, proportions):
+            ax.text(min(98, proportion + 1.0), label, f"{proportion:.1f}%", va="center", fontsize=8)
+        ax.set_xlim(0, 100); ax.set_xlabel("Eligible ROIs (%)")
+        ax.set_title(f"{title} (n={len(eligible)}, unknown={unknown})")
+        ax.grid(axis="x", alpha=0.2)
+    fig.suptitle(f"Sleep-state preferred proportions: {compartment} {roi_type}", y=1.02)
+    fig.tight_layout()
+    _save(fig, path)
+
+
+
 def _state_coverage_plot(records: Sequence[Mapping[str, Any]], path: Path, preferred_state_views: Mapping[str, Sequence[Mapping[str, Any]]] | None = None) -> None:
     views = preferred_state_views or {"combined": records}
     view_names = ["combined", "movie", "sleep"]
@@ -256,28 +289,34 @@ def _state_coverage_plot(records: Sequence[Mapping[str, Any]], path: Path, prefe
     _save(fig, path)
 
 
-def write_initial_analysis_figures(records: Sequence[Mapping[str, Any]], output_dir: Path, preferred_state_views: Mapping[str, Sequence[Mapping[str, Any]]] | None = None) -> list[str]:
+def write_initial_analysis_figures(records: Sequence[Mapping[str, Any]], output_dir: Path, preferred_state_views: Mapping[str, Sequence[Mapping[str, Any]]] | None = None, pipeline: str | None = None) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    figure_records = list((preferred_state_views or {}).get("combined", records))
     paths: list[str] = []
-    visual = Counter(str(row.get("visual_class") or "unknown") for row in records)
-    preferred = Counter(str(row.get("preferred_state_class") or "unknown") for row in records)
+    visual = Counter(str(row.get("visual_class") or "unknown") for row in figure_records)
+    preferred = Counter(str(row.get("preferred_state_class") or "unknown") for row in figure_records)
     preferred_colors = {label: state_display_color(label) if label not in {"unknown", "tie"} else "#7f7f7f" for label in preferred}
     for filename, counts, title in (("visual_response_counts.png", visual, "Visual response classification"), ("preferred_state_counts.png", preferred, "Preferred-state classification")):
         path = output_dir / filename; _bar(counts, title, path, preferred_colors if "preferred" in filename else None); paths.append(str(path))
-    category_path = output_dir / "visual_response_by_roi_category.png"; _visual_category_plot(records, category_path)
+    category_path = output_dir / "visual_response_by_roi_category.png"; _visual_category_plot(figure_records, category_path)
     if category_path.exists(): paths.append(str(category_path))
-    category_order = [
-        ("dendrite", "apical"), ("dendrite", "basal"),
-        ("spine", "apical"), ("spine", "basal"),
-        ("soma", "soma"), ("bouton", "bouton"),
-    ]
+    pipeline_categories = {"dendrites": [("dendrite", "apical"), ("dendrite", "basal"), ("spine", "apical"), ("spine", "basal")], "soma_bouton": [("soma", "soma"), ("bouton", "bouton")]}
+    category_order = list(pipeline_categories.get(str(pipeline), []))
+    observed_categories = {(str(row.get("roi_type") or "unknown"), str(row.get("compartment") or "unspecified")) for row in figure_records}
+    category_order.extend(sorted(observed_categories.difference(category_order)))
+    for stale_path in output_dir.glob("preferred_state_proportions_*"):
+        if stale_path.is_file():
+            stale_path.unlink()
     for roi_type, compartment in category_order:
         category_path = output_dir / f"preferred_state_proportions_{roi_type}_{compartment}.png"
-        _preferred_state_proportion_plot(records, roi_type, compartment, category_path, preferred_state_views=preferred_state_views)
+        _preferred_state_proportion_plot(figure_records, roi_type, compartment, category_path, preferred_state_views=preferred_state_views)
         paths.append(str(category_path))
+        sleep_category_path = output_dir / f"preferred_state_proportions_sleep_states_{roi_type}_{compartment}.png"
+        _preferred_state_sleep_only_plot(figure_records, roi_type, compartment, sleep_category_path, preferred_state_views=preferred_state_views)
+        paths.append(str(sleep_category_path))
     overlap = output_dir / "preferred_state_overlap.png"; _overlap((preferred_state_views or {}).get("combined", records), overlap)
     if overlap.exists(): paths.append(str(overlap))
-    activity = output_dir / "activity_frequency_scatter.png"; _numeric_plot(records, activity); paths.append(str(activity))
+    activity = output_dir / "activity_frequency_scatter.png"; _numeric_plot(figure_records, activity); paths.append(str(activity))
     coverage = output_dir / "state_activity_coverage.png"; _state_coverage_plot(records, coverage, preferred_state_views=preferred_state_views)
     if coverage.exists(): paths.append(str(coverage))
     return paths

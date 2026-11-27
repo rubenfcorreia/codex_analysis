@@ -7,8 +7,8 @@ def numeric(value: Any) -> float | None:
     try: result = float(value)
     except (TypeError, ValueError): return None
     return result if result == result else None
-def _group_key(record: Mapping[str, Any], mode: str | None = None) -> tuple[str, str, str]:
-    return (str(record.get("roi_key") or record.get("unit_id") or record.get("global_roi_id")), str(record.get("day_id") or record.get("expid") or "unknown"), str(mode if mode is not None else record.get("experiment_mode") or "unknown"))
+def _group_key(record: Mapping[str, Any], mode: str | None = None) -> tuple[str, str, str, str, str, str]:
+    return (str(record.get("animal_id") or "unknown"), str(record.get("roi_type") or "unknown"), str(record.get("compartment") or "unspecified"), str(record.get("roi_key") or record.get("unit_id") or record.get("global_roi_id")), str(record.get("day_id") or record.get("expid") or "unknown"), str(mode if mode is not None else record.get("experiment_mode") or "unknown"))
 def _aggregate_rows(rows, mode, scope):
     state_values: dict[str, list[float]] = defaultdict(list); freq_values: dict[str, list[float]] = defaultdict(list)
     for row in rows:
@@ -19,16 +19,19 @@ def _aggregate_rows(rows, mode, scope):
             value = numeric(value)
             if value is not None: freq_values[str(state)].append(value)
     first = rows[0]
-    return {"roi_key": str(first.get("roi_key")), "day_id": str(first.get("day_id") or first.get("expid") or "unknown"), "experiment_mode": mode, "scope": scope, "expid": first.get("expid"), "animal_id": first.get("animal_id"), "roi_type": first.get("roi_type"), "compartment": first.get("compartment"), "state_activity": {k: sum(v)/len(v) for k,v in sorted(state_values.items()) if v}, "state_frequency": {k: sum(v)/len(v) for k,v in sorted(freq_values.items()) if v}, "visual_responsive": first.get("visual_responsive"), "visual_class": first.get("visual_class"), "source_expids": sorted({str(row.get("expid")) for row in rows if row.get("expid")}), "observation_count": len(rows), "modes_present": [mode], "schema_version": CACHE_SCHEMA_VERSION}
+    visual_rows = [row for row in rows if row.get("visual_class") is not None or row.get("visual_responsive") is not None]
+    visual_row = visual_rows[0] if visual_rows else first
+    return {"roi_key": str(first.get("roi_key")), "day_id": str(first.get("day_id") or first.get("expid") or "unknown"), "experiment_mode": mode, "scope": scope, "expid": first.get("expid"), "animal_id": first.get("animal_id"), "roi_type": first.get("roi_type"), "compartment": first.get("compartment"), "state_activity": {k: sum(v)/len(v) for k,v in sorted(state_values.items()) if v}, "state_frequency": {k: sum(v)/len(v) for k,v in sorted(freq_values.items()) if v}, "visual_responsive": visual_row.get("visual_responsive"), "visual_class": visual_row.get("visual_class"), "source_expids": sorted({str(row.get("expid")) for row in rows if row.get("expid")}), "observation_count": len(rows), "modes_present": [mode], "schema_version": CACHE_SCHEMA_VERSION}
 def aggregate_roi_day_mode(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str,str,str], list[Mapping[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str, str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for record in records: groups[_group_key(record)].append(record)
-    return [_aggregate_rows(rows, mode, "roi_day_mode") for (_, _, mode), rows in sorted(groups.items())]
+    return [_aggregate_rows(rows, mode, "roi_day_mode") for (_, _, _, _, _, mode), rows in sorted(groups.items())]
 def aggregate_roi_day_combined(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str,str], list[Mapping[str, Any]]] = defaultdict(list)
-    for record in records: groups[(str(record.get("roi_key")), str(record.get("day_id") or record.get("expid") or "unknown"))].append(record)
+    groups: dict[tuple[str, str, str, str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for record in records:
+        groups[(str(record.get("animal_id") or "unknown"), str(record.get("roi_type") or "unknown"), str(record.get("compartment") or "unspecified"), str(record.get("roi_key")), str(record.get("day_id") or record.get("expid") or "unknown"))].append(record)
     output = []
-    for (_, _), rows in sorted(groups.items()):
+    for (_, _, _, _, _), rows in sorted(groups.items()):
         row = _aggregate_rows(rows, "combined", "roi_day_combined")
         row["source_expids"] = sorted({str(x) for item in rows for x in (item.get("source_expids") or [item.get("expid")]) if x})
         row["observation_count"] = sum(int(item.get("observation_count") or 1) for item in rows)
@@ -38,4 +41,20 @@ def aggregate_roi_day_combined(records: list[Mapping[str, Any]]) -> list[dict[st
 def build_preferred_state_views(records: list[Mapping[str, Any]], summarize) -> dict[str, list[dict[str, Any]]]:
     mode_rows = aggregate_roi_day_mode(records); combined_rows = aggregate_roi_day_combined(mode_rows)
     views = {"combined": combined_rows, "movie": [r for r in mode_rows if r["experiment_mode"] == "movie"], "sleep": [r for r in mode_rows if r["experiment_mode"] == "sleep"]}
+    sleep_families = ("active_awake", "quiet_awake", "nrem", "rem")
+
+    def sleep_only(row: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        for field in ("state_activity", "state_frequency"):
+            grouped: dict[str, list[float]] = defaultdict(list)
+            for state, value in (row.get(field) or {}).items():
+                label = str(state)
+                family = next((candidate for candidate in sleep_families if label == candidate or label.startswith(candidate + "_")), None)
+                value = numeric(value)
+                if family is not None and value is not None:
+                    grouped[family].append(value)
+            result[field] = {state: sum(values) / len(values) for state, values in grouped.items() if values}
+        return result
+
+    views.update({"movie_sleep_states": [sleep_only(row) for row in views["movie"]], "sleep_sleep_states": [sleep_only(row) for row in views["sleep"]]})
     return {name: [summarize(row) for row in rows] for name, rows in views.items()}
